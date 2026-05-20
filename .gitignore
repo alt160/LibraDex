@@ -1,0 +1,15 @@
+bin/
+obj/
+.vs/
+.tmp/
+.tmp_*
+artifacts/
+*.user
+*.suo
+*.tmp
+*.log
+TestResults/
+*.lbdx
+*.db
+*.sqlite
+*.sqlite3
