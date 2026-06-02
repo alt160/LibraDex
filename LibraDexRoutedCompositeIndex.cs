@@ -153,6 +153,12 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
     public LibraDexIndexShapeSpec? LogicalShape => shape;
 
     /// <summary>
+    /// Gets a composite condition root for this opened routed composite index.<br/>
+    /// The index supplies its identity group and index name, so callers can describe declared key-part criteria without repeating `ForGroup(...).Index(...)` ceremony.<br/>
+    /// </summary>
+    public LibraDexCompositeConditionWhere Where => LibraDexCondition.ForGroup(Group).Index(Name).CompositeWhereRoot;
+
+    /// <summary>
     /// Inserts one routed composite key and identity into the tier tree.<br/>
     /// Each part advances one mini-router level; the identity is stored only on the terminal node for the complete composite path.<br/>
     /// </summary>
@@ -618,10 +624,10 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
     private IEnumerable<object> FindCompositeMatch(LibraDexCompositePredicate predicate)
     {
         predicate.ValidateAgainst(shape);
-        object?[] values = predicate.HasJoinedKeyCriterion
+        object?[] values = predicate.HasFullKeyCriterion
             ? new object?[shape.CompositeParts.Count]
             : Array.Empty<object?>();
-        foreach (object identity in Traverse(root, tier: 0, predicate, anyStringMatched: false, values))
+        foreach (object identity in Traverse(root, tier: 0, predicate, values))
         {
             yield return identity;
         }
@@ -637,7 +643,7 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
     {
         predicate.ValidateAgainst(shape);
         object?[] values = new object?[shape.CompositeParts.Count];
-        foreach (LibraDexObjectTuple tuple in EnumerateCompositeMatchTuples(root, tier: 0, predicate, anyStringMatched: false, values))
+        foreach (LibraDexObjectTuple tuple in EnumerateCompositeMatchTuples(root, tier: 0, predicate, values))
         {
             yield return tuple;
         }
@@ -645,26 +651,23 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
 
     /// <summary>
     /// Recursively enumerates composite tuples while applying the same route-pruned predicates used by identity retrieval.<br/>
-    /// The reusable value buffer is always populated because tuple mutation needs the original full key even when no joined-key predicate is present.<br/>
+    /// The reusable value buffer is always populated because tuple mutation needs the original full key even when no full-key predicate is present.<br/>
     /// </summary>
     /// <param name="node">The current routed node.</param>
     /// <param name="tier">The current composite part ordinal.</param>
     /// <param name="predicate">The composite predicate being applied.</param>
-    /// <param name="anyStringMatched">Whether an earlier string tier satisfied the any-string pseudo predicate.</param>
     /// <param name="values">The reusable routed path buffer.</param>
     /// <returns>The matching key/identity tuples below the node.</returns>
     private IEnumerable<LibraDexObjectTuple> EnumerateCompositeMatchTuples(
         CompositeNode node,
         int tier,
         LibraDexCompositePredicate predicate,
-        bool anyStringMatched,
         object?[] values)
     {
         if (tier >= shape.CompositeParts.Count)
         {
             EnsureNodeLoaded(node, tier);
-            if ((!predicate.HasAnyStringCriterion || anyStringMatched) &&
-                MatchesJoinedKeyIfNeeded(predicate, values))
+            if (MatchesFullKeyIfNeeded(predicate, values))
             {
                 LibraDexCompositeKey key = LibraDexCompositeKey.Of(values.ToArray());
                 foreach (object identity in node.Identities)
@@ -682,8 +685,7 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
             foreach (CompositeNode child in MatchedChildren(node, tier, criterion!))
             {
                 values[tier] = child.RouteValue ?? throw new InvalidDataException("Composite tuple traversal encountered a child route without a component value.");
-                bool nextAnyStringMatched = anyStringMatched || ChildMatchesAnyString(part, child, predicate);
-                foreach (LibraDexObjectTuple tuple in EnumerateCompositeMatchTuples(child, tier + 1, predicate, nextAnyStringMatched, values))
+                foreach (LibraDexObjectTuple tuple in EnumerateCompositeMatchTuples(child, tier + 1, predicate, values))
                 {
                     yield return tuple;
                 }
@@ -698,8 +700,7 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
         foreach (CompositeChild child in node.Children)
         {
             values[tier] = child.Node.RouteValue ?? throw new InvalidDataException("Composite tuple traversal encountered a child route without a component value.");
-            bool nextAnyStringMatched = anyStringMatched || ChildMatchesAnyString(part, child.Node, predicate);
-            foreach (LibraDexObjectTuple tuple in EnumerateCompositeMatchTuples(child.Node, tier + 1, predicate, nextAnyStringMatched, values))
+            foreach (LibraDexObjectTuple tuple in EnumerateCompositeMatchTuples(child.Node, tier + 1, predicate, values))
             {
                 yield return tuple;
             }
@@ -712,14 +713,12 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
         CompositeNode node,
         int tier,
         LibraDexCompositePredicate predicate,
-        bool anyStringMatched,
-        object?[] joinedValues)
+        object?[] fullKeyValues)
     {
         if (tier >= shape.CompositeParts.Count)
         {
             EnsureNodeLoaded(node, tier);
-            if ((!predicate.HasAnyStringCriterion || anyStringMatched) &&
-                MatchesJoinedKeyIfNeeded(predicate, joinedValues))
+            if (MatchesFullKeyIfNeeded(predicate, fullKeyValues))
             {
                 foreach (object identity in node.Identities)
                 {
@@ -735,14 +734,13 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
         {
             foreach (CompositeNode child in MatchedChildren(node, tier, criterion!))
             {
-                SetJoinedValue(joinedValues, tier, child);
-                bool nextAnyStringMatched = anyStringMatched || ChildMatchesAnyString(part, child, predicate);
-                foreach (object identity in Traverse(child, tier + 1, predicate, nextAnyStringMatched, joinedValues))
+                SetFullKeyValue(fullKeyValues, tier, child);
+                foreach (object identity in Traverse(child, tier + 1, predicate, fullKeyValues))
                 {
                     yield return identity;
                 }
 
-                ClearJoinedValue(joinedValues, tier);
+                ClearFullKeyValue(fullKeyValues, tier);
             }
 
             yield break;
@@ -751,30 +749,29 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
         EnsureNodeLoaded(node, tier);
         foreach (CompositeChild child in node.Children)
         {
-            SetJoinedValue(joinedValues, tier, child.Node);
-            bool nextAnyStringMatched = anyStringMatched || ChildMatchesAnyString(part, child.Node, predicate);
-            foreach (object identity in Traverse(child.Node, tier + 1, predicate, nextAnyStringMatched, joinedValues))
+            SetFullKeyValue(fullKeyValues, tier, child.Node);
+            foreach (object identity in Traverse(child.Node, tier + 1, predicate, fullKeyValues))
             {
                 yield return identity;
             }
 
-            ClearJoinedValue(joinedValues, tier);
+            ClearFullKeyValue(fullKeyValues, tier);
         }
     }
 
     /// <summary>
     /// Deletes tuples matched by one composite predicate.<br/>
-    /// The traversal uses the same part-aware route pruning as `CompositeMatch` retrieval and removes identities only at terminal paths whose named, any-string, and joined-key predicates all pass.<br/>
+    /// The traversal uses the same part-aware route pruning as `CompositeMatch` retrieval and removes identities only at terminal paths whose named and full-key predicates all pass.<br/>
     /// </summary>
     /// <param name="predicate">The composite predicate materialized from the condition builder.</param>
     /// <returns>The number of terminal key/identity tuples removed.</returns>
     private long DeleteCompositeMatch(LibraDexCompositePredicate predicate)
     {
         predicate.ValidateAgainst(shape);
-        object?[] values = predicate.HasJoinedKeyCriterion
+        object?[] values = predicate.HasFullKeyCriterion
             ? new object?[shape.CompositeParts.Count]
             : Array.Empty<object?>();
-        long deleted = DeleteCompositeMatch(root, tier: 0, predicate, anyStringMatched: false, values);
+        long deleted = DeleteCompositeMatch(root, tier: 0, predicate, values);
         if (deleted == 0)
         {
             return 0;
@@ -792,21 +789,18 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
     /// <param name="node">The current routed node.</param>
     /// <param name="tier">The current composite part ordinal.</param>
     /// <param name="predicate">The composite predicate being applied.</param>
-    /// <param name="anyStringMatched">Whether an earlier string tier satisfied the any-string pseudo predicate.</param>
-    /// <param name="joinedValues">The reusable joined-key path buffer.</param>
+    /// <param name="fullKeyValues">The reusable full-key path buffer.</param>
     /// <returns>The number of tuples removed below this node.</returns>
     private long DeleteCompositeMatch(
         CompositeNode node,
         int tier,
         LibraDexCompositePredicate predicate,
-        bool anyStringMatched,
-        object?[] joinedValues)
+        object?[] fullKeyValues)
     {
         EnsureNodeLoaded(node, tier);
         if (tier >= shape.CompositeParts.Count)
         {
-            if ((!predicate.HasAnyStringCriterion || anyStringMatched) &&
-                MatchesJoinedKeyIfNeeded(predicate, joinedValues))
+            if (MatchesFullKeyIfNeeded(predicate, fullKeyValues))
             {
                 return node.ClearIdentities();
             }
@@ -820,10 +814,9 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
         {
             foreach (CompositeNode child in MatchedChildren(node, tier, criterion!).ToArray())
             {
-                SetJoinedValue(joinedValues, tier, child);
-                bool nextAnyStringMatched = anyStringMatched || ChildMatchesAnyString(part, child, predicate);
-                deleted += DeleteCompositeMatch(child, tier + 1, predicate, nextAnyStringMatched, joinedValues);
-                ClearJoinedValue(joinedValues, tier);
+                SetFullKeyValue(fullKeyValues, tier, child);
+                deleted += DeleteCompositeMatch(child, tier + 1, predicate, fullKeyValues);
+                ClearFullKeyValue(fullKeyValues, tier);
             }
 
             return deleted;
@@ -831,82 +824,58 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
 
         foreach (CompositeChild child in node.Children)
         {
-            SetJoinedValue(joinedValues, tier, child.Node);
-            bool nextAnyStringMatched = anyStringMatched || ChildMatchesAnyString(part, child.Node, predicate);
-            deleted += DeleteCompositeMatch(child.Node, tier + 1, predicate, nextAnyStringMatched, joinedValues);
-            ClearJoinedValue(joinedValues, tier);
+            SetFullKeyValue(fullKeyValues, tier, child.Node);
+            deleted += DeleteCompositeMatch(child.Node, tier + 1, predicate, fullKeyValues);
+            ClearFullKeyValue(fullKeyValues, tier);
         }
 
         return deleted;
     }
 
     /// <summary>
-    /// Applies the explicit joined-key predicate when one is present.<br/>
-    /// The joined value is rendered only at terminal paths and only for predicates that explicitly requested whole-composite matching.<br/>
+    /// Applies the explicit full-key predicate when one is present.<br/>
+    /// The full-key value is rendered only at terminal paths and only for predicates that explicitly requested whole-composite matching.<br/>
     /// </summary>
-    /// <param name="predicate">The composite predicate that may contain a joined-key criterion.</param>
-    /// <param name="joinedValues">The current routed path values in composite part order.</param>
-    /// <returns><see langword="true"/> when no joined predicate exists or the rendered key matches it.</returns>
-    private bool MatchesJoinedKeyIfNeeded(LibraDexCompositePredicate predicate, object?[] joinedValues)
+    /// <param name="predicate">The composite predicate that may contain a full-key criterion.</param>
+    /// <param name="fullKeyValues">The current routed path values in composite part order.</param>
+    /// <returns><see langword="true"/> when no full-key predicate exists or the rendered key matches it.</returns>
+    private bool MatchesFullKeyIfNeeded(LibraDexCompositePredicate predicate, object?[] fullKeyValues)
     {
-        if (!predicate.TryGetJoinedKeyPart(out LibraDexCompositePartCriterion? joinedCriterion))
+        if (!predicate.TryGetFullKeyPart(out LibraDexCompositePartCriterion? fullKeyCriterion))
         {
             return true;
         }
 
-        LibraDexCompositePartCriterion criterion = joinedCriterion!;
-        byte[] joined = EncodeJoinedKey(shape, joinedValues, criterion);
-        return MatchesJoinedBytes(shape, joined, criterion);
+        LibraDexCompositePartCriterion criterion = fullKeyCriterion!;
+        byte[] fullKey = EncodeFullKey(shape, fullKeyValues, criterion);
+        return MatchesFullKeyBytes(shape, fullKey, criterion);
     }
 
     /// <summary>
-    /// Stores one routed component value into the reusable joined-key path buffer.<br/>
+    /// Stores one routed component value into the reusable full-key path buffer.<br/>
     /// </summary>
-    /// <param name="joinedValues">The reusable joined-key path buffer.</param>
+    /// <param name="fullKeyValues">The reusable full-key path buffer.</param>
     /// <param name="tier">The component tier being visited.</param>
     /// <param name="child">The child route node whose route value should be captured.</param>
-    private static void SetJoinedValue(object?[] joinedValues, int tier, CompositeNode child)
+    private static void SetFullKeyValue(object?[] fullKeyValues, int tier, CompositeNode child)
     {
-        if (joinedValues.Length != 0)
+        if (fullKeyValues.Length != 0)
         {
-            joinedValues[tier] = child.RouteValue ?? throw new InvalidDataException("Joined composite traversal encountered a child route without a component value.");
+            fullKeyValues[tier] = child.RouteValue ?? throw new InvalidDataException("FullKey composite traversal encountered a child route without a component value.");
         }
     }
 
     /// <summary>
-    /// Clears one routed component value from the reusable joined-key path buffer after traversal returns from that child.<br/>
+    /// Clears one routed component value from the reusable full-key path buffer after traversal returns from that child.<br/>
     /// </summary>
-    /// <param name="joinedValues">The reusable joined-key path buffer.</param>
+    /// <param name="fullKeyValues">The reusable full-key path buffer.</param>
     /// <param name="tier">The component tier to clear.</param>
-    private static void ClearJoinedValue(object?[] joinedValues, int tier)
+    private static void ClearFullKeyValue(object?[] fullKeyValues, int tier)
     {
-        if (joinedValues.Length != 0)
+        if (fullKeyValues.Length != 0)
         {
-            joinedValues[tier] = null;
+            fullKeyValues[tier] = null;
         }
-    }
-
-    /// <summary>
-    /// Tests whether a child route satisfies the explicit any-string-part predicate at the current composite tier.<br/>
-    /// The predicate is evaluated independently per string tier and never builds or searches a flattened joined composite value.<br/>
-    /// </summary>
-    /// <param name="part">The current composite part descriptor.</param>
-    /// <param name="child">The child route node whose component value belongs to <paramref name="part"/>.</param>
-    /// <param name="predicate">The composite predicate that may contain an any-string criterion.</param>
-    /// <returns><see langword="true"/> when this tier is a string tier and its component value matches the any-string criterion.</returns>
-    private bool ChildMatchesAnyString(
-        LibraDexCompositeKeyPartSpec part,
-        CompositeNode child,
-        LibraDexCompositePredicate predicate)
-    {
-        if (!predicate.TryGetAnyStringPart(out LibraDexCompositePartCriterion? anyStringCriterion) ||
-            part.KeyType != typeof(string) ||
-            child.RouteValue is null)
-        {
-            return false;
-        }
-
-        return MatchesPart(part, child.RouteValue, anyStringCriterion!);
     }
 
     /// <summary>
@@ -1293,7 +1262,7 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
 
     /// <summary>
     /// Applies one string criterion to a rendered or stored composite text value.<br/>
-    /// The helper is shared by named string parts, any-string pseudo parts, and explicit joined-key predicates so wildcard and culture behavior stays aligned.<br/>
+    /// The helper is shared by named string parts and explicit full-key predicates so wildcard and culture behavior stays aligned.<br/>
     /// </summary>
     /// <param name="text">The text value to test.</param>
     /// <param name="criterion">The string criterion to apply.</param>
@@ -1320,20 +1289,20 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
 
     /// <summary>
     /// Encodes the current full composite key path using index-order parts and the caller-selected delimiter bytes.<br/>
-    /// Each component uses the same stable key-domain encoding LibraDex uses for comparable scalar/string/GUID/date/binary values, so joined matching converts the criterion once and does not render every part to text.<br/>
+    /// Each component uses the same stable key-domain encoding LibraDex uses for comparable scalar/string/GUID/date/binary values, so full-key matching converts the criterion once and does not render every part to text.<br/>
     /// </summary>
     /// <param name="shape">The composite shape that supplies part names and index order.</param>
     /// <param name="values">The composite path values in index order.</param>
-    /// <param name="criterion">The joined-key criterion that supplies delimiter and optional included part names.</param>
-    /// <returns>The encoded joined composite key.</returns>
-    private static byte[] EncodeJoinedKey(
+    /// <param name="criterion">The full-key criterion that supplies delimiter and optional included part names.</param>
+    /// <returns>The encoded full-key composite key.</returns>
+    private static byte[] EncodeFullKey(
         LibraDexIndexShapeSpec shape,
         IReadOnlyList<object?> values,
         LibraDexCompositePartCriterion criterion)
     {
-        byte[] delimiter = Encoding.UTF8.GetBytes(criterion.JoinedDelimiter ?? string.Empty);
-        IReadOnlyList<string>? partNames = criterion.JoinedPartNames;
-        IReadOnlyList<string>? excludedPartNames = criterion.JoinedExcludedPartNames;
+        byte[] delimiter = Encoding.UTF8.GetBytes(criterion.FullKeyDelimiter ?? string.Empty);
+        IReadOnlyList<string>? partNames = criterion.FullKeyPartNames;
+        IReadOnlyList<string>? excludedPartNames = criterion.FullKeyExcludedPartNames;
         using MemoryStream stream = new();
         bool appendedAny = false;
         for (int i = 0; i < values.Count; i++)
@@ -1355,10 +1324,10 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
                 stream.Write(delimiter);
             }
 
-            WriteJoinedPart(
+            WriteFullKeyPart(
                 stream,
                 shape.CompositeParts[i],
-                values[i] ?? throw new InvalidDataException("Joined composite traversal reached a terminal path with a missing part value."));
+                values[i] ?? throw new InvalidDataException("FullKey composite traversal reached a terminal path with a missing part value."));
             appendedAny = true;
         }
 
@@ -1366,7 +1335,7 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
     }
 
     /// <summary>
-    /// Tests whether a joined-key include list contains one composite part name.<br/>
+    /// Tests whether a full-key include list contains one composite part name.<br/>
     /// Include lists are expected to be small, so a linear ordinal check keeps this path allocation-free and avoids building a set per terminal key.<br/>
     /// </summary>
     /// <param name="partNames">The included part names.</param>
@@ -1389,10 +1358,10 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
     /// Writes one composite component in its comparable key-domain byte form.<br/>
     /// Strings use UTF-8 bytes, fixed scalars use big-endian sortable lanes, GUIDs use their 16-byte value, dates use the structured date scalar, and raw binary parts remain raw bytes.<br/>
     /// </summary>
-    /// <param name="stream">The destination joined-key byte stream.</param>
+    /// <param name="stream">The destination full-key byte stream.</param>
     /// <param name="part">The component part descriptor recorded by the composite shape.</param>
     /// <param name="value">The component value to encode.</param>
-    private static void WriteJoinedPart(Stream stream, LibraDexCompositeKeyPartSpec part, object value)
+    private static void WriteFullKeyPart(Stream stream, LibraDexCompositeKeyPartSpec part, object value)
     {
         Type type = part.KeyType;
         if (type == typeof(string))
@@ -1416,25 +1385,25 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
             return;
         }
 
-        if (TryEncodeJoinedScalar8(part, value, out ulong encoded))
+        if (TryEncodeFullKeyScalar8(part, value, out ulong encoded))
         {
             BinaryPrimitives.WriteUInt64BigEndian(buffer[..8], encoded);
             stream.Write(buffer[..8]);
             return;
         }
 
-        throw new NotSupportedException($"Composite joined-key byte matching does not support part type {type.FullName}.");
+        throw new NotSupportedException($"Composite full-key byte matching does not support part type {type.FullName}.");
     }
 
     /// <summary>
     /// Encodes a supported 8-byte composite component into LibraDex's sortable scalar lane.<br/>
-    /// This mirrors the generic scalar key codec so joined-byte residual matching compares the same byte-domain representation used by scalar indexes.<br/>
+    /// This mirrors the generic scalar key codec so full-key-byte residual matching compares the same byte-domain representation used by scalar indexes.<br/>
     /// </summary>
     /// <param name="part">The component part descriptor.</param>
     /// <param name="value">The component value.</param>
     /// <param name="encoded">Receives the sortable 8-byte lane when supported.</param>
     /// <returns><see langword="true"/> when the component was encoded; otherwise <see langword="false"/>.</returns>
-    private static bool TryEncodeJoinedScalar8(LibraDexCompositeKeyPartSpec part, object value, out ulong encoded)
+    private static bool TryEncodeFullKeyScalar8(LibraDexCompositeKeyPartSpec part, object value, out ulong encoded)
     {
         Type type = part.KeyType;
         encoded = 0;
@@ -1532,62 +1501,62 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
     }
 
     /// <summary>
-    /// Applies a joined-key string criterion against encoded joined bytes.<br/>
+    /// Applies a full-key string criterion against encoded full-key bytes.<br/>
     /// Operands are converted once into the same byte-domain as composite components; matching does not render stored component values to text.<br/>
     /// </summary>
     /// <param name="shape">The composite shape used to resolve part-level encoding contracts for typed operands.</param>
-    /// <param name="candidate">The encoded joined composite key.</param>
-    /// <param name="criterion">The joined-key string criterion.</param>
+    /// <param name="candidate">The encoded full-key composite key.</param>
+    /// <param name="criterion">The full-key string criterion.</param>
     /// <returns><see langword="true"/> when the encoded candidate satisfies the criterion.</returns>
-    private static bool MatchesJoinedBytes(
+    private static bool MatchesFullKeyBytes(
         LibraDexIndexShapeSpec shape,
         ReadOnlySpan<byte> candidate,
         LibraDexCompositePartCriterion criterion)
     {
-        byte[] operand = EncodeJoinedCriterionOperand(shape, criterion, RequireValue(criterion.Values, 0));
+        byte[] operand = EncodeFullKeyCriterionOperand(shape, criterion, RequireValue(criterion.Values, 0));
         return criterion.Operator switch
         {
             LibraDexConditionOperatorKind.EqualTo => candidate.SequenceEqual(operand),
             LibraDexConditionOperatorKind.StartsWith => candidate.StartsWith(operand),
             LibraDexConditionOperatorKind.EndsWith => candidate.EndsWith(operand),
             LibraDexConditionOperatorKind.Contains => candidate.IndexOf(operand) >= 0,
-            LibraDexConditionOperatorKind.MatchesPattern => MatchesJoinedByteWildcard(candidate, operand),
-            _ => throw new NotSupportedException($"Composite joined-key operator {criterion.Operator} is not supported for byte-domain matching.")
+            LibraDexConditionOperatorKind.MatchesPattern => MatchesFullKeyByteWildcard(candidate, operand),
+            _ => throw new NotSupportedException($"Composite full-key operator {criterion.Operator} is not supported for byte-domain matching.")
         };
     }
 
     /// <summary>
-    /// Encodes one joined-key criterion operand into the composite byte domain.<br/>
-    /// Strings become UTF-8 bytes, raw binary stays raw, GUIDs use their 16-byte value, and scalar/date values use sortable big-endian lanes just like joined path components.<br/>
+    /// Encodes one full-key criterion operand into the composite byte domain.<br/>
+    /// Strings become UTF-8 bytes, raw binary stays raw, GUIDs use their 16-byte value, and scalar/date values use sortable big-endian lanes just like full-key path components.<br/>
     /// </summary>
     /// <param name="shape">The composite shape used to resolve part-level encoding contracts for typed operands.</param>
-    /// <param name="criterion">The joined-key criterion that may narrow matching to selected part names.</param>
+    /// <param name="criterion">The full-key criterion that may narrow matching to selected part names.</param>
     /// <param name="value">The criterion operand to encode.</param>
     /// <returns>The encoded operand bytes.</returns>
-    private static byte[] EncodeJoinedCriterionOperand(
+    private static byte[] EncodeFullKeyCriterionOperand(
         LibraDexIndexShapeSpec shape,
         LibraDexCompositePartCriterion criterion,
         object value)
     {
         using MemoryStream stream = new();
-        WriteJoinedPart(stream, ResolveJoinedOperandPart(shape, criterion, value), value);
+        WriteFullKeyPart(stream, ResolveFullKeyOperandPart(shape, criterion, value), value);
         return stream.ToArray();
     }
 
     /// <summary>
-    /// Resolves the composite part descriptor that should encode a typed joined-key operand.<br/>
-    /// Explicit single-part joined predicates use that part's metadata, while whole-key typed predicates fall back to the first compatible part when one is unambiguous enough for byte-domain matching.<br/>
+    /// Resolves the composite part descriptor that should encode a typed full-key operand.<br/>
+    /// Explicit single-part full-key predicates use that part's metadata, while whole-key typed predicates fall back to the first compatible part when one is unambiguous enough for byte-domain matching.<br/>
     /// </summary>
     /// <param name="shape">The composite shape that supplies part descriptors.</param>
-    /// <param name="criterion">The joined-key criterion with optional part selection.</param>
+    /// <param name="criterion">The full-key criterion with optional part selection.</param>
     /// <param name="value">The typed operand value.</param>
     /// <returns>The part descriptor used to encode the operand.</returns>
-    private static LibraDexCompositeKeyPartSpec ResolveJoinedOperandPart(
+    private static LibraDexCompositeKeyPartSpec ResolveFullKeyOperandPart(
         LibraDexIndexShapeSpec shape,
         LibraDexCompositePartCriterion criterion,
         object value)
     {
-        IReadOnlyList<string>? partNames = criterion.JoinedPartNames;
+        IReadOnlyList<string>? partNames = criterion.FullKeyPartNames;
         if (partNames is { Count: 1 } &&
             TryGetCompositePart(shape, partNames[0], out LibraDexCompositeKeyPartSpec selectedPart))
         {
@@ -1668,13 +1637,13 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
     }
 
     /// <summary>
-    /// Applies simple wildcard matching over encoded joined bytes.<br/>
-    /// The UTF-8 byte value `*` spans zero or more bytes and `?` matches one byte, keeping pattern semantics byte-oriented for joined composite matching.<br/>
+    /// Applies simple wildcard matching over encoded full-key bytes.<br/>
+    /// The UTF-8 byte value `*` spans zero or more bytes and `?` matches one byte, keeping pattern semantics byte-oriented for full-key composite matching.<br/>
     /// </summary>
-    /// <param name="candidate">The encoded joined composite key.</param>
+    /// <param name="candidate">The encoded full-key composite key.</param>
     /// <param name="pattern">The encoded wildcard pattern.</param>
     /// <returns><see langword="true"/> when the candidate matches the byte wildcard pattern.</returns>
-    private static bool MatchesJoinedByteWildcard(ReadOnlySpan<byte> candidate, ReadOnlySpan<byte> pattern)
+    private static bool MatchesFullKeyByteWildcard(ReadOnlySpan<byte> candidate, ReadOnlySpan<byte> pattern)
     {
         int candidateIndex = 0;
         int patternIndex = 0;
@@ -2235,13 +2204,6 @@ internal sealed class LibraDexCompositePredicate
         return criteria.TryGetValue(name, out criterion);
     }
 
-    internal bool HasAnyStringCriterion => criteria.ContainsKey(LibraDexCompositePartCriterion.AnyStringPartName);
-
-    internal bool TryGetAnyStringPart(out LibraDexCompositePartCriterion? criterion)
-    {
-        return criteria.TryGetValue(LibraDexCompositePartCriterion.AnyStringPartName, out criterion);
-    }
-
     internal void ValidateAgainst(LibraDexIndexShapeSpec shape)
     {
         ArgumentNullException.ThrowIfNull(shape);
@@ -2252,25 +2214,15 @@ internal sealed class LibraDexCompositePredicate
 
         foreach (LibraDexCompositePartCriterion criterion in criteria.Values)
         {
-            if (string.Equals(criterion.PartName, LibraDexCompositePartCriterion.JoinedKeyPartName, StringComparison.Ordinal))
+            if (string.Equals(criterion.PartName, LibraDexCompositePartCriterion.FullKeyPartName, StringComparison.Ordinal))
             {
-                if (!IsSupportedJoinedCriterionValueKind(criterion.ValueKind))
+                if (!IsSupportedFullKeyCriterionValueKind(criterion.ValueKind))
                 {
-                    throw new ArgumentException("Composite joined-key predicates support string, binary, GUID, numeric, and date/time criteria.", nameof(shape));
+                    throw new ArgumentException("Composite full-key predicates support string, binary, GUID, numeric, and date/time criteria.", nameof(shape));
                 }
 
-                ValidateJoinedPartSelection(shape, criterion.JoinedPartNames, "selection");
-                ValidateJoinedPartSelection(shape, criterion.JoinedExcludedPartNames, "exclusion");
-                continue;
-            }
-
-            if (string.Equals(criterion.PartName, LibraDexCompositePartCriterion.AnyStringPartName, StringComparison.Ordinal))
-            {
-                if (criterion.ValueKind != LibraDexConditionValueKind.String)
-                {
-                    throw new ArgumentException("Composite any-part predicates currently support string criteria only.", nameof(shape));
-                }
-
+                ValidateFullKeyPartSelection(shape, criterion.FullKeyPartNames, "selection");
+                ValidateFullKeyPartSelection(shape, criterion.FullKeyExcludedPartNames, "exclusion");
                 continue;
             }
 
@@ -2309,14 +2261,14 @@ internal sealed class LibraDexCompositePredicate
         }
     }
 
-    internal bool HasJoinedKeyCriterion => criteria.ContainsKey(LibraDexCompositePartCriterion.JoinedKeyPartName);
+    internal bool HasFullKeyCriterion => criteria.ContainsKey(LibraDexCompositePartCriterion.FullKeyPartName);
 
-    internal bool TryGetJoinedKeyPart(out LibraDexCompositePartCriterion? criterion)
+    internal bool TryGetFullKeyPart(out LibraDexCompositePartCriterion? criterion)
     {
-        return criteria.TryGetValue(LibraDexCompositePartCriterion.JoinedKeyPartName, out criterion);
+        return criteria.TryGetValue(LibraDexCompositePartCriterion.FullKeyPartName, out criterion);
     }
 
-    private static bool IsSupportedJoinedCriterionValueKind(LibraDexConditionValueKind valueKind)
+    private static bool IsSupportedFullKeyCriterionValueKind(LibraDexConditionValueKind valueKind)
     {
         return valueKind == LibraDexConditionValueKind.String ||
             valueKind == LibraDexConditionValueKind.Binary ||
@@ -2328,13 +2280,13 @@ internal sealed class LibraDexCompositePredicate
     }
 
     /// <summary>
-    /// Validates optional joined-key part selection against the composite shape.<br/>
+    /// Validates optional full-key part selection against the composite shape.<br/>
     /// Selection names are inclusion filters only; rendering still follows persisted index order after validation succeeds.<br/>
     /// </summary>
     /// <param name="shape">The composite shape that supplies known part names.</param>
     /// <param name="partNames">The optional selected or excluded part names.</param>
     /// <param name="role">The validation role used in exception messages.</param>
-    private static void ValidateJoinedPartSelection(LibraDexIndexShapeSpec shape, IReadOnlyList<string>? partNames, string role)
+    private static void ValidateFullKeyPartSelection(LibraDexIndexShapeSpec shape, IReadOnlyList<string>? partNames, string role)
     {
         if (partNames is not { Count: > 0 })
         {
@@ -2347,7 +2299,7 @@ internal sealed class LibraDexCompositePredicate
             string partName = partNames[i];
             if (!seen.Add(partName))
             {
-                throw new ArgumentException($"Composite joined-key part {role} contains duplicate part '{partName}'.", nameof(shape));
+                throw new ArgumentException($"Composite full-key part {role} contains duplicate part '{partName}'.", nameof(shape));
             }
 
             bool found = false;
@@ -2362,7 +2314,7 @@ internal sealed class LibraDexCompositePredicate
 
             if (!found)
             {
-                throw new ArgumentException($"Composite joined-key part {role} references unknown part '{partName}'.", nameof(shape));
+                throw new ArgumentException($"Composite full-key part {role} references unknown part '{partName}'.", nameof(shape));
             }
         }
     }

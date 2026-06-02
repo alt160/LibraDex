@@ -2685,22 +2685,29 @@ public sealed class LibraDexConditionValueTypeSelector
     public LibraDexConditionOperator<char> AsChar => new(builder, indexSelector, LibraDexConditionValueKind.Numeric);
 
     /// <summary>
-    /// Selects routed composite-key operators for the current index.<br/>
-    /// Composite conditions capture named tier predicates so execution can enter the first matching component route, then continue through lightweight child tier routes instead of querying a flattened concatenated key.<br/>
+    /// Captures routed composite-key predicates for the current index.<br/>
+    /// The selected index must be a composite index; each key-part predicate is captured as part of one composite-match leaf so execution can traverse the declared tier routes instead of flattening values into one synthetic key.<br/>
     /// </summary>
-    public LibraDexCompositeConditionOperator AsComposite => new(builder, indexSelector);
+    /// <param name="keyParts">The composite key-part predicates to apply as one composite-match leaf.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd Where(params LibraDexCompositePartCriterion[] keyParts)
+    {
+        return CompositeWhereRoot.Where(keyParts);
+    }
+
+    internal LibraDexCompositeConditionWhere CompositeWhereRoot => new(builder, indexSelector);
 }
 
 /// <summary>
-/// Captures composite-key predicates for one logical routed composite index.<br/>
-/// The first executable slice records all part predicates as one condition leaf so the physical composite index can traverse tiers in descriptor order rather than intersecting independent scans after the fact.<br/>
+/// Builds composite-key predicates for one logical routed composite index.<br/>
+/// This is exposed directly as `.Where` from a composite index selector so callers do not have to restate that the selected index is composite before describing key-part intent.<br/>
 /// </summary>
-public sealed class LibraDexCompositeConditionOperator
+public sealed class LibraDexCompositeConditionWhere
 {
     private readonly LibraDexConditionBuilder builder;
     private readonly LibraDexConditionIndexSelector indexSelector;
 
-    internal LibraDexCompositeConditionOperator(LibraDexConditionBuilder builder, LibraDexConditionIndexSelector indexSelector)
+    internal LibraDexCompositeConditionWhere(LibraDexConditionBuilder builder, LibraDexConditionIndexSelector indexSelector)
     {
         this.builder = builder;
         this.indexSelector = indexSelector;
@@ -2728,6 +2735,635 @@ public sealed class LibraDexCompositeConditionOperator
             IgnoreCase: false,
             Culture: null));
     }
+
+    /// <summary>
+    /// Selects one declared key part inside the current composite index.<br/>
+    /// The returned selector separates part selection from type interpretation so generated callers can choose the part name first and later decide whether to treat the stored component as text, bytes, GUID, date/time, or scalar data.<br/>
+    /// </summary>
+    /// <param name="name">The composite key-part name declared when the index was created.</param>
+    /// <returns>A typed selector for the named composite key part.</returns>
+    public LibraDexCompositeConditionKeyPartSelector KeyPart(string name)
+    {
+        return new LibraDexCompositeConditionKeyPartSelector(
+            new LibraDexCompositeKeyPartCondition(name),
+            Capture);
+    }
+
+    /// <summary>
+    /// Starts an explicit whole-composite key predicate using index-order key parts and no delimiter.<br/>
+    /// This is an ANR-style convenience surface: LibraDex compares against the developer-selected full-key representation instead of inventing implicit cross-part text behavior.<br/>
+    /// </summary>
+    /// <returns>A full-key predicate builder with no delimiter.</returns>
+    public LibraDexCompositeConditionFullKeySelector FullKey()
+    {
+        return new LibraDexCompositeConditionFullKeySelector(LibraDexCompositePart.FullKey(), Capture);
+    }
+
+    /// <summary>
+    /// Starts an explicit whole-composite key predicate using index-order key parts and a caller-supplied delimiter.<br/>
+    /// The delimiter participates in the full-key representation so callers can make boundary-aware contains or pattern requests without changing the physical composite index shape.<br/>
+    /// </summary>
+    /// <param name="delimiter">The delimiter inserted between encoded composite key parts.</param>
+    /// <returns>A full-key predicate builder using the supplied delimiter.</returns>
+    public LibraDexCompositeConditionFullKeySelector FullKey(string delimiter)
+    {
+        return new LibraDexCompositeConditionFullKeySelector(LibraDexCompositePart.FullKey(delimiter), Capture);
+    }
+
+    private LibraDexCompositeConditionContinuation Capture(LibraDexCompositePartCriterion part)
+    {
+        return new LibraDexCompositeConditionContinuation(Where(part), indexSelector);
+    }
+}
+
+/// <summary>
+/// Continues or ends a composite-index condition after one routed composite predicate has been captured.<br/>
+/// The continuation keeps the same composite index selected so handwritten code can naturally chain `.And.KeyPart(...)` or `.Or.FullKey(...)` without repeating the index name.<br/>
+/// </summary>
+public sealed class LibraDexCompositeConditionContinuation
+{
+    private readonly LibraDexConditionContinueOrEnd continuation;
+    private readonly LibraDexConditionIndexSelector indexSelector;
+
+    internal LibraDexCompositeConditionContinuation(
+        LibraDexConditionContinueOrEnd continuation,
+        LibraDexConditionIndexSelector indexSelector)
+    {
+        this.continuation = continuation;
+        this.indexSelector = indexSelector;
+    }
+
+    /// <summary>
+    /// Adds an intersection operator and continues the same composite-index condition grammar.<br/>
+    /// </summary>
+    public LibraDexCompositeConditionWhere And => continuation.AND.Index(indexSelector).CompositeWhereRoot;
+
+    /// <summary>
+    /// Adds a union operator and continues the same composite-index condition grammar.<br/>
+    /// </summary>
+    public LibraDexCompositeConditionWhere Or => continuation.OR.Index(indexSelector).CompositeWhereRoot;
+
+    /// <summary>
+    /// Completes the condition descriptor.<br/>
+    /// </summary>
+    public LibraDexConditionEndCondition EndCondition => continuation.EndCondition;
+
+    /// <summary>
+    /// Convenience alias for <see cref="EndCondition"/> that matches Abraxas' short `ec` alias.<br/>
+    /// </summary>
+    public LibraDexConditionEndCondition ec => EndCondition;
+}
+
+/// <summary>
+/// Selects type-specific predicate operators for one declared composite key part in an opened-index condition chain.<br/>
+/// Operators returned from this selector immediately capture their criterion into the owning composite index condition, unlike the lower-level `LibraDexCompositePart` descriptor helpers.<br/>
+/// </summary>
+public sealed class LibraDexCompositeConditionKeyPartSelector
+{
+    private readonly LibraDexCompositeKeyPartCondition inner;
+    private readonly Func<LibraDexCompositePartCriterion, LibraDexCompositeConditionContinuation> capture;
+
+    internal LibraDexCompositeConditionKeyPartSelector(
+        LibraDexCompositeKeyPartCondition inner,
+        Func<LibraDexCompositePartCriterion, LibraDexCompositeConditionContinuation> capture)
+    {
+        this.inner = inner;
+        this.capture = capture;
+    }
+
+    /// <summary>
+    /// Interprets the selected composite key part as string data and captures string operators into the owning composite condition.<br/>
+    /// </summary>
+    public LibraDexCompositeConditionStringOperator AsString => new(inner.AsString, capture);
+
+    /// <summary>
+    /// Interprets the selected composite key part as a GUID stored in the binary GUID domain.<br/>
+    /// </summary>
+    public LibraDexCompositeConditionGuidOperator AsGuid => new(inner.AsGuid, capture);
+
+    /// <summary>
+    /// Interprets the selected composite key part as structured date/time data.<br/>
+    /// </summary>
+    public LibraDexCompositeConditionDateOperator AsDate => new(inner.AsDate, capture);
+
+    /// <summary>
+    /// Interprets the selected composite key part as an ordered scalar value.<br/>
+    /// </summary>
+    /// <typeparam name="TValue">The scalar component value type.</typeparam>
+    /// <returns>Scalar operators that capture into the owning composite condition.</returns>
+    public LibraDexCompositeConditionScalarOperator<TValue> AsScalar<TValue>()
+    {
+        return new LibraDexCompositeConditionScalarOperator<TValue>(inner.AsScalar<TValue>(), capture);
+    }
+}
+
+/// <summary>
+/// Selects a comparison domain for the full composite key in an opened-index condition chain.<br/>
+/// Operators returned from this selector immediately capture their criterion into the owning composite index condition.<br/>
+/// </summary>
+public sealed class LibraDexCompositeConditionFullKeySelector
+{
+    private readonly LibraDexCompositeFullKeyCondition inner;
+    private readonly Func<LibraDexCompositePartCriterion, LibraDexCompositeConditionContinuation> capture;
+
+    internal LibraDexCompositeConditionFullKeySelector(
+        LibraDexCompositeFullKeyCondition inner,
+        Func<LibraDexCompositePartCriterion, LibraDexCompositeConditionContinuation> capture)
+    {
+        this.inner = inner;
+        this.capture = capture;
+    }
+
+    /// <summary>
+    /// Narrows the full composite key to selected key-part names while preserving composite index order.<br/>
+    /// </summary>
+    /// <param name="partNames">The composite key-part names to include in the full-key value.</param>
+    /// <returns>A narrowed full-key selector.</returns>
+    public LibraDexCompositeConditionFullKeySelector Parts(params string[] partNames)
+    {
+        return new LibraDexCompositeConditionFullKeySelector(inner.Parts(partNames), capture);
+    }
+
+    /// <summary>
+    /// Excludes selected key-part names from the full composite key while preserving composite index order for the remaining parts.<br/>
+    /// </summary>
+    /// <param name="partNames">The composite key-part names to exclude from the full-key value.</param>
+    /// <returns>A narrowed full-key selector.</returns>
+    public LibraDexCompositeConditionFullKeySelector Excluding(params string[] partNames)
+    {
+        return new LibraDexCompositeConditionFullKeySelector(inner.Excluding(partNames), capture);
+    }
+
+    /// <summary>
+    /// Interprets the selected full composite key representation as string data.<br/>
+    /// </summary>
+    public LibraDexCompositeConditionFullKeyStringOperator AsString => new(inner.AsString, capture);
+}
+
+/// <summary>
+/// Captures string key-part predicates into an opened composite index condition.<br/>
+/// </summary>
+public sealed class LibraDexCompositeConditionStringOperator
+{
+    private readonly LibraDexCompositeStringPartCondition inner;
+    private readonly Func<LibraDexCompositePartCriterion, LibraDexCompositeConditionContinuation> capture;
+
+    internal LibraDexCompositeConditionStringOperator(
+        LibraDexCompositeStringPartCondition inner,
+        Func<LibraDexCompositePartCriterion, LibraDexCompositeConditionContinuation> capture)
+    {
+        this.inner = inner;
+        this.capture = capture;
+    }
+
+    /// <summary>
+    /// Captures equality against the selected string key part.<br/>
+    /// The produced predicate is immediately attached to the owning composite index condition.<br/>
+    /// </summary>
+    /// <param name="value">The string value to match.</param>
+    /// <param name="ignoreCase">Whether comparison should ignore case.</param>
+    /// <param name="culture">Optional culture name for managed comparison.</param>
+    /// <returns>A continuation for the same composite index condition.</returns>
+    public LibraDexCompositeConditionContinuation EqualTo(string value, bool ignoreCase = false, string? culture = null) => capture(inner.EqualTo(value, ignoreCase, culture));
+
+    /// <summary>
+    /// Captures a prefix predicate against the selected string key part.<br/>
+    /// The produced predicate is immediately attached to the owning composite index condition.<br/>
+    /// </summary>
+    /// <param name="value">The prefix value.</param>
+    /// <param name="ignoreCase">Whether comparison should ignore case.</param>
+    /// <param name="culture">Optional culture name for managed comparison.</param>
+    /// <returns>A continuation for the same composite index condition.</returns>
+    public LibraDexCompositeConditionContinuation StartsWith(string value, bool ignoreCase = false, string? culture = null) => capture(inner.StartsWith(value, ignoreCase, culture));
+
+    /// <summary>
+    /// Captures a suffix predicate against the selected string key part.<br/>
+    /// The produced predicate is immediately attached to the owning composite index condition.<br/>
+    /// </summary>
+    /// <param name="value">The suffix value.</param>
+    /// <param name="ignoreCase">Whether comparison should ignore case.</param>
+    /// <param name="culture">Optional culture name for managed comparison.</param>
+    /// <returns>A continuation for the same composite index condition.</returns>
+    public LibraDexCompositeConditionContinuation EndsWith(string value, bool ignoreCase = false, string? culture = null) => capture(inner.EndsWith(value, ignoreCase, culture));
+
+    /// <summary>
+    /// Captures a containment predicate against the selected string key part.<br/>
+    /// The produced predicate is immediately attached to the owning composite index condition.<br/>
+    /// </summary>
+    /// <param name="value">The contained value.</param>
+    /// <param name="ignoreCase">Whether comparison should ignore case.</param>
+    /// <param name="culture">Optional culture name for managed comparison.</param>
+    /// <returns>A continuation for the same composite index condition.</returns>
+    public LibraDexCompositeConditionContinuation Contains(string value, bool ignoreCase = false, string? culture = null) => capture(inner.Contains(value, ignoreCase, culture));
+
+    /// <summary>
+    /// Captures a wildcard pattern predicate against the selected string key part.<br/>
+    /// The produced predicate is immediately attached to the owning composite index condition.<br/>
+    /// </summary>
+    /// <param name="pattern">The wildcard pattern to apply.</param>
+    /// <param name="ignoreCase">Whether comparison should ignore case.</param>
+    /// <param name="culture">Optional culture name for managed comparison.</param>
+    /// <returns>A continuation for the same composite index condition.</returns>
+    public LibraDexCompositeConditionContinuation MatchesPattern(string pattern, bool ignoreCase = false, string? culture = null) => capture(inner.MatchesPattern(pattern, ignoreCase, culture));
+
+    /// <summary>
+    /// Captures a greater-than predicate against the selected string key part.<br/>
+    /// The produced predicate is immediately attached to the owning composite index condition.<br/>
+    /// </summary>
+    /// <param name="value">The exclusive lower value.</param>
+    /// <param name="ignoreCase">Whether comparison should ignore case.</param>
+    /// <param name="culture">Optional culture name for managed comparison.</param>
+    /// <returns>A continuation for the same composite index condition.</returns>
+    public LibraDexCompositeConditionContinuation GreaterThan(string value, bool ignoreCase = false, string? culture = null) => capture(inner.GreaterThan(value, ignoreCase, culture));
+
+    /// <summary>
+    /// Captures a greater-than-or-equal predicate against the selected string key part.<br/>
+    /// The produced predicate is immediately attached to the owning composite index condition.<br/>
+    /// </summary>
+    /// <param name="value">The inclusive lower value.</param>
+    /// <param name="ignoreCase">Whether comparison should ignore case.</param>
+    /// <param name="culture">Optional culture name for managed comparison.</param>
+    /// <returns>A continuation for the same composite index condition.</returns>
+    public LibraDexCompositeConditionContinuation GreaterOrEqual(string value, bool ignoreCase = false, string? culture = null) => capture(inner.GreaterOrEqual(value, ignoreCase, culture));
+
+    /// <summary>
+    /// Captures a less-than predicate against the selected string key part.<br/>
+    /// The produced predicate is immediately attached to the owning composite index condition.<br/>
+    /// </summary>
+    /// <param name="value">The exclusive upper value.</param>
+    /// <param name="ignoreCase">Whether comparison should ignore case.</param>
+    /// <param name="culture">Optional culture name for managed comparison.</param>
+    /// <returns>A continuation for the same composite index condition.</returns>
+    public LibraDexCompositeConditionContinuation LessThan(string value, bool ignoreCase = false, string? culture = null) => capture(inner.LessThan(value, ignoreCase, culture));
+
+    /// <summary>
+    /// Captures a less-than-or-equal predicate against the selected string key part.<br/>
+    /// The produced predicate is immediately attached to the owning composite index condition.<br/>
+    /// </summary>
+    /// <param name="value">The inclusive upper value.</param>
+    /// <param name="ignoreCase">Whether comparison should ignore case.</param>
+    /// <param name="culture">Optional culture name for managed comparison.</param>
+    /// <returns>A continuation for the same composite index condition.</returns>
+    public LibraDexCompositeConditionContinuation LessOrEqual(string value, bool ignoreCase = false, string? culture = null) => capture(inner.LessOrEqual(value, ignoreCase, culture));
+
+    /// <summary>
+    /// Captures an inclusive range predicate against the selected string key part.<br/>
+    /// The produced predicate is immediately attached to the owning composite index condition.<br/>
+    /// </summary>
+    /// <param name="lower">The inclusive lower value.</param>
+    /// <param name="upper">The inclusive upper value.</param>
+    /// <param name="ignoreCase">Whether comparison should ignore case.</param>
+    /// <param name="culture">Optional culture name for managed comparison.</param>
+    /// <returns>A continuation for the same composite index condition.</returns>
+    public LibraDexCompositeConditionContinuation Between(string lower, string upper, bool ignoreCase = false, string? culture = null) => capture(inner.Between(lower, upper, ignoreCase, culture));
+}
+
+/// <summary>
+/// Captures full-key string predicates into an opened composite index condition.<br/>
+/// </summary>
+public sealed class LibraDexCompositeConditionFullKeyStringOperator
+{
+    private readonly LibraDexCompositeFullKeyStringCondition inner;
+    private readonly Func<LibraDexCompositePartCriterion, LibraDexCompositeConditionContinuation> capture;
+
+    internal LibraDexCompositeConditionFullKeyStringOperator(
+        LibraDexCompositeFullKeyStringCondition inner,
+        Func<LibraDexCompositePartCriterion, LibraDexCompositeConditionContinuation> capture)
+    {
+        this.inner = inner;
+        this.capture = capture;
+    }
+
+    /// <summary>
+    /// Captures equality against the full composite key string representation.<br/>
+    /// </summary>
+    /// <param name="value">The string value to match.</param>
+    /// <param name="ignoreCase">Whether comparison should ignore case.</param>
+    /// <param name="culture">Optional culture name for managed comparison.</param>
+    /// <returns>A continuation for the same composite index condition.</returns>
+    public LibraDexCompositeConditionContinuation EqualTo(string value, bool ignoreCase = false, string? culture = null) => capture(inner.EqualTo(value, ignoreCase, culture));
+
+    /// <summary>
+    /// Captures equality against an encoded typed operand inside the full composite key.<br/>
+    /// </summary>
+    /// <param name="value">The typed operand to encode once into the full-key byte domain.</param>
+    /// <returns>A continuation for the same composite index condition.</returns>
+    public LibraDexCompositeConditionContinuation EqualTo(object value) => capture(inner.EqualTo(value));
+
+    /// <summary>
+    /// Captures a string prefix predicate against the full composite key representation.<br/>
+    /// </summary>
+    /// <param name="value">The prefix value.</param>
+    /// <param name="ignoreCase">Whether comparison should ignore case.</param>
+    /// <param name="culture">Optional culture name for managed comparison.</param>
+    /// <returns>A continuation for the same composite index condition.</returns>
+    public LibraDexCompositeConditionContinuation StartsWith(string value, bool ignoreCase = false, string? culture = null) => capture(inner.StartsWith(value, ignoreCase, culture));
+
+    /// <summary>
+    /// Captures an encoded typed prefix predicate inside the full composite key.<br/>
+    /// </summary>
+    /// <param name="value">The typed operand to encode as a prefix.</param>
+    /// <returns>A continuation for the same composite index condition.</returns>
+    public LibraDexCompositeConditionContinuation StartsWith(object value) => capture(inner.StartsWith(value));
+
+    /// <summary>
+    /// Captures a string suffix predicate against the full composite key representation.<br/>
+    /// </summary>
+    /// <param name="value">The suffix value.</param>
+    /// <param name="ignoreCase">Whether comparison should ignore case.</param>
+    /// <param name="culture">Optional culture name for managed comparison.</param>
+    /// <returns>A continuation for the same composite index condition.</returns>
+    public LibraDexCompositeConditionContinuation EndsWith(string value, bool ignoreCase = false, string? culture = null) => capture(inner.EndsWith(value, ignoreCase, culture));
+
+    /// <summary>
+    /// Captures an encoded typed suffix predicate inside the full composite key.<br/>
+    /// </summary>
+    /// <param name="value">The typed operand to encode as a suffix.</param>
+    /// <returns>A continuation for the same composite index condition.</returns>
+    public LibraDexCompositeConditionContinuation EndsWith(object value) => capture(inner.EndsWith(value));
+
+    /// <summary>
+    /// Captures a string containment predicate against the full composite key representation.<br/>
+    /// </summary>
+    /// <param name="value">The contained value.</param>
+    /// <param name="ignoreCase">Whether comparison should ignore case.</param>
+    /// <param name="culture">Optional culture name for managed comparison.</param>
+    /// <returns>A continuation for the same composite index condition.</returns>
+    public LibraDexCompositeConditionContinuation Contains(string value, bool ignoreCase = false, string? culture = null) => capture(inner.Contains(value, ignoreCase, culture));
+
+    /// <summary>
+    /// Captures an encoded typed containment predicate inside the full composite key.<br/>
+    /// </summary>
+    /// <param name="value">The typed operand to encode and search for.</param>
+    /// <returns>A continuation for the same composite index condition.</returns>
+    public LibraDexCompositeConditionContinuation Contains(object value) => capture(inner.Contains(value));
+
+    /// <summary>
+    /// Captures a wildcard pattern predicate against the full composite key representation.<br/>
+    /// </summary>
+    /// <param name="pattern">The wildcard pattern to apply.</param>
+    /// <param name="ignoreCase">Whether comparison should ignore case.</param>
+    /// <param name="culture">Optional culture name for managed comparison.</param>
+    /// <returns>A continuation for the same composite index condition.</returns>
+    public LibraDexCompositeConditionContinuation MatchesPattern(string pattern, bool ignoreCase = false, string? culture = null) => capture(inner.MatchesPattern(pattern, ignoreCase, culture));
+}
+
+/// <summary>
+/// Captures GUID key-part predicates into an opened composite index condition.<br/>
+/// </summary>
+public sealed class LibraDexCompositeConditionGuidOperator
+{
+    private readonly LibraDexCompositeGuidPartCondition inner;
+    private readonly Func<LibraDexCompositePartCriterion, LibraDexCompositeConditionContinuation> capture;
+
+    internal LibraDexCompositeConditionGuidOperator(
+        LibraDexCompositeGuidPartCondition inner,
+        Func<LibraDexCompositePartCriterion, LibraDexCompositeConditionContinuation> capture)
+    {
+        this.inner = inner;
+        this.capture = capture;
+    }
+
+    /// <summary>
+    /// Captures equality against the selected GUID key part.<br/>
+    /// </summary>
+    /// <param name="value">The GUID value to match.</param>
+    /// <returns>A continuation for the same composite index condition.</returns>
+    public LibraDexCompositeConditionContinuation EqualTo(Guid value) => capture(inner.EqualTo(value));
+
+    /// <summary>
+    /// Captures inequality against the selected GUID key part.<br/>
+    /// </summary>
+    /// <param name="value">The GUID value to exclude.</param>
+    /// <returns>A continuation for the same composite index condition.</returns>
+    public LibraDexCompositeConditionContinuation NotEqualTo(Guid value) => capture(inner.NotEqualTo(value));
+
+    /// <summary>
+    /// Captures a binary-prefix predicate against the selected GUID key part.<br/>
+    /// </summary>
+    /// <param name="value">The GUID value that supplies prefix bytes.</param>
+    /// <param name="byteCount">The number of leading GUID bytes to compare.</param>
+    /// <returns>A continuation for the same composite index condition.</returns>
+    public LibraDexCompositeConditionContinuation StartsWith(Guid value, int byteCount) => capture(inner.StartsWith(value, byteCount));
+}
+
+/// <summary>
+/// Captures structured date/time key-part predicates into an opened composite index condition.<br/>
+/// </summary>
+public sealed class LibraDexCompositeConditionDateOperator
+{
+    private readonly LibraDexCompositeDatePartCondition inner;
+    private readonly Func<LibraDexCompositePartCriterion, LibraDexCompositeConditionContinuation> capture;
+
+    internal LibraDexCompositeConditionDateOperator(
+        LibraDexCompositeDatePartCondition inner,
+        Func<LibraDexCompositePartCriterion, LibraDexCompositeConditionContinuation> capture)
+    {
+        this.inner = inner;
+        this.capture = capture;
+    }
+
+    /// <summary>
+    /// Captures a year equality predicate against the selected structured date key part.<br/>
+    /// </summary>
+    /// <param name="year">The year component to match.</param>
+    /// <returns>A continuation for the same composite index condition.</returns>
+    public LibraDexCompositeConditionContinuation YearEqualTo(int year) => capture(inner.YearEqualTo(year));
+
+    /// <summary>
+    /// Captures a year equality predicate using Abraxas-style naming.<br/>
+    /// </summary>
+    /// <param name="year">The year component to match.</param>
+    /// <returns>A continuation for the same composite index condition.</returns>
+    public LibraDexCompositeConditionContinuation YearEqual(int year) => capture(inner.YearEqual(year));
+
+    /// <summary>
+    /// Captures an inclusive year range predicate against the selected structured date key part.<br/>
+    /// </summary>
+    /// <param name="startYear">The inclusive starting year.</param>
+    /// <param name="endYear">The inclusive ending year.</param>
+    /// <returns>A continuation for the same composite index condition.</returns>
+    public LibraDexCompositeConditionContinuation YearRange(int startYear, int endYear) => capture(inner.YearRange(startYear, endYear));
+
+    /// <summary>
+    /// Captures a year-month predicate against the selected structured date key part.<br/>
+    /// </summary>
+    /// <param name="year">The year component.</param>
+    /// <param name="month">The month component.</param>
+    /// <returns>A continuation for the same composite index condition.</returns>
+    public LibraDexCompositeConditionContinuation YearMonth(int year, int month) => capture(inner.YearMonth(year, month));
+
+    /// <summary>
+    /// Captures a year-month-day predicate against the selected structured date key part.<br/>
+    /// </summary>
+    /// <param name="year">The year component.</param>
+    /// <param name="month">The month component.</param>
+    /// <param name="day">The day component.</param>
+    /// <returns>A continuation for the same composite index condition.</returns>
+    public LibraDexCompositeConditionContinuation YearMonthDay(int year, int month, int day) => capture(inner.YearMonthDay(year, month, day));
+
+    /// <summary>
+    /// Captures a month equality predicate across any year for the selected structured date key part.<br/>
+    /// </summary>
+    /// <param name="month">The month component.</param>
+    /// <returns>A continuation for the same composite index condition.</returns>
+    public LibraDexCompositeConditionContinuation MonthEqualTo(int month) => capture(inner.MonthEqualTo(month));
+
+    /// <summary>
+    /// Captures a day equality predicate across any month and year for the selected structured date key part.<br/>
+    /// </summary>
+    /// <param name="day">The day component.</param>
+    /// <returns>A continuation for the same composite index condition.</returns>
+    public LibraDexCompositeConditionContinuation DayEqualTo(int day) => capture(inner.DayEqualTo(day));
+}
+
+/// <summary>
+/// Captures scalar key-part predicates into an opened composite index condition.<br/>
+/// </summary>
+/// <typeparam name="TValue">The scalar component value type.</typeparam>
+public sealed class LibraDexCompositeConditionScalarOperator<TValue>
+{
+    private readonly LibraDexCompositeScalarPartCondition<TValue> inner;
+    private readonly Func<LibraDexCompositePartCriterion, LibraDexCompositeConditionContinuation> capture;
+
+    internal LibraDexCompositeConditionScalarOperator(
+        LibraDexCompositeScalarPartCondition<TValue> inner,
+        Func<LibraDexCompositePartCriterion, LibraDexCompositeConditionContinuation> capture)
+    {
+        this.inner = inner;
+        this.capture = capture;
+    }
+
+    /// <summary>
+    /// Captures equality against the selected scalar key part.<br/>
+    /// </summary>
+    /// <param name="value">The scalar value to match.</param>
+    /// <returns>A continuation for the same composite index condition.</returns>
+    public LibraDexCompositeConditionContinuation EqualTo(TValue value) => capture(inner.EqualTo(value));
+
+    /// <summary>
+    /// Captures a greater-than predicate against the selected scalar key part.<br/>
+    /// </summary>
+    /// <param name="value">The exclusive lower value.</param>
+    /// <returns>A continuation for the same composite index condition.</returns>
+    public LibraDexCompositeConditionContinuation GreaterThan(TValue value) => capture(inner.GreaterThan(value));
+
+    /// <summary>
+    /// Captures a greater-than-or-equal predicate against the selected scalar key part.<br/>
+    /// </summary>
+    /// <param name="value">The inclusive lower value.</param>
+    /// <returns>A continuation for the same composite index condition.</returns>
+    public LibraDexCompositeConditionContinuation GreaterOrEqual(TValue value) => capture(inner.GreaterOrEqual(value));
+
+    /// <summary>
+    /// Captures a less-than predicate against the selected scalar key part.<br/>
+    /// </summary>
+    /// <param name="value">The exclusive upper value.</param>
+    /// <returns>A continuation for the same composite index condition.</returns>
+    public LibraDexCompositeConditionContinuation LessThan(TValue value) => capture(inner.LessThan(value));
+
+    /// <summary>
+    /// Captures a less-than-or-equal predicate against the selected scalar key part.<br/>
+    /// </summary>
+    /// <param name="value">The inclusive upper value.</param>
+    /// <returns>A continuation for the same composite index condition.</returns>
+    public LibraDexCompositeConditionContinuation LessOrEqual(TValue value) => capture(inner.LessOrEqual(value));
+
+    /// <summary>
+    /// Captures an inclusive range predicate against the selected scalar key part.<br/>
+    /// </summary>
+    /// <param name="lower">The inclusive lower value.</param>
+    /// <param name="upper">The inclusive upper value.</param>
+    /// <returns>A continuation for the same composite index condition.</returns>
+    public LibraDexCompositeConditionContinuation Between(TValue lower, TValue upper) => capture(inner.Between(lower, upper));
+
+    /// <summary>
+    /// Captures a bitwise-AND equality predicate against the selected scalar key part.<br/>
+    /// </summary>
+    /// <param name="bitMask">The bit mask to apply.</param>
+    /// <param name="equalTo">The expected masked value.</param>
+    /// <returns>A continuation for the same composite index condition.</returns>
+    public LibraDexCompositeConditionContinuation BitAnd(TValue bitMask, TValue equalTo) => capture(inner.BitAnd(bitMask, equalTo));
+
+    /// <summary>
+    /// Captures a bitwise-AND zero predicate against the selected scalar key part.<br/>
+    /// </summary>
+    /// <param name="bitMask">The bit mask to apply.</param>
+    /// <returns>A continuation for the same composite index condition.</returns>
+    public LibraDexCompositeConditionContinuation BitAnd(TValue bitMask) => capture(inner.BitAnd(bitMask));
+
+    /// <summary>
+    /// Captures a bitwise-AND inequality predicate against the selected scalar key part.<br/>
+    /// </summary>
+    /// <param name="bitMask">The bit mask to apply.</param>
+    /// <param name="notEqualTo">The masked value that must not match.</param>
+    /// <returns>A continuation for the same composite index condition.</returns>
+    public LibraDexCompositeConditionContinuation BitAndNotEqualTo(TValue bitMask, TValue notEqualTo) => capture(inner.BitAndNotEqualTo(bitMask, notEqualTo));
+
+    /// <summary>
+    /// Captures a predicate requiring every mask bit to be set on the selected scalar key part.<br/>
+    /// </summary>
+    /// <param name="bitMask">The bit mask whose bits must all be present.</param>
+    /// <returns>A continuation for the same composite index condition.</returns>
+    public LibraDexCompositeConditionContinuation AllBitsSet(TValue bitMask) => capture(inner.AllBitsSet(bitMask));
+
+    /// <summary>
+    /// Captures a predicate requiring at least one mask bit to be set on the selected scalar key part.<br/>
+    /// </summary>
+    /// <param name="bitMask">The bit mask whose overlap is tested.</param>
+    /// <returns>A continuation for the same composite index condition.</returns>
+    public LibraDexCompositeConditionContinuation AnyBitsSet(TValue bitMask) => capture(inner.AnyBitsSet(bitMask));
+
+    /// <summary>
+    /// Captures a predicate requiring no mask bits to be set on the selected scalar key part.<br/>
+    /// </summary>
+    /// <param name="bitMask">The bit mask whose bits must not overlap.</param>
+    /// <returns>A continuation for the same composite index condition.</returns>
+    public LibraDexCompositeConditionContinuation NoBitsSet(TValue bitMask) => capture(inner.NoBitsSet(bitMask));
+}
+
+/// <summary>
+/// Selects type-specific predicates for one declared composite key part.<br/>
+/// The selector keeps key-part choice separate from value interpretation, preserving Abraxas-style selector -> type -> operator flow while avoiding the ambiguous public `.Part(...)` vocabulary.<br/>
+/// </summary>
+public sealed class LibraDexCompositeKeyPartCondition
+{
+    private readonly string name;
+
+    internal LibraDexCompositeKeyPartCondition(string name)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        this.name = name;
+    }
+
+    /// <summary>
+    /// Interprets the selected composite key part as string data.<br/>
+    /// This should be used when the composite part descriptor stores a string-compatible key family; execution validates the part shape before materialization.<br/>
+    /// </summary>
+    public LibraDexCompositeStringPartCondition AsString => LibraDexCompositePart.String(name);
+
+    /// <summary>
+    /// Interprets the selected composite key part as a GUID stored in the binary GUID domain.<br/>
+    /// GUID criteria stay binary; callers that want text-oriented GUID matching should declare and populate a string key part instead.<br/>
+    /// </summary>
+    public LibraDexCompositeGuidPartCondition AsGuid => LibraDexCompositePart.Guid(name);
+
+    /// <summary>
+    /// Interprets the selected composite key part as structured date/time data.<br/>
+    /// Date criteria use the composite part's stored DateTime encoding contract rather than query-time text parsing.<br/>
+    /// </summary>
+    public LibraDexCompositeDatePartCondition AsDate => LibraDexCompositePart.Date(name);
+
+    /// <summary>
+    /// Interprets the selected composite key part as an ordered scalar value.<br/>
+    /// The generic value type must match the composite part descriptor at materialization time.<br/>
+    /// </summary>
+    /// <typeparam name="TValue">The scalar component value type.</typeparam>
+    /// <returns>Scalar predicates for the selected key part.</returns>
+    public LibraDexCompositeScalarPartCondition<TValue> AsScalar<TValue>()
+    {
+        return LibraDexCompositePart.Scalar<TValue>(name);
+    }
 }
 
 /// <summary>
@@ -2737,35 +3373,25 @@ public sealed class LibraDexCompositeConditionOperator
 public static class LibraDexCompositePart
 {
     /// <summary>
-    /// Starts a string predicate that may match any string-compatible component tier in the composite key.<br/>
-    /// This is not a joined-key search; each string tier is evaluated independently while normal named part predicates still route and filter their own tiers.<br/>
+    /// Starts a predicate over the full composite key using index-order parts and no delimiter.<br/>
+    /// This is an explicit full-key request: LibraDex renders the complete routed path at the terminal node and applies the requested predicate as a residual operation.<br/>
     /// </summary>
-    /// <returns>A string predicate builder that targets any string component tier.</returns>
-    public static LibraDexCompositeStringPartCondition AnyString()
+    /// <returns>A full-key predicate builder with no delimiter.</returns>
+    public static LibraDexCompositeFullKeyCondition FullKey()
     {
-        return new LibraDexCompositeStringPartCondition(LibraDexCompositePartCriterion.AnyStringPartName);
+        return new LibraDexCompositeFullKeyCondition(delimiter: string.Empty);
     }
 
     /// <summary>
-    /// Starts a predicate over the rendered whole composite key using index-order parts and no delimiter.<br/>
-    /// This is an explicit joined-key request: LibraDex renders the complete routed path at the terminal node and applies the requested string predicate as a residual operation.<br/>
+    /// Starts a predicate over the full composite key using index-order parts and a caller-supplied delimiter.<br/>
+    /// The delimiter participates in the rendered text so developers can shape their contains or pattern criteria with explicit key-part boundaries.<br/>
     /// </summary>
-    /// <returns>A joined-key predicate builder with no delimiter.</returns>
-    public static LibraDexCompositeJoinedKeyCondition Joined()
-    {
-        return new LibraDexCompositeJoinedKeyCondition(delimiter: string.Empty);
-    }
-
-    /// <summary>
-    /// Starts a predicate over the rendered whole composite key using index-order parts and a caller-supplied delimiter.<br/>
-    /// The delimiter participates in the rendered text so developers can shape their contains or pattern criteria with explicit part boundaries.<br/>
-    /// </summary>
-    /// <param name="delimiter">The delimiter inserted between rendered composite parts.</param>
-    /// <returns>A joined-key predicate builder using the supplied delimiter.</returns>
-    public static LibraDexCompositeJoinedKeyCondition Joined(string delimiter)
+    /// <param name="delimiter">The delimiter inserted between rendered composite key parts.</param>
+    /// <returns>A full-key predicate builder using the supplied delimiter.</returns>
+    public static LibraDexCompositeFullKeyCondition FullKey(string delimiter)
     {
         ArgumentNullException.ThrowIfNull(delimiter);
-        return new LibraDexCompositeJoinedKeyCondition(delimiter);
+        return new LibraDexCompositeFullKeyCondition(delimiter);
     }
 
     /// <summary>
@@ -2818,8 +3444,7 @@ public static class LibraDexCompositePart
 /// </summary>
 public sealed class LibraDexCompositePartCriterion
 {
-    internal const string AnyStringPartName = "__libradex_any_string_part";
-    internal const string JoinedKeyPartName = "__libradex_joined_key";
+    internal const string FullKeyPartName = "__libradex_full_key";
 
     internal LibraDexCompositePartCriterion(
         string partName,
@@ -2828,9 +3453,9 @@ public sealed class LibraDexCompositePartCriterion
         IReadOnlyList<object?> values,
         bool ignoreCase,
         string? culture,
-        string? joinedDelimiter = null,
-        IReadOnlyList<string>? joinedPartNames = null,
-        IReadOnlyList<string>? joinedExcludedPartNames = null)
+        string? fullKeyDelimiter = null,
+        IReadOnlyList<string>? fullKeyPartNames = null,
+        IReadOnlyList<string>? fullKeyExcludedPartNames = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(partName);
         PartName = partName;
@@ -2839,9 +3464,9 @@ public sealed class LibraDexCompositePartCriterion
         Values = values;
         IgnoreCase = ignoreCase;
         Culture = culture;
-        JoinedDelimiter = joinedDelimiter;
-        JoinedPartNames = joinedPartNames;
-        JoinedExcludedPartNames = joinedExcludedPartNames;
+        FullKeyDelimiter = fullKeyDelimiter;
+        FullKeyPartNames = fullKeyPartNames;
+        FullKeyExcludedPartNames = fullKeyExcludedPartNames;
     }
 
     /// <summary>
@@ -2875,40 +3500,40 @@ public sealed class LibraDexCompositePartCriterion
     public string? Culture { get; }
 
     /// <summary>
-    /// Gets the delimiter used by an explicit joined-key composite predicate.<br/>
-    /// A null value means the criterion targets a normal named part or the any-string pseudo part.<br/>
+    /// Gets the delimiter used by an explicit full-key composite predicate.<br/>
+    /// A null value means the criterion targets a normal named part.<br/>
     /// </summary>
-    public string? JoinedDelimiter { get; }
+    public string? FullKeyDelimiter { get; }
 
     /// <summary>
-    /// Gets the optional included part names used by an explicit joined-key composite predicate.<br/>
-    /// A null or empty list means the joined key renders all composite parts in index order.<br/>
+    /// Gets the optional included key-part names used by an explicit full-key composite predicate.<br/>
+    /// A null or empty list means the full key renders all composite parts in index order.<br/>
     /// </summary>
-    public IReadOnlyList<string>? JoinedPartNames { get; }
+    public IReadOnlyList<string>? FullKeyPartNames { get; }
 
     /// <summary>
-    /// Gets the optional excluded part names used by an explicit joined-key composite predicate.<br/>
+    /// Gets the optional excluded key-part names used by an explicit full-key composite predicate.<br/>
     /// Exclusions are applied after inclusion selection and still preserve composite index order.<br/>
     /// </summary>
-    public IReadOnlyList<string>? JoinedExcludedPartNames { get; }
+    public IReadOnlyList<string>? FullKeyExcludedPartNames { get; }
 }
 
 /// <summary>
-/// Captures string predicates over a rendered whole composite key.<br/>
-/// The rendered key uses the composite index's part order, all parts, and the delimiter selected by the developer; this is residual matching, not a hidden flattened physical key.<br/>
+/// Selects a comparison domain for the full composite key.<br/>
+/// The full key uses the composite index's part order, all parts, and the delimiter selected by the developer; this is residual matching, not a hidden flattened physical key.<br/>
 /// </summary>
-public sealed class LibraDexCompositeJoinedKeyCondition
+public sealed class LibraDexCompositeFullKeyCondition
 {
     private readonly string delimiter;
     private readonly IReadOnlyList<string>? partNames;
     private readonly IReadOnlyList<string>? excludedPartNames;
 
-    internal LibraDexCompositeJoinedKeyCondition(string delimiter)
+    internal LibraDexCompositeFullKeyCondition(string delimiter)
         : this(delimiter, partNames: null, excludedPartNames: null)
     {
     }
 
-    private LibraDexCompositeJoinedKeyCondition(
+    private LibraDexCompositeFullKeyCondition(
         string delimiter,
         IReadOnlyList<string>? partNames,
         IReadOnlyList<string>? excludedPartNames)
@@ -2919,17 +3544,17 @@ public sealed class LibraDexCompositeJoinedKeyCondition
     }
 
     /// <summary>
-    /// Narrows the rendered joined composite key to selected part names while preserving composite index order.<br/>
+    /// Narrows the full composite key to selected key-part names while preserving composite index order.<br/>
     /// The names describe inclusion only; rendering still follows the index descriptor order so generated callers do not have to sort their input names.<br/>
     /// </summary>
-    /// <param name="partNames">The composite part names to include in the joined value.</param>
-    /// <returns>A joined-key predicate builder that renders only the selected parts.</returns>
-    public LibraDexCompositeJoinedKeyCondition Parts(params string[] partNames)
+    /// <param name="partNames">The composite key-part names to include in the full-key value.</param>
+    /// <returns>A full-key predicate builder that renders only the selected key parts.</returns>
+    public LibraDexCompositeFullKeyCondition Parts(params string[] partNames)
     {
         ArgumentNullException.ThrowIfNull(partNames);
         if (partNames.Length == 0)
         {
-            throw new ArgumentException("Joined composite key part selection requires at least one part name.", nameof(partNames));
+            throw new ArgumentException("Full composite key part selection requires at least one key-part name.", nameof(partNames));
         }
 
         string[] copy = new string[partNames.Length];
@@ -2939,21 +3564,21 @@ public sealed class LibraDexCompositeJoinedKeyCondition
             copy[i] = partNames[i];
         }
 
-        return new LibraDexCompositeJoinedKeyCondition(delimiter, Array.AsReadOnly(copy), excludedPartNames);
+        return new LibraDexCompositeFullKeyCondition(delimiter, Array.AsReadOnly(copy), excludedPartNames);
     }
 
     /// <summary>
-    /// Excludes selected part names from the rendered joined composite key while preserving composite index order for the remaining parts.<br/>
-    /// This is useful when a composite index has a routing prefix such as tenant or partition that should not participate in user-facing joined text search.<br/>
+    /// Excludes selected key-part names from the full composite key while preserving composite index order for the remaining parts.<br/>
+    /// This is useful when a composite index has a routing prefix such as tenant or partition that should not participate in user-facing full-key text search.<br/>
     /// </summary>
-    /// <param name="partNames">The composite part names to exclude from the joined value.</param>
-    /// <returns>A joined-key predicate builder that omits the selected parts.</returns>
-    public LibraDexCompositeJoinedKeyCondition Excluding(params string[] partNames)
+    /// <param name="partNames">The composite key-part names to exclude from the full-key value.</param>
+    /// <returns>A full-key predicate builder that omits the selected key parts.</returns>
+    public LibraDexCompositeFullKeyCondition Excluding(params string[] partNames)
     {
         ArgumentNullException.ThrowIfNull(partNames);
         if (partNames.Length == 0)
         {
-            throw new ArgumentException("Joined composite key exclusion requires at least one part name.", nameof(partNames));
+            throw new ArgumentException("Full composite key exclusion requires at least one key-part name.", nameof(partNames));
         }
 
         string[] copy = new string[partNames.Length];
@@ -2963,108 +3588,135 @@ public sealed class LibraDexCompositeJoinedKeyCondition
             copy[i] = partNames[i];
         }
 
-        return new LibraDexCompositeJoinedKeyCondition(delimiter, this.partNames, Array.AsReadOnly(copy));
+        return new LibraDexCompositeFullKeyCondition(delimiter, this.partNames, Array.AsReadOnly(copy));
     }
 
     /// <summary>
-    /// Captures equality against the rendered joined composite key.<br/>
+    /// Interprets the selected full composite key representation as string data.<br/>
+    /// No delimiter is inserted when the full key was created with <see cref="LibraDexCompositePart.FullKey()"/>; delimiter overloads make boundary text explicit and developer-owned.<br/>
+    /// </summary>
+    public LibraDexCompositeFullKeyStringCondition AsString => new(delimiter, partNames, excludedPartNames);
+}
+
+/// <summary>
+/// Captures string predicates over the full composite key.<br/>
+/// The full-key representation uses the composite index's part order and selected delimiter, then compares the supplied criteria as residual string intent over that representation.<br/>
+/// </summary>
+public sealed class LibraDexCompositeFullKeyStringCondition
+{
+    private readonly string delimiter;
+    private readonly IReadOnlyList<string>? partNames;
+    private readonly IReadOnlyList<string>? excludedPartNames;
+
+    internal LibraDexCompositeFullKeyStringCondition(
+        string delimiter,
+        IReadOnlyList<string>? partNames,
+        IReadOnlyList<string>? excludedPartNames)
+    {
+        this.delimiter = delimiter;
+        this.partNames = partNames;
+        this.excludedPartNames = excludedPartNames;
+    }
+
+    /// <summary>
+    /// Captures equality against the full composite key string representation.<br/>
     /// </summary>
     /// <param name="value">The rendered key value to match.</param>
     /// <param name="ignoreCase">Whether comparison should ignore case.</param>
     /// <param name="culture">Optional culture name for managed comparison.</param>
-    /// <returns>A joined-key composite predicate.</returns>
+    /// <returns>A full-key composite predicate.</returns>
     public LibraDexCompositePartCriterion EqualTo(string value, bool ignoreCase = false, string? culture = null)
     {
         return Create(LibraDexConditionOperatorKind.EqualTo, ignoreCase, culture, value);
     }
 
     /// <summary>
-    /// Captures equality against an encoded typed value inside the joined composite key.<br/>
+    /// Captures equality against an encoded typed value inside the full composite key.<br/>
     /// The operand is encoded once into the same byte-domain used by composite components, making this suitable for GUID, scalar, date/time, and raw byte values without per-row text conversion.<br/>
     /// </summary>
     /// <param name="value">The typed operand to encode and compare.</param>
-    /// <returns>A joined-key composite predicate.</returns>
+    /// <returns>A full-key composite predicate.</returns>
     public LibraDexCompositePartCriterion EqualTo(object value)
     {
         return CreateTyped(LibraDexConditionOperatorKind.EqualTo, value);
     }
 
     /// <summary>
-    /// Captures a prefix predicate against the rendered joined composite key.<br/>
+    /// Captures a prefix predicate against the full composite key string representation.<br/>
     /// </summary>
     /// <param name="value">The prefix value.</param>
     /// <param name="ignoreCase">Whether comparison should ignore case.</param>
     /// <param name="culture">Optional culture name for managed comparison.</param>
-    /// <returns>A joined-key composite predicate.</returns>
+    /// <returns>A full-key composite predicate.</returns>
     public LibraDexCompositePartCriterion StartsWith(string value, bool ignoreCase = false, string? culture = null)
     {
         return Create(LibraDexConditionOperatorKind.StartsWith, ignoreCase, culture, value);
     }
 
     /// <summary>
-    /// Captures a prefix predicate against an encoded typed value inside the joined composite key.<br/>
+    /// Captures a prefix predicate against an encoded typed value inside the full composite key.<br/>
     /// The operand is encoded once into the same byte-domain used by composite components, so callers can express typed binary-prefix intent without formatting the value as text.<br/>
     /// </summary>
     /// <param name="value">The typed operand to encode and compare as a prefix.</param>
-    /// <returns>A joined-key composite predicate.</returns>
+    /// <returns>A full-key composite predicate.</returns>
     public LibraDexCompositePartCriterion StartsWith(object value)
     {
         return CreateTyped(LibraDexConditionOperatorKind.StartsWith, value);
     }
 
     /// <summary>
-    /// Captures a suffix predicate against the rendered joined composite key.<br/>
+    /// Captures a suffix predicate against the full composite key string representation.<br/>
     /// </summary>
     /// <param name="value">The suffix value.</param>
     /// <param name="ignoreCase">Whether comparison should ignore case.</param>
     /// <param name="culture">Optional culture name for managed comparison.</param>
-    /// <returns>A joined-key composite predicate.</returns>
+    /// <returns>A full-key composite predicate.</returns>
     public LibraDexCompositePartCriterion EndsWith(string value, bool ignoreCase = false, string? culture = null)
     {
         return Create(LibraDexConditionOperatorKind.EndsWith, ignoreCase, culture, value);
     }
 
     /// <summary>
-    /// Captures a suffix predicate against an encoded typed value inside the joined composite key.<br/>
+    /// Captures a suffix predicate against an encoded typed value inside the full composite key.<br/>
     /// The operand is encoded once into the same byte-domain used by composite components, preserving typed search intent without text rendering.<br/>
     /// </summary>
     /// <param name="value">The typed operand to encode and compare as a suffix.</param>
-    /// <returns>A joined-key composite predicate.</returns>
+    /// <returns>A full-key composite predicate.</returns>
     public LibraDexCompositePartCriterion EndsWith(object value)
     {
         return CreateTyped(LibraDexConditionOperatorKind.EndsWith, value);
     }
 
     /// <summary>
-    /// Captures a containment predicate against the rendered joined composite key.<br/>
+    /// Captures a containment predicate against the full composite key string representation.<br/>
     /// </summary>
     /// <param name="value">The contained value.</param>
     /// <param name="ignoreCase">Whether comparison should ignore case.</param>
     /// <param name="culture">Optional culture name for managed comparison.</param>
-    /// <returns>A joined-key composite predicate.</returns>
+    /// <returns>A full-key composite predicate.</returns>
     public LibraDexCompositePartCriterion Contains(string value, bool ignoreCase = false, string? culture = null)
     {
         return Create(LibraDexConditionOperatorKind.Contains, ignoreCase, culture, value);
     }
 
     /// <summary>
-    /// Captures a containment predicate against an encoded typed value inside the joined composite key.<br/>
+    /// Captures a containment predicate against an encoded typed value inside the full composite key.<br/>
     /// The operand is encoded once into the same byte-domain used by composite components, which is the preferred path for typed GUID, scalar, date/time, or raw byte containment checks.<br/>
     /// </summary>
     /// <param name="value">The typed operand to encode and search for.</param>
-    /// <returns>A joined-key composite predicate.</returns>
+    /// <returns>A full-key composite predicate.</returns>
     public LibraDexCompositePartCriterion Contains(object value)
     {
         return CreateTyped(LibraDexConditionOperatorKind.Contains, value);
     }
 
     /// <summary>
-    /// Captures a wildcard pattern predicate against the rendered joined composite key.<br/>
+    /// Captures a wildcard pattern predicate against the full composite key string representation.<br/>
     /// </summary>
     /// <param name="pattern">The wildcard pattern where `*` spans zero or more characters and `?` matches one character.</param>
     /// <param name="ignoreCase">Whether comparison should ignore case.</param>
     /// <param name="culture">Optional culture name for managed comparison.</param>
-    /// <returns>A joined-key composite predicate.</returns>
+    /// <returns>A full-key composite predicate.</returns>
     public LibraDexCompositePartCriterion MatchesPattern(string pattern, bool ignoreCase = false, string? culture = null)
     {
         return Create(LibraDexConditionOperatorKind.MatchesPattern, ignoreCase, culture, pattern);
@@ -3077,40 +3729,40 @@ public sealed class LibraDexCompositeJoinedKeyCondition
         params object?[] values)
     {
         return new LibraDexCompositePartCriterion(
-            LibraDexCompositePartCriterion.JoinedKeyPartName,
+            LibraDexCompositePartCriterion.FullKeyPartName,
             LibraDexConditionValueKind.String,
             operatorKind,
             Array.AsReadOnly(values),
             ignoreCase,
             culture,
-            delimiter,
-            partNames,
-            excludedPartNames);
+            fullKeyDelimiter: delimiter,
+            fullKeyPartNames: partNames,
+            fullKeyExcludedPartNames: excludedPartNames);
     }
 
     /// <summary>
-    /// Creates a joined-key predicate over a non-text typed operand.<br/>
-    /// The runtime executor validates and encodes the operand into the composite byte domain once before comparing it against encoded joined paths.<br/>
+    /// Creates a full-key predicate over a non-text typed operand.<br/>
+    /// The runtime executor validates and encodes the operand into the composite byte domain once before comparing it against encoded full-key paths.<br/>
     /// </summary>
-    /// <param name="operatorKind">The joined-key operator to apply.</param>
+    /// <param name="operatorKind">The full-key operator to apply.</param>
     /// <param name="value">The typed operand to encode.</param>
-    /// <returns>A joined-key composite predicate.</returns>
+    /// <returns>A full-key composite predicate.</returns>
     private LibraDexCompositePartCriterion CreateTyped(LibraDexConditionOperatorKind operatorKind, object value)
     {
         ArgumentNullException.ThrowIfNull(value);
         return new LibraDexCompositePartCriterion(
-            LibraDexCompositePartCriterion.JoinedKeyPartName,
-            ClassifyJoinedValueKind(value),
+            LibraDexCompositePartCriterion.FullKeyPartName,
+            ClassifyFullKeyValueKind(value),
             operatorKind,
             Array.AsReadOnly(new object?[] { value }),
             ignoreCase: false,
             culture: null,
-            delimiter,
-            partNames,
-            excludedPartNames);
+            fullKeyDelimiter: delimiter,
+            fullKeyPartNames: partNames,
+            fullKeyExcludedPartNames: excludedPartNames);
     }
 
-    private static LibraDexConditionValueKind ClassifyJoinedValueKind(object value)
+    private static LibraDexConditionValueKind ClassifyFullKeyValueKind(object value)
     {
         Type type = value.GetType();
         if (type == typeof(byte[]))
@@ -3196,7 +3848,7 @@ public sealed class LibraDexCompositeStringPartCondition
 
     /// <summary>
     /// Captures a string containment predicate for one component tier.<br/>
-    /// The predicate is intentionally part-scoped; whole-composite containment requires an explicit joined-key policy so LibraDex does not invent hidden flattening semantics.<br/>
+    /// The predicate is intentionally part-scoped; whole-composite containment requires an explicit full-key policy so LibraDex does not invent hidden flattening semantics.<br/>
     /// </summary>
     /// <param name="value">The contained value.</param>
     /// <param name="ignoreCase">Whether comparison should ignore case.</param>

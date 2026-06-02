@@ -7913,11 +7913,22 @@ internal static class RawHarness
             Guid persistedTenant = Guid.Parse("cccccccc-cccc-cccc-cccc-cccccccccccc");
             LibraDexConditionEndCondition reopenedTenantUserCondition = LibraDexCondition
                 .ForGroup("people")
-                .Index("tenantUser").AsComposite.Where(
+                .Index("tenantUser").Where(
                     LibraDexCompositePart.Scalar<Guid>("tenantId").EqualTo(persistedTenant),
                     LibraDexCompositePart.String("username").StartsWith("Co"))
                 .EndCondition;
             IReadOnlyList<long> reopenedTenantUserIds = reopenedTenantUserCondition.ToList<long>(
+                indexName => string.Equals(indexName, "tenantUser", StringComparison.Ordinal)
+                    ? reopenedTenantUser
+                    : throw new KeyNotFoundException(indexName),
+                deduplication: IdentityDeduplication.Preserve);
+            LibraDexConditionEndCondition reopenedTenantUserDirectWhereCondition = ((LibraDexRoutedCompositeIndex)reopenedTenantUser)
+                .Where
+                .KeyPart("tenantId").AsGuid.EqualTo(persistedTenant)
+                .And
+                .KeyPart("username").AsString.StartsWith("Co")
+                .EndCondition;
+            IReadOnlyList<long> reopenedTenantUserDirectWhereIds = reopenedTenantUserDirectWhereCondition.ToList<long>(
                 indexName => string.Equals(indexName, "tenantUser", StringComparison.Ordinal)
                     ? reopenedTenantUser
                     : throw new KeyNotFoundException(indexName),
@@ -7928,7 +7939,7 @@ internal static class RawHarness
                     new object?[] { Key.Of(persistedTenant, "Cole") }));
             LibraDexConditionEndCondition reopenedTenantUserRangeCondition = LibraDexCondition
                 .ForGroup("people")
-                .Index("tenantUser").AsComposite.Where(
+                .Index("tenantUser").Where(
                     LibraDexCompositePart.Scalar<Guid>("tenantId").EqualTo(persistedTenant),
                     LibraDexCompositePart.String("username").Between("Cole", "Cora"))
                 .EndCondition;
@@ -7939,7 +7950,7 @@ internal static class RawHarness
                 deduplication: IdentityDeduplication.Preserve);
             LibraDexConditionEndCondition reopenedTenantUserLowerBoundCondition = LibraDexCondition
                 .ForGroup("people")
-                .Index("tenantUser").AsComposite.Where(
+                .Index("tenantUser").Where(
                     LibraDexCompositePart.Scalar<Guid>("tenantId").EqualTo(persistedTenant),
                     LibraDexCompositePart.String("username").GreaterOrEqual("Cole"))
                 .EndCondition;
@@ -7950,19 +7961,19 @@ internal static class RawHarness
                 deduplication: IdentityDeduplication.Preserve);
             LibraDexConditionEndCondition reopenedTenantUserContainsCondition = LibraDexCondition
                 .ForGroup("people")
-                .Index("tenantUser").AsComposite.Where(
+                .Index("tenantUser").Where(
                     LibraDexCompositePart.Scalar<Guid>("tenantId").EqualTo(persistedTenant),
                     LibraDexCompositePart.String("username").Contains("or"))
                 .EndCondition;
             LibraDexConditionEndCondition reopenedTenantUserSuffixCondition = LibraDexCondition
                 .ForGroup("people")
-                .Index("tenantUser").AsComposite.Where(
+                .Index("tenantUser").Where(
                     LibraDexCompositePart.Scalar<Guid>("tenantId").EqualTo(persistedTenant),
                     LibraDexCompositePart.String("username").EndsWith("le"))
                 .EndCondition;
             LibraDexConditionEndCondition reopenedTenantUserPatternCondition = LibraDexCondition
                 .ForGroup("people")
-                .Index("tenantUser").AsComposite.Where(
+                .Index("tenantUser").Where(
                     LibraDexCompositePart.Scalar<Guid>("tenantId").EqualTo(persistedTenant),
                     LibraDexCompositePart.String("username").MatchesPattern("C?r?"))
                 .EndCondition;
@@ -7981,95 +7992,82 @@ internal static class RawHarness
                     ? reopenedTenantUser
                     : throw new KeyNotFoundException(indexName),
                 deduplication: IdentityDeduplication.Preserve);
-            LibraDexConditionEndCondition reopenedTenantUserAnyStringCondition = LibraDexCondition
+            LibraDexConditionEndCondition reopenedTenantUserFullKeyCondition = LibraDexCondition
                 .ForGroup("people")
-                .Index("tenantUser").AsComposite.Where(
+                .Index("tenantUser").Where(
+                    LibraDexCompositePart.FullKey().AsString.Contains("Cora"))
+                .EndCondition;
+            LibraDexConditionEndCondition reopenedTenantUserDelimitedFullKeyCondition = LibraDexCondition
+                .ForGroup("people")
+                .Index("tenantUser").Where(
+                    LibraDexCompositePart.FullKey("|").AsString.Contains("|Cole"))
+                .EndCondition;
+            LibraDexConditionEndCondition reopenedTenantUserDirectFullKeyCondition = ((LibraDexRoutedCompositeIndex)reopenedTenantUser)
+                .Where
+                .FullKey("|").AsString.Contains("|Cole")
+                .EndCondition;
+            LibraDexConditionEndCondition reopenedTenantUserSelectedFullKeyCondition = LibraDexCondition
+                .ForGroup("people")
+                .Index("tenantUser").Where(
+                    LibraDexCompositePart.FullKey("|").Parts("username").AsString.EqualTo("Cora"))
+                .EndCondition;
+            LibraDexConditionEndCondition reopenedTenantUserTypedFullKeyCondition = LibraDexCondition
+                .ForGroup("people")
+                .Index("tenantUser").Where(
+                    LibraDexCompositePart.FullKey().AsString.Contains((object)persistedTenant))
+                .EndCondition;
+            LibraDexConditionEndCondition reopenedTenantUserFullKeyPatternCondition = LibraDexCondition
+                .ForGroup("people")
+                .Index("tenantUser").Where(
+                    LibraDexCompositePart.FullKey("|").Parts("username").AsString.MatchesPattern("Co*"))
+                .EndCondition;
+            LibraDexConditionEndCondition reopenedTenantUserMixedFullKeyCondition = LibraDexCondition
+                .ForGroup("people")
+                .Index("tenantUser").Where(
                     LibraDexCompositePart.Scalar<Guid>("tenantId").EqualTo(persistedTenant),
-                    LibraDexCompositePart.AnyString().Contains("or"))
+                    LibraDexCompositePart.FullKey("|").Parts("username").AsString.Contains("or"))
                 .EndCondition;
-            LibraDexConditionEndCondition reopenedTenantUserAnyStringPatternCondition = LibraDexCondition
+            LibraDexConditionEndCondition reopenedTenantUserExcludedFullKeyCondition = LibraDexCondition
                 .ForGroup("people")
-                .Index("tenantUser").AsComposite.Where(
-                    LibraDexCompositePart.Scalar<Guid>("tenantId").EqualTo(persistedTenant),
-                    LibraDexCompositePart.AnyString().MatchesPattern("C*l?"))
+                .Index("tenantUser").Where(
+                    LibraDexCompositePart.FullKey("|").Excluding("tenantId").AsString.EqualTo("Cole"))
                 .EndCondition;
-            IReadOnlyList<long> reopenedTenantUserAnyStringIds = reopenedTenantUserAnyStringCondition.ToList<long>(
+            IReadOnlyList<long> reopenedTenantUserFullKeyIds = reopenedTenantUserFullKeyCondition.ToList<long>(
                 indexName => string.Equals(indexName, "tenantUser", StringComparison.Ordinal)
                     ? reopenedTenantUser
                     : throw new KeyNotFoundException(indexName),
                 deduplication: IdentityDeduplication.Preserve);
-            IReadOnlyList<long> reopenedTenantUserAnyStringPatternIds = reopenedTenantUserAnyStringPatternCondition.ToList<long>(
+            IReadOnlyList<long> reopenedTenantUserDelimitedFullKeyIds = reopenedTenantUserDelimitedFullKeyCondition.ToList<long>(
                 indexName => string.Equals(indexName, "tenantUser", StringComparison.Ordinal)
                     ? reopenedTenantUser
                     : throw new KeyNotFoundException(indexName),
                 deduplication: IdentityDeduplication.Preserve);
-            LibraDexConditionEndCondition reopenedTenantUserJoinedCondition = LibraDexCondition
-                .ForGroup("people")
-                .Index("tenantUser").AsComposite.Where(
-                    LibraDexCompositePart.Joined().Contains("Cora"))
-                .EndCondition;
-            LibraDexConditionEndCondition reopenedTenantUserDelimitedJoinedCondition = LibraDexCondition
-                .ForGroup("people")
-                .Index("tenantUser").AsComposite.Where(
-                    LibraDexCompositePart.Joined("|").Contains("|Cole"))
-                .EndCondition;
-            LibraDexConditionEndCondition reopenedTenantUserSelectedJoinedCondition = LibraDexCondition
-                .ForGroup("people")
-                .Index("tenantUser").AsComposite.Where(
-                    LibraDexCompositePart.Joined("|").Parts("username").EqualTo("Cora"))
-                .EndCondition;
-            LibraDexConditionEndCondition reopenedTenantUserTypedJoinedCondition = LibraDexCondition
-                .ForGroup("people")
-                .Index("tenantUser").AsComposite.Where(
-                    LibraDexCompositePart.Joined().Contains((object)persistedTenant))
-                .EndCondition;
-            LibraDexConditionEndCondition reopenedTenantUserJoinedPatternCondition = LibraDexCondition
-                .ForGroup("people")
-                .Index("tenantUser").AsComposite.Where(
-                    LibraDexCompositePart.Joined("|").Parts("username").MatchesPattern("Co*"))
-                .EndCondition;
-            LibraDexConditionEndCondition reopenedTenantUserMixedJoinedCondition = LibraDexCondition
-                .ForGroup("people")
-                .Index("tenantUser").AsComposite.Where(
-                    LibraDexCompositePart.Scalar<Guid>("tenantId").EqualTo(persistedTenant),
-                    LibraDexCompositePart.Joined("|").Parts("username").Contains("or"))
-                .EndCondition;
-            LibraDexConditionEndCondition reopenedTenantUserExcludedJoinedCondition = LibraDexCondition
-                .ForGroup("people")
-                .Index("tenantUser").AsComposite.Where(
-                    LibraDexCompositePart.Joined("|").Excluding("tenantId").EqualTo("Cole"))
-                .EndCondition;
-            IReadOnlyList<long> reopenedTenantUserJoinedIds = reopenedTenantUserJoinedCondition.ToList<long>(
+            IReadOnlyList<long> reopenedTenantUserDirectFullKeyIds = reopenedTenantUserDirectFullKeyCondition.ToList<long>(
                 indexName => string.Equals(indexName, "tenantUser", StringComparison.Ordinal)
                     ? reopenedTenantUser
                     : throw new KeyNotFoundException(indexName),
                 deduplication: IdentityDeduplication.Preserve);
-            IReadOnlyList<long> reopenedTenantUserDelimitedJoinedIds = reopenedTenantUserDelimitedJoinedCondition.ToList<long>(
+            IReadOnlyList<long> reopenedTenantUserSelectedFullKeyIds = reopenedTenantUserSelectedFullKeyCondition.ToList<long>(
                 indexName => string.Equals(indexName, "tenantUser", StringComparison.Ordinal)
                     ? reopenedTenantUser
                     : throw new KeyNotFoundException(indexName),
                 deduplication: IdentityDeduplication.Preserve);
-            IReadOnlyList<long> reopenedTenantUserSelectedJoinedIds = reopenedTenantUserSelectedJoinedCondition.ToList<long>(
+            IReadOnlyList<long> reopenedTenantUserTypedFullKeyIds = reopenedTenantUserTypedFullKeyCondition.ToList<long>(
                 indexName => string.Equals(indexName, "tenantUser", StringComparison.Ordinal)
                     ? reopenedTenantUser
                     : throw new KeyNotFoundException(indexName),
                 deduplication: IdentityDeduplication.Preserve);
-            IReadOnlyList<long> reopenedTenantUserTypedJoinedIds = reopenedTenantUserTypedJoinedCondition.ToList<long>(
+            IReadOnlyList<long> reopenedTenantUserFullKeyPatternIds = reopenedTenantUserFullKeyPatternCondition.ToList<long>(
                 indexName => string.Equals(indexName, "tenantUser", StringComparison.Ordinal)
                     ? reopenedTenantUser
                     : throw new KeyNotFoundException(indexName),
                 deduplication: IdentityDeduplication.Preserve);
-            IReadOnlyList<long> reopenedTenantUserJoinedPatternIds = reopenedTenantUserJoinedPatternCondition.ToList<long>(
+            IReadOnlyList<long> reopenedTenantUserMixedFullKeyIds = reopenedTenantUserMixedFullKeyCondition.ToList<long>(
                 indexName => string.Equals(indexName, "tenantUser", StringComparison.Ordinal)
                     ? reopenedTenantUser
                     : throw new KeyNotFoundException(indexName),
                 deduplication: IdentityDeduplication.Preserve);
-            IReadOnlyList<long> reopenedTenantUserMixedJoinedIds = reopenedTenantUserMixedJoinedCondition.ToList<long>(
-                indexName => string.Equals(indexName, "tenantUser", StringComparison.Ordinal)
-                    ? reopenedTenantUser
-                    : throw new KeyNotFoundException(indexName),
-                deduplication: IdentityDeduplication.Preserve);
-            IReadOnlyList<long> reopenedTenantUserExcludedJoinedIds = reopenedTenantUserExcludedJoinedCondition.ToList<long>(
+            IReadOnlyList<long> reopenedTenantUserExcludedFullKeyIds = reopenedTenantUserExcludedFullKeyCondition.ToList<long>(
                 indexName => string.Equals(indexName, "tenantUser", StringComparison.Ordinal)
                     ? reopenedTenantUser
                     : throw new KeyNotFoundException(indexName),
@@ -8081,6 +8079,9 @@ internal static class RawHarness
                 reopenedTenantUserIds.Count != 2 ||
                 reopenedTenantUserIds[0] != 7302L ||
                 reopenedTenantUserIds[1] != 7301L ||
+                reopenedTenantUserDirectWhereIds.Count != 2 ||
+                reopenedTenantUserDirectWhereIds[0] != 7302L ||
+                reopenedTenantUserDirectWhereIds[1] != 7301L ||
                 reopenedTenantUserExactIds.Count != 1 ||
                 (long)reopenedTenantUserExactIds[0] != 7302L ||
                 reopenedTenantUserRangeIds.Count != 2 ||
@@ -8095,33 +8096,31 @@ internal static class RawHarness
                 reopenedTenantUserSuffixIds[0] != 7302L ||
                 reopenedTenantUserPatternIds.Count != 1 ||
                 reopenedTenantUserPatternIds[0] != 7301L ||
-                reopenedTenantUserAnyStringIds.Count != 1 ||
-                reopenedTenantUserAnyStringIds[0] != 7301L ||
-                reopenedTenantUserAnyStringPatternIds.Count != 1 ||
-                reopenedTenantUserAnyStringPatternIds[0] != 7302L ||
-                reopenedTenantUserJoinedIds.Count != 1 ||
-                reopenedTenantUserJoinedIds[0] != 7301L ||
-                reopenedTenantUserDelimitedJoinedIds.Count != 1 ||
-                reopenedTenantUserDelimitedJoinedIds[0] != 7302L ||
-                reopenedTenantUserSelectedJoinedIds.Count != 1 ||
-                reopenedTenantUserSelectedJoinedIds[0] != 7301L ||
-                reopenedTenantUserTypedJoinedIds.Count != 2 ||
-                reopenedTenantUserTypedJoinedIds[0] != 7302L ||
-                reopenedTenantUserTypedJoinedIds[1] != 7301L ||
-                reopenedTenantUserJoinedPatternIds.Count != 2 ||
-                reopenedTenantUserJoinedPatternIds[0] != 7302L ||
-                reopenedTenantUserJoinedPatternIds[1] != 7301L ||
-                reopenedTenantUserMixedJoinedIds.Count != 1 ||
-                reopenedTenantUserMixedJoinedIds[0] != 7301L ||
-                reopenedTenantUserExcludedJoinedIds.Count != 1 ||
-                reopenedTenantUserExcludedJoinedIds[0] != 7302L)
+                reopenedTenantUserFullKeyIds.Count != 1 ||
+                reopenedTenantUserFullKeyIds[0] != 7301L ||
+                reopenedTenantUserDelimitedFullKeyIds.Count != 1 ||
+                reopenedTenantUserDelimitedFullKeyIds[0] != 7302L ||
+                reopenedTenantUserDirectFullKeyIds.Count != 1 ||
+                reopenedTenantUserDirectFullKeyIds[0] != 7302L ||
+                reopenedTenantUserSelectedFullKeyIds.Count != 1 ||
+                reopenedTenantUserSelectedFullKeyIds[0] != 7301L ||
+                reopenedTenantUserTypedFullKeyIds.Count != 2 ||
+                reopenedTenantUserTypedFullKeyIds[0] != 7302L ||
+                reopenedTenantUserTypedFullKeyIds[1] != 7301L ||
+                reopenedTenantUserFullKeyPatternIds.Count != 2 ||
+                reopenedTenantUserFullKeyPatternIds[0] != 7302L ||
+                reopenedTenantUserFullKeyPatternIds[1] != 7301L ||
+                reopenedTenantUserMixedFullKeyIds.Count != 1 ||
+                reopenedTenantUserMixedFullKeyIds[0] != 7301L ||
+                reopenedTenantUserExcludedFullKeyIds.Count != 1 ||
+                reopenedTenantUserExcludedFullKeyIds[0] != 7302L)
             {
                 throw new InvalidDataException("Reopened composite index did not preserve logical shape metadata, durable contents, or page-native constrained traversal.");
             }
             ValidateGenericInsert(reopenedTenantUser.Insert(Key.Of(persistedTenant, "Cody"), 7303L), "reopened routed composite tenant/Cody insert");
             LibraDexConditionEndCondition reopenedTenantUserDeleteCondition = LibraDexCondition
                 .ForGroup("people")
-                .Index("tenantUser").AsComposite.Where(
+                .Index("tenantUser").Where(
                     LibraDexCompositePart.Scalar<Guid>("tenantId").EqualTo(persistedTenant),
                     LibraDexCompositePart.String("username").EqualTo("Cody"))
                 .EndCondition;
@@ -8144,7 +8143,7 @@ internal static class RawHarness
             LibraDexCompositeKey colinCompositeKey = Key.Of(persistedTenant, "Colin");
             LibraDexIdentityMutationResult reopenedTenantUserSetKeyResult = LibraDexCondition
                 .ForGroup("people")
-                .Index("tenantUser").AsComposite.Where(
+                .Index("tenantUser").Where(
                     LibraDexCompositePart.Scalar<Guid>("tenantId").EqualTo(persistedTenant),
                     LibraDexCompositePart.String("username").EqualTo("Cole"))
                 .EndCondition
@@ -8154,7 +8153,7 @@ internal static class RawHarness
                     colinCompositeKey);
             IReadOnlyList<long> reopenedTenantUserOldSetKeyIds = LibraDexCondition
                 .ForGroup("people")
-                .Index("tenantUser").AsComposite.Where(
+                .Index("tenantUser").Where(
                     LibraDexCompositePart.Scalar<Guid>("tenantId").EqualTo(persistedTenant),
                     LibraDexCompositePart.String("username").EqualTo("Cole"))
                 .EndCondition
@@ -8163,7 +8162,7 @@ internal static class RawHarness
                     : throw new KeyNotFoundException(indexName));
             IReadOnlyList<long> reopenedTenantUserNewSetKeyIds = LibraDexCondition
                 .ForGroup("people")
-                .Index("tenantUser").AsComposite.Where(
+                .Index("tenantUser").Where(
                     LibraDexCompositePart.Scalar<Guid>("tenantId").EqualTo(persistedTenant),
                     LibraDexCompositePart.String("username").EqualTo("Colin"))
                 .EndCondition
@@ -8185,7 +8184,7 @@ internal static class RawHarness
             }
             IReadOnlyList<long> reopenedTenantUserRestoredColeIds = LibraDexCondition
                 .ForGroup("people")
-                .Index("tenantUser").AsComposite.Where(
+                .Index("tenantUser").Where(
                     LibraDexCompositePart.Scalar<Guid>("tenantId").EqualTo(persistedTenant),
                     LibraDexCompositePart.String("username").EqualTo("Cole"))
                 .EndCondition
@@ -9373,7 +9372,7 @@ internal static class RawHarness
             Guid persistedTenant = Guid.Parse("cccccccc-cccc-cccc-cccc-cccccccccccc");
             LibraDexConditionEndCondition condition = LibraDexCondition
                 .ForGroup("people")
-                .Index("tenantUser").AsComposite.Where(
+                .Index("tenantUser").Where(
                     LibraDexCompositePart.Scalar<Guid>("tenantId").EqualTo(persistedTenant),
                     LibraDexCompositePart.String("username").StartsWith("Co"))
                 .EndCondition;
@@ -10926,18 +10925,18 @@ internal static class RawHarness
             : throw new KeyNotFoundException(indexName);
         LibraDexConditionEndCondition routedCompositeTenantCondition = LibraDexCondition
             .ForGroup("people")
-            .Index("tenantUser").AsComposite.Where(
+            .Index("tenantUser").Where(
                 LibraDexCompositePart.Scalar<Guid>("tenantId").EqualTo(tenantA))
             .EndCondition;
         LibraDexConditionEndCondition routedCompositeTenantUserPrefixCondition = LibraDexCondition
             .ForGroup("people")
-            .Index("tenantUser").AsComposite.Where(
+            .Index("tenantUser").Where(
                 LibraDexCompositePart.Scalar<Guid>("tenantId").EqualTo(tenantA),
                 LibraDexCompositePart.String("username").StartsWith("J", ignoreCase: true))
             .EndCondition;
         LibraDexConditionEndCondition routedCompositeFullCondition = LibraDexCondition
             .ForGroup("people")
-            .Index("tenantUser").AsComposite.Where(
+            .Index("tenantUser").Where(
                 LibraDexCompositePart.Scalar<Guid>("tenantId").EqualTo(tenantA),
                 LibraDexCompositePart.String("username").EqualTo("Mark", ignoreCase: true))
             .EndCondition;
@@ -10966,7 +10965,7 @@ internal static class RawHarness
             : throw new KeyNotFoundException(indexName);
         LibraDexConditionEndCondition routedCompositeFlagsBitmaskCondition = LibraDexCondition
             .ForGroup("people")
-            .Index("tenantFlags").AsComposite.Where(
+            .Index("tenantFlags").Where(
                 LibraDexCompositePart.Scalar<Guid>("tenantId").EqualTo(tenantA),
                 LibraDexCompositePart.Scalar<uint>("flags").AllBitsSet(0x03U))
             .EndCondition;
@@ -10988,7 +10987,7 @@ internal static class RawHarness
             : throw new KeyNotFoundException(indexName);
         LibraDexConditionEndCondition routedCompositeGuidPrefixCondition = LibraDexCondition
             .ForGroup("people")
-            .Index("tenantGuidUser").AsComposite.Where(
+            .Index("tenantGuidUser").Where(
                 LibraDexCompositePart.Guid("tenantId").EqualTo(tenantA),
                 LibraDexCompositePart.Guid("userId").StartsWith(userPrefix, byteCount: 8))
             .EndCondition;
@@ -11006,13 +11005,13 @@ internal static class RawHarness
             : throw new KeyNotFoundException(indexName);
         LibraDexConditionEndCondition routedCompositeDateYearCondition = LibraDexCondition
             .ForGroup("people")
-            .Index("tenantCreated").AsComposite.Where(
+            .Index("tenantCreated").Where(
                 LibraDexCompositePart.Guid("tenantId").EqualTo(tenantA),
                 LibraDexCompositePart.Date("created").YearEqualTo(2026))
             .EndCondition;
         LibraDexConditionEndCondition routedCompositeDateYearMonthDayCondition = LibraDexCondition
             .ForGroup("people")
-            .Index("tenantCreated").AsComposite.Where(
+            .Index("tenantCreated").Where(
                 LibraDexCompositePart.Guid("tenantId").EqualTo(tenantA),
                 LibraDexCompositePart.Date("created").YearMonthDay(2026, 5, 20))
             .EndCondition;
@@ -12281,7 +12280,7 @@ internal static class RawHarness
                 new[] { 8202L },
                 "reopened PrecisionSDT strict greater-than sub-millisecond boundary");
             AssertSet(
-                LibraDexCondition.ForGroup("records").Index("tenantPrecisionCreated").AsComposite.Where(
+                LibraDexCondition.ForGroup("records").Index("tenantPrecisionCreated").Where(
                     LibraDexCompositePart.Guid("tenantId").EqualTo(tenantA),
                     LibraDexCompositePart.Date("created").YearMonthDay(2026, 3, 14))
                 .EndCondition
@@ -12291,14 +12290,14 @@ internal static class RawHarness
                 new[] { 8301L, 8302L },
                 "reopened composite PrecisionSDT date part YearMonthDay");
             AssertSet(
-                LibraDexCondition.ForGroup("records").Index("tenantPrecisionCreated").AsComposite.Where(
-                    LibraDexCompositePart.Joined().Parts("created").Contains(precisionTickOne))
+                LibraDexCondition.ForGroup("records").Index("tenantPrecisionCreated").Where(
+                    LibraDexCompositePart.FullKey().Parts("created").AsString.Contains(precisionTickOne))
                 .EndCondition
                 .Materialize(reopenedPrecisionCompositeIndexes)
                 .IDsWith(deduplication: IdentityDeduplication.Preserve)
                 .ToList<long>(),
                 new[] { 8301L },
-                "reopened composite PrecisionSDT joined date part contains exact tick");
+                "reopened composite PrecisionSDT full-key date part contains exact tick");
         }
     }
 
@@ -12874,7 +12873,7 @@ internal static class RawHarness
             "email" => peopleEmail,
             _ => throw new KeyNotFoundException(indexName)
         };
-        LibraDexConditionEndCondition lastAndFirst = LibraDexCondition.ForGroup("people").Index("lastFirst").AsComposite.Where(
+        LibraDexConditionEndCondition lastAndFirst = LibraDexCondition.ForGroup("people").Index("lastFirst").Where(
             LibraDexCompositePart.String("lastName").StartsWith("S"),
             LibraDexCompositePart.String("firstName").StartsWith("J")).EndCondition;
         AssertSet(
@@ -12892,15 +12891,15 @@ internal static class RawHarness
         ValidateGenericInsert(tenantUser.Insert(Key.Of("tenant-a", "auditor"), 1613UL), "composition tenant/auditor insert");
         Func<string, IIndex> tenantUserResolver = indexName => indexName == "tenantUser" ? tenantUser : throw new KeyNotFoundException(indexName);
         AssertSet(
-            UIDs(LibraDexCondition.ForGroup("people").Index("tenantUser").AsComposite.Where(
-                LibraDexCompositePart.Joined("/").MatchesPattern("tenant-a/ad*")).EndCondition, tenantUserResolver),
+            UIDs(LibraDexCondition.ForGroup("people").Index("tenantUser").Where(
+                LibraDexCompositePart.FullKey("/").AsString.MatchesPattern("tenant-a/ad*")).EndCondition, tenantUserResolver),
             new[] { 1611UL },
-            "proof row 161 composite joined delimiter pattern");
+            "proof row 161 composite full-key delimiter pattern");
         AssertSet(
-            UIDs(LibraDexCondition.ForGroup("people").Index("tenantUser").AsComposite.Where(
-                LibraDexCompositePart.Joined("|").Excluding("tenantId").Contains("admin")).EndCondition, tenantUserResolver),
+            UIDs(LibraDexCondition.ForGroup("people").Index("tenantUser").Where(
+                LibraDexCompositePart.FullKey("|").Excluding("tenantId").AsString.Contains("admin")).EndCondition, tenantUserResolver),
             new[] { 1611UL },
-            "proof row 163 composite excluding joined contains");
+            "proof row 163 composite excluding full-key contains");
 
         IIndex accountOrder = catalog.Indexes["orders"]["accountOrder"].Composite<ulong>(C.Int64("accountId"), C.Int32("orderNumber")).Create();
         ValidateGenericInsert(accountOrder.Insert(Key.Of(10L, 1001), 51UL), "composition account order 1001 insert");
@@ -12908,7 +12907,7 @@ internal static class RawHarness
         ValidateGenericInsert(accountOrder.Insert(Key.Of(11L, 1500), 53UL), "composition account order 1500 insert");
         Func<string, IIndex> orderResolver = indexName => indexName == "accountOrder" ? accountOrder : throw new KeyNotFoundException(indexName);
         AssertSet(
-            UIDs(LibraDexCondition.ForGroup("orders").Index("accountOrder").AsComposite.Where(
+            UIDs(LibraDexCondition.ForGroup("orders").Index("accountOrder").Where(
                 LibraDexCompositePart.Scalar<long>("accountId").EqualTo(10L),
                 LibraDexCompositePart.Scalar<int>("orderNumber").Between(1000, 2000)).EndCondition, orderResolver),
             new[] { 51UL },
@@ -12920,7 +12919,7 @@ internal static class RawHarness
         ValidateGenericInsert(currencyAmount.Insert(Key.Of("EUR", 2000L), 1933UL), "composition EUR amount insert");
         Func<string, IIndex> priceResolver = indexName => indexName == "currencyAmount" ? currencyAmount : throw new KeyNotFoundException(indexName);
         AssertSet(
-            UIDs(LibraDexCondition.ForGroup("prices").Index("currencyAmount").AsComposite.Where(
+            UIDs(LibraDexCondition.ForGroup("prices").Index("currencyAmount").Where(
                 LibraDexCompositePart.String("currency").EqualTo("USD"),
                 LibraDexCompositePart.Scalar<long>("amountMinor").GreaterThan(1000L)).EndCondition, priceResolver),
             new[] { 1931UL },
@@ -12932,14 +12931,14 @@ internal static class RawHarness
         ValidateGenericInsert(countryStateCity.Insert(Key.Of("CA", "BC", "Vancouver"), 56UL), "composition place CA BC Vancouver insert");
         Func<string, IIndex> placeResolver = indexName => indexName == "countryStateCity" ? countryStateCity : throw new KeyNotFoundException(indexName);
         AssertSet(
-            UIDs(LibraDexCondition.ForGroup("places").Index("countryStateCity").AsComposite.Where(
+            UIDs(LibraDexCondition.ForGroup("places").Index("countryStateCity").Where(
                 LibraDexCompositePart.String("country").EqualTo("US"),
                 LibraDexCompositePart.String("state").EqualTo("WA"),
                 LibraDexCompositePart.String("city").StartsWith("Sea")).EndCondition, placeResolver),
             new[] { 54UL },
             "proof row 156 composite multi-part");
         AssertSet(
-            UIDs(LibraDexCondition.ForGroup("places").Index("countryStateCity").AsComposite.Where(
+            UIDs(LibraDexCondition.ForGroup("places").Index("countryStateCity").Where(
                 LibraDexCompositePart.String("city").StartsWith("Sea")).EndCondition, placeResolver),
             new[] { 54UL },
             "proof row 157 composite missing lead");
