@@ -589,16 +589,10 @@ internal sealed class LibraDexStringPatternPredicate
             : value;
         if (mode == LibraDexStringPatternMode.EqualTo)
         {
-            IReadOnlyList<string> equalityCandidates = ignoreCase
+            List<string> equalityCandidates = ignoreCase
                 ? CreateCaseCandidatePrefixes(value, policy.ResolveCulture(), MaxCandidatePrefixes)
-                : new[] { value };
-            return equalityCandidates.Count == 0
-                ? Array.Empty<(string Lower, string Upper)>()
-                : equalityCandidates
-                    .Distinct(StringComparer.Ordinal)
-                    .OrderBy(static candidate => candidate, StringComparer.Ordinal)
-                    .Select(static candidate => (candidate, candidate))
-                    .ToArray();
+                : new List<string>(1) { value };
+            return CreateExactCandidateRanges(equalityCandidates);
         }
 
         if (mode == LibraDexStringPatternMode.InSet)
@@ -607,9 +601,9 @@ internal sealed class LibraDexStringPatternPredicate
             List<string> candidates = new(values.Count);
             foreach (string item in values)
             {
-                IReadOnlyList<string> itemCandidates = ignoreCase
+                List<string> itemCandidates = ignoreCase
                     ? CreateCaseCandidatePrefixes(item, policy.ResolveCulture(), MaxCandidatePrefixes)
-                    : new[] { item };
+                    : new List<string>(1) { item };
                 if (itemCandidates.Count == 0 || checked(candidates.Count + itemCandidates.Count) > MaxCandidatePrefixes)
                 {
                     return Array.Empty<(string Lower, string Upper)>();
@@ -618,13 +612,7 @@ internal sealed class LibraDexStringPatternPredicate
                 candidates.AddRange(itemCandidates);
             }
 
-            return candidates.Count == 0
-                ? Array.Empty<(string Lower, string Upper)>()
-                : candidates
-                    .Distinct(StringComparer.Ordinal)
-                    .OrderBy(static candidate => candidate, StringComparer.Ordinal)
-                    .Select(static candidate => (candidate, candidate))
-                    .ToArray();
+            return CreateExactCandidateRanges(candidates);
         }
 
         if (mode != LibraDexStringPatternMode.StartsWith &&
@@ -638,16 +626,10 @@ internal sealed class LibraDexStringPatternPredicate
             return Array.Empty<(string Lower, string Upper)>();
         }
 
-        IReadOnlyList<string> prefixes = ignoreCase
+        List<string> prefixes = ignoreCase
             ? CreateCaseCandidatePrefixes(prefix, policy.ResolveCulture(), MaxCandidatePrefixes)
-            : new[] { prefix };
-        return prefixes.Count == 0
-            ? Array.Empty<(string Lower, string Upper)>()
-            : prefixes
-                .Distinct(StringComparer.Ordinal)
-                .OrderBy(static prefix => prefix, StringComparer.Ordinal)
-                .Select(static prefix => (prefix, prefix + '\uffff'))
-                .ToArray();
+            : new List<string>(1) { prefix };
+        return CreatePrefixCandidateRanges(prefixes);
     }
 
     internal bool Matches(string candidate)
@@ -730,29 +712,90 @@ internal sealed class LibraDexStringPatternPredicate
         return values.Contains(candidate);
     }
 
-    private static IReadOnlyList<string> CreateCaseCandidatePrefixes(string prefix, CultureInfo culture, int maxCandidates)
+    /// <summary>
+    /// Builds exact candidate ranges from already-expanded string candidates.<br/>
+    /// The caller owns candidate expansion; this helper only sorts, de-duplicates, and maps each value to an exact lower/upper pair.<br/>
+    /// </summary>
+    /// <param name="candidates">The candidate string values to normalize.</param>
+    /// <returns>Sorted exact candidate ranges.</returns>
+    private static IReadOnlyList<(string Lower, string Upper)> CreateExactCandidateRanges(List<string> candidates)
+    {
+        return CreateCandidateRanges(candidates, exact: true);
+    }
+
+    /// <summary>
+    /// Builds prefix candidate ranges from already-expanded string candidates.<br/>
+    /// Each returned range uses the candidate as the lower bound and the maximal suffix sentinel as the upper bound.<br/>
+    /// </summary>
+    /// <param name="candidates">The candidate string prefixes to normalize.</param>
+    /// <returns>Sorted prefix candidate ranges.</returns>
+    private static IReadOnlyList<(string Lower, string Upper)> CreatePrefixCandidateRanges(List<string> candidates)
+    {
+        return CreateCandidateRanges(candidates, exact: false);
+    }
+
+    /// <summary>
+    /// Sorts and de-duplicates candidate strings before mapping them to exact or prefix ranges.<br/>
+    /// This replaces the prior LINQ chain on the retrieval path with one explicit pass over the sorted list.<br/>
+    /// </summary>
+    /// <param name="candidates">The candidate strings to normalize in place.</param>
+    /// <param name="exact">When <see langword="true"/>, lower and upper are identical; otherwise the upper bound receives the prefix sentinel.</param>
+    /// <returns>Sorted candidate ranges.</returns>
+    private static IReadOnlyList<(string Lower, string Upper)> CreateCandidateRanges(List<string> candidates, bool exact)
+    {
+        if (candidates.Count == 0)
+        {
+            return Array.Empty<(string Lower, string Upper)>();
+        }
+
+        candidates.Sort(StringComparer.Ordinal);
+        List<(string Lower, string Upper)> ranges = new(candidates.Count);
+        string? previous = null;
+        for (int i = 0; i < candidates.Count; i++)
+        {
+            string candidate = candidates[i];
+            if (string.Equals(candidate, previous, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            ranges.Add(exact ? (candidate, candidate) : (candidate, candidate + '\uffff'));
+            previous = candidate;
+        }
+
+        return ranges;
+    }
+
+    /// <summary>
+    /// Expands a case-insensitive prefix into candidate ordinal prefixes for coarse routed lookup.<br/>
+    /// The expansion is intentionally capped so no-case fallback can scope a scan without creating an unbounded candidate fan-out.<br/>
+    /// </summary>
+    /// <param name="prefix">The caller-supplied prefix.</param>
+    /// <param name="culture">The comparison culture used for culture-aware case variants.</param>
+    /// <param name="maxCandidates">The maximum number of candidate prefixes allowed.</param>
+    /// <returns>The expanded candidate prefixes, or an empty list when the cap is exceeded.</returns>
+    private static List<string> CreateCaseCandidatePrefixes(string prefix, CultureInfo culture, int maxCandidates)
     {
         List<string> candidates = new() { string.Empty };
+        Span<char> variants = stackalloc char[5];
         for (int i = 0; i < prefix.Length; i++)
         {
             char original = prefix[i];
-            char[] variants = new[]
+            int variantCount = 0;
+            AddCaseVariant(variants, ref variantCount, original);
+            AddCaseVariant(variants, ref variantCount, char.ToLower(original, culture));
+            AddCaseVariant(variants, ref variantCount, char.ToUpper(original, culture));
+            AddCaseVariant(variants, ref variantCount, char.ToLowerInvariant(original));
+            AddCaseVariant(variants, ref variantCount, char.ToUpperInvariant(original));
+            if (variantCount == 0 || checked(candidates.Count * variantCount) > maxCandidates)
             {
-                original,
-                char.ToLower(original, culture),
-                char.ToUpper(original, culture),
-                char.ToLowerInvariant(original),
-                char.ToUpperInvariant(original)
-            }.Distinct().ToArray();
-            if (variants.Length == 0 || checked(candidates.Count * variants.Length) > maxCandidates)
-            {
-                return Array.Empty<string>();
+                return new List<string>();
             }
 
-            List<string> next = new(candidates.Count * variants.Length);
+            List<string> next = new(candidates.Count * variantCount);
             foreach (string candidate in candidates)
             {
-                for (int variantIndex = 0; variantIndex < variants.Length; variantIndex++)
+                for (int variantIndex = 0; variantIndex < variantCount; variantIndex++)
                 {
                     next.Add(candidate + variants[variantIndex]);
                 }
@@ -762,6 +805,25 @@ internal sealed class LibraDexStringPatternPredicate
         }
 
         return candidates;
+    }
+
+    /// <summary>
+    /// Adds one character case variant to a small stack buffer when it has not already been captured.<br/>
+    /// </summary>
+    /// <param name="variants">The reusable variant buffer.</param>
+    /// <param name="count">The number of occupied buffer entries.</param>
+    /// <param name="candidate">The candidate variant to add.</param>
+    private static void AddCaseVariant(Span<char> variants, ref int count, char candidate)
+    {
+        for (int i = 0; i < count; i++)
+        {
+            if (variants[i] == candidate)
+            {
+                return;
+            }
+        }
+
+        variants[count++] = candidate;
     }
 
     private static string GetLeadingLiteralPrefix(string pattern)
@@ -2574,6 +2636,20 @@ internal static class LibraDexIdentityExecutionPlanner
         ArgumentNullException.ThrowIfNull(criterion);
         options.Validate();
         LibraDexIdentityExecutionPlan plan = Plan(criterion, options);
+        if (options.Ordering == IdentityResultOrdering.PlanNatural)
+        {
+            LibraDexIdentityNodeExecution streamed = ExecutePlanNaturalWithStats(criterion, options);
+            return new LibraDexIdentityExecutionResult(
+                streamed.Identities,
+                plan,
+                new LibraDexQueryDiagnostics(
+                    plan.Materialization == LibraDexIdentityPlanMaterialization.IdentitySet
+                        ? LibraDexExecutionKind.Projection
+                        : LibraDexExecutionKind.FastPath,
+                    RowsScanned: streamed.RowsScanned,
+                    RowsReturned: streamed.Identities.Count));
+        }
+
         LibraDexIdentityNodeExecution execution = ExecuteNodeWithStats(criterion);
         List<object> identities = execution.Identities;
         identities = ApplyDeduplication(identities, options.Deduplication);
@@ -3006,6 +3082,30 @@ internal static class LibraDexIdentityExecutionPlanner
         return new LibraDexIdentityNodeExecution(identities, identities.Count);
     }
 
+    /// <summary>
+    /// Executes a plan-natural identity projection through streaming primitives and materializes only the requested page.<br/>
+    /// Ordered projections still use the full materialization path because sorting requires the complete result set.<br/>
+    /// </summary>
+    /// <param name="criterion">The materialized identity criterion tree.</param>
+    /// <param name="options">The projection options controlling de-duplication and paging.</param>
+    /// <returns>The materialized page and observed scan count.</returns>
+    private static LibraDexIdentityNodeExecution ExecutePlanNaturalWithStats(IIdentityCriterion criterion, LibraDexIdentityQueryOptions options)
+    {
+        if (TryExecuteLeafPreserveWithTake(criterion, options, out IReadOnlyList<object>? leafIdentities))
+        {
+            IReadOnlyList<object> takenIdentities = leafIdentities ?? Array.Empty<object>();
+            return new LibraDexIdentityNodeExecution(takenIdentities.ToList(), takenIdentities.Count);
+        }
+
+        IEnumerable<object> identities = IterateNode(criterion);
+        if (options.Deduplication == IdentityDeduplication.Distinct)
+        {
+            identities = DistinctIterator(identities);
+        }
+
+        return MaterializeStreamingPage(identities, options);
+    }
+
     private static LibraDexIdentityNodeExecution ExecuteIntersectionWithStats(IIdentityCriterion leftCriterion, IIdentityCriterion rightCriterion)
     {
         LibraDexIdentityNodeExecution left = ExecuteNodeWithStats(leftCriterion);
@@ -3054,6 +3154,47 @@ internal static class LibraDexIdentityExecutionPlanner
 
         identities = primitiveExecutor.ExecuteIdentityPrimitive(
             new LibraDexIdentityPrimitiveRequest(criterion.CriteriaKind.Value, criterion.Values, takeLimit));
+        return true;
+    }
+
+    /// <summary>
+    /// Executes a single preserve-duplicates leaf with the primitive take limit when paging makes that safe.<br/>
+    /// Distinct projections cannot use this shortcut because raw primitive rows may collapse to fewer identities after de-duplication.<br/>
+    /// </summary>
+    /// <param name="criterion">The candidate leaf criterion.</param>
+    /// <param name="options">The projection options containing skip, take, and bookmark state.</param>
+    /// <param name="identities">Receives the requested paged identities when the shortcut applies.</param>
+    /// <returns><see langword="true"/> when the shortcut handled the request.</returns>
+    private static bool TryExecuteLeafPreserveWithTake(
+        IIdentityCriterion criterion,
+        LibraDexIdentityQueryOptions options,
+        out IReadOnlyList<object>? identities)
+    {
+        identities = null;
+        if (options.Deduplication != IdentityDeduplication.Preserve ||
+            options.TakeCount is not { } takeCount)
+        {
+            return false;
+        }
+
+        long start = options.SkipCount;
+        if (options.Bookmark is { } bookmark)
+        {
+            start = Math.Max(start, bookmark.Position);
+        }
+
+        long requested = start + takeCount;
+        if (requested > int.MaxValue)
+        {
+            return false;
+        }
+
+        if (!TryExecuteLeafWithTake(criterion, checked((int)requested), out IReadOnlyList<object>? rawIdentities))
+        {
+            return false;
+        }
+
+        identities = ApplyPaging(rawIdentities!.ToList(), options);
         return true;
     }
 
@@ -3179,14 +3320,25 @@ internal static class LibraDexIdentityExecutionPlanner
     /// <returns>A forward-only sequence of identities outside the child criterion.</returns>
     private static IEnumerable<object> ComplementIterator(IIdentityCriterion criterion, IReadOnlyList<object> excluded)
     {
-        IIdentityCriterion leaf = FindFirstLeaf(criterion);
-        if (leaf.Index is not IIdentityPrimitiveExecutor executor)
+        IEnumerable<object> universe;
+        if (TryResolveSingleExecutableUniverse(criterion, out IIdentityPrimitiveExecutor? singleIndexExecutor))
         {
-            throw new NotSupportedException("Negated identity criteria require at least one executable index to provide the identity universe.");
+            universe = singleIndexExecutor.IterateIdentityPrimitive(
+                new LibraDexIdentityPrimitiveRequest(LibraDexCriteriaKind.All, Array.Empty<object?>()));
+        }
+        else
+        {
+            IIdentityCriterion leaf = FindFirstLeaf(criterion);
+            if (leaf.Index is not IIdentityPrimitiveExecutor executor)
+            {
+                throw new NotSupportedException("Negated identity criteria require at least one executable index to provide the identity universe.");
+            }
+
+            universe = executor.IterateIdentityUniverse();
         }
 
         HashSet<object> excludedSet = new(excluded);
-        foreach (object identity in executor.IterateIdentityUniverse())
+        foreach (object identity in universe)
         {
             if (!excludedSet.Contains(identity))
             {
@@ -3327,6 +3479,48 @@ internal static class LibraDexIdentityExecutionPlanner
             returned++;
             yield return identity;
         }
+    }
+
+    /// <summary>
+    /// Materializes a streamed identity sequence only until the requested page has been satisfied.<br/>
+    /// This keeps `take` and bookmark projections from forcing full result materialization when natural plan order is acceptable.<br/>
+    /// </summary>
+    /// <param name="identities">The streamed identity sequence.</param>
+    /// <param name="options">The projection options controlling skip, take, and bookmark state.</param>
+    /// <returns>The materialized page and number of streamed identities consumed.</returns>
+    private static LibraDexIdentityNodeExecution MaterializeStreamingPage(IEnumerable<object> identities, LibraDexIdentityQueryOptions options)
+    {
+        long skip = options.SkipCount;
+        if (options.Bookmark is { } bookmark)
+        {
+            skip = Math.Max(skip, bookmark.Position);
+        }
+
+        if (options.TakeCount == 0)
+        {
+            return new LibraDexIdentityNodeExecution(new List<object>(), RowsScanned: 0);
+        }
+
+        int capacity = options.TakeCount is { } takeCount ? takeCount : 0;
+        List<object> result = capacity > 0 ? new List<object>(capacity) : new List<object>();
+        long scanned = 0;
+        foreach (object identity in identities)
+        {
+            scanned++;
+            if (skip > 0)
+            {
+                skip--;
+                continue;
+            }
+
+            result.Add(identity);
+            if (options.TakeCount is { } limit && result.Count >= limit)
+            {
+                break;
+            }
+        }
+
+        return new LibraDexIdentityNodeExecution(result, scanned);
     }
 
     private static List<object> ApplyDeduplication(List<object> identities, IdentityDeduplication deduplication)

@@ -57,7 +57,8 @@ public class LibraDexConditionExpression<TIdentity>
 
     /// <summary>
     /// Composes this expression with another expression from the same identity group using identity-set intersection.<br/>
-    /// This is the cross-index counterpart to index-local `.And`; it accepts an already built expression so reusable partial conditions can be assigned to variables and completed later.<br/>
+    /// This is the hand-written/reusable-fragment counterpart to ordinal `MultiKey(...).Where...And...` construction; both forms normalize to the same executable condition tree.<br/>
+    /// Use this form when caller code naturally holds completed condition expressions instead of an ordered index array.<br/>
     /// </summary>
     /// <param name="other">The expression to intersect with this expression.</param>
     /// <returns>A composed condition expression.</returns>
@@ -80,7 +81,8 @@ public class LibraDexConditionExpression<TIdentity>
 
     /// <summary>
     /// Composes this expression with another expression from the same identity group using identity-set union.<br/>
-    /// This is the cross-index counterpart to index-local `.Or`; it keeps grouping explicit while deferring final materialization until a terminal read or mutation call.<br/>
+    /// This is the hand-written/reusable-fragment counterpart to ordinal `MultiKey(...).Where...Or...` construction; both forms normalize to the same executable condition tree.<br/>
+    /// Use this form when caller code naturally holds completed condition expressions instead of an ordered index array.<br/>
     /// </summary>
     /// <param name="other">The expression to union with this expression.</param>
     /// <returns>A composed condition expression.</returns>
@@ -250,13 +252,13 @@ public sealed class LibraDexIndexCondition<TKey, TIdentity> : LibraDexConditionE
 
     /// <summary>
     /// Continues this expression with another predicate over the same opened index using identity-set intersection.<br/>
-    /// This preserves the Abraxas-style distinction between continuing the current index grammar and composing a separate cross-index expression with `.AndAlso(...)`.<br/>
+    /// This keeps the current opened-index grammar compact for handwritten conditions; wider expression composition remains available through `.AndAlso(...)` without changing the eventual executor path.<br/>
     /// </summary>
     public LibraDexIndexConditionContinuation<TKey, TIdentity> And => new(this, index, useOr: false, negateNext: false);
 
     /// <summary>
     /// Continues this expression with another predicate over the same opened index using identity-set union.<br/>
-    /// Cross-index union remains `.OrElse(...)`; this property is intentionally index-local.<br/>
+    /// This keeps the current opened-index grammar compact for handwritten conditions; wider expression composition remains available through `.OrElse(...)` without changing the eventual executor path.<br/>
     /// </summary>
     public LibraDexIndexConditionContinuation<TKey, TIdentity> Or => new(this, index, useOr: true, negateNext: false);
 
@@ -715,6 +717,7 @@ public sealed class LibraDexGroupCondition
 /// <summary>
 /// Starts typed selector-first conditions over one identity group.<br/>
 /// Selector methods identify the index by name, opened handle, or ordered multi-key ordinal; operator calls then provide the condition value.<br/>
+/// This is a construction convenience for programmatic callers: ordinal, name, and handle selectors all emit ordinary index-name condition leaves that execute through the same planner as `.AndAlso(...)`, `.OrElse(...)`, and grouped handwritten expressions.<br/>
 /// </summary>
 public sealed class LibraDexMultiKeyWhere
 {
@@ -760,7 +763,7 @@ public sealed class LibraDexMultiKeyWhere
 
     /// <summary>
     /// Selects a string-keyed participant by ordinal from an ordered `MultiKey(...)` builder.<br/>
-    /// Ordinals make generated and array-backed condition assembly concise while still compiling to index-name descriptors.<br/>
+    /// Ordinals make generated and array-backed condition assembly concise while still compiling to the same index-name descriptors produced by handwritten composition.<br/>
     /// </summary>
     /// <param name="ordinal">The zero-based participant ordinal supplied to `MultiKey(...)`.</param>
     /// <returns>String operators for the selected index.</returns>
@@ -1376,6 +1379,7 @@ public sealed class LibraDexMultiKeyDateWhere<TValue>
 
 /// <summary>
 /// Captures the participant list for ordered group-level multi-key condition builders.<br/>
+/// The ordered list is only a developer-experience aid for programmatic construction; it is not a separate execution contract and does not bypass normal condition-tree planning.<br/>
 /// </summary>
 public sealed class LibraDexOrderedMultiKeyBuilder
 {
@@ -1406,6 +1410,7 @@ public sealed class LibraDexOrderedMultiKeyBuilder
 
     /// <summary>
     /// Starts a condition builder whose ordinal selectors map to the ordered indexes supplied to `MultiKey(...)`.<br/>
+    /// The resulting predicates normalize to the same identity-group condition tree as manually composed opened-index expressions.<br/>
     /// </summary>
     public LibraDexMultiKeyWhere Where => new(group, LibraDexCondition.ForGroup(group), indexes);
 }

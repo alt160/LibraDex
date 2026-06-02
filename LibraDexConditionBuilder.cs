@@ -6633,9 +6633,54 @@ internal sealed class LibraDexConditionNode
     /// <param name="criteriaKind">The internal primitive request kind.</param>
     /// <param name="values">The already materialized primitive operands.</param>
     /// <returns>An identity criterion leaf for the condition executor.</returns>
+    /// <summary>
+    /// Creates a zero-operand internal condition leaf without allocating a caller-side `params` array.<br/>
+    /// </summary>
+    /// <param name="index">The resolved logical index that owns the leaf.</param>
+    /// <param name="criteriaKind">The internal primitive request kind.</param>
+    /// <returns>An identity criterion leaf for the condition executor.</returns>
+    private static IIdentityCriterion CreateConditionLeaf(IIndex index, LibraDexCriteriaKind criteriaKind)
+    {
+        return LibraDexIdentityCriterion.Leaf(index, criteriaKind, CreateConditionDiagnostics(criteriaKind), Array.Empty<object?>());
+    }
+
+    /// <summary>
+    /// Creates a one-operand internal condition leaf without routing through the many-value validation path.<br/>
+    /// </summary>
+    /// <param name="index">The resolved logical index that owns the leaf.</param>
+    /// <param name="criteriaKind">The internal primitive request kind.</param>
+    /// <param name="value">The primitive operand value.</param>
+    /// <returns>An identity criterion leaf for the condition executor.</returns>
+    private static IIdentityCriterion CreateConditionLeaf(IIndex index, LibraDexCriteriaKind criteriaKind, object? value)
+    {
+        return LibraDexIdentityCriterion.Leaf(
+            index,
+            criteriaKind,
+            CreateConditionDiagnostics(criteriaKind),
+            ValidateConditionLeafValue(index, criteriaKind, value));
+    }
+
+    /// <summary>
+    /// Creates a two-operand internal condition leaf for range-style conditions without LINQ allocation.<br/>
+    /// </summary>
+    /// <param name="index">The resolved logical index that owns the leaf.</param>
+    /// <param name="criteriaKind">The internal primitive request kind.</param>
+    /// <param name="first">The first primitive operand value.</param>
+    /// <param name="second">The second primitive operand value.</param>
+    /// <returns>An identity criterion leaf for the condition executor.</returns>
+    private static IIdentityCriterion CreateConditionLeaf(IIndex index, LibraDexCriteriaKind criteriaKind, object? first, object? second)
+    {
+        return LibraDexIdentityCriterion.Leaf(
+            index,
+            criteriaKind,
+            CreateConditionDiagnostics(criteriaKind),
+            ValidateConditionLeafValue(index, criteriaKind, first),
+            ValidateConditionLeafValue(index, criteriaKind, second));
+    }
+
     private static IIdentityCriterion CreateConditionLeaf(IIndex index, LibraDexCriteriaKind criteriaKind, params object?[] values)
     {
-        object?[] validatedValues = values.Select(value => ValidateConditionLeafValue(index, criteriaKind, value)).ToArray();
+        object?[] validatedValues = ValidateConditionLeafValues(index, criteriaKind, values);
         return LibraDexIdentityCriterion.Leaf(index, criteriaKind, CreateConditionDiagnostics(criteriaKind), validatedValues);
     }
 
@@ -6648,10 +6693,83 @@ internal sealed class LibraDexConditionNode
     /// <param name="criteriaKind">The internal primitive request kind.</param>
     /// <param name="values">The already materialized primitive operands.</param>
     /// <returns>An identity criterion leaf for the condition executor.</returns>
+    /// <summary>
+    /// Creates a zero-operand projection-backed condition leaf without allocating a caller-side `params` array.<br/>
+    /// </summary>
+    /// <param name="group">The logical identity group for the condition.</param>
+    /// <param name="index">The physical projection index that owns the primitive route.</param>
+    /// <param name="criteriaKind">The internal primitive request kind.</param>
+    /// <returns>An identity criterion leaf for the condition executor.</returns>
+    private static IIdentityCriterion CreateProjectionConditionLeaf(string group, IIndex index, LibraDexCriteriaKind criteriaKind)
+    {
+        return LibraDexIdentityCriterion.Leaf(group, index, criteriaKind, CreateConditionDiagnostics(criteriaKind), Array.Empty<object?>());
+    }
+
+    /// <summary>
+    /// Creates a one-operand projection-backed condition leaf without routing through the many-value validation path.<br/>
+    /// </summary>
+    /// <param name="group">The logical identity group for the condition.</param>
+    /// <param name="index">The physical projection index that owns the primitive route.</param>
+    /// <param name="criteriaKind">The internal primitive request kind.</param>
+    /// <param name="value">The primitive operand value.</param>
+    /// <returns>An identity criterion leaf for the condition executor.</returns>
+    private static IIdentityCriterion CreateProjectionConditionLeaf(string group, IIndex index, LibraDexCriteriaKind criteriaKind, object? value)
+    {
+        return LibraDexIdentityCriterion.Leaf(
+            group,
+            index,
+            criteriaKind,
+            CreateConditionDiagnostics(criteriaKind),
+            ValidateConditionLeafValue(index, criteriaKind, value));
+    }
+
+    /// <summary>
+    /// Creates a two-operand projection-backed condition leaf for range-style projection conditions without LINQ allocation.<br/>
+    /// </summary>
+    /// <param name="group">The logical identity group for the condition.</param>
+    /// <param name="index">The physical projection index that owns the primitive route.</param>
+    /// <param name="criteriaKind">The internal primitive request kind.</param>
+    /// <param name="first">The first primitive operand value.</param>
+    /// <param name="second">The second primitive operand value.</param>
+    /// <returns>An identity criterion leaf for the condition executor.</returns>
+    private static IIdentityCriterion CreateProjectionConditionLeaf(string group, IIndex index, LibraDexCriteriaKind criteriaKind, object? first, object? second)
+    {
+        return LibraDexIdentityCriterion.Leaf(
+            group,
+            index,
+            criteriaKind,
+            CreateConditionDiagnostics(criteriaKind),
+            ValidateConditionLeafValue(index, criteriaKind, first),
+            ValidateConditionLeafValue(index, criteriaKind, second));
+    }
+
     private static IIdentityCriterion CreateProjectionConditionLeaf(string group, IIndex index, LibraDexCriteriaKind criteriaKind, params object?[] values)
     {
-        object?[] validatedValues = values.Select(value => ValidateConditionLeafValue(index, criteriaKind, value)).ToArray();
+        object?[] validatedValues = ValidateConditionLeafValues(index, criteriaKind, values);
         return LibraDexIdentityCriterion.Leaf(group, index, criteriaKind, CreateConditionDiagnostics(criteriaKind), validatedValues);
+    }
+
+    /// <summary>
+    /// Validates many primitive leaf operands using an explicit loop instead of LINQ projection.<br/>
+    /// </summary>
+    /// <param name="index">The resolved index whose key contract validates the values.</param>
+    /// <param name="criteriaKind">The internal primitive request kind.</param>
+    /// <param name="values">The primitive operand values to validate.</param>
+    /// <returns>The validated primitive operand values.</returns>
+    private static object?[] ValidateConditionLeafValues(IIndex index, LibraDexCriteriaKind criteriaKind, object?[] values)
+    {
+        if (values.Length == 0)
+        {
+            return Array.Empty<object?>();
+        }
+
+        object?[] validatedValues = new object?[values.Length];
+        for (int i = 0; i < values.Length; i++)
+        {
+            validatedValues[i] = ValidateConditionLeafValue(index, criteriaKind, values[i]);
+        }
+
+        return validatedValues;
     }
 
     /// <summary>
