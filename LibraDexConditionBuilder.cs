@@ -6516,7 +6516,7 @@ internal sealed class LibraDexConditionNode
             throw new NotSupportedException($"Condition operator {descriptor.Operator} requires a maintained {classification.ProjectionKind} projection bridge, but the resolver did not return one.");
         }
 
-        object?[] values = descriptor.Operands.Select(static operand => operand.GetValue()).ToArray();
+        object?[] values = MaterializeOperandValues(descriptor);
         if (descriptor.ValueKind == LibraDexConditionValueKind.String &&
             RequiresManagedStringComparison(descriptor, index) &&
             IsStringComparisonOperator(descriptor.Operator))
@@ -6531,7 +6531,74 @@ internal sealed class LibraDexConditionNode
             return MaterializeStringMembershipLeaf(index, values, descriptor);
         }
 
-        IIdentityCriterion criterion = descriptor.Operator switch
+        return MaterializeResolvedPrimitiveLeaf(index, values, descriptor);
+    }
+
+    /// <summary>
+    /// Materializes adopted condition operands exactly once before the resolved leaf is dispatched to a domain materializer.<br/>
+    /// This keeps deferred operand evaluation visible and avoids LINQ allocation on the common materialization path.<br/>
+    /// </summary>
+    /// <param name="descriptor">The leaf descriptor whose operands should be evaluated.</param>
+    /// <returns>The materialized operand values.</returns>
+    private static object?[] MaterializeOperandValues(LibraDexConditionLeafDescriptor descriptor)
+    {
+        if (descriptor.Operands.Count == 0)
+        {
+            return Array.Empty<object?>();
+        }
+
+        object?[] values = new object?[descriptor.Operands.Count];
+        for (int i = 0; i < values.Length; i++)
+        {
+            values[i] = descriptor.Operands[i].GetValue();
+        }
+
+        return values;
+    }
+
+    /// <summary>
+    /// Dispatches one already-resolved leaf to the narrowest domain materializer that can express it.<br/>
+    /// The dispatch is intentionally grouped by execution domain so future operators do not accumulate in one monolithic switch.<br/>
+    /// </summary>
+    /// <param name="index">The resolved index that owns the leaf.</param>
+    /// <param name="values">The already materialized operand values.</param>
+    /// <param name="descriptor">The adopted condition leaf descriptor.</param>
+    /// <returns>An executable identity criterion leaf or composition.</returns>
+    private static IIdentityCriterion MaterializeResolvedPrimitiveLeaf(IIndex index, object?[] values, LibraDexConditionLeafDescriptor descriptor)
+    {
+        if (TryMaterializeCorePrimitiveLeaf(index, values, descriptor, out IIdentityCriterion? coreCriterion) &&
+            coreCriterion is not null)
+        {
+            return coreCriterion;
+        }
+
+        if (TryMaterializePatternPrimitiveLeaf(index, values, descriptor, out IIdentityCriterion? patternCriterion) &&
+            patternCriterion is not null)
+        {
+            return patternCriterion;
+        }
+
+        if (TryMaterializeStructuredDatePrimitiveLeaf(index, values, descriptor, out IIdentityCriterion? dateCriterion) &&
+            dateCriterion is not null)
+        {
+            return dateCriterion;
+        }
+
+        throw new NotSupportedException($"Condition operator {descriptor.Operator} is not connected to the LibraDex criteria bridge yet.");
+    }
+
+    /// <summary>
+    /// Tries to materialize scalar, set, bitmask, and other value-domain-neutral primitive leaves.<br/>
+    /// These operators do not need a specialized pattern or structured-date bridge once the index has been resolved.<br/>
+    /// </summary>
+    /// <param name="index">The resolved index that owns the leaf.</param>
+    /// <param name="values">The already materialized operand values.</param>
+    /// <param name="descriptor">The adopted condition leaf descriptor.</param>
+    /// <param name="criterion">Receives the executable criterion when the operator belongs to this domain.</param>
+    /// <returns><see langword="true"/> when the operator was handled.</returns>
+    private static bool TryMaterializeCorePrimitiveLeaf(IIndex index, object?[] values, LibraDexConditionLeafDescriptor descriptor, out IIdentityCriterion? criterion)
+    {
+        criterion = descriptor.Operator switch
         {
             LibraDexConditionOperatorKind.All => CreateConditionLeaf(index, LibraDexCriteriaKind.All),
             LibraDexConditionOperatorKind.EqualTo => CreateConditionLeaf(index, LibraDexCriteriaKind.Find, RequireValue(values, 0, descriptor)),
@@ -6544,6 +6611,27 @@ internal sealed class LibraDexConditionNode
             LibraDexConditionOperatorKind.NotBetween => CreateOrderedRangeExclusionLeaf(index, RequireValue(values, 0, descriptor), RequireValue(values, 1, descriptor)),
             LibraDexConditionOperatorKind.BitAndEqualTo => MaterializeBitmaskLeaf(index, values, descriptor, LibraDexBitmaskComparisonMode.EqualTo),
             LibraDexConditionOperatorKind.BitAndNotEqualTo => MaterializeBitmaskLeaf(index, values, descriptor, LibraDexBitmaskComparisonMode.NotEqualTo),
+            LibraDexConditionOperatorKind.InSet => CreateMembershipLeaf(index, values, descriptor),
+            LibraDexConditionOperatorKind.NotInSet => CreateMembershipLeaf(index, values, descriptor).Not(),
+            _ => null
+        };
+
+        return criterion is not null;
+    }
+
+    /// <summary>
+    /// Tries to materialize string, GUID, binary, and composite pattern-style leaves.<br/>
+    /// Unsupported pattern operators still fail explicitly when no projection or scan bridge has been connected for the selected value kind.<br/>
+    /// </summary>
+    /// <param name="index">The resolved index that owns the leaf.</param>
+    /// <param name="values">The already materialized operand values.</param>
+    /// <param name="descriptor">The adopted condition leaf descriptor.</param>
+    /// <param name="criterion">Receives the executable criterion when the operator belongs to this domain.</param>
+    /// <returns><see langword="true"/> when the operator was handled.</returns>
+    private static bool TryMaterializePatternPrimitiveLeaf(IIndex index, object?[] values, LibraDexConditionLeafDescriptor descriptor, out IIdentityCriterion? criterion)
+    {
+        criterion = descriptor.Operator switch
+        {
             LibraDexConditionOperatorKind.StartsWith when descriptor.ValueKind == LibraDexConditionValueKind.String && !RequiresManagedStringComparison(descriptor, index) => MaterializeExactStringPrefixLeaf(index, values, descriptor),
             LibraDexConditionOperatorKind.StartsWith or
             LibraDexConditionOperatorKind.EndsWith or
@@ -6573,8 +6661,25 @@ internal sealed class LibraDexConditionNode
             LibraDexConditionOperatorKind.EndsWith or
             LibraDexConditionOperatorKind.Contains or
             LibraDexConditionOperatorKind.MatchesPattern => throw new NotSupportedException($"Condition operator {descriptor.Operator} requires an explicit maintained projection bridge before it can materialize."),
-            LibraDexConditionOperatorKind.InSet => CreateMembershipLeaf(index, values, descriptor),
-            LibraDexConditionOperatorKind.NotInSet => CreateMembershipLeaf(index, values, descriptor).Not(),
+            _ => null
+        };
+
+        return criterion is not null;
+    }
+
+    /// <summary>
+    /// Tries to materialize structured date, calendar component, and time-of-day condition leaves.<br/>
+    /// Keeping this switch isolated makes the calendar-specific branch family easier to review independently from scalar and pattern operators.<br/>
+    /// </summary>
+    /// <param name="index">The resolved index that owns the leaf.</param>
+    /// <param name="values">The already materialized operand values.</param>
+    /// <param name="descriptor">The adopted condition leaf descriptor.</param>
+    /// <param name="criterion">Receives the executable criterion when the operator belongs to this domain.</param>
+    /// <returns><see langword="true"/> when the operator was handled.</returns>
+    private static bool TryMaterializeStructuredDatePrimitiveLeaf(IIndex index, object?[] values, LibraDexConditionLeafDescriptor descriptor, out IIdentityCriterion? criterion)
+    {
+        criterion = descriptor.Operator switch
+        {
             LibraDexConditionOperatorKind.YearEqualTo => MaterializeStructuredDateYearLeaf(index, values, descriptor),
             LibraDexConditionOperatorKind.YearNotEqualTo => MaterializeStructuredDateYearExclusionLeaf(index, values, descriptor),
             LibraDexConditionOperatorKind.YearIn => MaterializeStructuredDateYearInLeaf(index, values, descriptor),
@@ -6619,20 +6724,12 @@ internal sealed class LibraDexConditionNode
             LibraDexConditionOperatorKind.IsAfternoon => MaterializeStructuredTimeOfDayLeaf(index, 12, 16, descriptor),
             LibraDexConditionOperatorKind.IsEvening => MaterializeStructuredTimeOfDayLeaf(index, 17, 21, descriptor),
             LibraDexConditionOperatorKind.IsNight => MaterializeStructuredNightLeaf(index, descriptor),
-            _ => throw new NotSupportedException($"Condition operator {descriptor.Operator} is not connected to the LibraDex criteria bridge yet.")
+            _ => null
         };
 
-        return criterion;
+        return criterion is not null;
     }
 
-    /// <summary>
-    /// Creates one internal condition retrieval leaf without using the purged public criteria-builder surface.<br/>
-    /// This is an adapter-private bridge from adopted condition operators to the current low-level identity primitive request shape; it validates runtime key operands against the resolved index before execution.<br/>
-    /// </summary>
-    /// <param name="index">The resolved logical index that owns the leaf.</param>
-    /// <param name="criteriaKind">The internal primitive request kind.</param>
-    /// <param name="values">The already materialized primitive operands.</param>
-    /// <returns>An identity criterion leaf for the condition executor.</returns>
     /// <summary>
     /// Creates a zero-operand internal condition leaf without allocating a caller-side `params` array.<br/>
     /// </summary>

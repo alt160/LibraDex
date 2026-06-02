@@ -977,6 +977,18 @@ public sealed class LibraDexMultiKeyContinuation
     }
 
     /// <summary>
+    /// Creates the next multi-key continuation from one captured condition operation.<br/>
+    /// This keeps scalar, string, Guid, binary, and date wrappers on one continuation factory instead of repeating wrapper-local plumbing.<br/>
+    /// </summary>
+    /// <param name="continuation">The captured adopted condition continuation.</param>
+    /// <param name="orderedIndexes">The optional ordered index list used by ordinal selectors.</param>
+    /// <returns>A multi-key continuation over the same normalized condition tree.</returns>
+    internal static LibraDexMultiKeyContinuation From(LibraDexConditionContinueOrEnd continuation, IIndex[]? orderedIndexes)
+    {
+        return new LibraDexMultiKeyContinuation(continuation.EndCondition.Group, continuation, orderedIndexes);
+    }
+
+    /// <summary>
     /// Adds an identity-set intersection and starts the next typed selector.<br/>
     /// </summary>
     public LibraDexMultiKeyWhere And => new(group, continuation.AND, orderedIndexes);
@@ -1020,54 +1032,49 @@ public sealed class LibraDexMultiKeyScalarWhere<TValue>
     /// <summary>
     /// Captures equality against the selected index.<br/>
     /// </summary>
-    public LibraDexMultiKeyContinuation EqualTo(TValue value) => Wrap(inner.EqualTo(value));
+    public LibraDexMultiKeyContinuation EqualTo(TValue value) => LibraDexMultiKeyContinuation.From(inner.EqualTo(value), orderedIndexes);
 
     /// <summary>
     /// Captures inequality against the selected index.<br/>
     /// </summary>
-    public LibraDexMultiKeyContinuation NotEqualTo(TValue value) => Wrap(inner.NotEqualTo(value));
+    public LibraDexMultiKeyContinuation NotEqualTo(TValue value) => LibraDexMultiKeyContinuation.From(inner.NotEqualTo(value), orderedIndexes);
 
     /// <summary>
     /// Captures a greater-than comparison against the selected index.<br/>
     /// </summary>
-    public LibraDexMultiKeyContinuation GreaterThan(TValue value) => Wrap(inner.GreaterThan(value));
+    public LibraDexMultiKeyContinuation GreaterThan(TValue value) => LibraDexMultiKeyContinuation.From(inner.GreaterThan(value), orderedIndexes);
 
     /// <summary>
     /// Captures a greater-than-or-equal comparison against the selected index.<br/>
     /// </summary>
-    public LibraDexMultiKeyContinuation GreaterOrEqual(TValue value) => Wrap(inner.GreaterOrEqual(value));
+    public LibraDexMultiKeyContinuation GreaterOrEqual(TValue value) => LibraDexMultiKeyContinuation.From(inner.GreaterOrEqual(value), orderedIndexes);
 
     /// <summary>
     /// Captures a less-than comparison against the selected index.<br/>
     /// </summary>
-    public LibraDexMultiKeyContinuation LessThan(TValue value) => Wrap(inner.LessThan(value));
+    public LibraDexMultiKeyContinuation LessThan(TValue value) => LibraDexMultiKeyContinuation.From(inner.LessThan(value), orderedIndexes);
 
     /// <summary>
     /// Captures a less-than-or-equal comparison against the selected index.<br/>
     /// </summary>
-    public LibraDexMultiKeyContinuation LessOrEqual(TValue value) => Wrap(inner.LessOrEqual(value));
+    public LibraDexMultiKeyContinuation LessOrEqual(TValue value) => LibraDexMultiKeyContinuation.From(inner.LessOrEqual(value), orderedIndexes);
 
     /// <summary>
     /// Captures an inclusive range against the selected index.<br/>
     /// </summary>
-    public LibraDexMultiKeyContinuation Between(TValue lower, TValue upper) => Wrap(inner.Between(lower, upper));
+    public LibraDexMultiKeyContinuation Between(TValue lower, TValue upper) => LibraDexMultiKeyContinuation.From(inner.Between(lower, upper), orderedIndexes);
 
     /// <summary>
     /// Captures membership against the selected index from any enumerable value list.<br/>
     /// Non-set enumerables are captured by the adopted materializer and can be normalized at execution time.<br/>
     /// </summary>
-    public LibraDexMultiKeyContinuation In(IEnumerable<TValue> values) => Wrap(inner.In(values));
+    public LibraDexMultiKeyContinuation In(IEnumerable<TValue> values) => LibraDexMultiKeyContinuation.From(inner.In(values), orderedIndexes);
 
     /// <summary>
     /// Captures membership against the selected index from a caller-supplied set-shaped value collection.<br/>
     /// Compatible set instances can be used as supplied by the execution bridge rather than forcing serialization or rebuild at condition-construction time.<br/>
     /// </summary>
-    public LibraDexMultiKeyContinuation InSet(IEnumerable<TValue> values) => Wrap(inner.InSet(values));
-
-    private LibraDexMultiKeyContinuation Wrap(LibraDexConditionContinueOrEnd continuation)
-    {
-        return new LibraDexMultiKeyContinuation(continuation.EndCondition.Group, continuation, orderedIndexes);
-    }
+    public LibraDexMultiKeyContinuation InSet(IEnumerable<TValue> values) => LibraDexMultiKeyContinuation.From(inner.InSet(values), orderedIndexes);
 }
 
 /// <summary>
@@ -1088,54 +1095,49 @@ public sealed class LibraDexMultiKeyStringWhere
     /// Captures string equality against the selected index.<br/>
     /// Case and culture options are recorded in the condition descriptor so execution can choose an accelerated folded or sort-key projection when available, or a scoped comparison fallback when it is not.<br/>
     /// </summary>
-    public LibraDexMultiKeyContinuation EqualTo(string value, bool ignoreCase = false, string? culture = null) => Wrap(inner.EqualTo(value, ignoreCase, culture));
+    public LibraDexMultiKeyContinuation EqualTo(string value, bool ignoreCase = false, string? culture = null) => LibraDexMultiKeyContinuation.From(inner.EqualTo(value, ignoreCase, culture), orderedIndexes);
 
     /// <summary>
     /// Captures string inequality against the selected index.<br/>
     /// The selector remains index-bound while the supplied value is recorded as the operand for later materialization.<br/>
     /// </summary>
-    public LibraDexMultiKeyContinuation NotEqualTo(string value, bool ignoreCase = false, string? culture = null) => Wrap(inner.NotEqualTo(value, ignoreCase, culture));
+    public LibraDexMultiKeyContinuation NotEqualTo(string value, bool ignoreCase = false, string? culture = null) => LibraDexMultiKeyContinuation.From(inner.NotEqualTo(value, ignoreCase, culture), orderedIndexes);
 
     /// <summary>
     /// Captures a prefix condition against the selected string index.<br/>
     /// Execution may use normal routing, folded routing, sort-key routing, or scoped fallback according to the index profile and requested comparison policy.<br/>
     /// </summary>
-    public LibraDexMultiKeyContinuation StartsWith(string value, bool ignoreCase = false, string? culture = null) => Wrap(inner.StartsWith(value, ignoreCase, culture));
+    public LibraDexMultiKeyContinuation StartsWith(string value, bool ignoreCase = false, string? culture = null) => LibraDexMultiKeyContinuation.From(inner.StartsWith(value, ignoreCase, culture), orderedIndexes);
 
     /// <summary>
     /// Captures a suffix condition against the selected string index.<br/>
     /// Reversed subindexes can accelerate this operator, while missing projections still leave the condition valid for scoped scan execution.<br/>
     /// </summary>
-    public LibraDexMultiKeyContinuation EndsWith(string value, bool ignoreCase = false, string? culture = null) => Wrap(inner.EndsWith(value, ignoreCase, culture));
+    public LibraDexMultiKeyContinuation EndsWith(string value, bool ignoreCase = false, string? culture = null) => LibraDexMultiKeyContinuation.From(inner.EndsWith(value, ignoreCase, culture), orderedIndexes);
 
     /// <summary>
     /// Captures a substring condition against the selected string index.<br/>
     /// This remains a first-class condition shape even when the best execution path is scan-like rather than route-exact.<br/>
     /// </summary>
-    public LibraDexMultiKeyContinuation Contains(string value, bool ignoreCase = false, string? culture = null) => Wrap(inner.Contains(value, ignoreCase, culture));
+    public LibraDexMultiKeyContinuation Contains(string value, bool ignoreCase = false, string? culture = null) => LibraDexMultiKeyContinuation.From(inner.Contains(value, ignoreCase, culture), orderedIndexes);
 
     /// <summary>
     /// Captures a pattern condition against the selected string index.<br/>
     /// The condition descriptor preserves pattern intent so execution can apply any available routing prefix before falling back to pattern evaluation.<br/>
     /// </summary>
-    public LibraDexMultiKeyContinuation MatchesPattern(string pattern, bool ignoreCase = false, string? culture = null) => Wrap(inner.MatchesPattern(pattern, ignoreCase, culture));
+    public LibraDexMultiKeyContinuation MatchesPattern(string pattern, bool ignoreCase = false, string? culture = null) => LibraDexMultiKeyContinuation.From(inner.MatchesPattern(pattern, ignoreCase, culture), orderedIndexes);
 
     /// <summary>
     /// Captures string membership from an enumerable value list.<br/>
     /// Enumerable inputs remain low-friction for callers and can be normalized to a set by the execution bridge when that improves repeated matching.<br/>
     /// </summary>
-    public LibraDexMultiKeyContinuation In(IEnumerable<string> values, bool ignoreCase = false, string? culture = null) => Wrap(inner.In(values, ignoreCase, culture));
+    public LibraDexMultiKeyContinuation In(IEnumerable<string> values, bool ignoreCase = false, string? culture = null) => LibraDexMultiKeyContinuation.From(inner.In(values, ignoreCase, culture), orderedIndexes);
 
     /// <summary>
     /// Captures string membership from a set-shaped value collection.<br/>
     /// Compatible caller-supplied sets can be preserved as-is so comparer policy is not rebuilt unnecessarily.<br/>
     /// </summary>
-    public LibraDexMultiKeyContinuation InSet(IEnumerable<string> values, bool ignoreCase = false, string? culture = null) => Wrap(inner.InSet(values, ignoreCase, culture));
-
-    private LibraDexMultiKeyContinuation Wrap(LibraDexConditionContinueOrEnd continuation)
-    {
-        return new LibraDexMultiKeyContinuation(continuation.EndCondition.Group, continuation, orderedIndexes);
-    }
+    public LibraDexMultiKeyContinuation InSet(IEnumerable<string> values, bool ignoreCase = false, string? culture = null) => LibraDexMultiKeyContinuation.From(inner.InSet(values, ignoreCase, culture), orderedIndexes);
 }
 
 /// <summary>
@@ -1156,74 +1158,69 @@ public sealed class LibraDexMultiKeyGuidWhere
     /// Captures Guid equality against the selected index.<br/>
     /// Guid values remain binary-domain operands; callers that want string Guid behavior should store a string index explicitly.<br/>
     /// </summary>
-    public LibraDexMultiKeyContinuation EqualTo(Guid value) => Wrap(inner.EqualTo(value));
+    public LibraDexMultiKeyContinuation EqualTo(Guid value) => LibraDexMultiKeyContinuation.From(inner.EqualTo(value), orderedIndexes);
 
     /// <summary>
     /// Captures Guid equality from canonical text input.<br/>
     /// The text is parsed once when the condition is built, then execution uses the binary Guid key domain.<br/>
     /// </summary>
-    public LibraDexMultiKeyContinuation EqualTo(string value) => Wrap(inner.EqualTo(value));
+    public LibraDexMultiKeyContinuation EqualTo(string value) => LibraDexMultiKeyContinuation.From(inner.EqualTo(value), orderedIndexes);
 
     /// <summary>
     /// Captures Guid inequality against the selected index.<br/>
     /// </summary>
-    public LibraDexMultiKeyContinuation NotEqualTo(Guid value) => Wrap(inner.NotEqualTo(value));
+    public LibraDexMultiKeyContinuation NotEqualTo(Guid value) => LibraDexMultiKeyContinuation.From(inner.NotEqualTo(value), orderedIndexes);
 
     /// <summary>
     /// Captures Guid inequality from canonical text input.<br/>
     /// The text is parsed once when the condition is built, then execution uses the binary Guid key domain.<br/>
     /// </summary>
-    public LibraDexMultiKeyContinuation NotEqualTo(string value) => Wrap(inner.NotEqualTo(value));
+    public LibraDexMultiKeyContinuation NotEqualTo(string value) => LibraDexMultiKeyContinuation.From(inner.NotEqualTo(value), orderedIndexes);
 
     /// <summary>
     /// Captures a canonical Guid text-prefix condition against the selected Guid index.<br/>
     /// This overload keeps prefix intent explicit without making the selector overload itself look like a condition value overload.<br/>
     /// </summary>
-    public LibraDexMultiKeyContinuation StartsWith(string guidTextPrefix) => Wrap(inner.StartsWith(guidTextPrefix));
+    public LibraDexMultiKeyContinuation StartsWith(string guidTextPrefix) => LibraDexMultiKeyContinuation.From(inner.StartsWith(guidTextPrefix), orderedIndexes);
 
     /// <summary>
     /// Captures a stored-byte Guid prefix condition against the selected Guid index.<br/>
     /// The byte order is the same order produced by `Guid.TryWriteBytes`, matching the binary representation indexed by LibraDex.<br/>
     /// </summary>
-    public LibraDexMultiKeyContinuation StartsWith(byte[] guidBytePrefix) => Wrap(inner.StartsWith(guidBytePrefix));
+    public LibraDexMultiKeyContinuation StartsWith(byte[] guidBytePrefix) => LibraDexMultiKeyContinuation.From(inner.StartsWith(guidBytePrefix), orderedIndexes);
 
     /// <summary>
     /// Captures a canonical Guid text-suffix condition against the selected Guid index.<br/>
     /// </summary>
-    public LibraDexMultiKeyContinuation EndsWith(string guidTextSuffix) => Wrap(inner.EndsWith(guidTextSuffix));
+    public LibraDexMultiKeyContinuation EndsWith(string guidTextSuffix) => LibraDexMultiKeyContinuation.From(inner.EndsWith(guidTextSuffix), orderedIndexes);
 
     /// <summary>
     /// Captures a stored-byte Guid suffix condition against the selected Guid index.<br/>
     /// The byte order is the same order produced by `Guid.TryWriteBytes`, matching the binary representation indexed by LibraDex.<br/>
     /// </summary>
-    public LibraDexMultiKeyContinuation EndsWith(byte[] guidByteSuffix) => Wrap(inner.EndsWith(guidByteSuffix));
+    public LibraDexMultiKeyContinuation EndsWith(byte[] guidByteSuffix) => LibraDexMultiKeyContinuation.From(inner.EndsWith(guidByteSuffix), orderedIndexes);
 
     /// <summary>
     /// Captures a canonical Guid text containment condition against the selected Guid index.<br/>
     /// </summary>
-    public LibraDexMultiKeyContinuation Contains(string guidText) => Wrap(inner.Contains(guidText));
+    public LibraDexMultiKeyContinuation Contains(string guidText) => LibraDexMultiKeyContinuation.From(inner.Contains(guidText), orderedIndexes);
 
     /// <summary>
     /// Captures a stored-byte Guid containment condition against the selected Guid index.<br/>
     /// The byte order is the same order produced by `Guid.TryWriteBytes`, matching the binary representation indexed by LibraDex.<br/>
     /// </summary>
-    public LibraDexMultiKeyContinuation Contains(byte[] guidBytes) => Wrap(inner.Contains(guidBytes));
+    public LibraDexMultiKeyContinuation Contains(byte[] guidBytes) => LibraDexMultiKeyContinuation.From(inner.Contains(guidBytes), orderedIndexes);
 
     /// <summary>
     /// Captures a canonical Guid text pattern condition against the selected Guid index.<br/>
     /// </summary>
-    public LibraDexMultiKeyContinuation MatchesPattern(string pattern) => Wrap(inner.MatchesPattern(pattern));
+    public LibraDexMultiKeyContinuation MatchesPattern(string pattern) => LibraDexMultiKeyContinuation.From(inner.MatchesPattern(pattern), orderedIndexes);
 
     /// <summary>
     /// Captures a full stored-byte Guid pattern condition against the selected Guid index.<br/>
     /// The byte order is the same order produced by `Guid.TryWriteBytes`, and every nibble is compared.<br/>
     /// </summary>
-    public LibraDexMultiKeyContinuation MatchesPattern(byte[] pattern) => Wrap(inner.MatchesPattern(pattern));
-
-    private LibraDexMultiKeyContinuation Wrap(LibraDexConditionContinueOrEnd continuation)
-    {
-        return new LibraDexMultiKeyContinuation(continuation.EndCondition.Group, continuation, orderedIndexes);
-    }
+    public LibraDexMultiKeyContinuation MatchesPattern(byte[] pattern) => LibraDexMultiKeyContinuation.From(inner.MatchesPattern(pattern), orderedIndexes);
 }
 
 /// <summary>
@@ -1244,64 +1241,59 @@ public sealed class LibraDexMultiKeyBinaryWhere
     /// Captures exact byte-array equality against the selected binary index.<br/>
     /// The supplied byte array is captured by the adopted descriptor and validated against the resolved binary key contract at materialization.<br/>
     /// </summary>
-    public LibraDexMultiKeyContinuation EqualTo(byte[] value) => Wrap(inner.EqualTo(value));
+    public LibraDexMultiKeyContinuation EqualTo(byte[] value) => LibraDexMultiKeyContinuation.From(inner.EqualTo(value), orderedIndexes);
 
     /// <summary>
     /// Captures byte-array inequality against the selected binary index.<br/>
     /// </summary>
-    public LibraDexMultiKeyContinuation NotEqualTo(byte[] value) => Wrap(inner.NotEqualTo(value));
+    public LibraDexMultiKeyContinuation NotEqualTo(byte[] value) => LibraDexMultiKeyContinuation.From(inner.NotEqualTo(value), orderedIndexes);
 
     /// <summary>
     /// Captures a raw byte-prefix condition against the selected binary index.<br/>
     /// Execution reads encoded key bytes directly and does not decode the whole key for each candidate.<br/>
     /// </summary>
-    public LibraDexMultiKeyContinuation StartsWith(byte[] value) => Wrap(inner.StartsWith(value));
+    public LibraDexMultiKeyContinuation StartsWith(byte[] value) => LibraDexMultiKeyContinuation.From(inner.StartsWith(value), orderedIndexes);
 
     /// <summary>
     /// Captures a raw byte-prefix condition from a readable hexadecimal pattern.<br/>
     /// Hex digits select nibbles, `x` or `X` select wildcard nibbles, and common separators are ignored before execution compares stored key bytes directly.<br/>
     /// </summary>
-    public LibraDexMultiKeyContinuation StartsWithHex(string hexPattern) => Wrap(inner.StartsWithHex(hexPattern));
+    public LibraDexMultiKeyContinuation StartsWithHex(string hexPattern) => LibraDexMultiKeyContinuation.From(inner.StartsWithHex(hexPattern), orderedIndexes);
 
     /// <summary>
     /// Captures a raw byte-suffix condition against the selected binary index.<br/>
     /// </summary>
-    public LibraDexMultiKeyContinuation EndsWith(byte[] value) => Wrap(inner.EndsWith(value));
+    public LibraDexMultiKeyContinuation EndsWith(byte[] value) => LibraDexMultiKeyContinuation.From(inner.EndsWith(value), orderedIndexes);
 
     /// <summary>
     /// Captures a raw byte-suffix condition from a readable hexadecimal pattern.<br/>
     /// </summary>
-    public LibraDexMultiKeyContinuation EndsWithHex(string hexPattern) => Wrap(inner.EndsWithHex(hexPattern));
+    public LibraDexMultiKeyContinuation EndsWithHex(string hexPattern) => LibraDexMultiKeyContinuation.From(inner.EndsWithHex(hexPattern), orderedIndexes);
 
     /// <summary>
     /// Captures a raw byte-containment condition against the selected binary index.<br/>
     /// </summary>
-    public LibraDexMultiKeyContinuation Contains(byte[] value) => Wrap(inner.Contains(value));
+    public LibraDexMultiKeyContinuation Contains(byte[] value) => LibraDexMultiKeyContinuation.From(inner.Contains(value), orderedIndexes);
 
     /// <summary>
     /// Captures a raw byte-containment condition from a readable hexadecimal pattern.<br/>
     /// </summary>
-    public LibraDexMultiKeyContinuation ContainsHex(string hexPattern) => Wrap(inner.ContainsHex(hexPattern));
+    public LibraDexMultiKeyContinuation ContainsHex(string hexPattern) => LibraDexMultiKeyContinuation.From(inner.ContainsHex(hexPattern), orderedIndexes);
 
     /// <summary>
     /// Captures a full fixed-key byte pattern from a readable hexadecimal pattern.<br/>
     /// </summary>
-    public LibraDexMultiKeyContinuation MatchesHexPattern(string hexPattern) => Wrap(inner.MatchesHexPattern(hexPattern));
+    public LibraDexMultiKeyContinuation MatchesHexPattern(string hexPattern) => LibraDexMultiKeyContinuation.From(inner.MatchesHexPattern(hexPattern), orderedIndexes);
 
     /// <summary>
     /// Captures equality for a fixed raw byte slice inside the selected binary index key.<br/>
     /// </summary>
-    public LibraDexMultiKeyContinuation SliceEqual(int offset, byte[] value) => Wrap(inner.SliceEqual(offset, value));
+    public LibraDexMultiKeyContinuation SliceEqual(int offset, byte[] value) => LibraDexMultiKeyContinuation.From(inner.SliceEqual(offset, value), orderedIndexes);
 
     /// <summary>
     /// Captures equality for a fixed raw byte slice from a readable hexadecimal pattern.<br/>
     /// </summary>
-    public LibraDexMultiKeyContinuation SliceMatchesHex(int offset, string hexPattern) => Wrap(inner.SliceMatchesHex(offset, hexPattern));
-
-    private LibraDexMultiKeyContinuation Wrap(LibraDexConditionContinueOrEnd continuation)
-    {
-        return new LibraDexMultiKeyContinuation(continuation.EndCondition.Group, continuation, orderedIndexes);
-    }
+    public LibraDexMultiKeyContinuation SliceMatchesHex(int offset, string hexPattern) => LibraDexMultiKeyContinuation.From(inner.SliceMatchesHex(offset, hexPattern), orderedIndexes);
 }
 
 /// <summary>
@@ -1323,58 +1315,53 @@ public sealed class LibraDexMultiKeyDateWhere<TValue>
     /// Captures full date/time equality against the selected index.<br/>
     /// Structured date convenience operators remain available separately so callers do not have to convert date parts into text or ad hoc ranges.<br/>
     /// </summary>
-    public LibraDexMultiKeyContinuation EqualTo(TValue value) => Wrap(inner.EqualTo(value));
+    public LibraDexMultiKeyContinuation EqualTo(TValue value) => LibraDexMultiKeyContinuation.From(inner.EqualTo(value), orderedIndexes);
 
     /// <summary>
     /// Captures full date/time inequality against the selected index.<br/>
     /// </summary>
-    public LibraDexMultiKeyContinuation NotEqualTo(TValue value) => Wrap(inner.NotEqualTo(value));
+    public LibraDexMultiKeyContinuation NotEqualTo(TValue value) => LibraDexMultiKeyContinuation.From(inner.NotEqualTo(value), orderedIndexes);
 
     /// <summary>
     /// Captures an inclusive full date/time range against the selected index.<br/>
     /// </summary>
-    public LibraDexMultiKeyContinuation Between(TValue lower, TValue upper) => Wrap(inner.Between(lower, upper));
+    public LibraDexMultiKeyContinuation Between(TValue lower, TValue upper) => LibraDexMultiKeyContinuation.From(inner.Between(lower, upper), orderedIndexes);
 
     /// <summary>
     /// Captures a structured year equality condition against the selected date index.<br/>
     /// The execution bridge can evaluate this from the packed structured date bytes without converting stored keys to text.<br/>
     /// </summary>
-    public LibraDexMultiKeyContinuation YearEqualTo(int year) => Wrap(inner.YearEqualTo(year));
+    public LibraDexMultiKeyContinuation YearEqualTo(int year) => LibraDexMultiKeyContinuation.From(inner.YearEqualTo(year), orderedIndexes);
 
     /// <summary>
     /// Captures structured year membership against the selected date index.<br/>
     /// </summary>
-    public LibraDexMultiKeyContinuation YearIn(params int[] years) => Wrap(inner.YearIn(years));
+    public LibraDexMultiKeyContinuation YearIn(params int[] years) => LibraDexMultiKeyContinuation.From(inner.YearIn(years), orderedIndexes);
 
     /// <summary>
     /// Captures an inclusive structured year range against the selected date index.<br/>
     /// </summary>
-    public LibraDexMultiKeyContinuation YearRange(int startYear, int endYear) => Wrap(inner.YearRange(startYear, endYear));
+    public LibraDexMultiKeyContinuation YearRange(int startYear, int endYear) => LibraDexMultiKeyContinuation.From(inner.YearRange(startYear, endYear), orderedIndexes);
 
     /// <summary>
     /// Captures structured month equality against the selected date index.<br/>
     /// </summary>
-    public LibraDexMultiKeyContinuation MonthEqualTo(int month) => Wrap(inner.MonthEqualTo(month));
+    public LibraDexMultiKeyContinuation MonthEqualTo(int month) => LibraDexMultiKeyContinuation.From(inner.MonthEqualTo(month), orderedIndexes);
 
     /// <summary>
     /// Captures structured day-of-month equality against the selected date index.<br/>
     /// </summary>
-    public LibraDexMultiKeyContinuation DayEqualTo(int day) => Wrap(inner.DayEqualTo(day));
+    public LibraDexMultiKeyContinuation DayEqualTo(int day) => LibraDexMultiKeyContinuation.From(inner.DayEqualTo(day), orderedIndexes);
 
     /// <summary>
     /// Captures a structured year/month condition against the selected date index.<br/>
     /// </summary>
-    public LibraDexMultiKeyContinuation YearMonth(int year, int month) => Wrap(inner.YearMonth(year, month));
+    public LibraDexMultiKeyContinuation YearMonth(int year, int month) => LibraDexMultiKeyContinuation.From(inner.YearMonth(year, month), orderedIndexes);
 
     /// <summary>
     /// Captures a structured year/month/day condition against the selected date index.<br/>
     /// </summary>
-    public LibraDexMultiKeyContinuation YearMonthDay(int year, int month, int day) => Wrap(inner.YearMonthDay(year, month, day));
-
-    private LibraDexMultiKeyContinuation Wrap(LibraDexConditionContinueOrEnd continuation)
-    {
-        return new LibraDexMultiKeyContinuation(continuation.EndCondition.Group, continuation, orderedIndexes);
-    }
+    public LibraDexMultiKeyContinuation YearMonthDay(int year, int month, int day) => LibraDexMultiKeyContinuation.From(inner.YearMonthDay(year, month, day), orderedIndexes);
 }
 
 /// <summary>
