@@ -467,6 +467,204 @@ public sealed partial class LibraDexFileSession
     }
 
     /// <summary>
+    /// Deletes live `VV` tuples whose raw key falls inside the inclusive key range.<br/>
+    /// Router traversal prunes by persisted key prefix and shelf mutation uses tombstones, letting durability batches defer dense slot publication until commit.<br/>
+    /// </summary>
+    /// <param name="rootRouterOffset">The root router offset for the index.</param>
+    /// <param name="maxKeyLength">The maximum raw key length accepted by the profile family.</param>
+    /// <param name="maxIdentityLength">The maximum raw identity length accepted by the profile family.</param>
+    /// <param name="lowerKey">The inclusive lower raw key.</param>
+    /// <param name="upperKey">The inclusive upper raw key.</param>
+    /// <param name="maxRouterHops">The maximum number of router pages to follow.</param>
+    /// <returns>The number of live tuples deleted.</returns>
+    internal long DeleteVarKeyVarIdentityKeyRange(
+        long rootRouterOffset,
+        int maxKeyLength,
+        int maxIdentityLength,
+        ReadOnlySpan<byte> lowerKey,
+        ReadOnlySpan<byte> upperKey,
+        int maxRouterHops = DefaultVarKeyVarIdentityMaxRouterHops)
+    {
+        if (lowerKey.SequenceCompareTo(upperKey) > 0)
+        {
+            return 0;
+        }
+
+        byte lowerPrefix = GetVarKeyScalar8Prefix(lowerKey, 0);
+        byte upperPrefix = GetVarKeyScalar8Prefix(upperKey, 0);
+        long deleted = 0;
+        using RouteVisitedOffsetSet visitedShelves = RouteVisitedOffsetSet.Rent();
+        using RouteVisitedOffsetSet visitedRouters = RouteVisitedOffsetSet.Rent();
+        for (int prefix = lowerPrefix; prefix <= upperPrefix; prefix++)
+        {
+            long targetOffset = FindRouterTarget(rootRouterOffset, (byte)prefix);
+            if (targetOffset == 0)
+            {
+                continue;
+            }
+
+            deleted += DeleteVarKeyVarIdentityRangeFromTarget(
+                targetOffset,
+                maxKeyLength,
+                maxIdentityLength,
+                lowerKey,
+                upperKey,
+                visitedShelves,
+                visitedRouters,
+                maxRouterHops);
+        }
+
+        return deleted;
+    }
+
+    /// <summary>
+    /// Deletes one exact `VV` tuple from the routed varlen-key tree.<br/>
+    /// The route walk targets the owning key shelf and the mutable shelf sidecar tombstones only the matching key/identity pair.<br/>
+    /// </summary>
+    /// <param name="rootRouterOffset">The root router offset for the index.</param>
+    /// <param name="maxKeyLength">The maximum raw key length accepted by the profile family.</param>
+    /// <param name="maxIdentityLength">The maximum raw identity length accepted by the profile family.</param>
+    /// <param name="key">The exact raw key bytes.</param>
+    /// <param name="identity">The exact raw identity bytes.</param>
+    /// <param name="maxRouterHops">The maximum number of router pages to follow.</param>
+    /// <returns><see langword="true"/> when a live tuple was deleted.</returns>
+    internal bool DeleteVarKeyVarIdentityExactTuple(
+        long rootRouterOffset,
+        int maxKeyLength,
+        int maxIdentityLength,
+        ReadOnlySpan<byte> key,
+        ReadOnlySpan<byte> identity,
+        int maxRouterHops = DefaultVarKeyVarIdentityMaxRouterHops)
+    {
+        VarKeyVarIdentityRoutePathTarget pathTarget = WalkVarKeyVarIdentityRoutePathTarget(rootRouterOffset, key, maxRouterHops);
+        VarKeyVarIdentityRouteTarget target = pathTarget.Target;
+        if (target.Kind != VarKeyVarIdentityRouteTargetKind.Shelf)
+        {
+            throw new InvalidDataException("The classified route walker did not terminate at a VV shelf for exact tuple delete.");
+        }
+
+        VarKeyVarIdentityMutableShelf shelf = ReadVarKeyVarIdentityMutableShelf(target.Offset, maxKeyLength, maxIdentityLength);
+        if (!shelf.MarkTupleDeleted(key, identity))
+        {
+            return false;
+        }
+
+        if (!durabilityBatchActive)
+        {
+            _ = shelf.NormalizeDeletedSlotsForPublication();
+        }
+
+        _ = StageVarKeyVarIdentityShelfRewrite(target.Offset, shelf);
+        return true;
+    }
+
+    private long DeleteVarKeyVarIdentityRangeFromTarget(
+        long targetOffset,
+        int maxKeyLength,
+        int maxIdentityLength,
+        ReadOnlySpan<byte> lowerKey,
+        ReadOnlySpan<byte> upperKey,
+        RouteVisitedOffsetSet visitedShelves,
+        RouteVisitedOffsetSet visitedRouters,
+        int remainingRouterHops)
+    {
+        VarKeyVarIdentityRouteTargetKind kind = ClassifyVarKeyVarIdentityRouteTarget(targetOffset);
+        if (kind == VarKeyVarIdentityRouteTargetKind.Shelf)
+        {
+            if (!visitedShelves.Add(targetOffset))
+            {
+                return 0;
+            }
+
+            VarKeyVarIdentityMutableShelf shelf = ReadVarKeyVarIdentityMutableShelf(targetOffset, maxKeyLength, maxIdentityLength);
+            int deleted = shelf.MarkKeyRangeDeleted(lowerKey, upperKey);
+            if (deleted == 0)
+            {
+                return 0;
+            }
+
+            if (!durabilityBatchActive)
+            {
+                _ = shelf.NormalizeDeletedSlotsForPublication();
+            }
+
+            _ = StageVarKeyVarIdentityShelfRewrite(targetOffset, shelf);
+            return deleted;
+        }
+
+        if (kind != VarKeyVarIdentityRouteTargetKind.Router)
+        {
+            throw new InvalidDataException("The routed VV delete target is not a shelf or router.");
+        }
+
+        if (!visitedRouters.Add(targetOffset))
+        {
+            return 0;
+        }
+
+        if (remainingRouterHops <= 0)
+        {
+            throw new InvalidDataException("The routed VV range delete exceeded the configured router hop count.");
+        }
+
+        long deletedFromChildren = 0;
+        byte[] routerBytes = new byte[RouterLayout.Size];
+        ReadRouterPageUsingArenaCache(targetOffset, routerBytes);
+        RouterReader reader = new(routerBytes);
+        if (!reader.IsValid)
+        {
+            throw new InvalidDataException("The routed VV range delete router is invalid.");
+        }
+
+        if (reader.PrefixByteCount > 1)
+        {
+            for (int routeIndex = 0; routeIndex < reader.RouteCount; routeIndex++)
+            {
+                long childTargetOffset = reader.GetRouteTargetAt(routeIndex);
+                if (childTargetOffset == 0)
+                {
+                    continue;
+                }
+
+                deletedFromChildren += DeleteVarKeyVarIdentityRangeFromTarget(
+                    childTargetOffset,
+                    maxKeyLength,
+                    maxIdentityLength,
+                    lowerKey,
+                    upperKey,
+                    visitedShelves,
+                    visitedRouters,
+                    remainingRouterHops - 1);
+            }
+
+            return deletedFromChildren;
+        }
+
+        byte lowerPrefix = GetVarKeyScalar8Prefix(lowerKey, reader.KeyDepth);
+        byte upperPrefix = GetVarKeyScalar8Prefix(upperKey, reader.KeyDepth);
+        for (int prefix = lowerPrefix; prefix <= upperPrefix; prefix++)
+        {
+            long childTargetOffset = reader.FindTarget((byte)prefix);
+            if (childTargetOffset == 0)
+            {
+                continue;
+            }
+
+            deletedFromChildren += DeleteVarKeyVarIdentityRangeFromTarget(
+                childTargetOffset,
+                maxKeyLength,
+                maxIdentityLength,
+                lowerKey,
+                upperKey,
+                visitedShelves,
+                visitedRouters,
+                remainingRouterHops - 1);
+        }
+
+        return deletedFromChildren;
+    }
+
+    /// <summary>
     /// Splits a full max-growth `VV` shelf by transforming that shelf offset into a child router.<br/>
     /// The full shelf plus incoming tuple are merged in persisted key/identity order, a raw-key byte boundary is selected near the median, and two replacement shelves are appended.<br/>
     /// If all rows share the immediate child byte, the router can consume a multi-byte prefix or append a short one-byte chain until a later key byte divides the rows.<br/>
@@ -1193,6 +1391,8 @@ public sealed partial class LibraDexFileSession
 
         RawDataReservation shelfRewrite = kernel.ReserveAt(shelfOffset, shelf.Profile.ShelfExtentSize);
         shelf.Bytes.AsSpan(0, shelf.Profile.ShelfExtentSize).CopyTo(shelfRewrite.Span);
+        varKeyVarIdentityReadShelfCache.Remove(shelfOffset);
+        varKeyVarIdentityReadOnlyShelfCache.Remove(shelfOffset);
         return CommitAndInvalidateRouterReadCache();
     }
 }

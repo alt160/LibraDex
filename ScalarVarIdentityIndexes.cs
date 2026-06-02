@@ -93,6 +93,40 @@ public sealed class Scalar8VarIdentityIndex : IDisposable
     }
 
     /// <summary>
+    /// Deletes all tuples whose encoded scalar key is inside an inclusive `SV8` range.<br/>
+    /// The method opens a short durability batch so shelf-local deletes use the same tombstone sidecar and commit-time normalization path as bulk delete workloads.<br/>
+    /// This remains internal until a typed logical facade maps adopted conditions onto the raw var-identity storage shape.<br/>
+    /// </summary>
+    /// <param name="lowerEncodedKey">The inclusive lower encoded scalar key.</param>
+    /// <param name="upperEncodedKey">The inclusive upper encoded scalar key.</param>
+    /// <returns>The number of live tuples deleted.</returns>
+    internal long DeleteRange(ulong lowerEncodedKey, ulong upperEncodedKey)
+    {
+        ThrowIfDisposed();
+        using Scalar8VarIdentityBatch batch = BeginBatch();
+        long deleted = batch.DeleteRange(lowerEncodedKey, upperEncodedKey);
+        _ = batch.Commit();
+        return deleted;
+    }
+
+    /// <summary>
+    /// Deletes one exact encoded-key and raw-identity tuple from this routed `SV8` index.<br/>
+    /// The delete walks duplicate-key overflow chains when present and removes only the exact identity tuple.<br/>
+    /// This remains internal until a typed logical facade maps adopted conditions onto the raw var-identity storage shape.<br/>
+    /// </summary>
+    /// <param name="encodedKey">The exact encoded scalar key.</param>
+    /// <param name="identity">The exact raw identity bytes.</param>
+    /// <returns><see langword="true"/> when a live tuple was deleted.</returns>
+    internal bool DeleteExactTuple(ulong encodedKey, ReadOnlySpan<byte> identity)
+    {
+        ThrowIfDisposed();
+        using Scalar8VarIdentityBatch batch = BeginBatch();
+        bool deleted = batch.DeleteExactTuple(encodedKey, identity);
+        _ = batch.Commit();
+        return deleted;
+    }
+
+    /// <summary>
     /// Opens a forward-only reader for an inclusive encoded scalar-key range.<br/>
     /// The returned reader exposes each raw identity as a temporary <see cref="ReadOnlySpan{T}"/> while positioned on that row, avoiding `byte[][]` materialization by default.<br/>
     /// Callers own the reader and should dispose it when finished; identities that must outlive the current row can be copied through the reader's copy/materialization methods.<br/>
@@ -265,6 +299,47 @@ public sealed class Scalar16VarIdentityIndex : IDisposable
     }
 
     /// <summary>
+    /// Deletes all tuples whose encoded 16-byte scalar key is inside an inclusive `SV16` range.<br/>
+    /// The method opens a short durability batch so shelf-local deletes use the same tombstone sidecar and commit-time normalization path as bulk delete workloads.<br/>
+    /// This remains internal until a typed logical facade maps adopted conditions onto the raw var-identity storage shape.<br/>
+    /// </summary>
+    /// <param name="lowerEncodedKeyHigh">The high 8 bytes of the inclusive lower encoded key.</param>
+    /// <param name="lowerEncodedKeyLow">The low 8 bytes of the inclusive lower encoded key.</param>
+    /// <param name="upperEncodedKeyHigh">The high 8 bytes of the inclusive upper encoded key.</param>
+    /// <param name="upperEncodedKeyLow">The low 8 bytes of the inclusive upper encoded key.</param>
+    /// <returns>The number of live tuples deleted.</returns>
+    internal long DeleteRange(
+        ulong lowerEncodedKeyHigh,
+        ulong lowerEncodedKeyLow,
+        ulong upperEncodedKeyHigh,
+        ulong upperEncodedKeyLow)
+    {
+        ThrowIfDisposed();
+        using Scalar16VarIdentityBatch batch = BeginBatch();
+        long deleted = batch.DeleteRange(lowerEncodedKeyHigh, lowerEncodedKeyLow, upperEncodedKeyHigh, upperEncodedKeyLow);
+        _ = batch.Commit();
+        return deleted;
+    }
+
+    /// <summary>
+    /// Deletes one exact encoded-key and raw-identity tuple from this routed `SV16` index.<br/>
+    /// The delete walks duplicate-key overflow chains when present and removes only the exact identity tuple.<br/>
+    /// This remains internal until a typed logical facade maps adopted conditions onto the raw var-identity storage shape.<br/>
+    /// </summary>
+    /// <param name="encodedKeyHigh">The high 8 bytes of the exact encoded key.</param>
+    /// <param name="encodedKeyLow">The low 8 bytes of the exact encoded key.</param>
+    /// <param name="identity">The exact raw identity bytes.</param>
+    /// <returns><see langword="true"/> when a live tuple was deleted.</returns>
+    internal bool DeleteExactTuple(ulong encodedKeyHigh, ulong encodedKeyLow, ReadOnlySpan<byte> identity)
+    {
+        ThrowIfDisposed();
+        using Scalar16VarIdentityBatch batch = BeginBatch();
+        bool deleted = batch.DeleteExactTuple(encodedKeyHigh, encodedKeyLow, identity);
+        _ = batch.Commit();
+        return deleted;
+    }
+
+    /// <summary>
     /// Opens a forward-only reader for an inclusive encoded 16-byte scalar-key range.<br/>
     /// The returned reader exposes each raw identity as a temporary <see cref="ReadOnlySpan{T}"/> while positioned on that row, avoiding `byte[][]` materialization by default.<br/>
     /// Callers own the reader and should dispose it when finished; identities that must outlive the current row can be copied through the reader's copy/materialization methods.<br/>
@@ -407,6 +482,41 @@ public sealed class Scalar8VarIdentityBatch : IDisposable
         Scalar8VarIdentityInsertOutcome publicResult = Scalar8VarIdentityInsertOutcome.FromStorage(result, createdInitialShelfRoute);
         Count(publicResult);
         return publicResult;
+    }
+
+    /// <summary>
+    /// Deletes all tuples whose encoded scalar key is inside an inclusive `SV8` range without forcing a durable commit per range.<br/>
+    /// The owning session marks shelf-local tombstones during the batch and normalizes touched slot streams when the batch commits.<br/>
+    /// </summary>
+    /// <param name="lowerEncodedKey">The inclusive lower encoded scalar key.</param>
+    /// <param name="upperEncodedKey">The inclusive upper encoded scalar key.</param>
+    /// <returns>The number of live tuples deleted.</returns>
+    internal long DeleteRange(ulong lowerEncodedKey, ulong upperEncodedKey)
+    {
+        ThrowIfCompleted();
+        return index.Session.DeleteScalar8VarIdentityKeyRange(
+            index.RootRouterOffset,
+            index.MaxIdentityLength,
+            lowerEncodedKey,
+            upperEncodedKey);
+    }
+
+    /// <summary>
+    /// Deletes one exact encoded-key and raw-identity tuple without forcing a durable commit per tuple.<br/>
+    /// The delete walks duplicate-key overflow chains when present and removes only the exact identity tuple.<br/>
+    /// </summary>
+    /// <param name="encodedKey">The exact encoded scalar key.</param>
+    /// <param name="identity">The exact raw identity bytes.</param>
+    /// <returns><see langword="true"/> when a live tuple was deleted.</returns>
+    internal bool DeleteExactTuple(ulong encodedKey, ReadOnlySpan<byte> identity)
+    {
+        ThrowIfCompleted();
+        ValidateIdentityLength(identity, index.MaxIdentityLength, "SV8");
+        return index.Session.DeleteScalar8VarIdentityExactTuple(
+            index.RootRouterOffset,
+            index.MaxIdentityLength,
+            encodedKey,
+            identity);
     }
 
     /// <summary>
@@ -560,6 +670,51 @@ public sealed class Scalar16VarIdentityBatch : IDisposable
         Scalar16VarIdentityInsertOutcome publicResult = Scalar16VarIdentityInsertOutcome.FromStorage(result, createdInitialShelfRoute);
         Count(publicResult);
         return publicResult;
+    }
+
+    /// <summary>
+    /// Deletes all tuples whose encoded 16-byte scalar key is inside an inclusive `SV16` range without forcing a durable commit per range.<br/>
+    /// The owning session marks shelf-local tombstones during the batch and normalizes touched slot streams when the batch commits.<br/>
+    /// </summary>
+    /// <param name="lowerEncodedKeyHigh">The high 8 bytes of the inclusive lower encoded key.</param>
+    /// <param name="lowerEncodedKeyLow">The low 8 bytes of the inclusive lower encoded key.</param>
+    /// <param name="upperEncodedKeyHigh">The high 8 bytes of the inclusive upper encoded key.</param>
+    /// <param name="upperEncodedKeyLow">The low 8 bytes of the inclusive upper encoded key.</param>
+    /// <returns>The number of live tuples deleted.</returns>
+    internal long DeleteRange(
+        ulong lowerEncodedKeyHigh,
+        ulong lowerEncodedKeyLow,
+        ulong upperEncodedKeyHigh,
+        ulong upperEncodedKeyLow)
+    {
+        ThrowIfCompleted();
+        return index.Session.DeleteScalar16VarIdentityKeyRange(
+            index.RootRouterOffset,
+            index.MaxIdentityLength,
+            lowerEncodedKeyHigh,
+            lowerEncodedKeyLow,
+            upperEncodedKeyHigh,
+            upperEncodedKeyLow);
+    }
+
+    /// <summary>
+    /// Deletes one exact encoded-key and raw-identity tuple without forcing a durable commit per tuple.<br/>
+    /// The delete walks duplicate-key overflow chains when present and removes only the exact identity tuple.<br/>
+    /// </summary>
+    /// <param name="encodedKeyHigh">The high 8 bytes of the exact encoded key.</param>
+    /// <param name="encodedKeyLow">The low 8 bytes of the exact encoded key.</param>
+    /// <param name="identity">The exact raw identity bytes.</param>
+    /// <returns><see langword="true"/> when a live tuple was deleted.</returns>
+    internal bool DeleteExactTuple(ulong encodedKeyHigh, ulong encodedKeyLow, ReadOnlySpan<byte> identity)
+    {
+        ThrowIfCompleted();
+        ValidateIdentityLength(identity, index.MaxIdentityLength, "SV16");
+        return index.Session.DeleteScalar16VarIdentityExactTuple(
+            index.RootRouterOffset,
+            index.MaxIdentityLength,
+            encodedKeyHigh,
+            encodedKeyLow,
+            identity);
     }
 
     /// <summary>

@@ -25,6 +25,12 @@ internal sealed class Scalar16VarIdentityReadOnly
 
     public int ItemCount => IsValid ? recordOffsets.Length : 0;
 
+    public int PhysicalItemCount => ItemCount;
+
+    public int LiveItemCount => ItemCount;
+
+    public int DeletedItemCount => 0;
+
     public int LowerBoundKey(ulong encodedKeyHigh, ulong encodedKeyLow)
     {
         uint prefix = Scalar16VarIdentityLayout.CreateKeyPrefix(encodedKeyHigh, encodedKeyLow);

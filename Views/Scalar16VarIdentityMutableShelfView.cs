@@ -14,9 +14,12 @@ internal sealed class Scalar16VarIdentityMutableShelfView
     private readonly ulong[] keyHighs;
     private readonly ulong[] keyLows;
     private readonly int[] sortedIndexes;
+    private readonly bool[] deletedSlots;
     private int itemCount;
     private int slotStreamLength;
     private int recordArenaEnd;
+    private int deletedItemCount;
+    private int deletedPayloadBytes;
 
     private Scalar16VarIdentityMutableShelfView(
         byte[] bytes,
@@ -26,6 +29,7 @@ internal sealed class Scalar16VarIdentityMutableShelfView
         ulong[] keyHighs,
         ulong[] keyLows,
         int[] sortedIndexes,
+        bool[] deletedSlots,
         int itemCount,
         int slotStreamLength,
         int slotCapacityBytes,
@@ -38,6 +42,7 @@ internal sealed class Scalar16VarIdentityMutableShelfView
         this.keyHighs = keyHighs;
         this.keyLows = keyLows;
         this.sortedIndexes = sortedIndexes;
+        this.deletedSlots = deletedSlots;
         this.itemCount = itemCount;
         this.slotStreamLength = slotStreamLength;
         SlotCapacityBytes = slotCapacityBytes;
@@ -58,6 +63,18 @@ internal sealed class Scalar16VarIdentityMutableShelfView
     /// Gets the number of sorted tuple slots currently stored in the shelf.<br/>
     /// </summary>
     public int ItemCount => itemCount;
+
+    public int PhysicalItemCount => itemCount;
+
+    public int LiveItemCount => itemCount - deletedItemCount;
+
+    public int DeletedItemCount => deletedItemCount;
+
+    public int PayloadBytesUsed => recordArenaEnd - (Scalar16VarIdentityLayout.HeaderSize + SlotCapacityBytes);
+
+    public int PayloadBytesLive => PayloadBytesUsed - deletedPayloadBytes;
+
+    public int PayloadBytesDeleted => deletedPayloadBytes;
 
     /// <summary>
     /// Gets the reserved persisted slot-array byte capacity for this shelf extent.<br/>
@@ -117,6 +134,7 @@ internal sealed class Scalar16VarIdentityMutableShelfView
         ulong[] keyHighs = new ulong[slotCapacity];
         ulong[] keyLows = new ulong[slotCapacity];
         int[] indexes = new int[slotCapacity];
+        bool[] deleted = new bool[slotCapacity];
         int cursor = Scalar16VarIdentityLayout.HeaderSize;
         for (int i = 0; i < count; i++)
         {
@@ -140,7 +158,7 @@ internal sealed class Scalar16VarIdentityMutableShelfView
             cursor += Scalar16VarIdentityLayout.SlotSize;
         }
 
-        shelf = new Scalar16VarIdentityMutableShelfView(bytes, profile, offsets, prefixes, keyHighs, keyLows, indexes, count, slotStreamLength, slotCapacityBytes, recordArenaEnd);
+        shelf = new Scalar16VarIdentityMutableShelfView(bytes, profile, offsets, prefixes, keyHighs, keyLows, indexes, deleted, count, slotStreamLength, slotCapacityBytes, recordArenaEnd);
         return true;
     }
 
@@ -154,6 +172,11 @@ internal sealed class Scalar16VarIdentityMutableShelfView
     /// <returns>The insert result.</returns>
     public Scalar16VarIdentityInsertResult Insert(ulong encodedKeyHigh, ulong encodedKeyLow, ReadOnlySpan<byte> identity, bool allowDuplicateKeys)
     {
+        if (deletedItemCount != 0)
+        {
+            _ = NormalizeDeletedSlotsForPublication();
+        }
+
         if (identity.Length <= 0 || identity.Length > Profile.MaxIdentityLength)
         {
             return Scalar16VarIdentityInsertResult.Invalid;
@@ -210,6 +233,7 @@ internal sealed class Scalar16VarIdentityMutableShelfView
         keyPrefixes[physicalIndex] = prefix;
         keyHighs[physicalIndex] = encodedKeyHigh;
         keyLows[physicalIndex] = encodedKeyLow;
+        deletedSlots[physicalIndex] = false;
         sortedIndexes[insertIndex] = physicalIndex;
         itemCount++;
         slotStreamLength += Scalar16VarIdentityLayout.SlotSize;
@@ -265,6 +289,148 @@ internal sealed class Scalar16VarIdentityMutableShelfView
     }
 
     /// <summary>
+    /// Marks a sorted slot interval as deleted while retaining the current variable-identity record bytes.<br/>
+    /// The slot sidecar remains physical until normalization so delete/repack policy can inspect live/deleted counts and orphaned payload bytes separately.<br/>
+    /// </summary>
+    /// <param name="startSlot">The first sorted slot to mark deleted.</param>
+    /// <param name="deleteCount">The number of sorted slots to mark deleted.</param>
+    /// <returns>The number of newly deleted live slots.</returns>
+    internal int MarkSlotRangeDeleted(int startSlot, int deleteCount)
+    {
+        if (startSlot < 0 || startSlot > itemCount)
+        {
+            throw new ArgumentOutOfRangeException(nameof(startSlot), startSlot, "The SV16 delete start slot must be inside the physical slot table.");
+        }
+
+        if (deleteCount < 0 || deleteCount > itemCount - startSlot)
+        {
+            throw new ArgumentOutOfRangeException(nameof(deleteCount), deleteCount, "The SV16 delete count must fit inside the physical slot table.");
+        }
+
+        int marked = 0;
+        for (int slotIndex = startSlot; slotIndex < startSlot + deleteCount; slotIndex++)
+        {
+            int physicalIndex = sortedIndexes[slotIndex];
+            if (deletedSlots[physicalIndex])
+            {
+                continue;
+            }
+
+            deletedSlots[physicalIndex] = true;
+            deletedItemCount++;
+            deletedPayloadBytes += Scalar16VarIdentityLayout.GetRecordLength(Bytes, recordOffsets[physicalIndex]);
+            marked++;
+        }
+
+        if (marked != 0)
+        {
+            IsDirty = true;
+            SlotBytesDirty = true;
+        }
+
+        return marked;
+    }
+
+    /// <summary>
+    /// Marks all live tuples whose encoded 16-byte scalar key falls inside the inclusive key range as deleted.<br/>
+    /// The method bounds the affected sorted-sidecar interval before applying tombstones, so range deletes avoid scanning unrelated shelf rows.<br/>
+    /// </summary>
+    /// <param name="lowerEncodedKeyHigh">The high 8 bytes of the inclusive lower encoded key.</param>
+    /// <param name="lowerEncodedKeyLow">The low 8 bytes of the inclusive lower encoded key.</param>
+    /// <param name="upperEncodedKeyHigh">The high 8 bytes of the inclusive upper encoded key.</param>
+    /// <param name="upperEncodedKeyLow">The low 8 bytes of the inclusive upper encoded key.</param>
+    /// <returns>The number of newly deleted live tuples.</returns>
+    internal int MarkKeyRangeDeleted(
+        ulong lowerEncodedKeyHigh,
+        ulong lowerEncodedKeyLow,
+        ulong upperEncodedKeyHigh,
+        ulong upperEncodedKeyLow)
+    {
+        if (CompareKeys(lowerEncodedKeyHigh, lowerEncodedKeyLow, upperEncodedKeyHigh, upperEncodedKeyLow) > 0)
+        {
+            return 0;
+        }
+
+        int startSlot = LowerBoundKey(lowerEncodedKeyHigh, lowerEncodedKeyLow, Scalar16VarIdentityLayout.CreateKeyPrefix(lowerEncodedKeyHigh, lowerEncodedKeyLow));
+        int endSlot = LowerBoundKeyAfter(upperEncodedKeyHigh, upperEncodedKeyLow, Scalar16VarIdentityLayout.CreateKeyPrefix(upperEncodedKeyHigh, upperEncodedKeyLow));
+        return MarkSlotRangeDeleted(startSlot, endSlot - startSlot);
+    }
+
+    /// <summary>
+    /// Marks one exact encoded-key and raw-identity tuple as deleted when the tuple is currently live.<br/>
+    /// This gives condition-driven delete a single-row primitive without requiring callers to scan a duplicate-key run themselves.<br/>
+    /// </summary>
+    /// <param name="encodedKeyHigh">The high 8 bytes of the exact encoded scalar key.</param>
+    /// <param name="encodedKeyLow">The low 8 bytes of the exact encoded scalar key.</param>
+    /// <param name="identity">The exact raw identity bytes.</param>
+    /// <returns><see langword="true"/> when a live tuple was newly deleted.</returns>
+    internal bool MarkTupleDeleted(ulong encodedKeyHigh, ulong encodedKeyLow, ReadOnlySpan<byte> identity)
+    {
+        uint prefix = Scalar16VarIdentityLayout.CreateKeyPrefix(encodedKeyHigh, encodedKeyLow);
+        int slotIndex = LowerBoundTuple(encodedKeyHigh, encodedKeyLow, prefix, identity);
+        if (slotIndex >= itemCount ||
+            CompareSlotTuple(slotIndex, prefix, encodedKeyHigh, encodedKeyLow, identity) != 0)
+        {
+            return false;
+        }
+
+        int physicalIndex = sortedIndexes[slotIndex];
+        if (deletedSlots[physicalIndex])
+        {
+            return false;
+        }
+
+        return MarkSlotRangeDeleted(slotIndex, 1) == 1;
+    }
+
+    /// <summary>
+    /// Removes deleted entries from the sorted sidecars while retaining record-arena bytes for a later full payload repack decision.<br/>
+    /// This keeps ordinary search and insertion algorithms over live entries only while `PayloadBytesDeleted` continues to report orphaned record bytes.<br/>
+    /// </summary>
+    /// <returns>The number of deleted entries removed from the active slot stream.</returns>
+    internal int NormalizeDeletedSlotsForPublication()
+    {
+        if (deletedItemCount == 0)
+        {
+            return 0;
+        }
+
+        int removed = deletedItemCount;
+        int writeIndex = 0;
+        for (int slotIndex = 0; slotIndex < itemCount; slotIndex++)
+        {
+            int physicalIndex = sortedIndexes[slotIndex];
+            if (deletedSlots[physicalIndex])
+            {
+                deletedSlots[physicalIndex] = false;
+                continue;
+            }
+
+            if (writeIndex != physicalIndex)
+            {
+                recordOffsets[writeIndex] = recordOffsets[physicalIndex];
+                keyPrefixes[writeIndex] = keyPrefixes[physicalIndex];
+                keyHighs[writeIndex] = keyHighs[physicalIndex];
+                keyLows[writeIndex] = keyLows[physicalIndex];
+            }
+
+            sortedIndexes[writeIndex] = writeIndex;
+            writeIndex++;
+        }
+
+        Array.Clear(deletedSlots, writeIndex, itemCount - writeIndex);
+        itemCount = writeIndex;
+        slotStreamLength = checked(itemCount * Scalar16VarIdentityLayout.SlotSize);
+        deletedItemCount = 0;
+        Scalar16VarIdentityLayout.WriteItemCount(Bytes, itemCount);
+        Scalar16VarIdentityLayout.WriteSlotStreamLength(Bytes, slotStreamLength);
+        SlotBytesDirty = true;
+        EnsureSlotBytesCurrent();
+        IsDirty = true;
+        return removed;
+    }
+
+    /// <summary>
     /// Reads the scalar key at a sorted slot from the decoded mutable sidecar.<br/>
     /// Duplicate-run fast paths use this to validate first/last key bounds without allocating a read-only decoder.<br/>
     /// </summary>
@@ -299,6 +465,12 @@ internal sealed class Scalar16VarIdentityMutableShelfView
 
     private bool ContainsKey(ulong encodedKeyHigh, ulong encodedKeyLow, uint prefix, out int index)
     {
+        index = LowerBoundKey(encodedKeyHigh, encodedKeyLow, prefix);
+        return index < itemCount && CompareSlotKey(index, prefix, encodedKeyHigh, encodedKeyLow) == 0;
+    }
+
+    private int LowerBoundKey(ulong encodedKeyHigh, ulong encodedKeyLow, uint prefix)
+    {
         int low = 0;
         int high = itemCount;
         while (low < high)
@@ -315,8 +487,48 @@ internal sealed class Scalar16VarIdentityMutableShelfView
             }
         }
 
-        index = low;
-        return low < itemCount && CompareSlotKey(low, prefix, encodedKeyHigh, encodedKeyLow) == 0;
+        return low;
+    }
+
+    private int LowerBoundKeyAfter(ulong encodedKeyHigh, ulong encodedKeyLow, uint prefix)
+    {
+        int low = 0;
+        int high = itemCount;
+        while (low < high)
+        {
+            int middle = low + ((high - low) >> 1);
+            int comparison = CompareSlotKey(middle, prefix, encodedKeyHigh, encodedKeyLow);
+            if (comparison <= 0)
+            {
+                low = middle + 1;
+            }
+            else
+            {
+                high = middle;
+            }
+        }
+
+        return low;
+    }
+
+    private static int CompareKeys(ulong leftHigh, ulong leftLow, ulong rightHigh, ulong rightLow)
+    {
+        if (leftHigh < rightHigh)
+        {
+            return -1;
+        }
+
+        if (leftHigh > rightHigh)
+        {
+            return 1;
+        }
+
+        if (leftLow < rightLow)
+        {
+            return -1;
+        }
+
+        return leftLow > rightLow ? 1 : 0;
     }
 
     /// <summary>

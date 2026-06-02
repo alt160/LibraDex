@@ -14,6 +14,7 @@ public sealed class Scalar16Scalar8RangeReader : IDisposable
     private const int DefaultShelfCapacity = 8;
 
     private byte[][] shelves;
+    private long[] shelfOffsets;
     private int[] startSlots;
     private int[] endSlots;
     private long[]? pendingOffsets;
@@ -34,11 +35,13 @@ public sealed class Scalar16Scalar8RangeReader : IDisposable
     private int currentSlotIndex = -1;
     private int ordinal = -1;
     private bool traversalComplete = true;
+    private bool currentRowInvalidated;
     private bool disposed;
 
     internal Scalar16Scalar8RangeReader()
     {
         shelves = ArrayPool<byte[]>.Shared.Rent(DefaultShelfCapacity);
+        shelfOffsets = ArrayPool<long>.Shared.Rent(DefaultShelfCapacity);
         startSlots = ArrayPool<int>.Shared.Rent(DefaultShelfCapacity);
         endSlots = ArrayPool<int>.Shared.Rent(DefaultShelfCapacity);
     }
@@ -153,6 +156,7 @@ public sealed class Scalar16Scalar8RangeReader : IDisposable
             ordinal = rowCount;
             currentShelfIndex = shelfCount;
             currentSlotIndex = -1;
+            currentRowInvalidated = false;
             return false;
         }
 
@@ -175,6 +179,7 @@ public sealed class Scalar16Scalar8RangeReader : IDisposable
         }
 
         ordinal++;
+        currentRowInvalidated = false;
         return true;
     }
 
@@ -224,6 +229,7 @@ public sealed class Scalar16Scalar8RangeReader : IDisposable
         disposed = true;
         ReturnShelfBuffers();
         ArrayPool<byte[]>.Shared.Return(shelves, clearArray: true);
+        ArrayPool<long>.Shared.Return(shelfOffsets, clearArray: false);
         ArrayPool<int>.Shared.Return(startSlots, clearArray: false);
         ArrayPool<int>.Shared.Return(endSlots, clearArray: false);
         if (pendingOffsets is not null)
@@ -249,12 +255,14 @@ public sealed class Scalar16Scalar8RangeReader : IDisposable
         visitedShelves = null;
         visitedRouters = null;
         session = null;
+        shelfOffsets = Array.Empty<long>();
         shelfCount = 0;
         rowCount = 0;
         pendingCount = 0;
         ordinal = -1;
         currentShelfIndex = 0;
         currentSlotIndex = -1;
+        currentRowInvalidated = false;
     }
 
     private void ReturnShelfBuffers()
@@ -275,7 +283,7 @@ public sealed class Scalar16Scalar8RangeReader : IDisposable
         get
         {
             ThrowIfDisposed();
-            if ((uint)ordinal >= (uint)rowCount || (uint)currentShelfIndex >= (uint)shelfCount)
+            if (currentRowInvalidated || (uint)ordinal >= (uint)rowCount || (uint)currentShelfIndex >= (uint)shelfCount)
             {
                 throw new InvalidOperationException("The SS16-8 range reader is not positioned on a row.");
             }
@@ -284,7 +292,126 @@ public sealed class Scalar16Scalar8RangeReader : IDisposable
         }
     }
 
-    private void AddShelfRange(byte[] shelfBytes)
+    /// <summary>
+    /// Deletes the current cursor row and repositions the reader before the next surviving row.<br/>
+    /// The method mutates only the retained shelf that owns the current slot, stages that shelf rewrite through the owning session, and updates the reader's slot interval so a following <see cref="MoveNext"/> continues without skipping the tuple that shifted into the deleted slot.<br/>
+    /// Current key and identity accessors are invalid until the next successful move.<br/>
+    /// </summary>
+    /// <returns><see langword="true"/> when the positioned row was deleted.</returns>
+    internal bool DeleteCurrent()
+    {
+        ThrowIfDisposed();
+        if (currentRowInvalidated || (uint)ordinal >= (uint)rowCount || (uint)currentShelfIndex >= (uint)shelfCount)
+        {
+            throw new InvalidOperationException("The SS16-8 range reader is not positioned on a row.");
+        }
+
+        LibraDexFileSession localSession = session ?? throw new ObjectDisposedException(nameof(Scalar16Scalar8RangeReader));
+        Scalar16Scalar8 shelf = new(shelves[currentShelfIndex], profile);
+        int removed = shelf.RemoveSlotRange(currentSlotIndex, 1);
+        if (removed != 1)
+        {
+            return false;
+        }
+
+        _ = localSession.StageScalar16Scalar8ShelfRewriteForBatch(shelfOffsets[currentShelfIndex], profile, shelves[currentShelfIndex]);
+        endSlots[currentShelfIndex]--;
+        rowCount--;
+        ordinal--;
+        currentSlotIndex--;
+        currentRowInvalidated = true;
+        return true;
+    }
+
+    /// <summary>
+    /// Invalidates the current row after the owning index performs an exact external mutation for that row.<br/>
+    /// The retained range remains a traversal snapshot; leaving the slot and ordinal unchanged makes the next <see cref="MoveNext"/> skip the stale current row and continue with the next original row.<br/>
+    /// Current key and identity accessors remain invalid until the next successful move.<br/>
+    /// </summary>
+    internal void InvalidateCurrentAfterExternalMutation()
+    {
+        ThrowIfDisposed();
+        if (currentRowInvalidated || (uint)ordinal >= (uint)rowCount || (uint)currentShelfIndex >= (uint)shelfCount)
+        {
+            throw new InvalidOperationException("The SS16-8 range reader is not positioned on a row.");
+        }
+
+        currentRowInvalidated = true;
+    }
+
+    internal long DeleteMatchedRanges()
+    {
+        ThrowIfDisposed();
+        LibraDexFileSession localSession = session ?? throw new ObjectDisposedException(nameof(Scalar16Scalar8RangeReader));
+        EnsureAllRangesLoaded();
+        long deleted = 0;
+        for (int i = 0; i < shelfCount; i++)
+        {
+            byte[] shelfBytes = localSession.IsDurabilityBatchActive
+                ? localSession.ReadScalar16Scalar8ShelfBytesForBatch(shelfOffsets[i], profile)
+                : shelves[i];
+            Scalar16Scalar8ReadOnly readOnly = new(shelfBytes, profile);
+            int startSlot = localSession.IsDurabilityBatchActive
+                ? readOnly.LowerBoundKey(lowerKeyHigh, lowerKeyLow)
+                : startSlots[i];
+            int endSlot = localSession.IsDurabilityBatchActive ? startSlot : endSlots[i];
+            if (localSession.IsDurabilityBatchActive)
+            {
+                while (endSlot < readOnly.ItemCount && CompareKey(readOnly.ReadKeyHighAt(endSlot), readOnly.ReadKeyLowAt(endSlot), upperKeyHigh, upperKeyLow) <= 0)
+                {
+                    endSlot++;
+                }
+            }
+
+            Scalar16Scalar8 shelf = new(shelfBytes, profile);
+            int removed = localSession.IsDurabilityBatchActive
+                ? shelf.MarkSlotRangeDeleted(startSlot, endSlot - startSlot)
+                : shelf.RemoveSlotRange(startSlot, endSlot - startSlot);
+            if (removed == 0)
+            {
+                continue;
+            }
+
+            _ = localSession.StageScalar16Scalar8ShelfRewriteForBatch(shelfOffsets[i], profile, shelfBytes);
+            deleted += removed;
+        }
+
+        return deleted;
+    }
+
+    /// <summary>
+    /// Deletes the first row in this reader's current key range whose encoded identity matches the supplied value.<br/>
+    /// Callers use this after opening an equality range over a known key, which keeps non-unique-key deletion scoped to one exact physical tuple.<br/>
+    /// The reader should be disposed after this call because shelf slot positions may have shifted.<br/>
+    /// </summary>
+    /// <param name="encodedIdentity">The encoded identity to remove.</param>
+    /// <returns><see langword="true"/> when one tuple was removed.</returns>
+    internal bool DeleteFirstMatchingEncodedIdentity(ulong encodedIdentity)
+    {
+        ThrowIfDisposed();
+        LibraDexFileSession localSession = session ?? throw new ObjectDisposedException(nameof(Scalar16Scalar8RangeReader));
+        EnsureAllRangesLoaded();
+        for (int i = 0; i < shelfCount; i++)
+        {
+            Scalar16Scalar8ReadOnly readOnly = new(shelves[i], profile);
+            for (int slot = startSlots[i]; slot < endSlots[i]; slot++)
+            {
+                if (readOnly.ReadIdentityAt(slot) != encodedIdentity)
+                {
+                    continue;
+                }
+
+                Scalar16Scalar8 shelf = new(shelves[i], profile);
+                _ = shelf.RemoveSlotRange(slot, 1);
+                _ = localSession.StageScalar16Scalar8ShelfRewriteForBatch(shelfOffsets[i], profile, shelves[i]);
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private void AddShelfRange(long shelfOffset, byte[] shelfBytes)
     {
         Scalar16Scalar8ReadOnly shelf = new(shelfBytes, profile);
         if (!shelf.IsValid)
@@ -310,6 +437,7 @@ public sealed class Scalar16Scalar8RangeReader : IDisposable
         }
 
         shelves[shelfCount] = shelfBytes;
+        shelfOffsets[shelfCount] = shelfOffset;
         startSlots[shelfCount] = startSlot;
         endSlots[shelfCount] = endSlot;
         shelfCount++;
@@ -344,7 +472,7 @@ public sealed class Scalar16Scalar8RangeReader : IDisposable
                     continue;
                 }
 
-                AddShelfRange(localSession.ReadScalar16Scalar8ShelfBytes(targetOffset, profile));
+                AddShelfRange(targetOffset, localSession.ReadScalar16Scalar8ShelfBytes(targetOffset, profile));
                 if (rowCount > previousRowCount)
                 {
                     return true;
@@ -445,15 +573,19 @@ public sealed class Scalar16Scalar8RangeReader : IDisposable
     {
         int newLength = checked(shelves.Length * 2);
         byte[][] newShelves = ArrayPool<byte[]>.Shared.Rent(newLength);
+        long[] newShelfOffsets = ArrayPool<long>.Shared.Rent(newLength);
         int[] newStartSlots = ArrayPool<int>.Shared.Rent(newLength);
         int[] newEndSlots = ArrayPool<int>.Shared.Rent(newLength);
         Array.Copy(shelves, newShelves, shelfCount);
+        shelfOffsets.AsSpan(0, shelfCount).CopyTo(newShelfOffsets);
         startSlots.AsSpan(0, shelfCount).CopyTo(newStartSlots);
         endSlots.AsSpan(0, shelfCount).CopyTo(newEndSlots);
         ArrayPool<byte[]>.Shared.Return(shelves, clearArray: true);
+        ArrayPool<long>.Shared.Return(shelfOffsets, clearArray: false);
         ArrayPool<int>.Shared.Return(startSlots, clearArray: false);
         ArrayPool<int>.Shared.Return(endSlots, clearArray: false);
         shelves = newShelves;
+        shelfOffsets = newShelfOffsets;
         startSlots = newStartSlots;
         endSlots = newEndSlots;
     }

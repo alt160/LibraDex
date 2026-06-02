@@ -43,12 +43,38 @@ internal readonly ref struct Fixed32Scalar8ReadOnly
 
     public ushort ItemCount => Fixed32Scalar8Layout.ReadItemCount(bytes);
 
+    public ushort PhysicalItemCount => ItemCount;
+
+    public ushort LiveItemCount => checked((ushort)(ItemCount - DeletedItemCount));
+
+    public ushort DeletedItemCount => CountDeletedSlots(ItemCount);
+
     public bool IsValid =>
         bytes.Length >= profile.ShelfExtentSize &&
         Magic == Fixed32Scalar8Layout.Magic &&
         FormatVersion == Fixed32Scalar8Layout.FormatVersion &&
         HeaderSize == Fixed32Scalar8Layout.HeaderSize &&
         ItemCount <= profile.MaxItemCount;
+
+    /// <summary>
+    /// Counts fixed deleted-slot sentinels in the physical slot table.<br/>
+    /// This keeps read-only diagnostics aligned with batch-local tombstone images without changing ordinary compact shelf reads.<br/>
+    /// </summary>
+    /// <param name="physicalCount">The physical slot count to scan.</param>
+    /// <returns>The number of slot entries currently marked deleted.</returns>
+    private ushort CountDeletedSlots(ushort physicalCount)
+    {
+        ushort deleted = 0;
+        for (int slotIndex = 0; slotIndex < physicalCount; slotIndex++)
+        {
+            if (Fixed32Scalar8Layout.ReadSlot(bytes, profile, slotIndex) == Fixed32Scalar8Layout.DeletedSlotOffset)
+            {
+                deleted++;
+            }
+        }
+
+        return deleted;
+    }
 
     /// <summary>
     /// Reads the encoded high key half for an item in sorted slot order.<br/>

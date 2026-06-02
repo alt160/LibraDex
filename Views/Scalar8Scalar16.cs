@@ -34,6 +34,12 @@ internal ref struct Scalar8Scalar16
 
     public ushort ItemCount => Scalar8Scalar16Layout.ReadItemCount(bytes);
 
+    public ushort PhysicalItemCount => ItemCount;
+
+    public ushort LiveItemCount => checked((ushort)(ItemCount - DeletedItemCount));
+
+    public ushort DeletedItemCount => CountDeletedSlots(ItemCount);
+
     public bool IsValid => AsReadOnly().IsValid;
 
     /// <summary>
@@ -136,6 +142,121 @@ internal ref struct Scalar8Scalar16
         Scalar8Scalar16Layout.WriteItemCount(bytes, checked((ushort)(count + 1)));
         mutationBounds = CreateInsertMutationBounds(profile, insertIndex, count, itemOffset);
         return Scalar8Scalar16InsertResult.Inserted;
+    }
+
+    /// <summary>
+    /// Removes a contiguous sorted-slot interval from this shelf.<br/>
+    /// Surviving tuples are compacted into the dense fixed-payload prefix and their sorted slots are rewritten to those new payload cells.<br/>
+    /// This provides the `SS8-16` shelf-local delete primitive used by condition-driven mutation.<br/>
+    /// </summary>
+    /// <param name="startSlot">The first sorted slot to remove.</param>
+    /// <param name="removeCount">The number of sorted slots to remove.</param>
+    /// <returns>The number of tuples removed from the active shelf view.</returns>
+    internal int RemoveSlotRange(int startSlot, int removeCount)
+    {
+        ushort count = ItemCount;
+        int marked = MarkSlotRangeDeleted(startSlot, removeCount);
+        if (marked == 0)
+        {
+            return 0;
+        }
+
+        return NormalizeDeletedSlots(count);
+    }
+
+    /// <summary>
+    /// Marks a contiguous sorted-slot interval with the fixed deleted-slot sentinel without compacting the shelf.<br/>
+    /// The physical slot count is intentionally retained so a batch-local shelf can accumulate multiple deletes and expose truthful live/deleted counts before publication.<br/>
+    /// Callers that will publish or reuse the shelf for ordinary fixed-shelf search should call <see cref="NormalizeDeletedSlotsForPublication"/> before exposing the image to those paths.<br/>
+    /// </summary>
+    /// <param name="startSlot">The first sorted slot to mark deleted.</param>
+    /// <param name="removeCount">The number of sorted slots to mark deleted.</param>
+    /// <returns>The number of newly tombstoned active slots.</returns>
+    internal int MarkSlotRangeDeleted(int startSlot, int removeCount)
+    {
+        ushort count = ItemCount;
+        if (startSlot < 0 || startSlot > count)
+        {
+            throw new ArgumentOutOfRangeException(nameof(startSlot), startSlot, "The SS8-16 remove start slot must be inside the physical slot table.");
+        }
+
+        if (removeCount < 0 || removeCount > count - startSlot)
+        {
+            throw new ArgumentOutOfRangeException(nameof(removeCount), removeCount, "The SS8-16 remove count must fit inside the physical slot table.");
+        }
+
+        int marked = 0;
+        for (int slotIndex = startSlot; slotIndex < startSlot + removeCount; slotIndex++)
+        {
+            if (Scalar8Scalar16Layout.ReadSlot(bytes, profile, slotIndex) == Scalar8Scalar16Layout.DeletedSlotOffset)
+            {
+                continue;
+            }
+
+            Scalar8Scalar16Layout.WriteSlot(bytes, profile, slotIndex, Scalar8Scalar16Layout.DeletedSlotOffset);
+            marked++;
+        }
+
+        return marked;
+    }
+
+    /// <summary>
+    /// Compacts any deleted-slot sentinels back into dense sorted-slot and payload prefixes for publication.<br/>
+    /// This is the explicit fixed-shelf boundary between batch-local tombstone accumulation and ordinary persisted shelf bytes.<br/>
+    /// </summary>
+    /// <returns>The number of tombstoned slots removed during normalization.</returns>
+    internal int NormalizeDeletedSlotsForPublication()
+    {
+        return NormalizeDeletedSlots(ItemCount);
+    }
+
+    /// <summary>
+    /// Counts fixed deleted-slot sentinels in the physical slot table.<br/>
+    /// The count is intentionally derived from the slot table until a persisted metadata field is introduced for fixed shelves.<br/>
+    /// </summary>
+    /// <param name="physicalCount">The physical slot count to scan.</param>
+    /// <returns>The number of slot entries currently marked deleted.</returns>
+    private ushort CountDeletedSlots(ushort physicalCount)
+    {
+        ushort deleted = 0;
+        for (int slotIndex = 0; slotIndex < physicalCount; slotIndex++)
+        {
+            if (Scalar8Scalar16Layout.ReadSlot(bytes, profile, slotIndex) == Scalar8Scalar16Layout.DeletedSlotOffset)
+            {
+                deleted++;
+            }
+        }
+
+        return deleted;
+    }
+
+    private int NormalizeDeletedSlots(ushort physicalCount)
+    {
+        byte[] compacted = new byte[physicalCount * Scalar8Scalar16Layout.ItemSize];
+        int writeIndex = 0;
+        for (int slotIndex = 0; slotIndex < physicalCount; slotIndex++)
+        {
+            ushort itemOffset = Scalar8Scalar16Layout.ReadSlot(bytes, profile, slotIndex);
+            if (itemOffset == Scalar8Scalar16Layout.DeletedSlotOffset)
+            {
+                continue;
+            }
+
+            bytes.Slice(itemOffset, Scalar8Scalar16Layout.ItemSize)
+                .CopyTo(compacted.AsSpan(writeIndex * Scalar8Scalar16Layout.ItemSize, Scalar8Scalar16Layout.ItemSize));
+            writeIndex++;
+        }
+
+        for (int itemIndex = 0; itemIndex < writeIndex; itemIndex++)
+        {
+            int itemOffset = Scalar8Scalar16Layout.GetItemOffset(profile, itemIndex);
+            compacted.AsSpan(itemIndex * Scalar8Scalar16Layout.ItemSize, Scalar8Scalar16Layout.ItemSize)
+                .CopyTo(bytes.Slice(itemOffset, Scalar8Scalar16Layout.ItemSize));
+            Scalar8Scalar16Layout.WriteSlot(bytes, profile, itemIndex, checked((ushort)itemOffset));
+        }
+
+        Scalar8Scalar16Layout.WriteItemCount(bytes, checked((ushort)writeIndex));
+        return physicalCount - writeIndex;
     }
 
     /// <summary>

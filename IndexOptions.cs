@@ -135,6 +135,25 @@ public enum DateKeys
 }
 
 /// <summary>
+/// Selects the binary encoding used for DateTime-like values stored as LibraDex date index keys.<br/>
+/// The condition builder remains encoding-agnostic; execution reads this index-level contract to decide whether a component predicate can use packed fields directly or must derive a component while scanning the compact index key stream.<br/>
+/// </summary>
+public enum DateTimeKeyEncoding
+{
+    /// <summary>
+    /// Uses the Abraxas calendar-optimized structured date/time layout.<br/>
+    /// This is the default because it directly stores calendar components such as day-of-week for common business filtering, while quantizing sub-millisecond precision to 10-tick slices.<br/>
+    /// </summary>
+    CalendarSdt = 0,
+
+    /// <summary>
+    /// Uses a precision structured date/time layout that preserves full .NET tick precision for DateTime, DateTimeOffset, and TimeOnly values.<br/>
+    /// This trades away the packed day-of-week field; weekday and weekend predicates still work, but derive day-of-week from the encoded date components during execution.<br/>
+    /// </summary>
+    PrecisionSdt = 1
+}
+
+/// <summary>
 /// Public per-index options resolved at create/open time.<br/>
 /// These options represent index contracts or maintained projections; callers should not need to repeat them on every insert or query.<br/>
 /// </summary>
@@ -163,4 +182,16 @@ public sealed class IndexOptions
     /// The default stores exact chronological keys only until the structured date profile is connected to concrete storage.<br/>
     /// </summary>
     public DateKeys DateKeys { get; init; } = DateKeys.Exact;
+
+    /// <summary>
+    /// Gets or initializes the binary encoding used for DateTime-like key values in date indexes.<br/>
+    /// The default is <see cref="DateTimeKeyEncoding.CalendarSdt"/> because most application filters benefit from direct calendar components more often than sub-millisecond tick distinction.<br/>
+    /// </summary>
+    public DateTimeKeyEncoding DateTimeKeyEncoding { get; init; } = DateTimeKeyEncoding.CalendarSdt;
+
+    /// <summary>
+    /// Gets or initializes the index-level default string comparison policy.<br/>
+    /// This overrides the catalog-level policy for managed residual comparison or prepared membership on this index, but it does not replace encoded-key, folded-text, sort-key, or structured projection routes.<br/>
+    /// </summary>
+    public LibraDexStringComparisonPolicy? StringComparisonPolicy { get; init; }
 }

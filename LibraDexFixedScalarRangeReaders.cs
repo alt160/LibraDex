@@ -68,7 +68,7 @@ public sealed partial class LibraDexFileSession
             throw new ArgumentOutOfRangeException(nameof(maxRouterHops), maxRouterHops, "The SS8-8 range plan maximum router hop count must be positive.");
         }
 
-        Scalar8Scalar8RangePlan plan = new(profile);
+        Scalar8Scalar8RangePlan plan = new(this, profile);
         long[] pendingOffsets = ArrayPool<long>.Shared.Rent(8);
         int[] pendingHops = ArrayPool<int>.Shared.Rent(8);
         byte[] pendingFlags = ArrayPool<byte>.Shared.Rent(8);
@@ -123,7 +123,7 @@ public sealed partial class LibraDexFileSession
                         continue;
                     }
 
-                    plan.AddShelfRange(ReadScalar8Scalar8ShelfBytes(targetOffset, profile), lowerEncodedKey, upperEncodedKey);
+                    plan.AddShelfRange(targetOffset, ReadScalar8Scalar8ShelfBytes(targetOffset, profile), lowerEncodedKey, upperEncodedKey);
                     continue;
                 }
 

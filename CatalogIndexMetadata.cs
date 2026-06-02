@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Globalization;
 using System.Text;
 
 namespace LibraDex;
@@ -42,7 +43,12 @@ public enum CatalogIndexKeyFamily
     /// <summary>
     /// The key is an ordered composite made from multiple typed parts.<br/>
     /// </summary>
-    Composite = 6
+    Composite = 6,
+
+    /// <summary>
+    /// The key is a first-class signed BigInteger value stored with a capped sortable byte encoding.<br/>
+    /// </summary>
+    BigInt = 7
 }
 
 /// <summary>
@@ -83,10 +89,23 @@ internal readonly record struct CatalogIndexMetadata(
     StringKeys StringKeys,
     GuidKeys GuidKeys,
     DateKeys DateKeys,
+    DateTimeKeyEncoding DateTimeKeyEncoding,
     LibraDexProjectionDirectionSet Directions,
     LibraDexIndexSortOrder SortOrder,
     IReadOnlyList<LibraDexIndexProjectionSpec> Projections,
     IReadOnlyList<LibraDexCompositeKeyPartSpec> CompositeParts,
+    int VarKeyMaxKeyLength,
+    int VarIdentityMaxLength,
+    int ExactReversedProjectionSlotIndex,
+    int FoldedProjectionSlotIndex,
+    int SortKeyProjectionSlotIndex,
+    int FoldedReversedProjectionSlotIndex,
+    string FoldedCulture,
+    string SortKeyCulture,
+    LibraDexStringComparisonPolicyKind StringComparisonPolicyKind,
+    CompareOptions StringComparisonCompareOptions,
+    string StringComparisonCulture,
+    string StringComparisonCustomComparerTypeName,
     bool HasShapeMetadata);
 
 internal static class CatalogIndexMetadataCodec
@@ -94,22 +113,38 @@ internal static class CatalogIndexMetadataCodec
     private const uint Magic = 0x4D58444C; // LDXM
     private const ushort Version1 = 1;
     private const ushort Version2 = 2;
+    private const ushort Version3 = 3;
+    private const ushort Version4 = 4;
+    private const ushort Version5 = 5;
+    private const ushort Version6 = 6;
+    private const ushort Version7 = 7;
     private const int Version1HeaderSize = 20;
     private const int Version2HeaderSize = 28;
+    private const int Version3HeaderSize = 44;
+    private const int Version4HeaderSize = 50;
+    private const int Version5HeaderSize = 54;
+    private const int Version6HeaderSize = 58;
+    private const int Version7HeaderSize = 60;
     private const int ProjectionSize = 6;
+    private const int Version6CompositePartPrefixSize = 7;
+    private const int Version7CompositePartPrefixSize = 9;
 
     internal static int GetEncodedSize(CatalogIndexMetadata metadata)
     {
-        int size = Version2HeaderSize +
+        int size = Version7HeaderSize +
             GetUtf8ByteCount(metadata.Group) +
             GetUtf8ByteCount(metadata.IndexName) +
             GetUtf8ByteCount(metadata.KeyTypeName) +
-            GetUtf8ByteCount(metadata.IdentityTypeName);
+            GetUtf8ByteCount(metadata.IdentityTypeName) +
+            GetUtf8ByteCount(metadata.FoldedCulture) +
+            GetUtf8ByteCount(metadata.SortKeyCulture) +
+            GetUtf8ByteCount(metadata.StringComparisonCulture) +
+            GetUtf8ByteCount(metadata.StringComparisonCustomComparerTypeName);
         size = checked(size + (metadata.Projections.Count * ProjectionSize));
         for (int i = 0; i < metadata.CompositeParts.Count; i++)
         {
             LibraDexCompositeKeyPartSpec part = metadata.CompositeParts[i];
-            size = checked(size + 7 + GetUtf8ByteCount(part.Name) + GetUtf8ByteCount(GetStableTypeName(part.KeyType)));
+            size = checked(size + Version7CompositePartPrefixSize + GetUtf8ByteCount(part.Name) + GetUtf8ByteCount(GetStableTypeName(part.KeyType)));
         }
 
         return size;
@@ -124,7 +159,7 @@ internal static class CatalogIndexMetadataCodec
         }
 
         BinaryPrimitives.WriteUInt32LittleEndian(destination[..4], Magic);
-        BinaryPrimitives.WriteUInt16LittleEndian(destination.Slice(4, 2), Version2);
+        BinaryPrimitives.WriteUInt16LittleEndian(destination.Slice(4, 2), Version7);
         BinaryPrimitives.WriteInt32LittleEndian(destination.Slice(6, 4), required);
         destination[10] = checked((byte)metadata.KeyFamily);
         destination[11] = checked((byte)metadata.IdentityFamily);
@@ -136,12 +171,25 @@ internal static class CatalogIndexMetadataCodec
         BinaryPrimitives.WriteUInt16LittleEndian(destination.Slice(22, 2), checked((ushort)metadata.SortOrder));
         BinaryPrimitives.WriteUInt16LittleEndian(destination.Slice(24, 2), checked((ushort)metadata.Projections.Count));
         BinaryPrimitives.WriteUInt16LittleEndian(destination.Slice(26, 2), checked((ushort)metadata.CompositeParts.Count));
+        BinaryPrimitives.WriteInt32LittleEndian(destination.Slice(28, 4), metadata.VarKeyMaxKeyLength);
+        BinaryPrimitives.WriteInt32LittleEndian(destination.Slice(32, 4), metadata.FoldedProjectionSlotIndex);
+        BinaryPrimitives.WriteInt32LittleEndian(destination.Slice(36, 4), metadata.SortKeyProjectionSlotIndex);
+        BinaryPrimitives.WriteInt32LittleEndian(destination.Slice(40, 4), metadata.FoldedReversedProjectionSlotIndex);
+        BinaryPrimitives.WriteUInt16LittleEndian(destination.Slice(44, 2), checked((ushort)metadata.StringComparisonPolicyKind));
+        BinaryPrimitives.WriteUInt32LittleEndian(destination.Slice(46, 4), checked((uint)metadata.StringComparisonCompareOptions));
+        BinaryPrimitives.WriteInt32LittleEndian(destination.Slice(50, 4), metadata.ExactReversedProjectionSlotIndex);
+        BinaryPrimitives.WriteInt32LittleEndian(destination.Slice(54, 4), metadata.VarIdentityMaxLength);
+        BinaryPrimitives.WriteUInt16LittleEndian(destination.Slice(58, 2), checked((ushort)metadata.DateTimeKeyEncoding));
 
-        int cursor = Version2HeaderSize;
+        int cursor = Version7HeaderSize;
         WriteString(destination, ref cursor, metadata.Group);
         WriteString(destination, ref cursor, metadata.IndexName);
         WriteString(destination, ref cursor, metadata.KeyTypeName);
         WriteString(destination, ref cursor, metadata.IdentityTypeName);
+        WriteString(destination, ref cursor, metadata.FoldedCulture);
+        WriteString(destination, ref cursor, metadata.SortKeyCulture);
+        WriteString(destination, ref cursor, metadata.StringComparisonCulture);
+        WriteString(destination, ref cursor, metadata.StringComparisonCustomComparerTypeName);
         for (int i = 0; i < metadata.Projections.Count; i++)
         {
             LibraDexIndexProjectionSpec projection = metadata.Projections[i];
@@ -163,6 +211,8 @@ internal static class CatalogIndexMetadataCodec
             cursor += 2;
             BinaryPrimitives.WriteUInt16LittleEndian(destination.Slice(cursor, 2), checked((ushort)part.DateKeys));
             cursor += 2;
+            BinaryPrimitives.WriteUInt16LittleEndian(destination.Slice(cursor, 2), checked((ushort)part.DateTimeKeyEncoding));
+            cursor += 2;
             WriteString(destination, ref cursor, part.Name);
             WriteString(destination, ref cursor, GetStableTypeName(part.KeyType));
         }
@@ -178,12 +228,21 @@ internal static class CatalogIndexMetadataCodec
         }
 
         ushort version = BinaryPrimitives.ReadUInt16LittleEndian(source.Slice(4, 2));
-        if (version != Version1 && version != Version2)
+        if (version != Version1 && version != Version2 && version != Version3 && version != Version4 && version != Version5 && version != Version6 && version != Version7)
         {
             return false;
         }
 
-        int headerSize = version == Version2 ? Version2HeaderSize : Version1HeaderSize;
+        int headerSize = version switch
+        {
+            Version7 => Version7HeaderSize,
+            Version6 => Version6HeaderSize,
+            Version5 => Version5HeaderSize,
+            Version4 => Version4HeaderSize,
+            Version3 => Version3HeaderSize,
+            Version2 => Version2HeaderSize,
+            _ => Version1HeaderSize
+        };
         int totalLength = BinaryPrimitives.ReadInt32LittleEndian(source.Slice(6, 4));
         if (totalLength < headerSize || source.Length < totalLength)
         {
@@ -196,16 +255,54 @@ internal static class CatalogIndexMetadataCodec
         StringKeys stringKeys = (StringKeys)BinaryPrimitives.ReadUInt16LittleEndian(source.Slice(14, 2));
         GuidKeys guidKeys = (GuidKeys)BinaryPrimitives.ReadUInt16LittleEndian(source.Slice(16, 2));
         DateKeys dateKeys = (DateKeys)BinaryPrimitives.ReadUInt16LittleEndian(source.Slice(18, 2));
+        DateTimeKeyEncoding dateTimeKeyEncoding = DateTimeKeyEncoding.CalendarSdt;
         LibraDexProjectionDirectionSet directions = LibraDexProjectionDirectionSet.Forward;
         LibraDexIndexSortOrder sortOrder = LibraDexIndexSortOrder.Ascending;
         int projectionCount = 0;
         int compositePartCount = 0;
-        if (version == Version2)
+        int varKeyMaxKeyLength = 0;
+        int varIdentityMaxLength = 0;
+        int exactReversedProjectionSlotIndex = -1;
+        int foldedProjectionSlotIndex = -1;
+        int sortKeyProjectionSlotIndex = -1;
+        int foldedReversedProjectionSlotIndex = -1;
+        LibraDexStringComparisonPolicyKind stringComparisonPolicyKind = LibraDexStringComparisonPolicyKind.Invariant;
+        CompareOptions stringComparisonCompareOptions = CompareOptions.None;
+        if (version >= Version2)
         {
             directions = (LibraDexProjectionDirectionSet)BinaryPrimitives.ReadUInt16LittleEndian(source.Slice(20, 2));
             sortOrder = (LibraDexIndexSortOrder)BinaryPrimitives.ReadUInt16LittleEndian(source.Slice(22, 2));
             projectionCount = BinaryPrimitives.ReadUInt16LittleEndian(source.Slice(24, 2));
             compositePartCount = BinaryPrimitives.ReadUInt16LittleEndian(source.Slice(26, 2));
+        }
+
+        if (version >= Version3)
+        {
+            varKeyMaxKeyLength = BinaryPrimitives.ReadInt32LittleEndian(source.Slice(28, 4));
+            foldedProjectionSlotIndex = BinaryPrimitives.ReadInt32LittleEndian(source.Slice(32, 4));
+            sortKeyProjectionSlotIndex = BinaryPrimitives.ReadInt32LittleEndian(source.Slice(36, 4));
+            foldedReversedProjectionSlotIndex = BinaryPrimitives.ReadInt32LittleEndian(source.Slice(40, 4));
+        }
+
+        if (version >= Version4)
+        {
+            stringComparisonPolicyKind = (LibraDexStringComparisonPolicyKind)BinaryPrimitives.ReadUInt16LittleEndian(source.Slice(44, 2));
+            stringComparisonCompareOptions = (CompareOptions)BinaryPrimitives.ReadUInt32LittleEndian(source.Slice(46, 4));
+        }
+
+        if (version >= Version5)
+        {
+            exactReversedProjectionSlotIndex = BinaryPrimitives.ReadInt32LittleEndian(source.Slice(50, 4));
+        }
+
+        if (version >= Version6)
+        {
+            varIdentityMaxLength = BinaryPrimitives.ReadInt32LittleEndian(source.Slice(54, 4));
+        }
+
+        if (version >= Version7)
+        {
+            dateTimeKeyEncoding = (DateTimeKeyEncoding)BinaryPrimitives.ReadUInt16LittleEndian(source.Slice(58, 2));
         }
 
         int cursor = headerSize;
@@ -217,9 +314,27 @@ internal static class CatalogIndexMetadataCodec
             return false;
         }
 
+        string foldedCulture = string.Empty;
+        string sortKeyCulture = string.Empty;
+        string stringComparisonCulture = string.Empty;
+        string stringComparisonCustomComparerTypeName = string.Empty;
+        if (version >= Version3 &&
+            (!TryReadString(source, totalLength, ref cursor, out foldedCulture) ||
+            !TryReadString(source, totalLength, ref cursor, out sortKeyCulture)))
+        {
+            return false;
+        }
+
+        if (version >= Version4 &&
+            (!TryReadString(source, totalLength, ref cursor, out stringComparisonCulture) ||
+            !TryReadString(source, totalLength, ref cursor, out stringComparisonCustomComparerTypeName)))
+        {
+            return false;
+        }
+
         LibraDexIndexProjectionSpec[] projections = Array.Empty<LibraDexIndexProjectionSpec>();
         LibraDexCompositeKeyPartSpec[] compositeParts = Array.Empty<LibraDexCompositeKeyPartSpec>();
-        if (version == Version2)
+        if (version >= Version2)
         {
             projections = new LibraDexIndexProjectionSpec[projectionCount];
             for (int i = 0; i < projections.Length; i++)
@@ -241,7 +356,10 @@ internal static class CatalogIndexMetadataCodec
             compositeParts = new LibraDexCompositeKeyPartSpec[compositePartCount];
             for (int i = 0; i < compositeParts.Length; i++)
             {
-                if (cursor + 7 > totalLength)
+                int partPrefixSize = version >= Version7
+                    ? Version7CompositePartPrefixSize
+                    : Version6CompositePartPrefixSize;
+                if (cursor + partPrefixSize > totalLength)
                 {
                     return false;
                 }
@@ -253,6 +371,12 @@ internal static class CatalogIndexMetadataCodec
                 cursor += 2;
                 DateKeys partDateKeys = (DateKeys)BinaryPrimitives.ReadUInt16LittleEndian(source.Slice(cursor, 2));
                 cursor += 2;
+                DateTimeKeyEncoding partDateTimeKeyEncoding = DateTimeKeyEncoding.CalendarSdt;
+                if (version >= Version7)
+                {
+                    partDateTimeKeyEncoding = (DateTimeKeyEncoding)BinaryPrimitives.ReadUInt16LittleEndian(source.Slice(cursor, 2));
+                    cursor += 2;
+                }
                 if (!TryReadString(source, totalLength, ref cursor, out string partName) ||
                     !TryReadString(source, totalLength, ref cursor, out string partTypeName))
                 {
@@ -266,7 +390,8 @@ internal static class CatalogIndexMetadataCodec
                     partFamily,
                     partStringKeys,
                     partGuidKeys,
-                    partDateKeys);
+                    partDateKeys,
+                    partDateTimeKeyEncoding);
             }
         }
 
@@ -281,11 +406,24 @@ internal static class CatalogIndexMetadataCodec
             stringKeys,
             guidKeys,
             dateKeys,
+            dateTimeKeyEncoding,
             directions,
             sortOrder,
             projections,
             compositeParts,
-            version == Version2);
+            varKeyMaxKeyLength,
+            varIdentityMaxLength,
+            exactReversedProjectionSlotIndex,
+            foldedProjectionSlotIndex,
+            sortKeyProjectionSlotIndex,
+            foldedReversedProjectionSlotIndex,
+            foldedCulture,
+            sortKeyCulture,
+            stringComparisonPolicyKind,
+            stringComparisonCompareOptions,
+            stringComparisonCulture,
+            stringComparisonCustomComparerTypeName,
+            version >= Version2);
         return true;
     }
 
@@ -299,13 +437,22 @@ internal static class CatalogIndexMetadataCodec
         }
 
         ushort version = BinaryPrimitives.ReadUInt16LittleEndian(header.Slice(4, 2));
-        if (version != Version1 && version != Version2)
+        if (version != Version1 && version != Version2 && version != Version3 && version != Version4 && version != Version5 && version != Version6 && version != Version7)
         {
             return false;
         }
 
         length = BinaryPrimitives.ReadInt32LittleEndian(header.Slice(6, 4));
-        int headerSize = version == Version2 ? Version2HeaderSize : Version1HeaderSize;
+        int headerSize = version switch
+        {
+            Version7 => Version7HeaderSize,
+            Version6 => Version6HeaderSize,
+            Version5 => Version5HeaderSize,
+            Version4 => Version4HeaderSize,
+            Version3 => Version3HeaderSize,
+            Version2 => Version2HeaderSize,
+            _ => Version1HeaderSize
+        };
         return length >= headerSize;
     }
 

@@ -12,11 +12,14 @@ internal sealed class VarKeyScalar8MutableShelf
 {
     private readonly int[] recordOffsets;
     private readonly uint[] keyPrefixes;
+    private readonly bool[] deletedSlots;
     private readonly bool ownsBytes;
     private readonly bool ownsSidecars;
     private int itemCount;
     private int slotStreamLength;
     private int recordArenaEnd;
+    private int deletedItemCount;
+    private int deletedPayloadBytes;
     private bool released;
 
     private VarKeyScalar8MutableShelf(
@@ -24,6 +27,7 @@ internal sealed class VarKeyScalar8MutableShelf
         VarKeyScalar8Profile profile,
         int[] recordOffsets,
         uint[] keyPrefixes,
+        bool[] deletedSlots,
         bool ownsBytes,
         bool ownsSidecars,
         int itemCount,
@@ -35,6 +39,7 @@ internal sealed class VarKeyScalar8MutableShelf
         Profile = profile;
         this.recordOffsets = recordOffsets;
         this.keyPrefixes = keyPrefixes;
+        this.deletedSlots = deletedSlots;
         this.ownsBytes = ownsBytes;
         this.ownsSidecars = ownsSidecars;
         this.itemCount = itemCount;
@@ -60,6 +65,18 @@ internal sealed class VarKeyScalar8MutableShelf
     /// This mirrors the persisted header value and is updated after successful insert mutations.<br/>
     /// </summary>
     public int ItemCount => itemCount;
+
+    public int PhysicalItemCount => itemCount;
+
+    public int LiveItemCount => itemCount - deletedItemCount;
+
+    public int DeletedItemCount => deletedItemCount;
+
+    public int PayloadBytesUsed => recordArenaEnd - (VarKeyScalar8Layout.HeaderSize + SlotCapacityBytes);
+
+    public int PayloadBytesLive => PayloadBytesUsed - deletedPayloadBytes;
+
+    public int PayloadBytesDeleted => deletedPayloadBytes;
 
     /// <summary>
     /// Gets the reserved persisted slot-array byte capacity for this shelf extent.<br/>
@@ -130,6 +147,7 @@ internal sealed class VarKeyScalar8MutableShelf
         int slotCapacity = slotCapacityBytes / VarKeyScalar8Layout.SlotSize;
         int[] offsets = rentSidecars ? ArrayPool<int>.Shared.Rent(slotCapacity) : new int[slotCapacity];
         uint[] prefixes = rentSidecars ? ArrayPool<uint>.Shared.Rent(slotCapacity) : new uint[slotCapacity];
+        bool[] deleted = new bool[slotCapacity];
         int cursor = VarKeyScalar8Layout.HeaderSize;
         for (int i = 0; i < count; i++)
         {
@@ -157,6 +175,7 @@ internal sealed class VarKeyScalar8MutableShelf
             profile,
             offsets,
             prefixes,
+            deleted,
             ownsBytes,
             rentSidecars,
             count,
@@ -213,6 +232,11 @@ internal sealed class VarKeyScalar8MutableShelf
         out VarKeyScalar8MutationHint mutationHint)
     {
         mutationHint = default;
+        if (deletedItemCount != 0)
+        {
+            _ = NormalizeDeletedSlotsForPublication();
+        }
+
         if (key.Length <= 0 || key.Length > Profile.MaxKeyLength)
         {
             return VarKeyScalar8InsertResult.Invalid;
@@ -259,6 +283,7 @@ internal sealed class VarKeyScalar8MutableShelf
             Bytes.AsSpan(slotOffset, slotTailLength).CopyTo(Bytes.AsSpan(slotOffset + VarKeyScalar8Layout.SlotSize, slotTailLength));
             Array.Copy(recordOffsets, insertIndex, recordOffsets, insertIndex + 1, itemCount - insertIndex);
             Array.Copy(keyPrefixes, insertIndex, keyPrefixes, insertIndex + 1, itemCount - insertIndex);
+            Array.Copy(deletedSlots, insertIndex, deletedSlots, insertIndex + 1, itemCount - insertIndex);
         }
 
         uint keyPrefix = VarKeyScalar8Layout.CreateKeyPrefix(key);
@@ -267,6 +292,7 @@ internal sealed class VarKeyScalar8MutableShelf
         VarKeyScalar8Layout.WriteSlotKeyPrefix(Bytes, slotOffset, keyPrefix);
         recordOffsets[insertIndex] = recordOffset;
         keyPrefixes[insertIndex] = keyPrefix;
+        deletedSlots[insertIndex] = false;
         itemCount++;
         slotStreamLength += VarKeyScalar8Layout.SlotSize;
         recordArenaEnd = newRecordArenaEnd;
@@ -275,6 +301,208 @@ internal sealed class VarKeyScalar8MutableShelf
         VarKeyScalar8Layout.WriteRecordArenaEnd(Bytes, recordArenaEnd);
         IsDirty = true;
         return VarKeyScalar8InsertResult.Inserted;
+    }
+
+    /// <summary>
+    /// Marks a sorted slot interval as deleted while retaining the current record arena bytes.<br/>
+    /// The slot table remains physical until normalization, letting delete/repack policy inspect live counts and orphaned payload byte counts separately.<br/>
+    /// </summary>
+    /// <param name="startSlot">The first sorted slot to mark deleted.</param>
+    /// <param name="deleteCount">The number of sorted slots to mark deleted.</param>
+    /// <returns>The number of newly deleted live slots.</returns>
+    internal int MarkSlotRangeDeleted(int startSlot, int deleteCount)
+    {
+        if (startSlot < 0 || startSlot > itemCount)
+        {
+            throw new ArgumentOutOfRangeException(nameof(startSlot), startSlot, "The VS8 delete start slot must be inside the physical slot table.");
+        }
+
+        if (deleteCount < 0 || deleteCount > itemCount - startSlot)
+        {
+            throw new ArgumentOutOfRangeException(nameof(deleteCount), deleteCount, "The VS8 delete count must fit inside the physical slot table.");
+        }
+
+        int marked = 0;
+        for (int slotIndex = startSlot; slotIndex < startSlot + deleteCount; slotIndex++)
+        {
+            if (deletedSlots[slotIndex])
+            {
+                continue;
+            }
+
+            deletedSlots[slotIndex] = true;
+            deletedItemCount++;
+            deletedPayloadBytes += VarKeyScalar8Layout.GetRecordLength(Bytes, recordOffsets[slotIndex]);
+            marked++;
+        }
+
+        if (marked != 0)
+        {
+            IsDirty = true;
+        }
+
+        return marked;
+    }
+
+    /// <summary>
+    /// Marks all live tuples whose raw key is inside an inclusive key range.<br/>
+    /// The method uses the decoded slot sidecars to lower-bound the first candidate and then walks only the matching slot interval.<br/>
+    /// Deleted records remain in the payload arena until a later publication normalization or payload repack decision consumes the tombstone sidecar.<br/>
+    /// </summary>
+    /// <param name="lowerKey">The inclusive lower raw key bound.</param>
+    /// <param name="upperKey">The inclusive upper raw key bound.</param>
+    /// <returns>The number of newly deleted live slots.</returns>
+    internal int MarkKeyRangeDeleted(ReadOnlySpan<byte> lowerKey, ReadOnlySpan<byte> upperKey)
+    {
+        if (lowerKey.SequenceCompareTo(upperKey) > 0)
+        {
+            return 0;
+        }
+
+        int startSlot = LowerBoundKey(lowerKey);
+        int endSlot = startSlot;
+        while (endSlot < itemCount && ReadKeyAt(endSlot).SequenceCompareTo(upperKey) <= 0)
+        {
+            endSlot++;
+        }
+
+        return MarkSlotRangeDeleted(startSlot, endSlot - startSlot);
+    }
+
+    /// <summary>
+    /// Marks one exact raw-key and encoded-identity tuple as deleted when it is currently live in this shelf.<br/>
+    /// The tuple lower-bound keeps projection maintenance from deleting neighboring identities that share the same key or folded projection key.<br/>
+    /// The record payload remains in place until slot normalization or a later payload repack consumes the tombstone sidecar.<br/>
+    /// </summary>
+    /// <param name="key">The exact raw key bytes.</param>
+    /// <param name="encodedIdentity">The exact encoded identity.</param>
+    /// <returns><see langword="true"/> when a live tuple was marked deleted.</returns>
+    internal bool MarkTupleDeleted(ReadOnlySpan<byte> key, ulong encodedIdentity)
+    {
+        int slot = LowerBound(key, encodedIdentity);
+        if (slot >= itemCount || CompareSlotTuple(slot, VarKeyScalar8Layout.CreateKeyPrefix(key), key, encodedIdentity) != 0)
+        {
+            return false;
+        }
+
+        return MarkSlotRangeDeleted(slot, 1) == 1;
+    }
+
+    /// <summary>
+    /// Removes deleted slots from the sorted slot stream while retaining record-arena bytes for a later full payload repack decision.<br/>
+    /// This keeps ordinary search and insertion algorithms over live slots only while `PayloadBytesDeleted` continues to report orphaned record bytes.<br/>
+    /// </summary>
+    /// <returns>The number of deleted slots removed from the active slot stream.</returns>
+    internal int NormalizeDeletedSlotsForPublication()
+    {
+        if (deletedItemCount == 0)
+        {
+            return 0;
+        }
+
+        int removed = deletedItemCount;
+        int writeIndex = 0;
+        for (int readIndex = 0; readIndex < itemCount; readIndex++)
+        {
+            if (deletedSlots[readIndex])
+            {
+                deletedSlots[readIndex] = false;
+                continue;
+            }
+
+            if (writeIndex != readIndex)
+            {
+                recordOffsets[writeIndex] = recordOffsets[readIndex];
+                keyPrefixes[writeIndex] = keyPrefixes[readIndex];
+            }
+
+            writeIndex++;
+        }
+
+        Array.Clear(deletedSlots, writeIndex, itemCount - writeIndex);
+        itemCount = writeIndex;
+        slotStreamLength = checked(itemCount * VarKeyScalar8Layout.SlotSize);
+        deletedItemCount = 0;
+        VarKeyScalar8Layout.WriteItemCount(Bytes, itemCount);
+        VarKeyScalar8Layout.WriteSlotStreamLength(Bytes, slotStreamLength);
+        RewriteSlotBytes();
+        IsDirty = true;
+        return removed;
+    }
+
+    /// <summary>
+    /// Rebuilds the record arena into a compact live-record prefix when deleted payload bytes cross the supplied thresholds.<br/>
+    /// Slot normalization is performed first so the sidecar arrays describe only live tuples, then live records are copied into a fresh shelf image in sorted slot order.<br/>
+    /// The method deliberately requires both an absolute byte floor and a deleted-payload percentage so small shelves and tiny deletes do not pay repack cost prematurely.<br/>
+    /// </summary>
+    /// <param name="minimumDeletedPayloadBytes">The minimum orphaned payload bytes required before repack is considered.</param>
+    /// <param name="minimumDeletedPayloadPercent">The minimum orphaned payload percentage of used payload bytes required before repack is considered.</param>
+    /// <returns><see langword="true"/> when the record arena was rebuilt.</returns>
+    internal bool RepackPayloadIfWorthwhile(int minimumDeletedPayloadBytes, int minimumDeletedPayloadPercent)
+    {
+        if (minimumDeletedPayloadBytes < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(minimumDeletedPayloadBytes), minimumDeletedPayloadBytes, "The VS8 payload repack byte threshold must be non-negative.");
+        }
+
+        if (minimumDeletedPayloadPercent < 0 || minimumDeletedPayloadPercent > 100)
+        {
+            throw new ArgumentOutOfRangeException(nameof(minimumDeletedPayloadPercent), minimumDeletedPayloadPercent, "The VS8 payload repack percentage threshold must be from 0 to 100.");
+        }
+
+        if (deletedItemCount != 0)
+        {
+            _ = NormalizeDeletedSlotsForPublication();
+        }
+
+        int deletedBytes = deletedPayloadBytes;
+        int usedBytes = PayloadBytesUsed;
+        if (deletedBytes <= 0 ||
+            deletedBytes < minimumDeletedPayloadBytes ||
+            usedBytes <= 0 ||
+            checked((long)deletedBytes * 100L) < checked((long)usedBytes * minimumDeletedPayloadPercent))
+        {
+            return false;
+        }
+
+        byte[] compacted = new byte[Profile.ShelfExtentSize];
+        VarKeyScalar8Layout.Initialize(compacted, Profile);
+        int slotCursor = VarKeyScalar8Layout.HeaderSize;
+        int compactedSlotCapacityBytes = VarKeyScalar8Layout.ReadSlotCapacityBytes(compacted);
+        int recordCursor = VarKeyScalar8Layout.HeaderSize + compactedSlotCapacityBytes;
+        for (int slotIndex = 0; slotIndex < itemCount; slotIndex++)
+        {
+            ReadOnlySpan<byte> key = ReadKeyAt(slotIndex);
+            ulong identity = ReadIdentityAt(slotIndex);
+            int recordOffset = recordCursor;
+            VarKeyScalar8Layout.WriteRecord(compacted, recordOffset, key, identity);
+            VarKeyScalar8Layout.WriteSlotRecordOffset(compacted, slotCursor, recordOffset);
+            VarKeyScalar8Layout.WriteSlotKeyPrefix(compacted, slotCursor, keyPrefixes[slotIndex]);
+            recordOffsets[slotIndex] = recordOffset;
+            recordCursor += VarKeyScalar8Layout.GetNewRecordLength(key.Length);
+            slotCursor += VarKeyScalar8Layout.SlotSize;
+        }
+
+        VarKeyScalar8Layout.WriteItemCount(compacted, itemCount);
+        VarKeyScalar8Layout.WriteSlotStreamLength(compacted, checked(itemCount * VarKeyScalar8Layout.SlotSize));
+        VarKeyScalar8Layout.WriteRecordArenaEnd(compacted, recordCursor);
+        compacted.AsSpan(0, Profile.ShelfExtentSize).CopyTo(Bytes.AsSpan(0, Profile.ShelfExtentSize));
+        slotStreamLength = checked(itemCount * VarKeyScalar8Layout.SlotSize);
+        recordArenaEnd = recordCursor;
+        deletedPayloadBytes = 0;
+        IsDirty = true;
+        return true;
+    }
+
+    private void RewriteSlotBytes()
+    {
+        int slotOffset = VarKeyScalar8Layout.HeaderSize;
+        for (int slotIndex = 0; slotIndex < itemCount; slotIndex++)
+        {
+            VarKeyScalar8Layout.WriteSlotRecordOffset(Bytes, slotOffset, recordOffsets[slotIndex]);
+            VarKeyScalar8Layout.WriteSlotKeyPrefix(Bytes, slotOffset, keyPrefixes[slotIndex]);
+            slotOffset += VarKeyScalar8Layout.SlotSize;
+        }
     }
 
     private int LowerBoundKey(ReadOnlySpan<byte> key)

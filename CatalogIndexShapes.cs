@@ -91,7 +91,22 @@ public enum LibraDexIndexProjectionKind
     /// <summary>
     /// Stores canonical GUID text for text-oriented lookup over GUID values.<br/>
     /// </summary>
-    GuidText = 5
+    GuidText = 5,
+
+    /// <summary>
+    /// Stores fixed-width sortable BigInteger bytes.<br/>
+    /// </summary>
+    BigIntFixed = 6,
+
+    /// <summary>
+    /// Stores variable-width sortable BigInteger bytes.<br/>
+    /// </summary>
+    BigIntVarLen = 7,
+
+    /// <summary>
+    /// Stores fixed-width sortable BigInteger bytes with variable-length raw identity bytes.<br/>
+    /// </summary>
+    BigIntFixedVarIdentity = 8
 }
 
 /// <summary>
@@ -116,13 +131,197 @@ public readonly record struct LibraDexIndexProjectionSpec(
 /// <param name="StringKeys">String projection flags for string parts.</param>
 /// <param name="GuidKeys">GUID projection flags for GUID parts.</param>
 /// <param name="DateKeys">Date projection flags for date parts.</param>
+/// <param name="DateTimeKeyEncoding">The DateTime-like key encoding contract for date parts.</param>
 public readonly record struct LibraDexCompositeKeyPartSpec(
     string Name,
     Type KeyType,
     CatalogIndexKeyFamily KeyFamily,
     StringKeys StringKeys,
     GuidKeys GuidKeys,
-    DateKeys DateKeys);
+    DateKeys DateKeys,
+    DateTimeKeyEncoding DateTimeKeyEncoding = DateTimeKeyEncoding.CalendarSdt);
+
+/// <summary>
+/// Describes one runtime value supplied for a composite key.<br/>
+/// Names are optional for low-friction positional callers, but generated callers can provide names so validation catches accidental part reordering early.<br/>
+/// </summary>
+/// <param name="Name">The optional composite part name.</param>
+/// <param name="Value">The runtime value for the part.</param>
+public readonly record struct LibraDexCompositeKeyValue(string? Name, object? Value);
+
+/// <summary>
+/// Represents one runtime composite key value.<br/>
+/// This is a programmatic container for generated callers and higher-level adapters; it avoids caller-owned delimiter rules, byte concatenation, or ambiguous object-array conventions.<br/>
+/// Physical composite-key storage is not connected yet, but this type lets public APIs and adapters agree on shape validation now.<br/>
+/// </summary>
+public sealed class LibraDexCompositeKey
+{
+    private readonly LibraDexCompositeKeyValue[] values;
+
+    private LibraDexCompositeKey(IReadOnlyList<LibraDexCompositeKeyValue> values)
+    {
+        ArgumentNullException.ThrowIfNull(values);
+        if (values.Count == 0)
+        {
+            throw new ArgumentException("Composite keys require at least one value.", nameof(values));
+        }
+
+        this.values = values.ToArray();
+    }
+
+    /// <summary>
+    /// Gets the ordered composite key values.<br/>
+    /// The order must match the owning composite index shape unless every value is named and a future resolver supports name-based mapping.<br/>
+    /// </summary>
+    public IReadOnlyList<LibraDexCompositeKeyValue> Values => values;
+
+    /// <summary>
+    /// Gets the number of values in the composite key.<br/>
+    /// </summary>
+    public int Count => values.Length;
+
+    /// <summary>
+    /// Gets a composite key value by ordinal.<br/>
+    /// </summary>
+    /// <param name="ordinal">The zero-based value ordinal.</param>
+    /// <returns>The value at the requested ordinal.</returns>
+    public object? this[int ordinal] => values[ordinal].Value;
+
+    /// <summary>
+    /// Creates a positional composite key.<br/>
+    /// Positional keys are concise for handwritten code; generated callers should prefer named values when shape drift is possible.<br/>
+    /// </summary>
+    /// <param name="values">The ordered values that make up the composite key.</param>
+    /// <returns>A composite key descriptor.</returns>
+    public static LibraDexCompositeKey Of(params object?[] values)
+    {
+        ArgumentNullException.ThrowIfNull(values);
+        LibraDexCompositeKeyValue[] parts = new LibraDexCompositeKeyValue[values.Length];
+        for (int i = 0; i < values.Length; i++)
+        {
+            parts[i] = new LibraDexCompositeKeyValue(Name: null, values[i]);
+        }
+
+        return new LibraDexCompositeKey(parts);
+    }
+
+    /// <summary>
+    /// Creates a named composite key.<br/>
+    /// Named values still preserve order today, but validation can also verify the supplied names against the composite index shape.<br/>
+    /// </summary>
+    /// <param name="values">The ordered named values that make up the composite key.</param>
+    /// <returns>A composite key descriptor.</returns>
+    public static LibraDexCompositeKey Named(params LibraDexCompositeKeyValue[] values)
+    {
+        return new LibraDexCompositeKey(values);
+    }
+
+    /// <summary>
+    /// Creates one named composite key value.<br/>
+    /// This helper keeps call sites compact: `LibraDexCompositeKey.Named(LibraDexCompositeKey.Part("tenantId", tenantId), ...)`.<br/>
+    /// </summary>
+    /// <param name="name">The composite part name.</param>
+    /// <param name="value">The runtime value for the part.</param>
+    /// <returns>A named composite key value.</returns>
+    public static LibraDexCompositeKeyValue Part(string name, object? value)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        return new LibraDexCompositeKeyValue(name, value);
+    }
+
+    /// <summary>
+    /// Validates this runtime key against a composite index shape.<br/>
+    /// Validation checks part count, optional names, null values, and CLR value types so dynamic callers fail before any physical key encoding occurs.<br/>
+    /// </summary>
+    /// <param name="shape">The composite index shape to validate against.</param>
+    /// <exception cref="ArgumentException">Thrown when the supplied shape is not composite or the key values do not match the shape.</exception>
+    public void ValidateAgainst(LibraDexIndexShapeSpec shape)
+    {
+        ArgumentNullException.ThrowIfNull(shape);
+        if (shape.KeyFamily != CatalogIndexKeyFamily.Composite)
+        {
+            throw new ArgumentException("Composite key validation requires a composite index shape.", nameof(shape));
+        }
+
+        ValidateAgainst(shape.CompositeParts);
+    }
+
+    /// <summary>
+    /// Validates this runtime key against ordered composite part descriptors.<br/>
+    /// This overload lets adapters validate against persisted metadata without reconstructing a full shape descriptor first.<br/>
+    /// </summary>
+    /// <param name="parts">The ordered composite key part descriptors.</param>
+    /// <exception cref="ArgumentException">Thrown when the key values do not match the supplied part descriptors.</exception>
+    public void ValidateAgainst(IReadOnlyList<LibraDexCompositeKeyPartSpec> parts)
+    {
+        ArgumentNullException.ThrowIfNull(parts);
+        if (parts.Count != values.Length)
+        {
+            throw new ArgumentException($"Composite key value count {values.Length} does not match composite part count {parts.Count}.", nameof(parts));
+        }
+
+        for (int i = 0; i < values.Length; i++)
+        {
+            LibraDexCompositeKeyValue value = values[i];
+            LibraDexCompositeKeyPartSpec part = parts[i];
+            if (!string.IsNullOrWhiteSpace(value.Name) && !string.Equals(value.Name, part.Name, StringComparison.Ordinal))
+            {
+                throw new ArgumentException($"Composite key value '{value.Name}' does not match part '{part.Name}' at ordinal {i}.", nameof(parts));
+            }
+
+            if (value.Value is null)
+            {
+                throw new ArgumentException($"Composite key part '{part.Name}' cannot be null.", nameof(parts));
+            }
+
+            if (!part.KeyType.IsInstanceOfType(value.Value))
+            {
+                throw new ArgumentException($"Composite key part '{part.Name}' expects {part.KeyType.FullName}, but received {value.Value.GetType().FullName}.", nameof(parts));
+            }
+        }
+    }
+}
+
+/// <summary>
+/// Provides short aliases for composite runtime keys.<br/>
+/// These aliases keep insert call sites compact while preserving the explicit <see cref="LibraDexCompositeKey"/> container and validation behavior.<br/>
+/// </summary>
+public static class Key
+{
+    /// <summary>
+    /// Creates a positional composite key.<br/>
+    /// This is a short alias for <see cref="LibraDexCompositeKey.Of(object?[])"/>.<br/>
+    /// </summary>
+    /// <param name="values">The ordered values that make up the composite key.</param>
+    /// <returns>A composite key descriptor.</returns>
+    public static LibraDexCompositeKey Of(params object?[] values)
+    {
+        return LibraDexCompositeKey.Of(values);
+    }
+
+    /// <summary>
+    /// Creates a named composite key.<br/>
+    /// This is a short alias for <see cref="LibraDexCompositeKey.Named(LibraDexCompositeKeyValue[])"/>.<br/>
+    /// </summary>
+    /// <param name="values">The ordered named values that make up the composite key.</param>
+    /// <returns>A composite key descriptor.</returns>
+    public static LibraDexCompositeKey Named(params LibraDexCompositeKeyValue[] values)
+    {
+        return LibraDexCompositeKey.Named(values);
+    }
+
+    /// <summary>
+    /// Creates one named composite key value.<br/>
+    /// This is a short alias for <see cref="LibraDexCompositeKey.Part(string, object?)"/>.<br/>
+    /// </summary>
+    /// <param name="name">The composite part name.</param>
+    /// <param name="value">The runtime value for the part.</param>
+    /// <returns>A named composite key value.</returns>
+    public static LibraDexCompositeKeyValue Part(string name, object? value)
+    {
+        return LibraDexCompositeKey.Part(name, value);
+    }
+}
 
 /// <summary>
 /// Provides low-friction composite-key part descriptors.<br/>
@@ -138,7 +337,7 @@ public static class LibraDexCompositeKeyPart
     /// <returns>A composite-key part descriptor.</returns>
     public static LibraDexCompositeKeyPartSpec Scalar<TKey>(string name)
     {
-        return Create(name, typeof(TKey), CatalogIndexKeyFamily.Scalar, StringKeys.Exact, GuidKeys.Exact, DateKeys.Exact);
+        return Create(name, typeof(TKey), CatalogIndexKeyFamily.Scalar, StringKeys.Exact, GuidKeys.Exact, DateKeys.Exact, DateTimeKeyEncoding.CalendarSdt);
     }
 
     /// <summary>
@@ -149,7 +348,7 @@ public static class LibraDexCompositeKeyPart
     /// <returns>A composite-key part descriptor.</returns>
     public static LibraDexCompositeKeyPartSpec String(string name, StringKeys stringKeys = StringKeys.Exact)
     {
-        return Create(name, typeof(string), CatalogIndexKeyFamily.String, stringKeys, GuidKeys.Exact, DateKeys.Exact);
+        return Create(name, typeof(string), CatalogIndexKeyFamily.String, stringKeys, GuidKeys.Exact, DateKeys.Exact, DateTimeKeyEncoding.CalendarSdt);
     }
 
     /// <summary>
@@ -160,7 +359,7 @@ public static class LibraDexCompositeKeyPart
     /// <returns>A composite-key part descriptor.</returns>
     public static LibraDexCompositeKeyPartSpec Guid(string name, GuidKeys guidKeys = GuidKeys.Exact)
     {
-        return Create(name, typeof(Guid), CatalogIndexKeyFamily.Guid, StringKeys.Exact, guidKeys, DateKeys.Exact);
+        return Create(name, typeof(Guid), CatalogIndexKeyFamily.Guid, StringKeys.Exact, guidKeys, DateKeys.Exact, DateTimeKeyEncoding.CalendarSdt);
     }
 
     /// <summary>
@@ -169,8 +368,12 @@ public static class LibraDexCompositeKeyPart
     /// <typeparam name="TKey">The date/time key-part type.</typeparam>
     /// <param name="name">The logical part name.</param>
     /// <param name="dateKeys">The date projection profile for this part.</param>
+    /// <param name="dateTimeKeyEncoding">The DateTime-like key encoding contract for this part.</param>
     /// <returns>A composite-key part descriptor.</returns>
-    public static LibraDexCompositeKeyPartSpec Date<TKey>(string name, DateKeys dateKeys = DateKeys.Exact)
+    public static LibraDexCompositeKeyPartSpec Date<TKey>(
+        string name,
+        DateKeys dateKeys = DateKeys.Exact,
+        DateTimeKeyEncoding dateTimeKeyEncoding = DateTimeKeyEncoding.CalendarSdt)
     {
         Type keyType = typeof(TKey);
         if (keyType != typeof(DateTime) &&
@@ -182,7 +385,7 @@ public static class LibraDexCompositeKeyPart
             throw new NotSupportedException("Date composite-key parts require DateTime, DateTimeOffset, DateOnly, TimeOnly, or TimeSpan keys.");
         }
 
-        return Create(name, keyType, CatalogIndexKeyFamily.Date, StringKeys.Exact, GuidKeys.Exact, dateKeys);
+        return Create(name, keyType, CatalogIndexKeyFamily.Date, StringKeys.Exact, GuidKeys.Exact, dateKeys, dateTimeKeyEncoding);
     }
 
     private static LibraDexCompositeKeyPartSpec Create(
@@ -191,10 +394,105 @@ public static class LibraDexCompositeKeyPart
         CatalogIndexKeyFamily keyFamily,
         StringKeys stringKeys,
         GuidKeys guidKeys,
-        DateKeys dateKeys)
+        DateKeys dateKeys,
+        DateTimeKeyEncoding dateTimeKeyEncoding)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
-        return new LibraDexCompositeKeyPartSpec(name, keyType, keyFamily, stringKeys, guidKeys, dateKeys);
+        return new LibraDexCompositeKeyPartSpec(name, keyType, keyFamily, stringKeys, guidKeys, dateKeys, dateTimeKeyEncoding);
+    }
+}
+
+/// <summary>
+/// Provides short aliases for composite-key part descriptors.<br/>
+/// The aliases are intended for handwritten schema declarations where `LibraDexCompositeKeyPart.String(...)` and similar long-form names add noise without adding precision.<br/>
+/// </summary>
+public static class C
+{
+    /// <summary>
+    /// Gets the unique-key contract for compact composite declarations that import or qualify the short alias class.<br/>
+    /// This alias avoids making callers spell `IndexKeys.Unique` when the surrounding call already declares an index shape.<br/>
+    /// </summary>
+    public const IndexKeys Unique = IndexKeys.Unique;
+
+    /// <summary>
+    /// Gets the non-unique-key contract for compact composite declarations that import or qualify the short alias class.<br/>
+    /// This is the default duplicate-key contract for LibraDex indexes.<br/>
+    /// </summary>
+    public const IndexKeys NonUnique = IndexKeys.NonUnique;
+
+    /// <summary>
+    /// Creates a scalar composite-key part descriptor.<br/>
+    /// This is a short alias for <see cref="LibraDexCompositeKeyPart.Scalar{TKey}(string)"/>.<br/>
+    /// </summary>
+    /// <typeparam name="TKey">The scalar key-part type.</typeparam>
+    /// <param name="name">The logical part name.</param>
+    /// <returns>A composite-key part descriptor.</returns>
+    public static LibraDexCompositeKeyPartSpec Scalar<TKey>(string name)
+    {
+        return LibraDexCompositeKeyPart.Scalar<TKey>(name);
+    }
+
+    /// <summary>
+    /// Creates an Int32 scalar composite-key part descriptor.<br/>
+    /// This common-width alias keeps compact declarations readable without requiring generic syntax at the call site.<br/>
+    /// </summary>
+    /// <param name="name">The logical part name.</param>
+    /// <returns>A composite-key part descriptor.</returns>
+    public static LibraDexCompositeKeyPartSpec Int32(string name)
+    {
+        return LibraDexCompositeKeyPart.Scalar<int>(name);
+    }
+
+    /// <summary>
+    /// Creates an Int64 scalar composite-key part descriptor.<br/>
+    /// This common-width alias keeps compact declarations readable without requiring generic syntax at the call site.<br/>
+    /// </summary>
+    /// <param name="name">The logical part name.</param>
+    /// <returns>A composite-key part descriptor.</returns>
+    public static LibraDexCompositeKeyPartSpec Int64(string name)
+    {
+        return LibraDexCompositeKeyPart.Scalar<long>(name);
+    }
+
+    /// <summary>
+    /// Creates a GUID composite-key part descriptor.<br/>
+    /// This is a short alias for <see cref="LibraDexCompositeKeyPart.Guid(string, GuidKeys)"/>.<br/>
+    /// </summary>
+    /// <param name="name">The logical part name.</param>
+    /// <param name="guidKeys">The GUID projection profile for this part.</param>
+    /// <returns>A composite-key part descriptor.</returns>
+    public static LibraDexCompositeKeyPartSpec Guid(string name, GuidKeys guidKeys = GuidKeys.Exact)
+    {
+        return LibraDexCompositeKeyPart.Guid(name, guidKeys);
+    }
+
+    /// <summary>
+    /// Creates a string composite-key part descriptor.<br/>
+    /// This is a short alias for <see cref="LibraDexCompositeKeyPart.String(string, StringKeys)"/> with a developer-facing `Text` name to reduce visual collision with <see cref="string"/>.<br/>
+    /// </summary>
+    /// <param name="name">The logical part name.</param>
+    /// <param name="stringKeys">The string projection profile for this part.</param>
+    /// <returns>A composite-key part descriptor.</returns>
+    public static LibraDexCompositeKeyPartSpec Text(string name, StringKeys stringKeys = StringKeys.Exact)
+    {
+        return LibraDexCompositeKeyPart.String(name, stringKeys);
+    }
+
+    /// <summary>
+    /// Creates a date/time composite-key part descriptor.<br/>
+    /// This is a short alias for <see cref="LibraDexCompositeKeyPart.Date{TKey}(string, DateKeys, DateTimeKeyEncoding)"/>.<br/>
+    /// </summary>
+    /// <typeparam name="TKey">The date/time key-part type.</typeparam>
+    /// <param name="name">The logical part name.</param>
+    /// <param name="dateKeys">The date projection profile for this part.</param>
+    /// <param name="dateTimeKeyEncoding">The DateTime-like key encoding contract for this part.</param>
+    /// <returns>A composite-key part descriptor.</returns>
+    public static LibraDexCompositeKeyPartSpec Date<TKey>(
+        string name,
+        DateKeys dateKeys = DateKeys.Exact,
+        DateTimeKeyEncoding dateTimeKeyEncoding = DateTimeKeyEncoding.CalendarSdt)
+    {
+        return LibraDexCompositeKeyPart.Date<TKey>(name, dateKeys, dateTimeKeyEncoding);
     }
 }
 
@@ -215,6 +513,7 @@ public sealed class LibraDexIndexShapeSpec
         StringKeys stringKeys,
         GuidKeys guidKeys,
         DateKeys dateKeys,
+        DateTimeKeyEncoding dateTimeKeyEncoding,
         LibraDexProjectionDirectionSet directions,
         LibraDexIndexSortOrder sortOrder,
         IReadOnlyList<LibraDexIndexProjectionSpec> projections,
@@ -230,6 +529,7 @@ public sealed class LibraDexIndexShapeSpec
         StringKeys = stringKeys;
         GuidKeys = guidKeys;
         DateKeys = dateKeys;
+        DateTimeKeyEncoding = dateTimeKeyEncoding;
         Directions = directions;
         SortOrder = sortOrder;
         Projections = projections;
@@ -290,6 +590,12 @@ public sealed class LibraDexIndexShapeSpec
     public DateKeys DateKeys { get; }
 
     /// <summary>
+    /// Gets the DateTime-like key encoding contract requested by this shape.<br/>
+    /// Non-date shapes return <see cref="DateTimeKeyEncoding.CalendarSdt"/> as the neutral default.<br/>
+    /// </summary>
+    public DateTimeKeyEncoding DateTimeKeyEncoding { get; }
+
+    /// <summary>
     /// Gets the requested projection byte directions.<br/>
     /// </summary>
     public LibraDexProjectionDirectionSet Directions { get; }
@@ -345,7 +651,8 @@ public sealed class LibraDexIndexShapeSpec
             Keys = KeyContract,
             StringKeys = StringKeys,
             GuidKeys = GuidKeys,
-            DateKeys = DateKeys
+            DateKeys = DateKeys,
+            DateTimeKeyEncoding = DateTimeKeyEncoding
         };
     }
 }
@@ -389,6 +696,7 @@ public sealed class CatalogNamedIndexShapeBuilder
             StringKeys.Exact,
             GuidKeys.Exact,
             DateKeys.Exact,
+            DateTimeKeyEncoding.CalendarSdt,
             directions,
             sortOrder,
             new[] { LibraDexIndexProjectionKind.Exact });
@@ -435,6 +743,7 @@ public sealed class CatalogNamedIndexShapeBuilder
             stringKeys,
             GuidKeys.Exact,
             DateKeys.Exact,
+            DateTimeKeyEncoding.CalendarSdt,
             directions,
             sortOrder,
             kinds);
@@ -481,6 +790,7 @@ public sealed class CatalogNamedIndexShapeBuilder
             StringKeys.Exact,
             guidKeys,
             DateKeys.Exact,
+            DateTimeKeyEncoding.CalendarSdt,
             directions,
             sortOrder,
             kinds);
@@ -493,12 +803,14 @@ public sealed class CatalogNamedIndexShapeBuilder
     /// <typeparam name="TKey">The date/time key type.</typeparam>
     /// <typeparam name="TIdentity">The scalar identity type.</typeparam>
     /// <param name="dateKeys">The date projection profile.</param>
+    /// <param name="dateTimeKeyEncoding">The DateTime-like key encoding contract for this shape.</param>
     /// <param name="keys">The duplicate-key contract for the logical shape.</param>
     /// <param name="sortOrder">The physical sort order requested for maintained projections.</param>
     /// <param name="directions">The byte directions requested for maintained projections.</param>
     /// <returns>A descriptor for the requested logical shape.</returns>
     public LibraDexIndexShapeSpec Date<TKey, TIdentity>(
         DateKeys dateKeys = DateKeys.Exact,
+        DateTimeKeyEncoding dateTimeKeyEncoding = DateTimeKeyEncoding.CalendarSdt,
         IndexKeys keys = IndexKeys.NonUnique,
         LibraDexIndexSortOrder sortOrder = LibraDexIndexSortOrder.Ascending,
         LibraDexProjectionDirectionSet directions = LibraDexProjectionDirectionSet.Forward)
@@ -533,6 +845,7 @@ public sealed class CatalogNamedIndexShapeBuilder
             StringKeys.Exact,
             GuidKeys.Exact,
             dateKeys,
+            dateTimeKeyEncoding,
             directions,
             sortOrder,
             kinds);
@@ -575,7 +888,7 @@ public sealed class CatalogNamedIndexShapeBuilder
         }
 
         return Create(
-            typeof(ValueTuple),
+            typeof(LibraDexCompositeKey),
             typeof(TIdentity),
             CatalogIndexKeyFamily.Composite,
             CatalogIndexIdentityFamily.Scalar,
@@ -583,6 +896,7 @@ public sealed class CatalogNamedIndexShapeBuilder
             StringKeys.Exact,
             GuidKeys.Exact,
             DateKeys.Exact,
+            DateTimeKeyEncoding.CalendarSdt,
             directions,
             sortOrder,
             new[] { LibraDexIndexProjectionKind.Exact },
@@ -612,6 +926,7 @@ public sealed class CatalogNamedIndexShapeBuilder
         StringKeys stringKeys,
         GuidKeys guidKeys,
         DateKeys dateKeys,
+        DateTimeKeyEncoding dateTimeKeyEncoding,
         LibraDexProjectionDirectionSet directions,
         LibraDexIndexSortOrder sortOrder,
         IReadOnlyList<LibraDexIndexProjectionKind> projectionKinds,
@@ -650,6 +965,7 @@ public sealed class CatalogNamedIndexShapeBuilder
             stringKeys,
             guidKeys,
             dateKeys,
+            dateTimeKeyEncoding,
             directions,
             sortOrder,
             projections.ToArray(),

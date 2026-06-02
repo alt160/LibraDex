@@ -20,6 +20,12 @@ internal sealed class VarKeyScalar16ReadOnly
 
     public int ItemCount => IsValid ? recordOffsets.Length : 0;
 
+    public int PhysicalItemCount => ItemCount;
+
+    public int LiveItemCount => ItemCount;
+
+    public int DeletedItemCount => 0;
+
     public int LowerBoundKey(ReadOnlySpan<byte> key)
     {
         uint prefix = VarKeyScalar16Layout.CreateKeyPrefix(key);

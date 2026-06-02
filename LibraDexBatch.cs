@@ -39,16 +39,22 @@ public sealed class LibraDexBatch<TKey, TIdentity> : IDisposable
     {
         attemptedInsertCount++;
         bool allowDuplicateKeys = index.KeyContract == IndexKeys.NonUnique;
-        return index.Shape switch
+        LibraDexGenericInsertResult result = index.Shape switch
         {
-            LibraDexGenericScalarShape.SS88 => RecordInsert(InsertScalar8Scalar8(key, identity, allowDuplicateKeys)),
-            LibraDexGenericScalarShape.SS168 => RecordInsert(InsertScalar16Scalar8(key, identity, allowDuplicateKeys)),
-            LibraDexGenericScalarShape.SS816 => RecordInsert(InsertScalar8Scalar16(key, identity, allowDuplicateKeys)),
-            LibraDexGenericScalarShape.SS1616 => RecordInsert(InsertScalar16Scalar16(key, identity, allowDuplicateKeys)),
-            LibraDexGenericScalarShape.FS328 => RecordInsert(InsertFixed32Scalar8(key, identity, allowDuplicateKeys)),
-            LibraDexGenericScalarShape.FS3216 => RecordInsert(InsertFixed32Scalar16(key, identity, allowDuplicateKeys)),
+            LibraDexGenericScalarShape.SS88 => InsertScalar8Scalar8(key, identity, allowDuplicateKeys),
+            LibraDexGenericScalarShape.SS168 => InsertScalar16Scalar8(key, identity, allowDuplicateKeys),
+            LibraDexGenericScalarShape.SS816 => InsertScalar8Scalar16(key, identity, allowDuplicateKeys),
+            LibraDexGenericScalarShape.SS1616 => InsertScalar16Scalar16(key, identity, allowDuplicateKeys),
+            LibraDexGenericScalarShape.FS328 => InsertFixed32Scalar8(key, identity, allowDuplicateKeys),
+            LibraDexGenericScalarShape.FS3216 => InsertFixed32Scalar16(key, identity, allowDuplicateKeys),
             _ => throw new InvalidDataException($"Unsupported generic LibraDex shape {index.Shape}.")
         };
+        if (result.Inserted)
+        {
+            index.InsertExactReversedProjection(key, identity, durabilityBatch);
+        }
+
+        return RecordInsert(result);
     }
 
     /// <summary>
@@ -107,7 +113,7 @@ public sealed class LibraDexBatch<TKey, TIdentity> : IDisposable
 
     private LibraDexGenericInsertResult InsertScalar8Scalar8(TKey key, TIdentity identity, bool allowDuplicateKeys)
     {
-        ulong encodedKey = LibraDexGenericScalarCodec<TKey>.Encode8(key);
+        ulong encodedKey = index.EncodeKey8(key);
         ulong encodedIdentity = LibraDexGenericScalarCodec<TIdentity>.Encode8(identity);
         byte rootPrefix = (byte)(encodedKey >> 56);
         bool createdInitialShelfRoute = false;
@@ -143,7 +149,7 @@ public sealed class LibraDexBatch<TKey, TIdentity> : IDisposable
 
     private LibraDexGenericInsertResult InsertScalar8Scalar16(TKey key, TIdentity identity, bool allowDuplicateKeys)
     {
-        ulong encodedKey = LibraDexGenericScalarCodec<TKey>.Encode8(key);
+        ulong encodedKey = index.EncodeKey8(key);
         LibraDexGenericScalarCodec<TIdentity>.Encode16(identity, out ulong identityHigh, out ulong identityLow);
         byte rootPrefix = (byte)(encodedKey >> 56);
         bool createdInitialShelfRoute = false;

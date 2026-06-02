@@ -1,4 +1,6 @@
 using System.Buffers;
+using LibraDex.Layouts;
+using LibraDex.Views;
 
 namespace LibraDex;
 
@@ -8,14 +10,15 @@ namespace LibraDex;
 /// </summary>
 /// <typeparam name="TKey">The public key type.</typeparam>
 /// <typeparam name="TIdentity">The public identity type.</typeparam>
-public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveExecutor, IDisposable
+public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveExecutor, IIdentityPrimitiveMutator, IIdentityPrimitiveTupleExecutor, IIdentityExactTupleMutator, IDisposable
 {
     private readonly LibraDexFileSession session;
     private readonly LibraDexGenericScalarShape shape;
     private readonly bool ownsSession;
     private readonly IndexKeys keyContract;
     private readonly Catalog? catalog;
-    private readonly IIndexCriteriaBuilder objectCriteria;
+    private readonly LibraDexIndex<TKey, TIdentity>? exactReversedProjection;
+    private readonly DateTimeKeyEncoding dateTimeKeyEncoding;
     private bool disposed;
 
     internal LibraDexIndex(
@@ -30,7 +33,9 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
         string group = "",
         CatalogIndexKeyFamily keyFamily = CatalogIndexKeyFamily.Unknown,
         CatalogIndexIdentityFamily identityFamily = CatalogIndexIdentityFamily.Unknown,
-        LibraDexIndexShapeSpec? logicalShape = null)
+        LibraDexIndexShapeSpec? logicalShape = null,
+        LibraDexIndex<TKey, TIdentity>? exactReversedProjection = null,
+        DateTimeKeyEncoding dateTimeKeyEncoding = DateTimeKeyEncoding.CalendarSdt)
     {
         this.session = session;
         this.shape = shape;
@@ -41,24 +46,14 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
         KeyFamily = keyFamily;
         IdentityFamily = identityFamily;
         LogicalShape = logicalShape;
+        this.exactReversedProjection = exactReversedProjection;
+        this.dateTimeKeyEncoding = logicalShape?.DateTimeKeyEncoding ?? dateTimeKeyEncoding;
         SlotIndex = slotIndex;
         Name = name;
         RootRouterOffset = rootRouterOffset;
         BatchManager = new IndexBatchManager<TKey, TIdentity>(this);
-        objectCriteria = new LibraDexObjectCriteriaBuilder<TKey, TIdentity>(this);
-        Keys = new LibraDexKeyProjection<TKey, TIdentity>(this);
-        Identities = new LibraDexIdentityProjection<TKey, TIdentity>(this);
-        Not = new LibraDexNotFacade<TKey, TIdentity>(this);
-        Aggregates = new LibraDexAggregateFacade<TKey, TIdentity>(this);
-        Grouped = new LibraDexGroupedFacade<TKey, TIdentity>(this);
         Stats = new LibraDexIndexStats<TKey, TIdentity>(this);
         Maintenance = new LibraDexIndexMaintenance<TKey, TIdentity>(this);
-        Prepare = new LibraDexPrepareFacade<TKey, TIdentity>(this);
-        First = new LibraDexPositionalFacade<TKey, TIdentity, LibraDexTuple<TKey, TIdentity>>(this, LibraDexProjectionKind.Tuples, LibraDexPositionKind.First);
-        Last = new LibraDexPositionalFacade<TKey, TIdentity, LibraDexTuple<TKey, TIdentity>>(this, LibraDexProjectionKind.Tuples, LibraDexPositionKind.Last);
-        Middle = new LibraDexPositionalFacade<TKey, TIdentity, LibraDexTuple<TKey, TIdentity>>(this, LibraDexProjectionKind.Tuples, LibraDexPositionKind.Middle);
-        Rank = new LibraDexRankFacade<TKey, TIdentity, LibraDexTuple<TKey, TIdentity>>(this, LibraDexProjectionKind.Tuples, LibraDexPositionKind.Rank);
-        PercentRank = new LibraDexPercentRankFacade<TKey, TIdentity, LibraDexTuple<TKey, TIdentity>>(this, LibraDexProjectionKind.Tuples);
     }
 
     /// <summary>
@@ -107,10 +102,70 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     public LibraDexIndexShapeSpec? LogicalShape { get; }
 
     /// <summary>
-    /// Gets a programmatic criteria builder for this index.<br/>
-    /// The builder creates immutable identity-criteria descriptors for adapters that translate external condition trees into LibraDex lookups.<br/>
+    /// Gets the DateTime-like key encoding contract used by this index.<br/>
+    /// Date conditions are builder-agnostic and execution consults this value to choose calendar-SDT direct fields or precision-SDT derived component behavior.<br/>
     /// </summary>
-    public IIndexCriteriaBuilder Criteria => objectCriteria;
+    public DateTimeKeyEncoding DateTimeKeyEncoding => dateTimeKeyEncoding;
+
+    /// <summary>
+    /// Encodes one public scalar key with this index's DateTime-like binary contract.<br/>
+    /// Non-date key types ignore the DateTime encoding selector through the generic codec's normal type dispatch.<br/>
+    /// </summary>
+    /// <param name="key">The public key value to encode.</param>
+    /// <returns>The encoded scalar key lane.</returns>
+    internal ulong EncodeKey8(TKey key)
+    {
+        return LibraDexGenericScalarCodec<TKey>.Encode8(key, dateTimeKeyEncoding);
+    }
+
+    /// <summary>
+    /// Decodes one scalar key lane with this index's DateTime-like binary contract.<br/>
+    /// Precision-SDT indexes recover sub-millisecond ticks while calendar-SDT indexes recover the calendar-optimized quantum.<br/>
+    /// </summary>
+    /// <param name="encodedKey">The encoded scalar key lane.</param>
+    /// <returns>The decoded public key value.</returns>
+    internal TKey DecodeKey8(ulong encodedKey)
+    {
+        return LibraDexGenericScalarCodec<TKey>.Decode8(encodedKey, dateTimeKeyEncoding);
+    }
+
+    /// <summary>
+    /// Computes the previous representable public key under this index's DateTime-like binary contract.<br/>
+    /// DateTime-like keys use the selected SDT quantum while other scalar domains keep their existing codec rules.<br/>
+    /// </summary>
+    /// <param name="key">The current public key.</param>
+    /// <param name="previousKey">The previous public key when one exists.</param>
+    /// <returns><see langword="true"/> when a previous key exists.</returns>
+    private bool TryGetPreviousKeyValue(TKey key, out TKey previousKey)
+    {
+        return LibraDexGenericScalarCodec<TKey>.TryGetPreviousValue(key, dateTimeKeyEncoding, out previousKey);
+    }
+
+    /// <summary>
+    /// Computes the next representable public key under this index's DateTime-like binary contract.<br/>
+    /// DateTime-like keys use the selected SDT quantum while other scalar domains keep their existing codec rules.<br/>
+    /// </summary>
+    /// <param name="key">The current public key.</param>
+    /// <param name="nextKey">The next public key when one exists.</param>
+    /// <returns><see langword="true"/> when a next key exists.</returns>
+    private bool TryGetNextKeyValue(TKey key, out TKey nextKey)
+    {
+        return LibraDexGenericScalarCodec<TKey>.TryGetNextValue(key, dateTimeKeyEncoding, out nextKey);
+    }
+
+    /// <summary>
+    /// Gets the fixed encoded key byte width when this generic handle stores raw fixed-width byte-array keys.<br/>
+    /// Binary suffix projection planning uses this to turn a suffix into exact reversed-prefix range bounds without exposing shape slots to callers.<br/>
+    /// </summary>
+    public int? FixedKeyByteWidth => typeof(TKey) == typeof(byte[])
+        ? shape switch
+        {
+            LibraDexGenericScalarShape.SS88 or LibraDexGenericScalarShape.SS816 => 8,
+            LibraDexGenericScalarShape.SS168 or LibraDexGenericScalarShape.SS1616 => 16,
+            LibraDexGenericScalarShape.FS328 or LibraDexGenericScalarShape.FS3216 => 32,
+            _ => null
+        }
+        : null;
 
     /// <summary>
     /// Gets the root-router file offset for this typed index.<br/>
@@ -143,48 +198,6 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     public IndexBatchManager<TKey, TIdentity> Batch => BatchManager;
 
     /// <summary>
-    /// Gets key-only retrieval and positional-retrieval projections for this index.<br/>
-    /// This keeps value-from-index workflows explicit: callers can ask for keys without materializing identities or object payloads.<br/>
-    /// </summary>
-    public LibraDexKeyProjection<TKey, TIdentity> Keys { get; }
-
-    /// <summary>
-    /// Gets identity-only retrieval and positional-retrieval projections for this index.<br/>
-    /// This is the common object-lookup path when callers only need identities from the index.<br/>
-    /// </summary>
-    public LibraDexIdentityProjection<TKey, TIdentity> Identities { get; }
-
-    /// <summary>
-    /// Gets identity-only retrieval and positional-retrieval projections for this index.<br/>
-    /// `IDs` is the preferred short call-site spelling; full identity terminology remains in type names and documentation where precision matters.<br/>
-    /// </summary>
-    public LibraDexIdentityProjection<TKey, TIdentity> IDs => Identities;
-
-    /// <summary>
-    /// Gets negated retrieval criteria for this index.<br/>
-    /// The facade avoids boolean negation parameters and leaves room for ordered complement planning over key extents.<br/>
-    /// </summary>
-    public LibraDexNotFacade<TKey, TIdentity> Not { get; }
-
-    /// <summary>
-    /// Gets aggregate operations over this index.<br/>
-    /// Aggregates are separated from retrieval because they compute values and should avoid identity materialization whenever possible.<br/>
-    /// </summary>
-    public LibraDexAggregateFacade<TKey, TIdentity> Aggregates { get; }
-
-    /// <summary>
-    /// Gets grouped retrieval operations over this index.<br/>
-    /// Grouping is streaming-first result shaping and should preserve group keys instead of forcing callers to rebuild groups from flattened rows.<br/>
-    /// </summary>
-    public LibraDexGroupedFacade<TKey, TIdentity> Grouped { get; }
-
-    /// <summary>
-    /// Gets grouped retrieval operations over this index.<br/>
-    /// `Groups` is the preferred short public spelling for grouping result shapes; `Grouped` remains an alias while the scaffold is still evolving.<br/>
-    /// </summary>
-    public LibraDexGroupedFacade<TKey, TIdentity> Groups => Grouped;
-
-    /// <summary>
     /// Gets passive stats, marker/delta helpers, and explicit layout snapshots for this index.<br/>
     /// Expensive physical layout calculations should remain explicit snapshot calls rather than hidden work on ordinary properties.<br/>
     /// </summary>
@@ -197,40 +210,10 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     public LibraDexIndexMaintenance<TKey, TIdentity> Maintenance { get; }
 
     /// <summary>
-    /// Gets prepared helper construction for this index.<br/>
-    /// Prepared helpers are limited to reusable runtime objects that remove repeated work, such as membership sets and grouping specs.<br/>
+    /// Gets a typed condition root for this opened index.<br/>
+    /// The index supplies its identity group, index name, and key type so handwritten code can build reusable conditions without repeating `ForGroup(...).Index(...).AsType` ceremony.<br/>
     /// </summary>
-    public LibraDexPrepareFacade<TKey, TIdentity> Prepare { get; }
-
-    /// <summary>
-    /// Gets first-position tuple retrieval methods.<br/>
-    /// Positional retrieval returns real indexed entries and is separate from aggregate minimum values.<br/>
-    /// </summary>
-    public LibraDexPositionalFacade<TKey, TIdentity, LibraDexTuple<TKey, TIdentity>> First { get; }
-
-    /// <summary>
-    /// Gets last-position tuple retrieval methods.<br/>
-    /// Positional retrieval returns real indexed entries and is separate from aggregate maximum values.<br/>
-    /// </summary>
-    public LibraDexPositionalFacade<TKey, TIdentity, LibraDexTuple<TKey, TIdentity>> Last { get; }
-
-    /// <summary>
-    /// Gets middle-position tuple retrieval methods.<br/>
-    /// Middle retrieval returns a centered window of real indexed entries; it is not median interpolation or mathematical midpoint calculation.<br/>
-    /// </summary>
-    public LibraDexPositionalFacade<TKey, TIdentity, LibraDexTuple<TKey, TIdentity>> Middle { get; }
-
-    /// <summary>
-    /// Gets absolute-rank tuple retrieval methods.<br/>
-    /// Rank retrieval returns real indexed entries at ordered positions; it is not a value aggregate.<br/>
-    /// </summary>
-    public LibraDexRankFacade<TKey, TIdentity, LibraDexTuple<TKey, TIdentity>> Rank { get; }
-
-    /// <summary>
-    /// Gets percentile-rank tuple retrieval methods.<br/>
-    /// Percent-rank retrieval returns real indexed entries near an ordered percentile and is separate from aggregate percentile values.<br/>
-    /// </summary>
-    public LibraDexPercentRankFacade<TKey, TIdentity, LibraDexTuple<TKey, TIdentity>> PercentRank { get; }
+    public LibraDexIndexWhere<TKey, TIdentity> Where => new(this);
 
     internal LibraDexFileSession Session => session;
 
@@ -238,177 +221,23 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
 
     internal Catalog? Catalog => catalog;
 
-    internal LibraDexRangeReader<TKey, TIdentity> OpenCriteriaReader(
-        LibraDexCriteriaKind criteriaKind,
-        TKey key,
-        bool hasKey,
-        QueryDirection direction,
-        int skip,
-        int? take,
-        RetrievalScope scope,
-        bool isNegated)
-    {
-        ThrowIfDisposed();
-        if (isNegated)
-        {
-            throw new NotSupportedException("Negated criteria execution requires ordered complement planning and is not connected to physical readers yet.");
-        }
-
-        if (direction != QueryDirection.Ascending)
-        {
-            throw new NotSupportedException("Descending criteria traversal is part of the public API scaffold but is not connected to this physical reader yet.");
-        }
-
-        if (scope != RetrievalScope.Tuples)
-        {
-            throw new NotSupportedException("Distinct-key retrieval scopes are part of the public API scaffold but are not connected to this physical reader yet.");
-        }
-
-        if (skip < 0)
-        {
-            throw new ArgumentOutOfRangeException(nameof(skip), skip, "Skip cannot be negative.");
-        }
-
-        if (take is < 0)
-        {
-            throw new ArgumentOutOfRangeException(nameof(take), take, "Take cannot be negative.");
-        }
-
-        LibraDexRangeReader<TKey, TIdentity> reader = criteriaKind switch
-        {
-            LibraDexCriteriaKind.All => OpenAllRangeReader(),
-            LibraDexCriteriaKind.Before when hasKey => OpenBeforeRangeReader(key),
-            LibraDexCriteriaKind.AtOrBefore when hasKey => OpenAtOrBeforeRangeReader(key),
-            LibraDexCriteriaKind.After when hasKey => OpenAfterRangeReader(key),
-            LibraDexCriteriaKind.AtOrAfter when hasKey => OpenAtOrAfterRangeReader(key),
-            _ => throw new NotSupportedException($"{criteriaKind} queries are part of the public API scaffold but are not connected to physical execution yet.")
-        };
-
-        if (skip > 0)
-        {
-            _ = reader.Skip(skip);
-        }
-
-        reader.ApplyTakeLimit(take);
-        return reader;
-    }
-
     /// <summary>
-    /// Streams tuple results for the direct criteria facade through the same physical reader primitives used by condition execution.<br/>
-    /// Range-backed criteria use ordered range readers, membership criteria use equality-reader fan-out, and scan-backed predicates read full key/identity tuples before applying the key predicate.<br/>
-    /// This method keeps handwritten direct query syntax executable while preserving the condition builder as the canonical multi-index representation.<br/>
+    /// Inserts the reversed-key companion tuple into the maintained exact reversed projection when this index owns one.<br/>
+    /// The caller supplies the active durability batch so the primary and projection writes publish at the same commit boundary.<br/>
     /// </summary>
-    /// <param name="criteriaKind">The criteria kind to execute.</param>
-    /// <param name="operand">The optional operand captured by the public criteria method.</param>
-    /// <param name="hasOperand">Whether an operand was captured.</param>
-    /// <param name="direction">The requested traversal direction.</param>
-    /// <param name="skip">The number of matching rows to skip.</param>
-    /// <param name="take">The optional maximum number of rows to return.</param>
-    /// <param name="scope">The duplicate-key retrieval scope.</param>
-    /// <param name="isNegated">Whether this direct criteria descriptor is negated.</param>
-    /// <returns>A forward-only tuple sequence.</returns>
-    internal IEnumerable<LibraDexTuple<TKey, TIdentity>> IterateCriteriaTuples(
-        LibraDexCriteriaKind criteriaKind,
-        object? operand,
-        bool hasOperand,
-        QueryDirection direction,
-        int skip,
-        int? take,
-        RetrievalScope scope,
-        bool isNegated)
+    /// <param name="key">The original forward key supplied to the logical index.</param>
+    /// <param name="identity">The identity associated with the key.</param>
+    /// <param name="durabilityBatch">The active durability batch shared with the primary write.</param>
+    internal void InsertExactReversedProjection(TKey key, TIdentity identity, LibraDexFileSessionDurabilityBatch durabilityBatch)
     {
-        ThrowIfDisposed();
-        if (isNegated)
+        if (exactReversedProjection is null)
         {
-            throw new NotSupportedException("Negated direct criteria execution requires ordered complement planning and is not connected to physical readers yet.");
+            return;
         }
 
-        if (scope != RetrievalScope.Tuples)
-        {
-            throw new NotSupportedException("Distinct-key retrieval scopes are part of the public API scaffold but are not connected to this physical reader yet.");
-        }
-
-        if (skip < 0)
-        {
-            throw new ArgumentOutOfRangeException(nameof(skip), skip, "Skip cannot be negative.");
-        }
-
-        if (take is < 0)
-        {
-            throw new ArgumentOutOfRangeException(nameof(take), take, "Take cannot be negative.");
-        }
-
-        if (direction == QueryDirection.Descending)
-        {
-            List<LibraDexTuple<TKey, TIdentity>> rows = IterateCriteriaTuples(
-                criteriaKind,
-                operand,
-                hasOperand,
-                QueryDirection.Ascending,
-                skip: 0,
-                take: null,
-                scope,
-                isNegated).ToList();
-            rows.Reverse();
-            IEnumerable<LibraDexTuple<TKey, TIdentity>> shaped = rows;
-            if (skip > 0)
-            {
-                shaped = shaped.Skip(skip);
-            }
-
-            if (take is not null)
-            {
-                shaped = shaped.Take(take.Value);
-            }
-
-            foreach (LibraDexTuple<TKey, TIdentity> tuple in shaped)
-            {
-                yield return tuple;
-            }
-
-            yield break;
-        }
-
-        switch (criteriaKind)
-        {
-            case LibraDexCriteriaKind.All:
-            case LibraDexCriteriaKind.Before:
-            case LibraDexCriteriaKind.AtOrBefore:
-            case LibraDexCriteriaKind.After:
-            case LibraDexCriteriaKind.AtOrAfter:
-            {
-                TKey keyOperand = hasOperand && operand is TKey typedKey
-                    ? typedKey
-                    : default!;
-                using LibraDexRangeReader<TKey, TIdentity> reader = OpenCriteriaReader(criteriaKind, keyOperand, hasOperand, direction, skip, take, scope, isNegated);
-                while (reader.TryReadNext(out TKey key, out TIdentity identity))
-                {
-                    yield return new LibraDexTuple<TKey, TIdentity>(key, identity);
-                }
-
-                yield break;
-            }
-            case LibraDexCriteriaKind.In:
-            case LibraDexCriteriaKind.InSet:
-                foreach (LibraDexTuple<TKey, TIdentity> tuple in IterateMembershipTuples(RequireCriteriaOperand(operand, hasOperand), skip, take))
-                {
-                    yield return tuple;
-                }
-
-                yield break;
-            case LibraDexCriteriaKind.Prefix:
-            case LibraDexCriteriaKind.Suffix:
-            case LibraDexCriteriaKind.Contains:
-            case LibraDexCriteriaKind.Matches:
-                foreach (LibraDexTuple<TKey, TIdentity> tuple in IterateScannedTuples(criteriaKind, RequireCriteriaOperand(operand, hasOperand), skip, take))
-                {
-                    yield return tuple;
-                }
-
-                yield break;
-            default:
-                throw new NotSupportedException($"{criteriaKind} direct criteria execution is not connected to physical readers yet.");
-        }
+        TKey reversedKey = CreateExactReversedProjectionKey(key);
+        var sharedBatch = new LibraDexBatch<TKey, TIdentity>(exactReversedProjection, durabilityBatch, ownsDurabilityBatch: false);
+        _ = sharedBatch.Insert(reversedKey, identity);
     }
 
     /// <summary>
@@ -458,258 +287,41 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     }
 
     /// <summary>
-    /// Captures an exact-key tuple query.<br/>
-    /// For duplicate-key indexes this should resolve to the contiguous key run for the requested key rather than row-by-row filtering.<br/>
+    /// Adds one typed key and typed identity to this index.<br/>
+    /// This is the preferred public spelling for ordinary index population; it delegates to <see cref="Insert(TKey, TIdentity)"/> so batching, duplicate-key behavior, telemetry, and routing remain identical.<br/>
     /// </summary>
-    /// <param name="key">The key to find.</param>
-    /// <param name="direction">The requested traversal direction for matching tuples.</param>
-    /// <param name="skip">The number of matching tuples to skip before returning rows.</param>
-    /// <param name="take">The optional maximum number of matching tuples to return.</param>
-    /// <param name="scope">The duplicate-key retrieval scope.</param>
-    /// <param name="bookmark">Optional bookmark state used to resume a prior query.</param>
-    /// <returns>A lightweight query descriptor that can open a cursor when executed.</returns>
-    public LibraDexQuery<TKey, TIdentity> Find(
-        TKey key,
-        QueryDirection direction = QueryDirection.Ascending,
+    /// <param name="key">The typed key value to add.</param>
+    /// <param name="identity">The typed identity value associated with the key.</param>
+    /// <returns>The insert result plus any route-create and insert commit telemetry.</returns>
+    public LibraDexGenericInsertResult Add(TKey key, TIdentity identity)
+    {
+        return Insert(key, identity);
+    }
+
+    /// <summary>
+    /// Materializes identities for a condition rooted at this index.<br/>
+    /// This convenience is intentionally single-index scoped: composed cross-index expressions should be executed from the owning identity group so every referenced index can be resolved by name.<br/>
+    /// </summary>
+    /// <param name="condition">The condition expression to execute.</param>
+    /// <param name="ordering">The requested identity ordering contract.</param>
+    /// <param name="deduplication">The requested duplicate identity policy.</param>
+    /// <param name="skip">The number of matching identities to skip.</param>
+    /// <param name="take">The optional maximum number of identities to return.</param>
+    /// <param name="bookmark">The optional continuation bookmark.</param>
+    /// <returns>A typed list of matching identities.</returns>
+    public IReadOnlyList<TIdentity> GetIdentities(
+        LibraDexConditionExpression<TIdentity> condition,
+        IdentityResultOrdering ordering = IdentityResultOrdering.PlanNatural,
+        IdentityDeduplication deduplication = IdentityDeduplication.Distinct,
         int skip = 0,
         int? take = null,
-        RetrievalScope scope = RetrievalScope.Tuples,
         LibraDexBookmark? bookmark = null)
     {
-        return Between(key, key, direction, skip, take, scope, bookmark);
-    }
-
-    /// <summary>
-    /// Captures an inclusive range tuple query.<br/>
-    /// The returned descriptor records public query intent and can open the current generic range reader for connected physical shapes.<br/>
-    /// </summary>
-    /// <param name="lowerKey">The inclusive lower key.</param>
-    /// <param name="upperKey">The inclusive upper key.</param>
-    /// <param name="direction">The requested traversal direction for matching tuples.</param>
-    /// <param name="skip">The number of matching tuples to skip before returning rows.</param>
-    /// <param name="take">The optional maximum number of matching tuples to return.</param>
-    /// <param name="scope">The duplicate-key retrieval scope.</param>
-    /// <param name="bookmark">Optional bookmark state used to resume a prior query.</param>
-    /// <returns>A lightweight query descriptor that can open a cursor when executed.</returns>
-    public LibraDexQuery<TKey, TIdentity> Between(
-        TKey lowerKey,
-        TKey upperKey,
-        QueryDirection direction = QueryDirection.Ascending,
-        int skip = 0,
-        int? take = null,
-        RetrievalScope scope = RetrievalScope.Tuples,
-        LibraDexBookmark? bookmark = null)
-    {
-        ThrowIfDisposed();
-        if (skip < 0)
-        {
-            throw new ArgumentOutOfRangeException(nameof(skip), skip, "Skip cannot be negative.");
-        }
-
-        if (take is < 0)
-        {
-            throw new ArgumentOutOfRangeException(nameof(take), take, "Take cannot be negative.");
-        }
-
-        LibraDexExecutionKind executionKind = direction == QueryDirection.Descending
-            ? LibraDexExecutionKind.ReverseTraversal
-            : LibraDexExecutionKind.FastPath;
-        return new LibraDexQuery<TKey, TIdentity>(
-            this,
-            lowerKey,
-            upperKey,
-            direction,
-            skip,
-            take,
-            scope,
-            bookmark,
-            executionKind);
-    }
-
-    /// <summary>
-    /// Captures an all-tuples query over the index.<br/>
-    /// This criterion is named in the public API now; physical all-index bounds will be connected with ordered min/max or full-index traversal support.<br/>
-    /// </summary>
-    /// <param name="direction">The requested traversal direction.</param>
-    /// <param name="skip">The number of matching tuples to skip before returning rows.</param>
-    /// <param name="take">The optional maximum number of matching tuples to return.</param>
-    /// <param name="scope">The duplicate-key retrieval scope.</param>
-    /// <param name="bookmark">Optional bookmark state used to resume a prior query.</param>
-    /// <returns>A lightweight criteria descriptor for all-index retrieval.</returns>
-    public LibraDexCriteriaQuery<TKey, TIdentity> All(
-        QueryDirection direction = QueryDirection.Ascending,
-        int skip = 0,
-        int? take = null,
-        RetrievalScope scope = RetrievalScope.Tuples,
-        LibraDexBookmark? bookmark = null)
-    {
-        return CreateCriteriaQuery(LibraDexCriteriaKind.All, direction, skip, take, scope, bookmark, DirectionExecutionKind(direction));
-    }
-
-    /// <summary>
-    /// Captures a before-key tuple query.<br/>
-    /// This criterion is named in the public API now; physical lower-bound discovery will be connected with ordered min/bookmark support.<br/>
-    /// </summary>
-    public LibraDexCriteriaQuery<TKey, TIdentity> Before(TKey key, QueryDirection direction = QueryDirection.Ascending)
-    {
-        return CreateCriteriaQuery(LibraDexCriteriaKind.Before, direction, 0, null, RetrievalScope.Tuples, null, DirectionExecutionKind(direction), key, hasKey: true);
-    }
-
-    /// <summary>
-    /// Captures an at-or-before-key tuple query.<br/>
-    /// This criterion is named in the public API now; physical lower-bound discovery will be connected with ordered min/bookmark support.<br/>
-    /// </summary>
-    public LibraDexCriteriaQuery<TKey, TIdentity> AtOrBefore(TKey key, QueryDirection direction = QueryDirection.Ascending)
-    {
-        return CreateCriteriaQuery(LibraDexCriteriaKind.AtOrBefore, direction, 0, null, RetrievalScope.Tuples, null, DirectionExecutionKind(direction), key, hasKey: true);
-    }
-
-    /// <summary>
-    /// Captures an after-key tuple query.<br/>
-    /// This criterion is named in the public API now; physical upper-bound discovery will be connected with ordered max/bookmark support.<br/>
-    /// </summary>
-    public LibraDexCriteriaQuery<TKey, TIdentity> After(TKey key, QueryDirection direction = QueryDirection.Ascending)
-    {
-        return CreateCriteriaQuery(LibraDexCriteriaKind.After, direction, 0, null, RetrievalScope.Tuples, null, DirectionExecutionKind(direction), key, hasKey: true);
-    }
-
-    /// <summary>
-    /// Captures an at-or-after-key tuple query.<br/>
-    /// This criterion is named in the public API now; physical upper-bound discovery will be connected with ordered max/bookmark support.<br/>
-    /// </summary>
-    public LibraDexCriteriaQuery<TKey, TIdentity> AtOrAfter(TKey key, QueryDirection direction = QueryDirection.Ascending)
-    {
-        return CreateCriteriaQuery(LibraDexCriteriaKind.AtOrAfter, direction, 0, null, RetrievalScope.Tuples, null, DirectionExecutionKind(direction), key, hasKey: true);
-    }
-
-    /// <summary>
-    /// Captures a prefix lookup query.<br/>
-    /// Prefix can be fast when the selected key projection is byte-direction aligned; otherwise it may be projection-backed or scan-backed as diagnostics report.<br/>
-    /// </summary>
-    /// <param name="prefix">The prefix value to match.</param>
-    /// <param name="direction">The requested traversal direction.</param>
-    /// <returns>A lightweight criteria descriptor for prefix retrieval.</returns>
-    public LibraDexCriteriaQuery<TKey, TIdentity> Prefix(TKey prefix, QueryDirection direction = QueryDirection.Ascending)
-    {
-        _ = direction;
-        return CreateCriteriaQuery(LibraDexCriteriaKind.Prefix, direction, 0, null, RetrievalScope.Tuples, null, LibraDexExecutionKind.Scan, prefix, hasKey: true, operand: prefix, hasOperand: true);
-    }
-
-    /// <summary>
-    /// Captures a suffix lookup query.<br/>
-    /// Suffix can be fast when a reversed key projection is maintained and aligned; otherwise it is expected to be scan-backed.<br/>
-    /// </summary>
-    /// <param name="suffix">The suffix value to match.</param>
-    /// <param name="direction">The requested traversal direction.</param>
-    /// <returns>A lightweight criteria descriptor for suffix retrieval.</returns>
-    public LibraDexCriteriaQuery<TKey, TIdentity> Suffix(TKey suffix, QueryDirection direction = QueryDirection.Ascending)
-    {
-        return CreateCriteriaQuery(LibraDexCriteriaKind.Suffix, direction, 0, null, RetrievalScope.Tuples, null, LibraDexExecutionKind.Scan, suffix, hasKey: true, operand: suffix, hasOperand: true);
-    }
-
-    /// <summary>
-    /// Captures a contains lookup query.<br/>
-    /// Contains is part of the core intent vocabulary but is normally scan-backed unless a future contains-capable projection is maintained.<br/>
-    /// </summary>
-    /// <param name="value">The contained value or pattern fragment to match.</param>
-    /// <param name="direction">The requested traversal direction.</param>
-    /// <returns>A lightweight criteria descriptor for contains retrieval.</returns>
-    public LibraDexCriteriaQuery<TKey, TIdentity> Contains(TKey value, QueryDirection direction = QueryDirection.Ascending)
-    {
-        _ = direction;
-        return CreateCriteriaQuery(LibraDexCriteriaKind.Contains, direction, 0, null, RetrievalScope.Tuples, null, LibraDexExecutionKind.Scan, value, hasKey: true, operand: value, hasOperand: true);
-    }
-
-    /// <summary>
-    /// Captures a pattern lookup query.<br/>
-    /// Pattern matching is named in the core surface so higher layers do not have to express it as a vague scan; physical support depends on maintained projections or typed scan predicates.<br/>
-    /// </summary>
-    /// <param name="pattern">The pattern object understood by the key class or higher-level adapter.</param>
-    /// <param name="direction">The requested traversal direction.</param>
-    /// <returns>A lightweight criteria descriptor for pattern retrieval.</returns>
-    public LibraDexCriteriaQuery<TKey, TIdentity> Matches(object pattern, QueryDirection direction = QueryDirection.Ascending)
-    {
-        _ = pattern ?? throw new ArgumentNullException(nameof(pattern));
-        _ = direction;
-        return CreateCriteriaQuery(LibraDexCriteriaKind.Matches, direction, 0, null, RetrievalScope.Tuples, null, LibraDexExecutionKind.Scan, operand: pattern, hasOperand: true);
-    }
-
-    /// <summary>
-    /// Captures a membership query over ordinary values.<br/>
-    /// The enumerable shape is convenient for one-off callers; repeated membership work should use `InSet` with a prepared set so LibraDex can pre-encode values later.<br/>
-    /// </summary>
-    /// <param name="keys">The keys to match.</param>
-    /// <param name="direction">The requested traversal direction.</param>
-    /// <returns>A lightweight criteria descriptor for membership retrieval.</returns>
-    public LibraDexCriteriaQuery<TKey, TIdentity> In(IEnumerable<TKey> keys, QueryDirection direction = QueryDirection.Ascending)
-    {
-        TKey[] capturedKeys = (keys ?? throw new ArgumentNullException(nameof(keys))).ToArray();
-        return CreateCriteriaQuery(LibraDexCriteriaKind.In, direction, 0, null, RetrievalScope.Tuples, null, LibraDexExecutionKind.Projection, operand: capturedKeys, hasOperand: true);
-    }
-
-    /// <summary>
-    /// Captures a membership query over a prepared set.<br/>
-    /// Prepared sets are intended to pre-encode and organize membership values once so scans or fan-out lookups do not rebuild set state per query.<br/>
-    /// </summary>
-    /// <param name="set">The prepared set to match.</param>
-    /// <param name="direction">The requested traversal direction.</param>
-    /// <returns>A lightweight criteria descriptor for prepared membership retrieval.</returns>
-    public LibraDexCriteriaQuery<TKey, TIdentity> InSet(LibraDexPreparedSet<TKey> set, QueryDirection direction = QueryDirection.Ascending)
-    {
-        _ = set ?? throw new ArgumentNullException(nameof(set));
-        return CreateCriteriaQuery(LibraDexCriteriaKind.InSet, direction, 0, null, RetrievalScope.Tuples, null, LibraDexExecutionKind.Projection, operand: set, hasOperand: true);
-    }
-
-    /// <summary>
-    /// Determines whether an exact key has at least one matching identity.<br/>
-    /// The connected first slice routes through the current exact-key range count and avoids materializing matching identities.<br/>
-    /// </summary>
-    /// <param name="key">The key to test.</param>
-    /// <returns><see langword="true"/> when at least one tuple exists for the key.</returns>
-    public bool Exists(TKey key)
-    {
-        return Aggregates.Count.Find(key) > 0;
-    }
-
-    /// <summary>
-    /// Determines whether any key in an ordinary value sequence has at least one matching identity.<br/>
-    /// This is a convenience existence shortcut; repeated membership checks should prefer `ExistsInSet` once prepared set execution is connected.<br/>
-    /// </summary>
-    /// <param name="keys">The keys to test.</param>
-    /// <returns><see langword="true"/> when any supplied key exists in the index.</returns>
-    public bool ExistsIn(IEnumerable<TKey> keys)
-    {
-        ArgumentNullException.ThrowIfNull(keys);
-        foreach (TKey key in keys)
-        {
-            if (Exists(key))
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    /// <summary>
-    /// Determines whether any key in a prepared set has at least one matching identity.<br/>
-    /// The first connected implementation reuses exact-key existence checks over the prepared values and stops at the first match.<br/>
-    /// Later implementations can replace this loop with encoded membership state without changing the public call shape.<br/>
-    /// </summary>
-    /// <param name="set">The prepared set to test.</param>
-    /// <returns><see langword="true"/> when any set key exists in the index.</returns>
-    public bool ExistsInSet(LibraDexPreparedSet<TKey> set)
-    {
-        ArgumentNullException.ThrowIfNull(set);
-        foreach (TKey key in set.Values)
-        {
-            if (Exists(key))
-            {
-                return true;
-            }
-        }
-
-        return false;
+        ArgumentNullException.ThrowIfNull(condition);
+        IIdentityCriterion criterion = condition.Condition.MaterializeWithProjectionBridge(
+            ResolveOwnIndex,
+            ResolveOwnProjectionIndex);
+        return criterion.IDsWith(ordering, deduplication, skip, take, bookmark).ToList<TIdentity>();
     }
 
     /// <summary>
@@ -724,141 +336,73 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
         return Insert(RequireObjectKey(key, nameof(key)), RequireObjectIdentity(identity, nameof(identity)));
     }
 
-    /// <summary>
-    /// Captures a non-generic exact-key query after validating the runtime key value against this index's key type.<br/>
-    /// The returned descriptor preserves criteria-first/result-shape-last programmatic grammar while keeping typed execution inside this generic index.<br/>
-    /// </summary>
-    /// <param name="key">The runtime key value to find.</param>
-    /// <returns>A non-generic query descriptor.</returns>
-    IIndexQuery IIndex.Find(object key)
+    bool IIndex.Delete(object key, object identity)
     {
-        return new LibraDexObjectIndexQuery<TKey, TIdentity>(this, Find(RequireObjectKey(key, nameof(key))).Diagnostics);
+        ThrowIfDisposed();
+        return DeleteExactTuple(RequireObjectKey(key, nameof(key)), RequireObjectIdentity(identity, nameof(identity)));
     }
 
-    /// <summary>
-    /// Captures a non-generic inclusive range query after validating both runtime key values against this index's key type.<br/>
-    /// </summary>
-    /// <param name="lowerKey">The runtime lower key.</param>
-    /// <param name="upperKey">The runtime upper key.</param>
-    /// <returns>A non-generic query descriptor.</returns>
-    IIndexQuery IIndex.Between(object lowerKey, object upperKey)
+    bool IIndex.Rekey(object identity, object oldKey, object newKey)
     {
-        return new LibraDexObjectIndexQuery<TKey, TIdentity>(
-            this,
-            Between(RequireObjectKey(lowerKey, nameof(lowerKey)), RequireObjectKey(upperKey, nameof(upperKey))).Diagnostics);
+        ThrowIfDisposed();
+        TIdentity typedIdentity = RequireObjectIdentity(identity, nameof(identity));
+        TKey typedOldKey = RequireObjectKey(oldKey, nameof(oldKey));
+        TKey typedNewKey = RequireObjectKey(newKey, nameof(newKey));
+        if (TupleComponentEquals(typedOldKey, typedNewKey))
+        {
+            return false;
+        }
+
+        if (!ContainsExactTuple(typedOldKey, typedIdentity))
+        {
+            return false;
+        }
+
+        if (!ContainsExactTuple(typedNewKey, typedIdentity))
+        {
+            LibraDexGenericInsertResult insert = Insert(typedNewKey, typedIdentity);
+            if (!insert.Inserted && !ContainsExactTuple(typedNewKey, typedIdentity))
+            {
+                throw new InvalidOperationException("Rekey could not create the replacement tuple; the original tuple was left unchanged.");
+            }
+        }
+
+        bool deleted = DeleteExactTuple(typedOldKey, typedIdentity);
+        if (deleted)
+        {
+            RecordRekey();
+        }
+
+        return deleted;
     }
 
-    /// <summary>
-    /// Captures a non-generic all-tuples query over this index.<br/>
-    /// </summary>
-    /// <returns>A non-generic query descriptor.</returns>
-    IIndexQuery IIndex.All()
+    long IIndex.Rekey(object identity, object newKey)
     {
-        return new LibraDexObjectIndexQuery<TKey, TIdentity>(this, All().Diagnostics);
-    }
+        ThrowIfDisposed();
+        TIdentity typedIdentity = RequireObjectIdentity(identity, nameof(identity));
+        TKey typedNewKey = RequireObjectKey(newKey, nameof(newKey));
+        List<TKey> oldKeys = new();
+        using (LibraDexRangeReader<TKey, TIdentity> reader = OpenAllRangeReader())
+        {
+            while (reader.TryReadNext(out TKey key, out TIdentity currentIdentity))
+            {
+                if (TupleComponentEquals(currentIdentity, typedIdentity))
+                {
+                    oldKeys.Add(key);
+                }
+            }
+        }
 
-    /// <summary>
-    /// Captures a non-generic exclusive upper-bound query after validating the runtime key value against this index's key type.<br/>
-    /// </summary>
-    /// <param name="key">The runtime boundary key.</param>
-    /// <returns>A non-generic query descriptor.</returns>
-    IIndexQuery IIndex.Before(object key)
-    {
-        return new LibraDexObjectIndexQuery<TKey, TIdentity>(this, Before(RequireObjectKey(key, nameof(key))).Diagnostics);
-    }
+        long changed = 0;
+        for (int i = 0; i < oldKeys.Count; i++)
+        {
+            if (((IIndex)this).Rekey(typedIdentity!, oldKeys[i]!, typedNewKey!))
+            {
+                changed++;
+            }
+        }
 
-    /// <summary>
-    /// Captures a non-generic inclusive upper-bound query after validating the runtime key value against this index's key type.<br/>
-    /// </summary>
-    /// <param name="key">The runtime boundary key.</param>
-    /// <returns>A non-generic query descriptor.</returns>
-    IIndexQuery IIndex.AtOrBefore(object key)
-    {
-        return new LibraDexObjectIndexQuery<TKey, TIdentity>(this, AtOrBefore(RequireObjectKey(key, nameof(key))).Diagnostics);
-    }
-
-    /// <summary>
-    /// Captures a non-generic exclusive lower-bound query after validating the runtime key value against this index's key type.<br/>
-    /// </summary>
-    /// <param name="key">The runtime boundary key.</param>
-    /// <returns>A non-generic query descriptor.</returns>
-    IIndexQuery IIndex.After(object key)
-    {
-        return new LibraDexObjectIndexQuery<TKey, TIdentity>(this, After(RequireObjectKey(key, nameof(key))).Diagnostics);
-    }
-
-    /// <summary>
-    /// Captures a non-generic inclusive lower-bound query after validating the runtime key value against this index's key type.<br/>
-    /// </summary>
-    /// <param name="key">The runtime boundary key.</param>
-    /// <returns>A non-generic query descriptor.</returns>
-    IIndexQuery IIndex.AtOrAfter(object key)
-    {
-        return new LibraDexObjectIndexQuery<TKey, TIdentity>(this, AtOrAfter(RequireObjectKey(key, nameof(key))).Diagnostics);
-    }
-
-    /// <summary>
-    /// Captures a non-generic prefix query after validating the runtime key value against this index's key type.<br/>
-    /// </summary>
-    /// <param name="prefix">The runtime prefix value.</param>
-    /// <returns>A non-generic query descriptor.</returns>
-    IIndexQuery IIndex.Prefix(object prefix)
-    {
-        return new LibraDexObjectIndexQuery<TKey, TIdentity>(this, Prefix(RequireObjectKey(prefix, nameof(prefix))).Diagnostics);
-    }
-
-    /// <summary>
-    /// Captures a non-generic suffix query after validating the runtime key value against this index's key type.<br/>
-    /// </summary>
-    /// <param name="suffix">The runtime suffix value.</param>
-    /// <returns>A non-generic query descriptor.</returns>
-    IIndexQuery IIndex.Suffix(object suffix)
-    {
-        return new LibraDexObjectIndexQuery<TKey, TIdentity>(this, Suffix(RequireObjectKey(suffix, nameof(suffix))).Diagnostics);
-    }
-
-    /// <summary>
-    /// Captures a non-generic contains query after validating the runtime key value against this index's key type.<br/>
-    /// </summary>
-    /// <param name="value">The runtime contained value.</param>
-    /// <returns>A non-generic query descriptor.</returns>
-    IIndexQuery IIndex.Contains(object value)
-    {
-        return new LibraDexObjectIndexQuery<TKey, TIdentity>(this, Contains(RequireObjectKey(value, nameof(value))).Diagnostics);
-    }
-
-    /// <summary>
-    /// Captures a non-generic membership query after validating each runtime key value against this index's key type.<br/>
-    /// </summary>
-    /// <param name="keys">The runtime key values to match.</param>
-    /// <returns>A non-generic query descriptor.</returns>
-    IIndexQuery IIndex.In(IEnumerable<object> keys)
-    {
-        ArgumentNullException.ThrowIfNull(keys);
-        TKey[] typedKeys = keys.Select(key => RequireObjectKey(key, nameof(keys))).ToArray();
-        return new LibraDexObjectIndexQuery<TKey, TIdentity>(this, In(typedKeys).Diagnostics);
-    }
-
-    /// <summary>
-    /// Captures a non-generic prepared-set membership query after validating each runtime key value against this index's key type.<br/>
-    /// The current descriptor creates a typed prepared set immediately so `InSet` remains distinct from ordinary `In` for planners and diagnostics.<br/>
-    /// </summary>
-    /// <param name="keys">The runtime key values to prepare and match.</param>
-    /// <returns>A non-generic query descriptor.</returns>
-    IIndexQuery IIndex.InSet(IEnumerable<object> keys)
-    {
-        return ((IIndex)this).InSet(((IIndex)this).PrepareInSet(keys));
-    }
-
-    /// <summary>
-    /// Captures a non-generic prepared-set membership query from a prepared object set.<br/>
-    /// </summary>
-    /// <param name="set">The prepared non-generic key set.</param>
-    /// <returns>A non-generic query descriptor.</returns>
-    IIndexQuery IIndex.InSet(LibraDexPreparedObjectSet set)
-    {
-        TKey[] typedKeys = RequirePreparedObjectSet(set, nameof(set));
-        return new LibraDexObjectIndexQuery<TKey, TIdentity>(this, InSet(new LibraDexPreparedSet<TKey>(typedKeys)).Diagnostics);
+        return changed;
     }
 
     /// <summary>
@@ -869,51 +413,19 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     LibraDexPreparedObjectSet IIndex.PrepareInSet(IEnumerable<object> keys)
     {
         ArgumentNullException.ThrowIfNull(keys);
+        if (keys is ISet<object> objectSet)
+        {
+            foreach (object key in objectSet)
+            {
+                _ = RequireObjectKey(key, nameof(keys));
+            }
+
+            IEqualityComparer<object>? comparer = objectSet is HashSet<object> hashSet ? hashSet.Comparer : null;
+            return new LibraDexPreparedObjectSet(typeof(TKey), values: null, objectSet, comparer);
+        }
+
         object[] values = keys.Select(key => (object)RequireObjectKey(key, nameof(keys))!).ToArray();
         return new LibraDexPreparedObjectSet(typeof(TKey), values);
-    }
-
-    /// <summary>
-    /// Captures a non-generic pattern query.<br/>
-    /// Pattern validation is intentionally deferred to the selected key family and projection because different key classes may use different pattern representations.<br/>
-    /// </summary>
-    /// <param name="pattern">The runtime pattern descriptor.</param>
-    /// <returns>A non-generic query descriptor.</returns>
-    IIndexQuery IIndex.Matches(object pattern)
-    {
-        return new LibraDexObjectIndexQuery<TKey, TIdentity>(this, Matches(pattern).Diagnostics);
-    }
-
-    /// <summary>
-    /// Determines whether a non-generic runtime key exists after validating it against this index's key type.<br/>
-    /// </summary>
-    /// <param name="key">The runtime key value to test.</param>
-    /// <returns><see langword="true"/> when at least one tuple exists for the key.</returns>
-    bool IIndex.Exists(object key)
-    {
-        return Exists(RequireObjectKey(key, nameof(key)));
-    }
-
-    /// <summary>
-    /// Determines whether any non-generic runtime key exists after validating every supplied key against this index's key type.<br/>
-    /// </summary>
-    /// <param name="keys">The runtime key values to test.</param>
-    /// <returns><see langword="true"/> when any supplied key exists in the index.</returns>
-    bool IIndex.ExistsIn(IEnumerable<object> keys)
-    {
-        ArgumentNullException.ThrowIfNull(keys);
-        TKey[] typedKeys = keys.Select(key => RequireObjectKey(key, nameof(keys))).ToArray();
-        return ExistsIn(typedKeys);
-    }
-
-    /// <summary>
-    /// Determines whether any key in a non-generic prepared-set sequence exists after validating every supplied key against this index's key type.<br/>
-    /// </summary>
-    /// <param name="keys">The runtime key values to prepare and test.</param>
-    /// <returns><see langword="true"/> when any supplied key exists in the index.</returns>
-    bool IIndex.ExistsInSet(IEnumerable<object> keys)
-    {
-        return ExistsInSet(new LibraDexPreparedSet<TKey>(RequirePreparedObjectSet(((IIndex)this).PrepareInSet(keys), nameof(keys))));
     }
 
     IReadOnlyList<object> IIdentityPrimitiveExecutor.ExecuteIdentityPrimitive(LibraDexIdentityPrimitiveRequest request)
@@ -929,6 +441,26 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     long IIdentityPrimitiveExecutor.CountIdentityPrimitive(LibraDexIdentityPrimitiveRequest request)
     {
         return CountIdentityPrimitive(request);
+    }
+
+    LibraDexIdentityMutationResult IIdentityPrimitiveMutator.DeleteIdentityPrimitive(LibraDexIdentityPrimitiveRequest request)
+    {
+        return DeleteIdentityPrimitive(request);
+    }
+
+    IReadOnlyList<LibraDexObjectTuple> IIdentityPrimitiveTupleExecutor.ExecuteTuplePrimitive(LibraDexIdentityPrimitiveRequest request)
+    {
+        return ExecuteTuplePrimitive(request);
+    }
+
+    bool IIdentityExactTupleMutator.ContainsExactTuple(object key, object identity)
+    {
+        return ContainsExactTuple(RequireObjectKey(key, nameof(key)), RequireObjectIdentity(identity, nameof(identity)));
+    }
+
+    bool IIdentityExactTupleMutator.DeleteExactTuple(object key, object identity)
+    {
+        return DeleteExactTuple(RequireObjectKey(key, nameof(key)), RequireObjectIdentity(identity, nameof(identity)));
     }
 
     private IReadOnlyList<object> ExecuteIdentityPrimitive(LibraDexIdentityPrimitiveRequest request)
@@ -949,22 +481,12 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
             LibraDexCriteriaKind.AtOrAfter => MaterializeIdentityObjects(OpenAtOrAfterRangeReader(RequireObjectKey(RequireCriterionValue(request.Values, 0), nameof(request.Values))), request.TakeLimit),
             LibraDexCriteriaKind.In => MaterializeMembershipIdentityObjects(request.Values, request.TakeLimit),
             LibraDexCriteriaKind.InSet => MaterializeMembershipIdentityObjects(request.Values, request.TakeLimit),
-            LibraDexCriteriaKind.Prefix => MaterializeScannedIdentityObjects(
-                LibraDexCriteriaKind.Prefix,
-                RequireCriterionValue(request.Values, 0),
-                request.TakeLimit),
-            LibraDexCriteriaKind.Suffix => MaterializeScannedIdentityObjects(
-                LibraDexCriteriaKind.Suffix,
-                RequireCriterionValue(request.Values, 0),
-                request.TakeLimit),
-            LibraDexCriteriaKind.Contains => MaterializeScannedIdentityObjects(
-                LibraDexCriteriaKind.Contains,
-                RequireCriterionValue(request.Values, 0),
-                request.TakeLimit),
-            LibraDexCriteriaKind.Matches => MaterializeScannedIdentityObjects(
-                LibraDexCriteriaKind.Matches,
-                RequireCriterionValue(request.Values, 0),
-                request.TakeLimit),
+            LibraDexCriteriaKind.MultiRange => MaterializeMultiRangeIdentityObjects(request.Values, request.TakeLimit),
+            LibraDexCriteriaKind.StructuredComponent => MaterializeStructuredComponentIdentityObjects(request.Values, request.TakeLimit),
+            LibraDexCriteriaKind.GuidPattern => MaterializeGuidPatternIdentityObjects(request.Values, request.TakeLimit),
+            LibraDexCriteriaKind.BinaryPattern => MaterializeBinaryPatternIdentityObjects(request.Values, request.TakeLimit),
+            LibraDexCriteriaKind.BinaryTypedSlice => MaterializeBinaryTypedSliceIdentityObjects(request.Values, request.TakeLimit),
+            LibraDexCriteriaKind.Bitmask => MaterializeBitmaskIdentityObjects(request.Values, request.TakeLimit),
             _ => throw new NotSupportedException($"{request.CriteriaKind} identity execution is not connected to physical readers yet.")
         };
     }
@@ -1042,14 +564,43 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
                 }
 
                 yield break;
-            case LibraDexCriteriaKind.Prefix:
-            case LibraDexCriteriaKind.Suffix:
-            case LibraDexCriteriaKind.Contains:
-            case LibraDexCriteriaKind.Matches:
-                foreach (object identity in IterateScannedIdentityObjects(
-                    request.CriteriaKind,
-                    RequireCriterionValue(request.Values, 0),
-                    request.TakeLimit))
+            case LibraDexCriteriaKind.MultiRange:
+                foreach (object identity in IterateMultiRangeIdentityObjects(request.Values, request.TakeLimit))
+                {
+                    yield return identity;
+                }
+
+                yield break;
+            case LibraDexCriteriaKind.StructuredComponent:
+                foreach (object identity in IterateStructuredComponentIdentityObjects(request.Values, request.TakeLimit))
+                {
+                    yield return identity;
+                }
+
+                yield break;
+            case LibraDexCriteriaKind.GuidPattern:
+                foreach (object identity in IterateGuidPatternIdentityObjects(request.Values, request.TakeLimit))
+                {
+                    yield return identity;
+                }
+
+                yield break;
+            case LibraDexCriteriaKind.BinaryPattern:
+                foreach (object identity in IterateBinaryPatternIdentityObjects(request.Values, request.TakeLimit))
+                {
+                    yield return identity;
+                }
+
+                yield break;
+            case LibraDexCriteriaKind.BinaryTypedSlice:
+                foreach (object identity in IterateBinaryTypedSliceIdentityObjects(request.Values, request.TakeLimit))
+                {
+                    yield return identity;
+                }
+
+                yield break;
+            case LibraDexCriteriaKind.Bitmask:
+                foreach (object identity in IterateBitmaskIdentityObjects(request.Values, request.TakeLimit))
                 {
                     yield return identity;
                 }
@@ -1135,20 +686,487 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
             LibraDexCriteriaKind.AtOrAfter => CountIdentityObjects(OpenAtOrAfterRangeReader(RequireObjectKey(RequireCriterionValue(request.Values, 0), nameof(request.Values)))),
             LibraDexCriteriaKind.In => CountMembershipIdentityObjects(request.Values),
             LibraDexCriteriaKind.InSet => CountMembershipIdentityObjects(request.Values),
-            LibraDexCriteriaKind.Prefix => CountScannedIdentityObjects(
-                LibraDexCriteriaKind.Prefix,
-                RequireCriterionValue(request.Values, 0)),
-            LibraDexCriteriaKind.Suffix => CountScannedIdentityObjects(
-                LibraDexCriteriaKind.Suffix,
-                RequireCriterionValue(request.Values, 0)),
-            LibraDexCriteriaKind.Contains => CountScannedIdentityObjects(
-                LibraDexCriteriaKind.Contains,
-                RequireCriterionValue(request.Values, 0)),
-            LibraDexCriteriaKind.Matches => CountScannedIdentityObjects(
-                LibraDexCriteriaKind.Matches,
-                RequireCriterionValue(request.Values, 0)),
+            LibraDexCriteriaKind.MultiRange => CountMultiRangeIdentityObjects(request.Values),
+            LibraDexCriteriaKind.StructuredComponent => CountStructuredComponentIdentityObjects(request.Values),
+            LibraDexCriteriaKind.GuidPattern => CountGuidPatternIdentityObjects(request.Values),
+            LibraDexCriteriaKind.BinaryPattern => CountBinaryPatternIdentityObjects(request.Values),
+            LibraDexCriteriaKind.BinaryTypedSlice => CountBinaryTypedSliceIdentityObjects(request.Values),
+            LibraDexCriteriaKind.Bitmask => CountBitmaskIdentityObjects(request.Values),
             _ => throw new NotSupportedException($"{request.CriteriaKind} identity count is not connected to physical readers yet.")
         };
+    }
+
+    /// <summary>
+    /// Deletes tuples matched by one normalized condition primitive when the selected generic physical shape has a connected shelf-local delete path.<br/>
+    /// This keeps condition-driven mutation on the same primitive spine as retrieval while exposing missing physical delete implementations as explicit shape gaps.<br/>
+    /// Connected fixed scalar shapes compact and rewrite only affected shelves for the requested key range.<br/>
+    /// </summary>
+    /// <param name="request">The normalized primitive request produced by the condition materializer.</param>
+    /// <returns>A tuple-oriented mutation result.</returns>
+    private LibraDexIdentityMutationResult DeleteIdentityPrimitive(LibraDexIdentityPrimitiveRequest request)
+    {
+        ThrowIfDisposed();
+        long deleted = request.CriteriaKind switch
+        {
+            LibraDexCriteriaKind.All => DeleteIdentityPrimitiveRange(GetLowerFullKeyBound(), GetUpperFullKeyBound()),
+            LibraDexCriteriaKind.Find => DeleteIdentityPrimitiveRange(
+                RequireObjectKey(RequireCriterionValue(request.Values, 0), nameof(request.Values)),
+                RequireObjectKey(RequireCriterionValue(request.Values, 0), nameof(request.Values))),
+            LibraDexCriteriaKind.Between => DeleteIdentityPrimitiveRange(
+                RequireObjectKey(RequireCriterionValue(request.Values, 0), nameof(request.Values)),
+                RequireObjectKey(RequireCriterionValue(request.Values, 1), nameof(request.Values))),
+            LibraDexCriteriaKind.Before => DeleteBeforeIdentityPrimitive(RequireObjectKey(RequireCriterionValue(request.Values, 0), nameof(request.Values))),
+            LibraDexCriteriaKind.AtOrBefore => DeleteIdentityPrimitiveRange(GetLowerFullKeyBound(), RequireObjectKey(RequireCriterionValue(request.Values, 0), nameof(request.Values))),
+            LibraDexCriteriaKind.After => DeleteAfterIdentityPrimitive(RequireObjectKey(RequireCriterionValue(request.Values, 0), nameof(request.Values))),
+            LibraDexCriteriaKind.AtOrAfter => DeleteIdentityPrimitiveRange(RequireObjectKey(RequireCriterionValue(request.Values, 0), nameof(request.Values)), GetUpperFullKeyBound()),
+            LibraDexCriteriaKind.In or LibraDexCriteriaKind.InSet => DeleteMembershipIdentityPrimitive(request.Values),
+            LibraDexCriteriaKind.MultiRange => DeleteMultiRangeIdentityPrimitive(request.Values),
+            _ => throw new NotSupportedException($"{request.CriteriaKind} identity deletion is not connected to physical mutation yet.")
+        };
+
+        return new LibraDexIdentityMutationResult(
+            LibraDexCriteriaMutationKind.Delete,
+            deleted,
+            deleted,
+            new LibraDexQueryDiagnostics(LibraDexExecutionKind.FastPath, RowsScanned: deleted, RowsReturned: deleted));
+    }
+
+    /// <summary>
+    /// Materializes key/identity tuples matched by one normalized condition primitive.<br/>
+    /// Criteria-scoped re-key uses this tuple-oriented path because the replacement must delete each old physical tuple exactly, not just the key range that discovered it.<br/>
+    /// Membership and multirange requests fan out through the same range readers used by identity projection so primitive routing remains aligned with retrieval.<br/>
+    /// </summary>
+    /// <param name="request">The normalized primitive request produced by the condition materializer.</param>
+    /// <returns>The matching key/identity tuples as object values.</returns>
+    private IReadOnlyList<LibraDexObjectTuple> ExecuteTuplePrimitive(LibraDexIdentityPrimitiveRequest request)
+    {
+        ThrowIfDisposed();
+        return request.CriteriaKind switch
+        {
+            LibraDexCriteriaKind.All => MaterializeTupleObjects(OpenAllRangeReader()),
+            LibraDexCriteriaKind.Find => MaterializeTupleObjects(OpenRangeReader(
+                RequireObjectKey(RequireCriterionValue(request.Values, 0), nameof(request.Values)),
+                RequireObjectKey(RequireCriterionValue(request.Values, 0), nameof(request.Values)))),
+            LibraDexCriteriaKind.Between => MaterializeTupleObjects(OpenRangeReader(
+                RequireObjectKey(RequireCriterionValue(request.Values, 0), nameof(request.Values)),
+                RequireObjectKey(RequireCriterionValue(request.Values, 1), nameof(request.Values)))),
+            LibraDexCriteriaKind.Before => MaterializeTupleObjects(OpenBeforeRangeReader(RequireObjectKey(RequireCriterionValue(request.Values, 0), nameof(request.Values)))),
+            LibraDexCriteriaKind.AtOrBefore => MaterializeTupleObjects(OpenAtOrBeforeRangeReader(RequireObjectKey(RequireCriterionValue(request.Values, 0), nameof(request.Values)))),
+            LibraDexCriteriaKind.After => MaterializeTupleObjects(OpenAfterRangeReader(RequireObjectKey(RequireCriterionValue(request.Values, 0), nameof(request.Values)))),
+            LibraDexCriteriaKind.AtOrAfter => MaterializeTupleObjects(OpenAtOrAfterRangeReader(RequireObjectKey(RequireCriterionValue(request.Values, 0), nameof(request.Values)))),
+            LibraDexCriteriaKind.In or LibraDexCriteriaKind.InSet => MaterializeMembershipTupleObjects(request.Values),
+            LibraDexCriteriaKind.MultiRange => MaterializeMultiRangeTupleObjects(request.Values),
+            LibraDexCriteriaKind.Bitmask => MaterializeBitmaskTupleObjects(request.Values),
+            _ => throw new NotSupportedException($"{request.CriteriaKind} tuple execution is not connected to physical readers yet.")
+        };
+    }
+
+    private TKey GetLowerFullKeyBound()
+    {
+        GetFullKeyBounds(out TKey lowerKey, out _);
+        return lowerKey;
+    }
+
+    private TKey GetUpperFullKeyBound()
+    {
+        GetFullKeyBounds(out _, out TKey upperKey);
+        return upperKey;
+    }
+
+    private long DeleteBeforeIdentityPrimitive(TKey key)
+    {
+        return TryGetPreviousKey(key, out TKey upperKey)
+            ? DeleteIdentityPrimitiveRange(GetLowerFullKeyBound(), upperKey)
+            : 0;
+    }
+
+    private long DeleteAfterIdentityPrimitive(TKey key)
+    {
+        return TryGetNextKey(key, out TKey lowerKey)
+            ? DeleteIdentityPrimitiveRange(lowerKey, GetUpperFullKeyBound())
+            : 0;
+    }
+
+    private long DeleteMembershipIdentityPrimitive(IReadOnlyList<object?> values)
+    {
+        if (values.Count > 1)
+        {
+            return DeleteMembershipIdentityPrimitive(values.Select(RequireNonNullMembershipValue));
+        }
+
+        object value = RequireCriterionValue(values, 0);
+        IEnumerable<object> keys = value switch
+        {
+            LibraDexPreparedObjectSet prepared => prepared.Source,
+            IEnumerable<object> objectValues => objectValues,
+            System.Collections.IEnumerable enumerable => enumerable.Cast<object>(),
+            _ => throw new InvalidOperationException("Membership identity deletion requires an enumerable key value or prepared set.")
+        };
+
+        return DeleteMembershipIdentityPrimitive(keys);
+    }
+
+    private long DeleteMembershipIdentityPrimitive(IEnumerable<object> keys)
+    {
+        long deleted = 0;
+        foreach (object keyValue in keys)
+        {
+            TKey key = RequireObjectKey(keyValue, nameof(keys));
+            deleted += DeleteIdentityPrimitiveRange(key, key);
+        }
+
+        return deleted;
+    }
+
+    private long DeleteMultiRangeIdentityPrimitive(IReadOnlyList<object?> values)
+    {
+        if (values.Count != 1 || values[0] is not IReadOnlyList<LibraDexIdentityKeyRange> ranges)
+        {
+            throw new InvalidOperationException("Multi-range identity deletion requires one range-list operand.");
+        }
+
+        long deleted = 0;
+        for (int i = 0; i < ranges.Count; i++)
+        {
+            deleted += DeleteIdentityPrimitiveRange(
+                RequireObjectKey(ranges[i].LowerKey, nameof(values)),
+                RequireObjectKey(ranges[i].UpperKey, nameof(values)));
+        }
+
+        return deleted;
+    }
+
+    private long DeleteIdentityPrimitiveRange(TKey lowerKey, TKey upperKey)
+    {
+        return shape switch
+        {
+            LibraDexGenericScalarShape.SS88 => DeleteScalar8Scalar8Range(lowerKey, upperKey),
+            LibraDexGenericScalarShape.SS168 => DeleteScalar16Scalar8Range(lowerKey, upperKey),
+            LibraDexGenericScalarShape.SS816 => DeleteScalar8Scalar16Range(lowerKey, upperKey),
+            LibraDexGenericScalarShape.SS1616 => DeleteScalar16Scalar16Range(lowerKey, upperKey),
+            LibraDexGenericScalarShape.FS328 => DeleteFixed32Scalar8Range(lowerKey, upperKey),
+            LibraDexGenericScalarShape.FS3216 => DeleteFixed32Scalar16Range(lowerKey, upperKey),
+            _ => throw new NotSupportedException($"{shape} identity deletion is not connected to physical shelf mutation yet.")
+        };
+    }
+
+    /// <summary>
+    /// Deletes `SS8-8` tuples in an inclusive key range by removing matching sorted slots from affected shelves.<br/>
+    /// The router walk is shared with the range reader plan so the delete touches only shelves whose key intervals intersect the condition primitive.<br/>
+    /// Surviving payload cells are compacted before the shelf rewrite is staged, keeping the active payload prefix safe for later inserts.<br/>
+    /// </summary>
+    /// <param name="lowerKey">The inclusive lower public key.</param>
+    /// <param name="upperKey">The inclusive upper public key.</param>
+    /// <returns>The number of active tuples removed.</returns>
+    private long DeleteScalar8Scalar8Range(TKey lowerKey, TKey upperKey)
+    {
+        ulong lowerEncodedKey = EncodeKey8(lowerKey);
+        ulong upperEncodedKey = EncodeKey8(upperKey);
+        if (upperEncodedKey < lowerEncodedKey)
+        {
+            return 0;
+        }
+
+        using Scalar8Scalar8RangePlan plan = session.BuildScalar8Scalar8RangePlan(RootRouterOffset, Scalar8Scalar8Profile.Default32KiB, lowerEncodedKey, upperEncodedKey);
+        long deleted = 0;
+        for (int i = 0; i < plan.ShelfCount; i++)
+        {
+            byte[] shelfBytes = session.IsDurabilityBatchActive
+                ? session.ReadScalar8Scalar8ShelfBytesForBatch(plan.ShelfOffsets[i], plan.Profile)
+                : plan.Shelves[i];
+            Scalar8Scalar8ReadOnly readOnly = new(shelfBytes, plan.Profile);
+            int startSlot = session.IsDurabilityBatchActive
+                ? readOnly.LowerBoundKey(lowerEncodedKey)
+                : plan.StartSlots[i];
+            int endSlot = session.IsDurabilityBatchActive ? startSlot : plan.EndSlots[i];
+            if (session.IsDurabilityBatchActive)
+            {
+                while (endSlot < readOnly.ItemCount && readOnly.ReadKeyAt(endSlot) <= upperEncodedKey)
+                {
+                    endSlot++;
+                }
+            }
+
+            Scalar8Scalar8 shelf = new(shelfBytes, plan.Profile);
+            int removed = session.IsDurabilityBatchActive
+                ? shelf.MarkSlotRangeDeleted(startSlot, endSlot - startSlot)
+                : shelf.RemoveSlotRange(startSlot, endSlot - startSlot);
+            if (removed == 0)
+            {
+                continue;
+            }
+
+            _ = session.StageScalar8Scalar8ShelfRewriteForBatch(plan.ShelfOffsets[i], plan.Profile, shelfBytes);
+            deleted += removed;
+        }
+
+        for (long i = 0; i < deleted; i++)
+        {
+            RecordDelete();
+        }
+
+        return deleted;
+    }
+
+    /// <summary>
+    /// Deletes `SS16-8` tuples in an inclusive key range by removing matching sorted slots from affected shelves.<br/>
+    /// The reader owns route traversal and retained shelf buffers; deletion mutates only the planned shelf intervals and stages validated rewrites through the session.<br/>
+    /// This mirrors the `SS8-8` delete bridge while preserving the two-lane key comparison rules inside the existing range reader.<br/>
+    /// </summary>
+    /// <param name="lowerKey">The inclusive lower public key.</param>
+    /// <param name="upperKey">The inclusive upper public key.</param>
+    /// <returns>The number of active tuples removed.</returns>
+    private long DeleteScalar16Scalar8Range(TKey lowerKey, TKey upperKey)
+    {
+        using Scalar16Scalar8RangeReader reader = OpenScalar16Scalar8RangeReader(lowerKey, upperKey);
+        long deleted = reader.DeleteMatchedRanges();
+        for (long i = 0; i < deleted; i++)
+        {
+            RecordDelete();
+        }
+
+        return deleted;
+    }
+
+    /// <summary>
+    /// Deletes `FS32-8` tuples in an inclusive key range by removing matching sorted slots from affected shelves.<br/>
+    /// The fixed 32-byte key shape keeps its range comparison and router traversal in the existing range reader; this method only invokes the reader's shelf-local delete executor and records mutation counters.<br/>
+    /// </summary>
+    /// <param name="lowerKey">The inclusive lower public key.</param>
+    /// <param name="upperKey">The inclusive upper public key.</param>
+    /// <returns>The number of active tuples removed.</returns>
+    private long DeleteFixed32Scalar8Range(TKey lowerKey, TKey upperKey)
+    {
+        using Fixed32Scalar8RangeReader reader = OpenFixed32Scalar8RangeReader(lowerKey, upperKey);
+        long deleted = reader.DeleteMatchedRanges();
+        for (long i = 0; i < deleted; i++)
+        {
+            RecordDelete();
+        }
+
+        return deleted;
+    }
+
+    /// <summary>
+    /// Deletes `SS8-16` tuples in an inclusive key range by removing matching sorted slots from affected shelves.<br/>
+    /// Widened identities do not change the delete predicate because the condition primitive selects by key; duplicate tuple order remains encoded in the shelf slot table.<br/>
+    /// </summary>
+    /// <param name="lowerKey">The inclusive lower public key.</param>
+    /// <param name="upperKey">The inclusive upper public key.</param>
+    /// <returns>The number of active tuples removed.</returns>
+    private long DeleteScalar8Scalar16Range(TKey lowerKey, TKey upperKey)
+    {
+        using Scalar8Scalar16RangeReader reader = OpenScalar8Scalar16RangeReader(lowerKey, upperKey);
+        long deleted = reader.DeleteMatchedRanges();
+        for (long i = 0; i < deleted; i++)
+        {
+            RecordDelete();
+        }
+
+        return deleted;
+    }
+
+    /// <summary>
+    /// Deletes `SS16-16` tuples in an inclusive key range by removing matching sorted slots from affected shelves.<br/>
+    /// The existing two-lane-key range reader owns route traversal and key comparison, while the delete bridge only applies shelf-local slot removal and stages rewritten shelves.<br/>
+    /// </summary>
+    /// <param name="lowerKey">The inclusive lower public key.</param>
+    /// <param name="upperKey">The inclusive upper public key.</param>
+    /// <returns>The number of active tuples removed.</returns>
+    private long DeleteScalar16Scalar16Range(TKey lowerKey, TKey upperKey)
+    {
+        using Scalar16Scalar16RangeReader reader = OpenScalar16Scalar16RangeReader(lowerKey, upperKey);
+        long deleted = reader.DeleteMatchedRanges();
+        for (long i = 0; i < deleted; i++)
+        {
+            RecordDelete();
+        }
+
+        return deleted;
+    }
+
+    /// <summary>
+    /// Deletes `FS32-16` tuples in an inclusive key range by removing matching sorted slots from affected shelves.<br/>
+    /// The fixed-key widened-identity shape uses the same routed range reader as retrieval, so delete remains aligned with condition materialization and avoids a separate mutation selector.<br/>
+    /// </summary>
+    /// <param name="lowerKey">The inclusive lower public key.</param>
+    /// <param name="upperKey">The inclusive upper public key.</param>
+    /// <returns>The number of active tuples removed.</returns>
+    private long DeleteFixed32Scalar16Range(TKey lowerKey, TKey upperKey)
+    {
+        using Fixed32Scalar16RangeReader reader = OpenFixed32Scalar16RangeReader(lowerKey, upperKey);
+        long deleted = reader.DeleteMatchedRanges();
+        for (long i = 0; i < deleted; i++)
+        {
+            RecordDelete();
+        }
+
+        return deleted;
+    }
+
+    private void RecordDelete()
+    {
+        Stats.RecordDelete();
+        catalog?.Stats.RecordDelete();
+    }
+
+    private void RecordRekey()
+    {
+        Stats.RecordRekey();
+        catalog?.Stats.RecordRekey();
+    }
+
+    /// <summary>
+    /// Tests one exact typed key/identity tuple through an equality range over the key.<br/>
+    /// This avoids relying on insert result ambiguity, where an uninserted replacement can mean either "already present" or "blocked by uniqueness".<br/>
+    /// </summary>
+    /// <param name="key">The key side of the tuple to test.</param>
+    /// <param name="identity">The identity side of the tuple to test.</param>
+    /// <returns><see langword="true"/> when the exact tuple exists.</returns>
+    private bool ContainsExactTuple(TKey key, TIdentity identity)
+    {
+        using LibraDexRangeReader<TKey, TIdentity> reader = OpenRangeReader(key, key);
+        while (reader.TryReadNext(out _, out TIdentity currentIdentity))
+        {
+            if (TupleComponentEquals(currentIdentity, identity))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Deletes one exact typed key/identity tuple without removing neighboring identities that share the same key.<br/>
+    /// The operation is the tuple-level primitive used by direct delete and by criteria-scoped re-key after replacement tuples have been created.<br/>
+    /// </summary>
+    /// <param name="key">The key side of the tuple to delete.</param>
+    /// <param name="identity">The identity side of the tuple to delete.</param>
+    /// <returns><see langword="true"/> when one tuple was removed.</returns>
+    private bool DeleteExactTuple(TKey key, TIdentity identity)
+    {
+        bool deleted = shape switch
+        {
+            LibraDexGenericScalarShape.SS88 => DeleteExactScalar8Scalar8Tuple(key, identity),
+            LibraDexGenericScalarShape.SS168 => DeleteExactScalar16Scalar8Tuple(key, identity),
+            LibraDexGenericScalarShape.SS816 => DeleteExactScalar8Scalar16Tuple(key, identity),
+            LibraDexGenericScalarShape.SS1616 => DeleteExactScalar16Scalar16Tuple(key, identity),
+            LibraDexGenericScalarShape.FS328 => DeleteExactFixed32Scalar8Tuple(key, identity),
+            LibraDexGenericScalarShape.FS3216 => DeleteExactFixed32Scalar16Tuple(key, identity),
+            _ => throw new NotSupportedException($"{shape} exact tuple deletion is not connected to physical shelf mutation yet.")
+        };
+        if (deleted)
+        {
+            DeleteExactReversedProjection(key, identity);
+            RecordDelete();
+        }
+
+        return deleted;
+    }
+
+    /// <summary>
+    /// Removes the reversed-key companion tuple from the maintained exact reversed projection when this index owns one.<br/>
+    /// Projection deletion is tied to exact tuple deletion so rekey and direct delete keep suffix routing consistent with the primary index.<br/>
+    /// </summary>
+    /// <param name="key">The original forward key removed from the logical index.</param>
+    /// <param name="identity">The identity associated with the removed tuple.</param>
+    private void DeleteExactReversedProjection(TKey key, TIdentity identity)
+    {
+        if (exactReversedProjection is null)
+        {
+            return;
+        }
+
+        _ = exactReversedProjection.DeleteExactTuple(CreateExactReversedProjectionKey(key), identity);
+    }
+
+    /// <summary>
+    /// Produces the stored key value for an exact reversed binary projection.<br/>
+    /// The input key is cloned before reversal so caller-owned byte arrays and primary index values are not mutated by projection maintenance.<br/>
+    /// </summary>
+    /// <param name="key">The original forward byte-array key.</param>
+    /// <returns>The reversed key value encoded as the same generic key type.</returns>
+    private static TKey CreateExactReversedProjectionKey(TKey key)
+    {
+        if (key is not byte[] bytes)
+        {
+            throw new NotSupportedException("Exact reversed projections are currently connected only for fixed-width byte[] keys.");
+        }
+
+        byte[] reversed = (byte[])bytes.Clone();
+        Array.Reverse(reversed);
+        return (TKey)(object)reversed;
+    }
+
+    private bool DeleteExactScalar8Scalar8Tuple(TKey key, TIdentity identity)
+    {
+        ulong encodedKey = EncodeKey8(key);
+        ulong encodedIdentity = LibraDexGenericScalarCodec<TIdentity>.Encode8(identity);
+        using Scalar8Scalar8RangePlan plan = session.BuildScalar8Scalar8RangePlan(RootRouterOffset, Scalar8Scalar8Profile.Default32KiB, encodedKey, encodedKey);
+        for (int i = 0; i < plan.ShelfCount; i++)
+        {
+            Scalar8Scalar8ReadOnly readOnly = new(plan.Shelves[i], plan.Profile);
+            for (int slot = plan.StartSlots[i]; slot < plan.EndSlots[i]; slot++)
+            {
+                if (readOnly.ReadIdentityAt(slot) != encodedIdentity)
+                {
+                    continue;
+                }
+
+                Scalar8Scalar8 shelf = new(plan.Shelves[i], plan.Profile);
+                _ = shelf.RemoveSlotRange(slot, 1);
+                _ = session.StageScalar8Scalar8ShelfRewriteForBatch(plan.ShelfOffsets[i], plan.Profile, plan.Shelves[i]);
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private bool DeleteExactScalar16Scalar8Tuple(TKey key, TIdentity identity)
+    {
+        ulong encodedIdentity = LibraDexGenericScalarCodec<TIdentity>.Encode8(identity);
+        using Scalar16Scalar8RangeReader reader = OpenScalar16Scalar8RangeReader(key, key);
+        return reader.DeleteFirstMatchingEncodedIdentity(encodedIdentity);
+    }
+
+    private bool DeleteExactScalar8Scalar16Tuple(TKey key, TIdentity identity)
+    {
+        LibraDexGenericScalarCodec<TIdentity>.Encode16(identity, out ulong identityHigh, out ulong identityLow);
+        using Scalar8Scalar16RangeReader reader = OpenScalar8Scalar16RangeReader(key, key);
+        return reader.DeleteFirstMatchingEncodedIdentity(identityHigh, identityLow);
+    }
+
+    private bool DeleteExactScalar16Scalar16Tuple(TKey key, TIdentity identity)
+    {
+        LibraDexGenericScalarCodec<TIdentity>.Encode16(identity, out ulong identityHigh, out ulong identityLow);
+        using Scalar16Scalar16RangeReader reader = OpenScalar16Scalar16RangeReader(key, key);
+        return reader.DeleteFirstMatchingEncodedIdentity(identityHigh, identityLow);
+    }
+
+    private bool DeleteExactFixed32Scalar8Tuple(TKey key, TIdentity identity)
+    {
+        ulong encodedIdentity = LibraDexGenericScalarCodec<TIdentity>.Encode8(identity);
+        using Fixed32Scalar8RangeReader reader = OpenFixed32Scalar8RangeReader(key, key);
+        return reader.DeleteFirstMatchingEncodedIdentity(encodedIdentity);
+    }
+
+    private bool DeleteExactFixed32Scalar16Tuple(TKey key, TIdentity identity)
+    {
+        LibraDexGenericScalarCodec<TIdentity>.Encode16(identity, out ulong identityHigh, out ulong identityLow);
+        using Fixed32Scalar16RangeReader reader = OpenFixed32Scalar16RangeReader(key, key);
+        return reader.DeleteFirstMatchingEncodedIdentity(identityHigh, identityLow);
+    }
+
+    private static bool TupleComponentEquals<TValue>(TValue left, TValue right)
+    {
+        if (left is byte[] leftBytes && right is byte[] rightBytes)
+        {
+            return leftBytes.AsSpan().SequenceEqual(rightBytes);
+        }
+
+        return EqualityComparer<TValue>.Default.Equals(left, right);
     }
 
     /// <summary>
@@ -1161,24 +1179,93 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     public void Rekey(TIdentity identity, TKey oldKey, TKey newKey)
     {
         ThrowIfDisposed();
-        _ = identity;
-        _ = oldKey;
-        _ = newKey;
-        throw new NotSupportedException("Direct Rekey(identity, oldKey, newKey) is part of the public API scaffold but is not connected to physical tuple replacement yet.");
+        if (TupleComponentEquals(oldKey, newKey))
+        {
+            return;
+        }
+
+        if (!ContainsExactTuple(oldKey, identity))
+        {
+            return;
+        }
+
+        if (!ContainsExactTuple(newKey, identity))
+        {
+            LibraDexGenericInsertResult insert = Insert(newKey, identity);
+            if (!insert.Inserted && !ContainsExactTuple(newKey, identity))
+            {
+                throw new InvalidOperationException("Rekey could not create the replacement tuple; the original tuple was left unchanged.");
+            }
+        }
+
+        _ = DeleteExactTuple(oldKey, identity);
+        RecordRekey();
+    }
+
+    /// <summary>
+    /// Re-keys the exact tuple captured by a live range cursor.<br/>
+    /// The range reader owns traversal state only; this method performs the durable mutation through the owning index so retained shelf snapshots are not rewritten after a replacement insert.<br/>
+    /// A no-op is returned when the old tuple is already gone or when the requested key is equal to the current key.<br/>
+    /// </summary>
+    /// <param name="oldKey">The key captured from the cursor's current row before mutation.</param>
+    /// <param name="identity">The identity captured from the cursor's current row before mutation.</param>
+    /// <param name="newKey">The replacement key to associate with the captured identity.</param>
+    /// <returns>The insert result for the replacement tuple, or a no-op result when no replacement insert was required.</returns>
+    private LibraDexGenericInsertResult RekeyForCursor(TKey oldKey, TIdentity identity, TKey newKey)
+    {
+        ThrowIfDisposed();
+        if (TupleComponentEquals(oldKey, newKey))
+        {
+            return new LibraDexGenericInsertResult(false, false, default, default);
+        }
+
+        if (!ContainsExactTuple(oldKey, identity))
+        {
+            return new LibraDexGenericInsertResult(false, false, default, default);
+        }
+
+        LibraDexGenericInsertResult insert = ContainsExactTuple(newKey, identity)
+            ? new LibraDexGenericInsertResult(false, false, default, default)
+            : Insert(newKey, identity);
+        if (!insert.Inserted && !ContainsExactTuple(newKey, identity))
+        {
+            throw new InvalidOperationException("Cursor-local SetKey could not create the replacement tuple; the original tuple was left unchanged.");
+        }
+
+        if (DeleteExactTuple(oldKey, identity))
+        {
+            RecordRekey();
+        }
+
+        return insert;
     }
 
     /// <summary>
     /// Re-keys one identity when the caller does not know the old key.<br/>
-    /// This shape requires either a maintained reverse identity lookup or a caller-selected retrieval cursor that finds the identity and calls `SetKey`.<br/>
+    /// The current implementation scans this index's visible tuples to discover old keys, then applies the exact old-key rekey primitive to each matching tuple.<br/>
+    /// A maintained reverse identity lookup can optimize this later without changing the public call shape.<br/>
     /// </summary>
     /// <param name="identity">The identity to re-key.</param>
     /// <param name="newKey">The replacement key to associate with the identity.</param>
     public void Rekey(TIdentity identity, TKey newKey)
     {
         ThrowIfDisposed();
-        _ = identity;
-        _ = newKey;
-        throw new NotSupportedException("Direct Rekey(identity, newKey) requires reverse identity lookup or a retrieval cursor and is not connected yet.");
+        List<TKey> oldKeys = new();
+        using (LibraDexRangeReader<TKey, TIdentity> reader = OpenAllRangeReader())
+        {
+            while (reader.TryReadNext(out TKey key, out TIdentity currentIdentity))
+            {
+                if (TupleComponentEquals(currentIdentity, identity))
+                {
+                    oldKeys.Add(key);
+                }
+            }
+        }
+
+        for (int i = 0; i < oldKeys.Count; i++)
+        {
+            Rekey(identity, oldKeys[i], newKey);
+        }
     }
 
     /// <summary>
@@ -1190,9 +1277,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     public void Delete(TKey key, TIdentity identity)
     {
         ThrowIfDisposed();
-        _ = key;
-        _ = identity;
-        throw new NotSupportedException("Direct Delete(key, identity) is part of the public API scaffold but is not connected to physical tuple deletion yet.");
+        _ = DeleteExactTuple(key, identity);
     }
 
     /// <summary>
@@ -1260,13 +1345,32 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
             _ => throw new NotSupportedException($"Generic LibraDex range readers do not support resolved shape {shape}.")
         };
 
-        return new LibraDexRangeReader<TKey, TIdentity>(reader, shape);
+        return new LibraDexRangeReader<TKey, TIdentity>(
+            reader,
+            shape,
+            recordDelete: RecordDelete,
+            rekeyTuple: RekeyForCursor);
     }
 
     private LibraDexRangeReader<TKey, TIdentity> OpenAllRangeReader()
     {
         GetFullKeyBounds(out TKey lowerKey, out TKey upperKey);
         return OpenRangeReader(lowerKey, upperKey);
+    }
+
+    /// <summary>
+    /// Streams every decoded key/identity tuple in this index through the lowest available all-range reader.<br/>
+    /// This method is the condition/grouping bridge for whole-index tuple walks after the old direct retrieval facade has been removed.<br/>
+    /// Callers that need filtered identity results should still enter through condition primitives so new physical needs are exposed as primitive requests instead of hidden facade reuse.<br/>
+    /// </summary>
+    /// <returns>A forward-only tuple sequence ordered by the index's physical key/identity traversal.</returns>
+    internal IEnumerable<LibraDexTuple<TKey, TIdentity>> IterateAllTuples()
+    {
+        using LibraDexRangeReader<TKey, TIdentity> reader = OpenAllRangeReader();
+        while (reader.TryReadNext(out TKey key, out TIdentity identity))
+        {
+            yield return new LibraDexTuple<TKey, TIdentity>(key, identity);
+        }
     }
 
     private LibraDexRangeReader<TKey, TIdentity> OpenBeforeRangeReader(TKey key)
@@ -1313,11 +1417,23 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
         {
             case LibraDexGenericScalarShape.SS88:
             case LibraDexGenericScalarShape.SS816:
-                lowerKey = LibraDexGenericScalarCodec<TKey>.Decode8(0);
-                upperKey = LibraDexGenericScalarCodec<TKey>.Decode8(ulong.MaxValue);
+                if (LibraDexGenericScalarCodec<TKey>.TryGetMinimumValue(out lowerKey) &&
+                    LibraDexGenericScalarCodec<TKey>.TryGetMaximumValue(out upperKey))
+                {
+                    return;
+                }
+
+                lowerKey = DecodeKey8(0);
+                upperKey = DecodeKey8(ulong.MaxValue);
                 return;
             case LibraDexGenericScalarShape.SS168:
             case LibraDexGenericScalarShape.SS1616:
+                if (LibraDexGenericScalarCodec<TKey>.TryGetMinimumValue(out lowerKey) &&
+                    LibraDexGenericScalarCodec<TKey>.TryGetMaximumValue(out upperKey))
+                {
+                    return;
+                }
+
                 lowerKey = LibraDexGenericScalarCodec<TKey>.Decode16(0, 0);
                 upperKey = LibraDexGenericScalarCodec<TKey>.Decode16(ulong.MaxValue, ulong.MaxValue);
                 return;
@@ -1338,19 +1454,29 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
             case LibraDexGenericScalarShape.SS88:
             case LibraDexGenericScalarShape.SS816:
             {
-                ulong encoded = LibraDexGenericScalarCodec<TKey>.Encode8(key);
+                if (LibraDexGenericScalarCodec<TKey>.HasExplicitScalarDomain)
+                {
+                    return TryGetPreviousKeyValue(key, out previousKey);
+                }
+
+                ulong encoded = EncodeKey8(key);
                 if (encoded == 0)
                 {
                     previousKey = default!;
                     return false;
                 }
 
-                previousKey = LibraDexGenericScalarCodec<TKey>.Decode8(encoded - 1);
+                previousKey = DecodeKey8(encoded - 1);
                 return true;
             }
             case LibraDexGenericScalarShape.SS168:
             case LibraDexGenericScalarShape.SS1616:
             {
+                if (LibraDexGenericScalarCodec<TKey>.HasExplicitScalarDomain)
+                {
+                    return TryGetPreviousKeyValue(key, out previousKey);
+                }
+
                 LibraDexGenericScalarCodec<TKey>.Encode16(key, out ulong high, out ulong low);
                 if (high == 0 && low == 0)
                 {
@@ -1386,19 +1512,29 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
             case LibraDexGenericScalarShape.SS88:
             case LibraDexGenericScalarShape.SS816:
             {
-                ulong encoded = LibraDexGenericScalarCodec<TKey>.Encode8(key);
+                if (LibraDexGenericScalarCodec<TKey>.HasExplicitScalarDomain)
+                {
+                    return TryGetNextKeyValue(key, out nextKey);
+                }
+
+                ulong encoded = EncodeKey8(key);
                 if (encoded == ulong.MaxValue)
                 {
                     nextKey = default!;
                     return false;
                 }
 
-                nextKey = LibraDexGenericScalarCodec<TKey>.Decode8(encoded + 1);
+                nextKey = DecodeKey8(encoded + 1);
                 return true;
             }
             case LibraDexGenericScalarShape.SS168:
             case LibraDexGenericScalarShape.SS1616:
             {
+                if (LibraDexGenericScalarCodec<TKey>.HasExplicitScalarDomain)
+                {
+                    return TryGetNextKeyValue(key, out nextKey);
+                }
+
                 LibraDexGenericScalarCodec<TKey>.Encode16(key, out ulong high, out ulong low);
                 if (high == ulong.MaxValue && low == ulong.MaxValue)
                 {
@@ -1520,50 +1656,36 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
         }
     }
 
-    private LibraDexCriteriaQuery<TKey, TIdentity> CreateCriteriaQuery(
-        LibraDexCriteriaKind criteriaKind,
-        QueryDirection direction,
-        int skip,
-        int? take,
-        RetrievalScope scope,
-        LibraDexBookmark? bookmark,
-        LibraDexExecutionKind executionKind,
-        TKey key = default!,
-        bool hasKey = false,
-        object? operand = null,
-        bool hasOperand = false)
+    private IIndex ResolveOwnIndex(string indexName)
     {
-        ThrowIfDisposed();
-        if (skip < 0)
+        if (!string.Equals(indexName, Name, StringComparison.Ordinal))
         {
-            throw new ArgumentOutOfRangeException(nameof(skip), skip, "Skip cannot be negative.");
+            throw new KeyNotFoundException($"Index '{indexName}' cannot be resolved from single-index handle '{Name}'. Execute composed cross-index conditions from the owning identity group instead.");
         }
 
-        if (take is < 0)
-        {
-            throw new ArgumentOutOfRangeException(nameof(take), take, "Take cannot be negative.");
-        }
-
-        return new LibraDexCriteriaQuery<TKey, TIdentity>(
-            this,
-            criteriaKind,
-            direction,
-            skip,
-            take,
-            scope,
-            bookmark,
-            executionKind,
-            key: key,
-            hasKey: hasKey,
-            operand: operand,
-            hasOperand: hasOperand);
+        return this;
     }
 
-    private static LibraDexExecutionKind DirectionExecutionKind(QueryDirection direction)
+    /// <summary>
+    /// Resolves this handle's hidden projection for single-index condition execution.<br/>
+    /// The current connected projection route is binary `EndsWith`, which maps to the maintained reversed exact-byte projection when present.<br/>
+    /// </summary>
+    /// <param name="descriptor">The condition leaf requesting a projection route.</param>
+    /// <param name="classification">The planner classification that identified the projection need.</param>
+    /// <returns>The hidden projection index, or <see langword="null"/> when this handle has no matching projection.</returns>
+    private IIndex? ResolveOwnProjectionIndex(
+        LibraDexConditionLeafDescriptor descriptor,
+        LibraDexConditionLeafClassification classification)
     {
-        return direction == QueryDirection.Descending
-            ? LibraDexExecutionKind.ReverseTraversal
-            : LibraDexExecutionKind.FastPath;
+        if (classification.ProjectionKind == LibraDexIndexProjectionKind.Exact &&
+            descriptor.ValueKind == LibraDexConditionValueKind.Binary &&
+            descriptor.Operator == LibraDexConditionOperatorKind.EndsWith &&
+            string.Equals(descriptor.IndexName, Name, StringComparison.Ordinal))
+        {
+            return exactReversedProjection;
+        }
+
+        return null;
     }
 
     private static TKey RequireObjectKey(object value, string parameterName)
@@ -1601,6 +1723,26 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     private IReadOnlyList<object> MaterializeIdentityObjects(LibraDexRangeReader<TKey, TIdentity> reader, int? takeLimit = null)
     {
         return IterateIdentityObjects(reader, takeLimit).ToList();
+    }
+
+    /// <summary>
+    /// Materializes decoded key/identity tuples from a generic range reader and disposes the reader after consumption.<br/>
+    /// The object wrapper is intentionally internal and preserves exact old keys for tuple-level mutation without adding a public projection type.<br/>
+    /// </summary>
+    /// <param name="reader">The range reader to consume.</param>
+    /// <returns>The decoded tuples as object key/identity pairs.</returns>
+    private static IReadOnlyList<LibraDexObjectTuple> MaterializeTupleObjects(LibraDexRangeReader<TKey, TIdentity> reader)
+    {
+        List<LibraDexObjectTuple> tuples = new();
+        using (reader)
+        {
+            while (reader.TryReadNext(out TKey key, out TIdentity identity))
+            {
+                tuples.Add(new LibraDexObjectTuple(key!, identity!));
+            }
+        }
+
+        return tuples;
     }
 
     /// <summary>
@@ -1647,219 +1789,6 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
         }
     }
 
-    private IReadOnlyList<object> MaterializeScannedIdentityObjects(
-        LibraDexCriteriaKind criteriaKind,
-        object operand,
-        int? takeLimit = null)
-    {
-        return IterateScannedIdentityObjects(criteriaKind, operand, takeLimit).ToList();
-    }
-
-    /// <summary>
-    /// Streams identities for scan-backed key predicates by reading key/identity tuples from the full key range.<br/>
-    /// This is the conservative physical bridge for criteria such as `Prefix`, `Suffix`, `Contains`, and `Matches` when no maintained projection is available yet.<br/>
-    /// The predicate is evaluated against decoded public key values, so callers get correct retrieval semantics before projection-specific fast paths are added.<br/>
-    /// </summary>
-    /// <param name="criteriaKind">The scan-backed criteria kind to evaluate.</param>
-    /// <param name="operand">The materialized predicate operand.</param>
-    /// <param name="takeLimit">The optional maximum number of identities to yield.</param>
-    /// <returns>A forward-only identity sequence.</returns>
-    private IEnumerable<object> IterateScannedIdentityObjects(
-        LibraDexCriteriaKind criteriaKind,
-        object operand,
-        int? takeLimit = null)
-    {
-        if (takeLimit is < 0)
-        {
-            throw new ArgumentOutOfRangeException(nameof(takeLimit), takeLimit, "Take cannot be negative.");
-        }
-
-        if (takeLimit == 0)
-        {
-            yield break;
-        }
-
-        using LibraDexRangeReader<TKey, TIdentity> reader = OpenAllRangeReader();
-        int returned = 0;
-        while (reader.TryReadNext(out TKey key, out TIdentity identity))
-        {
-            if (!MatchesScannedKey(criteriaKind, key, operand))
-            {
-                continue;
-            }
-
-            yield return identity!;
-            returned++;
-            if (takeLimit is not null && returned >= takeLimit.Value)
-            {
-                yield break;
-            }
-        }
-    }
-
-    /// <summary>
-    /// Streams tuple rows for a scan-backed key predicate by reading the full key range and applying the predicate to decoded keys.<br/>
-    /// Skip and take are applied after predicate matching so they behave like query-result paging rather than physical-row paging.<br/>
-    /// This is intentionally conservative: projection-specific fast paths can replace this when logical shape metadata proves a better maintained projection exists.<br/>
-    /// </summary>
-    /// <param name="criteriaKind">The scan-backed criteria kind to evaluate.</param>
-    /// <param name="operand">The materialized predicate operand.</param>
-    /// <param name="skip">The number of matching tuples to skip.</param>
-    /// <param name="take">The optional maximum number of tuples to return.</param>
-    /// <returns>A forward-only tuple sequence.</returns>
-    private IEnumerable<LibraDexTuple<TKey, TIdentity>> IterateScannedTuples(
-        LibraDexCriteriaKind criteriaKind,
-        object operand,
-        int skip,
-        int? take)
-    {
-        if (skip < 0)
-        {
-            throw new ArgumentOutOfRangeException(nameof(skip), skip, "Skip cannot be negative.");
-        }
-
-        if (take is < 0)
-        {
-            throw new ArgumentOutOfRangeException(nameof(take), take, "Take cannot be negative.");
-        }
-
-        if (take == 0)
-        {
-            yield break;
-        }
-
-        using LibraDexRangeReader<TKey, TIdentity> reader = OpenAllRangeReader();
-        int returned = 0;
-        while (reader.TryReadNext(out TKey key, out TIdentity identity))
-        {
-            if (!MatchesScannedKey(criteriaKind, key, operand))
-            {
-                continue;
-            }
-
-            if (skip > 0)
-            {
-                skip--;
-                continue;
-            }
-
-            yield return new LibraDexTuple<TKey, TIdentity>(key, identity);
-            returned++;
-            if (take is not null && returned >= take.Value)
-            {
-                yield break;
-            }
-        }
-    }
-
-    private long CountScannedIdentityObjects(LibraDexCriteriaKind criteriaKind, object operand)
-    {
-        long count = 0;
-        foreach (object _ in IterateScannedIdentityObjects(criteriaKind, operand))
-        {
-            count++;
-        }
-
-        return count;
-    }
-
-    private static bool MatchesScannedKey(LibraDexCriteriaKind criteriaKind, TKey key, object operand)
-    {
-        return criteriaKind switch
-        {
-            LibraDexCriteriaKind.Prefix => KeyStartsWith(key, operand),
-            LibraDexCriteriaKind.Suffix => KeyEndsWith(key, operand),
-            LibraDexCriteriaKind.Contains => KeyContains(key, operand),
-            LibraDexCriteriaKind.Matches => KeyMatchesPattern(key, operand),
-            _ => throw new NotSupportedException($"{criteriaKind} is not a scan-backed key predicate.")
-        };
-    }
-
-    private static bool KeyStartsWith(TKey key, object operand)
-    {
-        if (key is string keyText && operand is string prefixText)
-        {
-            return keyText.StartsWith(prefixText, StringComparison.Ordinal);
-        }
-
-        if (key is byte[] keyBytes && operand is byte[] prefixBytes)
-        {
-            return keyBytes.AsSpan().StartsWith(prefixBytes);
-        }
-
-        throw CreateUnsupportedKeyPredicateException("Prefix", key, operand);
-    }
-
-    private static bool KeyEndsWith(TKey key, object operand)
-    {
-        if (key is string keyText && operand is string suffixText)
-        {
-            return keyText.EndsWith(suffixText, StringComparison.Ordinal);
-        }
-
-        if (key is byte[] keyBytes && operand is byte[] suffixBytes)
-        {
-            return keyBytes.AsSpan().EndsWith(suffixBytes);
-        }
-
-        throw CreateUnsupportedKeyPredicateException("Suffix", key, operand);
-    }
-
-    private static bool KeyContains(TKey key, object operand)
-    {
-        if (key is string keyText && operand is string valueText)
-        {
-            return keyText.Contains(valueText, StringComparison.Ordinal);
-        }
-
-        if (key is byte[] keyBytes && operand is byte[] valueBytes)
-        {
-            return keyBytes.AsSpan().IndexOf(valueBytes) >= 0;
-        }
-
-        throw CreateUnsupportedKeyPredicateException("Contains", key, operand);
-    }
-
-    private static bool KeyMatchesPattern(TKey key, object operand)
-    {
-        if (operand is Predicate<TKey> predicate)
-        {
-            return predicate(key);
-        }
-
-        if (operand is Func<TKey, bool> typedFunction)
-        {
-            return typedFunction(key);
-        }
-
-        if (operand is Func<object, bool> objectFunction)
-        {
-            return objectFunction(key!);
-        }
-
-        if (key is string keyText)
-        {
-            if (operand is System.Text.RegularExpressions.Regex regex)
-            {
-                return regex.IsMatch(keyText);
-            }
-
-            if (operand is string patternText)
-            {
-                return System.Text.RegularExpressions.Regex.IsMatch(keyText, patternText);
-            }
-        }
-
-        throw CreateUnsupportedKeyPredicateException("Matches", key, operand);
-    }
-
-    private static NotSupportedException CreateUnsupportedKeyPredicateException(string operation, TKey key, object operand)
-    {
-        string keyType = key?.GetType().FullName ?? typeof(TKey).FullName ?? "<unknown>";
-        string operandType = operand.GetType().FullName ?? "<unknown>";
-        return new NotSupportedException($"{operation} scan execution does not support key type {keyType} with operand type {operandType}.");
-    }
-
     private IReadOnlyList<object> MaterializeMembershipIdentityObjects(IReadOnlyList<object?> values, int? takeLimit = null)
     {
         if (values.Count > 1)
@@ -1870,7 +1799,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
         object value = RequireCriterionValue(values, 0);
         IEnumerable<object> keys = value switch
         {
-            LibraDexPreparedObjectSet prepared => prepared.Values,
+            LibraDexPreparedObjectSet prepared => prepared.Source,
             IEnumerable<object> objectValues => objectValues,
             System.Collections.IEnumerable enumerable => enumerable.Cast<object>(),
             _ => throw new InvalidOperationException("Membership identity execution requires an enumerable key value or prepared set.")
@@ -1882,6 +1811,48 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     private IReadOnlyList<object> MaterializeMembershipIdentityObjects(IEnumerable<object> keys, int? takeLimit = null)
     {
         return IterateMembershipIdentityObjects(keys, takeLimit).ToList();
+    }
+
+    private IReadOnlyList<LibraDexObjectTuple> MaterializeMembershipTupleObjects(IReadOnlyList<object?> values)
+    {
+        if (values.Count > 1)
+        {
+            return MaterializeMembershipTupleObjects(values.Select(RequireNonNullMembershipValue));
+        }
+
+        object value = RequireCriterionValue(values, 0);
+        IEnumerable<object> keys = value switch
+        {
+            LibraDexPreparedObjectSet prepared => prepared.Source,
+            IEnumerable<object> objectValues => objectValues,
+            System.Collections.IEnumerable enumerable => enumerable.Cast<object>(),
+            _ => throw new InvalidOperationException("Membership tuple execution requires an enumerable key value or prepared set.")
+        };
+
+        return MaterializeMembershipTupleObjects(keys);
+    }
+
+    /// <summary>
+    /// Materializes tuple rows for a non-generic membership primitive by opening one equality reader per key.<br/>
+    /// The method preserves supplied key order and leaves duplicate tuple handling to the caller because mutation uses physical tuple identity, not identity de-duplication.<br/>
+    /// </summary>
+    /// <param name="keys">The membership keys to read.</param>
+    /// <returns>The matching key/identity tuples.</returns>
+    private IReadOnlyList<LibraDexObjectTuple> MaterializeMembershipTupleObjects(IEnumerable<object> keys)
+    {
+        List<LibraDexObjectTuple> tuples = new();
+        foreach (object keyValue in keys)
+        {
+            using LibraDexRangeReader<TKey, TIdentity> reader = OpenRangeReader(
+                RequireObjectKey(keyValue, nameof(keys)),
+                RequireObjectKey(keyValue, nameof(keys)));
+            while (reader.TryReadNext(out TKey key, out TIdentity identity))
+            {
+                tuples.Add(new LibraDexObjectTuple(key!, identity!));
+            }
+        }
+
+        return tuples;
     }
 
     /// <summary>
@@ -1902,7 +1873,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
         object value = RequireCriterionValue(values, 0);
         IEnumerable<object> keys = value switch
         {
-            LibraDexPreparedObjectSet prepared => prepared.Values,
+            LibraDexPreparedObjectSet prepared => prepared.Source,
             IEnumerable<object> objectValues => objectValues,
             System.Collections.IEnumerable enumerable => enumerable.Cast<object>(),
             _ => throw new InvalidOperationException("Membership identity iteration requires an enumerable key value or prepared set.")
@@ -2024,7 +1995,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
         object value = RequireCriterionValue(values, 0);
         IEnumerable<object> keys = value switch
         {
-            LibraDexPreparedObjectSet prepared => prepared.Values,
+            LibraDexPreparedObjectSet prepared => prepared.Source,
             IEnumerable<object> objectValues => objectValues,
             System.Collections.IEnumerable enumerable => enumerable.Cast<object>(),
             _ => throw new InvalidOperationException("Membership identity count requires an enumerable key value or prepared set.")
@@ -2045,6 +2016,485 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
         }
 
         return count;
+    }
+
+    private IReadOnlyList<object> MaterializeMultiRangeIdentityObjects(IReadOnlyList<object?> values, int? takeLimit = null)
+    {
+        return IterateMultiRangeIdentityObjects(values, takeLimit).ToList();
+    }
+
+    private IReadOnlyList<LibraDexObjectTuple> MaterializeMultiRangeTupleObjects(IReadOnlyList<object?> values)
+    {
+        LibraDexIdentityKeyRange[] ranges = RequireIdentityKeyRanges(values);
+        List<LibraDexObjectTuple> tuples = new();
+        for (int i = 0; i < ranges.Length; i++)
+        {
+            using LibraDexRangeReader<TKey, TIdentity> reader = OpenRangeReader(
+                RequireObjectKey(ranges[i].LowerKey, nameof(values)),
+                RequireObjectKey(ranges[i].UpperKey, nameof(values)));
+            while (reader.TryReadNext(out TKey key, out TIdentity identity))
+            {
+                tuples.Add(new LibraDexObjectTuple(key!, identity!));
+            }
+        }
+
+        return tuples;
+    }
+
+    /// <summary>
+    /// Streams identities for a condition-derived multi-range primitive by opening one inclusive range reader per requested extent.<br/>
+    /// The primitive exists because date condition permutations such as year membership and year/month tuple sets naturally produce multiple ordered extents over one index.<br/>
+    /// Duplicate identity handling remains above this layer so the physical primitive can preserve exact range output semantics.<br/>
+    /// </summary>
+    /// <param name="values">The primitive operand list containing one range array.</param>
+    /// <param name="takeLimit">The optional maximum number of identities to yield across all ranges.</param>
+    /// <returns>A forward-only identity sequence.</returns>
+    private IEnumerable<object> IterateMultiRangeIdentityObjects(IReadOnlyList<object?> values, int? takeLimit = null)
+    {
+        if (takeLimit is < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(takeLimit), takeLimit, "Take cannot be negative.");
+        }
+
+        if (takeLimit == 0)
+        {
+            yield break;
+        }
+
+        LibraDexIdentityKeyRange[] ranges = RequireIdentityKeyRanges(values);
+        int returned = 0;
+        for (int i = 0; i < ranges.Length; i++)
+        {
+            using LibraDexRangeReader<TKey, TIdentity> reader = OpenRangeReader(
+                RequireObjectKey(ranges[i].LowerKey, nameof(values)),
+                RequireObjectKey(ranges[i].UpperKey, nameof(values)));
+            while (reader.TryReadNextIdentity(out TIdentity identity))
+            {
+                yield return identity!;
+                returned++;
+                if (takeLimit is not null && returned >= takeLimit.Value)
+                {
+                    yield break;
+                }
+            }
+        }
+    }
+
+    private long CountMultiRangeIdentityObjects(IReadOnlyList<object?> values)
+    {
+        LibraDexIdentityKeyRange[] ranges = RequireIdentityKeyRanges(values);
+        long count = 0;
+        for (int i = 0; i < ranges.Length; i++)
+        {
+            using LibraDexRangeReader<TKey, TIdentity> reader = OpenRangeReader(
+                RequireObjectKey(ranges[i].LowerKey, nameof(values)),
+                RequireObjectKey(ranges[i].UpperKey, nameof(values)));
+            count += reader.Count;
+        }
+
+        return count;
+    }
+
+    private IReadOnlyList<object> MaterializeStructuredComponentIdentityObjects(IReadOnlyList<object?> values, int? takeLimit = null)
+    {
+        return IterateStructuredComponentIdentityObjects(values, takeLimit).ToList();
+    }
+
+    /// <summary>
+    /// Streams identities whose encoded structured date/time key satisfies a condition-derived component predicate.<br/>
+    /// The predicate is evaluated against the sortable 64-bit key value, so component-only date branches avoid CLR date reconstruction and avoid text conversion while remaining visibly distinct from ordered range seeks.<br/>
+    /// </summary>
+    /// <param name="values">The primitive operand list containing one compiled structured component predicate.</param>
+    /// <param name="takeLimit">The optional maximum number of identities to yield.</param>
+    /// <returns>A forward-only identity sequence.</returns>
+    private IEnumerable<object> IterateStructuredComponentIdentityObjects(IReadOnlyList<object?> values, int? takeLimit = null)
+    {
+        if (takeLimit is < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(takeLimit), takeLimit, "Take cannot be negative.");
+        }
+
+        if (takeLimit == 0)
+        {
+            yield break;
+        }
+
+        LibraDexStructuredComponentPredicate predicate = RequireStructuredComponentPredicate(values);
+        int returned = 0;
+        using LibraDexRangeReader<TKey, TIdentity> reader = OpenStructuredComponentRangeReader();
+        while (reader.TryReadNextEncodedScalar8KeyIdentity(out ulong encodedKey, out TIdentity identity))
+        {
+            if (!predicate.Matches(encodedKey))
+            {
+                continue;
+            }
+
+            yield return identity!;
+            returned++;
+            if (takeLimit is not null && returned >= takeLimit.Value)
+            {
+                yield break;
+            }
+        }
+    }
+
+    private long CountStructuredComponentIdentityObjects(IReadOnlyList<object?> values)
+    {
+        LibraDexStructuredComponentPredicate predicate = RequireStructuredComponentPredicate(values);
+        long count = 0;
+        using LibraDexRangeReader<TKey, TIdentity> reader = OpenAllRangeReader();
+        while (reader.TryReadNextEncodedScalar8KeyIdentity(out ulong encodedKey, out _))
+        {
+            if (predicate.Matches(encodedKey))
+            {
+                count++;
+            }
+        }
+
+        return count;
+    }
+
+    private static LibraDexIdentityKeyRange[] RequireIdentityKeyRanges(IReadOnlyList<object?> values)
+    {
+        object value = RequireCriterionValue(values, 0);
+        return value is LibraDexIdentityKeyRange[] ranges
+            ? ranges
+            : throw new InvalidOperationException("Multi-range identity execution requires an array of key ranges.");
+    }
+
+    private static LibraDexStructuredComponentPredicate RequireStructuredComponentPredicate(IReadOnlyList<object?> values)
+    {
+        object value = RequireCriterionValue(values, 0);
+        return value is LibraDexStructuredComponentPredicate predicate
+            ? predicate
+            : throw new InvalidOperationException("Structured component identity execution requires a compiled structured component predicate.");
+    }
+
+    private IReadOnlyList<object> MaterializeGuidPatternIdentityObjects(IReadOnlyList<object?> values, int? takeLimit = null)
+    {
+        return IterateGuidPatternIdentityObjects(values, takeLimit).ToList();
+    }
+
+    /// <summary>
+    /// Streams identities whose encoded GUID key satisfies a condition-derived canonical nibble predicate.<br/>
+    /// The predicate reads the encoded 16-byte key directly, so GUID prefix/suffix/contains/pattern branches avoid per-row Guid.ToString conversion and remain separate from maintained text projections.<br/>
+    /// </summary>
+    /// <param name="values">The primitive operand list containing one compiled GUID predicate.</param>
+    /// <param name="takeLimit">The optional maximum number of identities to yield.</param>
+    /// <returns>A forward-only identity sequence.</returns>
+    private IEnumerable<object> IterateGuidPatternIdentityObjects(IReadOnlyList<object?> values, int? takeLimit = null)
+    {
+        if (takeLimit is < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(takeLimit), takeLimit, "Take cannot be negative.");
+        }
+
+        if (takeLimit == 0)
+        {
+            yield break;
+        }
+
+        LibraDexGuidPatternPredicate predicate = RequireGuidPatternPredicate(values);
+        int returned = 0;
+        using LibraDexRangeReader<TKey, TIdentity> reader = OpenAllRangeReader();
+        while (reader.TryReadNextEncodedScalar16KeyIdentity(out ulong encodedHigh, out ulong encodedLow, out TIdentity identity))
+        {
+            if (!predicate.Matches(encodedHigh, encodedLow))
+            {
+                continue;
+            }
+
+            yield return identity!;
+            returned++;
+            if (takeLimit is not null && returned >= takeLimit.Value)
+            {
+                yield break;
+            }
+        }
+    }
+
+    private long CountGuidPatternIdentityObjects(IReadOnlyList<object?> values)
+    {
+        LibraDexGuidPatternPredicate predicate = RequireGuidPatternPredicate(values);
+        long count = 0;
+        using LibraDexRangeReader<TKey, TIdentity> reader = OpenAllRangeReader();
+        while (reader.TryReadNextEncodedScalar16KeyIdentity(out ulong encodedHigh, out ulong encodedLow, out _))
+        {
+            if (predicate.Matches(encodedHigh, encodedLow))
+            {
+                count++;
+            }
+        }
+
+        return count;
+    }
+
+    private static LibraDexGuidPatternPredicate RequireGuidPatternPredicate(IReadOnlyList<object?> values)
+    {
+        object value = RequireCriterionValue(values, 0);
+        return value is LibraDexGuidPatternPredicate predicate
+            ? predicate
+            : throw new InvalidOperationException("GUID pattern identity execution requires a compiled GUID pattern predicate.");
+    }
+
+    private IReadOnlyList<object> MaterializeBinaryPatternIdentityObjects(IReadOnlyList<object?> values, int? takeLimit = null)
+    {
+        return IterateBinaryPatternIdentityObjects(values, takeLimit).ToList();
+    }
+
+    /// <summary>
+    /// Streams identities whose encoded fixed-width byte-array key satisfies a condition-derived binary byte predicate.<br/>
+    /// The predicate reads the key lanes into a stack buffer, so raw binary prefix, suffix, contains, and slice branches avoid decoding every candidate key to an owned byte array.<br/>
+    /// </summary>
+    /// <param name="values">The primitive operand list containing one compiled binary predicate.</param>
+    /// <param name="takeLimit">The optional maximum number of identities to yield.</param>
+    /// <returns>A forward-only identity sequence.</returns>
+    private IEnumerable<object> IterateBinaryPatternIdentityObjects(IReadOnlyList<object?> values, int? takeLimit = null)
+    {
+        if (takeLimit is < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(takeLimit), takeLimit, "Take cannot be negative.");
+        }
+
+        if (takeLimit == 0)
+        {
+            yield break;
+        }
+
+        LibraDexBinaryPatternPredicate predicate = RequireBinaryPatternPredicate(values);
+        int returned = 0;
+        byte[] keyBuffer = new byte[32];
+        using LibraDexRangeReader<TKey, TIdentity> reader = OpenAllRangeReader();
+        while (reader.TryReadNextEncodedKeyBytes(keyBuffer.AsSpan(), out int keyByteCount, out TIdentity identity))
+        {
+            if (!predicate.Matches(keyBuffer.AsSpan(0, keyByteCount)))
+            {
+                continue;
+            }
+
+            yield return identity!;
+            returned++;
+            if (takeLimit is not null && returned >= takeLimit.Value)
+            {
+                yield break;
+            }
+        }
+    }
+
+    private long CountBinaryPatternIdentityObjects(IReadOnlyList<object?> values)
+    {
+        LibraDexBinaryPatternPredicate predicate = RequireBinaryPatternPredicate(values);
+        long count = 0;
+        Span<byte> keyBuffer = stackalloc byte[32];
+        using LibraDexRangeReader<TKey, TIdentity> reader = OpenAllRangeReader();
+        while (reader.TryReadNextEncodedKeyBytes(keyBuffer, out int keyByteCount, out _))
+        {
+            if (predicate.Matches(keyBuffer[..keyByteCount]))
+            {
+                count++;
+            }
+        }
+
+        return count;
+    }
+
+    private static LibraDexBinaryPatternPredicate RequireBinaryPatternPredicate(IReadOnlyList<object?> values)
+    {
+        object value = RequireCriterionValue(values, 0);
+        return value is LibraDexBinaryPatternPredicate predicate
+            ? predicate
+            : throw new InvalidOperationException("Binary pattern identity execution requires a compiled binary pattern predicate.");
+    }
+
+    private IReadOnlyList<object> MaterializeBinaryTypedSliceIdentityObjects(IReadOnlyList<object?> values, int? takeLimit = null)
+    {
+        return IterateBinaryTypedSliceIdentityObjects(values, takeLimit).ToList();
+    }
+
+    /// <summary>
+    /// Streams identities whose encoded fixed-width byte-array key satisfies a condition-derived typed binary-slice predicate.<br/>
+    /// The predicate reads only the requested slice from a stack-sized key buffer, so typed binary conditions avoid whole-key decoding while preserving Abraxas-compatible slice semantics.<br/>
+    /// </summary>
+    /// <param name="values">The primitive operand list containing one compiled typed binary-slice predicate.</param>
+    /// <param name="takeLimit">The optional maximum number of identities to yield.</param>
+    /// <returns>A forward-only identity sequence.</returns>
+    private IEnumerable<object> IterateBinaryTypedSliceIdentityObjects(IReadOnlyList<object?> values, int? takeLimit = null)
+    {
+        if (takeLimit is < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(takeLimit), takeLimit, "Take cannot be negative.");
+        }
+
+        if (takeLimit == 0)
+        {
+            yield break;
+        }
+
+        LibraDexBinaryTypedSlicePredicate predicate = RequireBinaryTypedSlicePredicate(values);
+        int returned = 0;
+        byte[] keyBuffer = new byte[32];
+        using LibraDexRangeReader<TKey, TIdentity> reader = OpenAllRangeReader();
+        while (reader.TryReadNextEncodedKeyBytes(keyBuffer.AsSpan(), out int keyByteCount, out TIdentity identity))
+        {
+            if (!predicate.Matches(keyBuffer.AsSpan(0, keyByteCount)))
+            {
+                continue;
+            }
+
+            yield return identity!;
+            returned++;
+            if (takeLimit is not null && returned >= takeLimit.Value)
+            {
+                yield break;
+            }
+        }
+    }
+
+    private long CountBinaryTypedSliceIdentityObjects(IReadOnlyList<object?> values)
+    {
+        LibraDexBinaryTypedSlicePredicate predicate = RequireBinaryTypedSlicePredicate(values);
+        long count = 0;
+        Span<byte> keyBuffer = stackalloc byte[32];
+        using LibraDexRangeReader<TKey, TIdentity> reader = OpenAllRangeReader();
+        while (reader.TryReadNextEncodedKeyBytes(keyBuffer, out int keyByteCount, out _))
+        {
+            if (predicate.Matches(keyBuffer[..keyByteCount]))
+            {
+                count++;
+            }
+        }
+
+        return count;
+    }
+
+    private static LibraDexBinaryTypedSlicePredicate RequireBinaryTypedSlicePredicate(IReadOnlyList<object?> values)
+    {
+        object value = RequireCriterionValue(values, 0);
+        return value is LibraDexBinaryTypedSlicePredicate predicate
+            ? predicate
+            : throw new InvalidOperationException("Binary typed-slice identity execution requires a compiled binary typed-slice predicate.");
+    }
+
+    private IReadOnlyList<object> MaterializeBitmaskIdentityObjects(IReadOnlyList<object?> values, int? takeLimit = null)
+    {
+        return IterateBitmaskIdentityObjects(values, takeLimit).ToList();
+    }
+
+    /// <summary>
+    /// Streams identities whose decoded scalar key satisfies a condition-derived bitmask predicate.<br/>
+    /// Arbitrary bitmask predicates are not contiguous in ordered key space, so this first bridge performs an explicit compact index scan rather than pretending a range seek exists.<br/>
+    /// </summary>
+    /// <param name="values">The primitive operand list containing one compiled bitmask predicate.</param>
+    /// <param name="takeLimit">The optional maximum number of identities to yield.</param>
+    /// <returns>A forward-only identity sequence.</returns>
+    private IEnumerable<object> IterateBitmaskIdentityObjects(IReadOnlyList<object?> values, int? takeLimit = null)
+    {
+        if (takeLimit is < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(takeLimit), takeLimit, "Take cannot be negative.");
+        }
+
+        if (takeLimit == 0)
+        {
+            yield break;
+        }
+
+        LibraDexBitmaskPredicate predicate = RequireBitmaskPredicate(values);
+        int returned = 0;
+        using LibraDexRangeReader<TKey, TIdentity> reader = OpenAllRangeReader();
+        while (reader.TryReadNext(out TKey key, out TIdentity identity))
+        {
+            if (!predicate.Matches(key!))
+            {
+                continue;
+            }
+
+            yield return identity!;
+            returned++;
+            if (takeLimit is not null && returned >= takeLimit.Value)
+            {
+                yield break;
+            }
+        }
+    }
+
+    private long CountBitmaskIdentityObjects(IReadOnlyList<object?> values)
+    {
+        LibraDexBitmaskPredicate predicate = RequireBitmaskPredicate(values);
+        long count = 0;
+        using LibraDexRangeReader<TKey, TIdentity> reader = OpenAllRangeReader();
+        while (reader.TryReadNext(out TKey key, out _))
+        {
+            if (predicate.Matches(key!))
+            {
+                count++;
+            }
+        }
+
+        return count;
+    }
+
+    private IReadOnlyList<LibraDexObjectTuple> MaterializeBitmaskTupleObjects(IReadOnlyList<object?> values)
+    {
+        LibraDexBitmaskPredicate predicate = RequireBitmaskPredicate(values);
+        List<LibraDexObjectTuple> tuples = new();
+        using LibraDexRangeReader<TKey, TIdentity> reader = OpenAllRangeReader();
+        while (reader.TryReadNext(out TKey key, out TIdentity identity))
+        {
+            if (predicate.Matches(key!))
+            {
+                tuples.Add(new LibraDexObjectTuple(key!, identity!));
+            }
+        }
+
+        return tuples;
+    }
+
+    private static LibraDexBitmaskPredicate RequireBitmaskPredicate(IReadOnlyList<object?> values)
+    {
+        object value = RequireCriterionValue(values, 0);
+        return value is LibraDexBitmaskPredicate predicate
+            ? predicate
+            : throw new InvalidOperationException("Bitmask identity execution requires a compiled bitmask predicate.");
+    }
+
+    /// <summary>
+    /// Opens the valid CLR key domain for an Abraxas-compatible structured date/time component predicate.<br/>
+    /// The ordinary all-reader uses raw encoded bounds, which are not always decodable as DateTime-like CLR values; this helper keeps component scans inside valid typed min/max keys while still reading encoded keys from the cursor.<br/>
+    /// </summary>
+    /// <returns>A range reader over the full valid structured date/time key domain.</returns>
+    private LibraDexRangeReader<TKey, TIdentity> OpenStructuredComponentRangeReader()
+    {
+        Type keyType = typeof(TKey);
+        if (keyType == typeof(DateTime))
+        {
+            return OpenRangeReader(
+                RequireObjectKey(DateTime.SpecifyKind(DateTime.MinValue, DateTimeKind.Utc), nameof(keyType)),
+                RequireObjectKey(DateTime.SpecifyKind(DateTime.MaxValue, DateTimeKind.Utc), nameof(keyType)));
+        }
+
+        if (keyType == typeof(DateTimeOffset))
+        {
+            return OpenRangeReader(
+                RequireObjectKey(DateTimeOffset.MinValue.ToUniversalTime(), nameof(keyType)),
+                RequireObjectKey(DateTimeOffset.MaxValue.ToUniversalTime(), nameof(keyType)));
+        }
+
+        if (keyType == typeof(DateOnly))
+        {
+            return OpenRangeReader(
+                RequireObjectKey(DateOnly.MinValue, nameof(keyType)),
+                RequireObjectKey(DateOnly.MaxValue, nameof(keyType)));
+        }
+
+        if (keyType == typeof(TimeOnly))
+        {
+            return OpenRangeReader(
+                RequireObjectKey(TimeOnly.MinValue, nameof(keyType)),
+                RequireObjectKey(TimeOnly.MaxValue, nameof(keyType)));
+        }
+
+        throw new NotSupportedException($"Structured component predicates require a structured date/time key type, not {keyType.FullName}.");
     }
 
     private static object RequireNonNullMembershipValue(object? value)
@@ -2076,8 +2526,8 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
         bool enableCoalescing,
         int coalescedShelfScratchCount)
     {
-        ulong lowerEncodedKey = LibraDexGenericScalarCodec<TKey>.Encode8(lowerKey);
-        ulong upperEncodedKey = LibraDexGenericScalarCodec<TKey>.Encode8(upperKey);
+        ulong lowerEncodedKey = EncodeKey8(lowerKey);
+        ulong upperEncodedKey = EncodeKey8(upperKey);
         ulong[] encodedIdentities = ArrayPool<ulong>.Shared.Rent(identities.Length);
         try
         {
@@ -2111,8 +2561,8 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
 
     private Scalar8Scalar8RangeReader OpenScalar8Scalar8RangeReader(TKey lowerKey, TKey upperKey)
     {
-        ulong lowerEncodedKey = LibraDexGenericScalarCodec<TKey>.Encode8(lowerKey);
-        ulong upperEncodedKey = LibraDexGenericScalarCodec<TKey>.Encode8(upperKey);
+        ulong lowerEncodedKey = EncodeKey8(lowerKey);
+        ulong upperEncodedKey = EncodeKey8(upperKey);
         return session.OpenScalar8Scalar8RangeReader(RootRouterOffset, Scalar8Scalar8Profile.Default32KiB, lowerEncodedKey, upperEncodedKey);
     }
 
@@ -2166,8 +2616,8 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
         TKey upperKey,
         Span<TIdentity> identities)
     {
-        ulong lowerEncodedKey = LibraDexGenericScalarCodec<TKey>.Encode8(lowerKey);
-        ulong upperEncodedKey = LibraDexGenericScalarCodec<TKey>.Encode8(upperKey);
+        ulong lowerEncodedKey = EncodeKey8(lowerKey);
+        ulong upperEncodedKey = EncodeKey8(upperKey);
         ulong[] identityHighs = ArrayPool<ulong>.Shared.Rent(identities.Length);
         ulong[] identityLows = ArrayPool<ulong>.Shared.Rent(identities.Length);
         byte[] shelfScratch = ArrayPool<byte>.Shared.Rent(Scalar8Scalar16Profile.Default32KiB.ShelfExtentSize);
@@ -2202,8 +2652,8 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
 
     private Scalar8Scalar16RangeReader OpenScalar8Scalar16RangeReader(TKey lowerKey, TKey upperKey)
     {
-        ulong lowerEncodedKey = LibraDexGenericScalarCodec<TKey>.Encode8(lowerKey);
-        ulong upperEncodedKey = LibraDexGenericScalarCodec<TKey>.Encode8(upperKey);
+        ulong lowerEncodedKey = EncodeKey8(lowerKey);
+        ulong upperEncodedKey = EncodeKey8(upperKey);
         return session.OpenScalar8Scalar16RangeReader(RootRouterOffset, Scalar8Scalar16Profile.Default32KiB, lowerEncodedKey, upperEncodedKey);
     }
 

@@ -1,4 +1,5 @@
 using LibraDex.Layouts;
+using System.Numerics;
 
 namespace LibraDex;
 
@@ -229,7 +230,9 @@ public sealed class Catalog : IDisposable
         CatalogIndexKeyFamily keyFamily = CatalogIndexKeyFamily.Scalar,
         CatalogIndexIdentityFamily identityFamily = CatalogIndexIdentityFamily.Scalar,
         string group = "",
-        LibraDexIndexShapeSpec? logicalShape = null)
+        LibraDexIndexShapeSpec? logicalShape = null,
+        int exactReversedProjectionSlotIndex = -1,
+        LibraDexIndex<TKey, TIdentity>? exactReversedProjection = null)
     {
         ThrowIfDisposed();
         if (TryFindSlot(session, slotIndex, out _))
@@ -238,7 +241,16 @@ public sealed class Catalog : IDisposable
         }
 
         LibraDexGenericScalarShape shape = ResolveGenericShape<TKey, TIdentity>(keyWidth, identityWidth);
-        CatalogIndexMetadata metadata = CreateGenericMetadata<TKey, TIdentity>(group, name, options, keyFamily, identityFamily, logicalShape);
+        CatalogIndexMetadata metadata = CreateGenericMetadata<TKey, TIdentity>(
+            group,
+            name,
+            options,
+            keyWidth,
+            identityWidth,
+            keyFamily,
+            identityFamily,
+            logicalShape,
+            exactReversedProjectionSlotIndex);
         (RouterSnapshot root, _) = session.CreateRootRouterIndex(CreateGenericSlot(slotIndex, name), metadata);
         return new LibraDexIndex<TKey, TIdentity>(
             session,
@@ -252,7 +264,9 @@ public sealed class Catalog : IDisposable
             group,
             keyFamily,
             identityFamily,
-            logicalShape);
+            logicalShape,
+            exactReversedProjection,
+            options.DateTimeKeyEncoding);
     }
 
     internal LibraDexIndex<TKey, TIdentity> OpenGenericIndex<TKey, TIdentity>(
@@ -274,14 +288,28 @@ public sealed class Catalog : IDisposable
         CatalogIndexIdentityFamily identityFamily = CatalogIndexIdentityFamily.Unknown;
         IndexKeys keyContract = options.Keys;
         LibraDexIndexShapeSpec? logicalShape = null;
+        CatalogIndexMetadata? persistedMetadata = null;
         if (session.TryReadCatalogIndexMetadata(slot, out CatalogIndexMetadata metadata))
         {
+            persistedMetadata = metadata;
             name = string.IsNullOrWhiteSpace(metadata.IndexName) ? slot.Name : metadata.IndexName;
             group = metadata.Group;
             keyFamily = metadata.KeyFamily;
             identityFamily = metadata.IdentityFamily;
             keyContract = metadata.KeyContract;
             logicalShape = CreateLogicalShape(metadata);
+        }
+
+        LibraDexIndex<TKey, TIdentity>? exactReversedProjection = null;
+        if (typeof(TKey) == typeof(byte[]) &&
+            persistedMetadata is CatalogIndexMetadata projectionOwnerMetadata &&
+            projectionOwnerMetadata.ExactReversedProjectionSlotIndex >= 0)
+        {
+            exactReversedProjection = OpenGenericIndex<TKey, TIdentity>(
+                projectionOwnerMetadata.ExactReversedProjectionSlotIndex,
+                new IndexOptions { Keys = keyContract },
+                keyWidth,
+                identityWidth);
         }
 
         return new LibraDexIndex<TKey, TIdentity>(
@@ -296,7 +324,9 @@ public sealed class Catalog : IDisposable
             group,
             keyFamily,
             identityFamily,
-            logicalShape);
+            logicalShape,
+            exactReversedProjection,
+            persistedMetadata?.DateTimeKeyEncoding ?? options.DateTimeKeyEncoding);
     }
 
     internal LibraDexIndex<TKey, TIdentity> CreateOrOpenGenericIndex<TKey, TIdentity>(
@@ -315,12 +345,54 @@ public sealed class Catalog : IDisposable
     internal IIndex OpenIndex(CatalogIndexInfo info)
     {
         ThrowIfDisposed();
+        if (info.KeyFamily == CatalogIndexKeyFamily.Composite)
+        {
+            return OpenCompositeIndex(info);
+        }
+
+        if (info.KeyFamily == CatalogIndexKeyFamily.String)
+        {
+            return new CatalogNamedStringKeyBuilder(this, Indexes, info.Group, info.Name).Open();
+        }
+
+        if (info.KeyFamily == CatalogIndexKeyFamily.BigInt)
+        {
+            if (info.Projections.Count > 0 && info.Projections[0].Kind == LibraDexIndexProjectionKind.BigIntFixedVarIdentity)
+            {
+                return OpenBigIntVarIdentityIndex(info);
+            }
+
+            Type persistedIdentityType = ResolvePersistedType(info.IdentityTypeName);
+            LibraDexBigIntKeyStorage storage = info.Projections.Count > 0 && info.Projections[0].Kind == LibraDexIndexProjectionKind.BigIntVarLen
+                ? LibraDexBigIntKeyStorage.VariableWidth
+                : LibraDexBigIntKeyStorage.FixedWidth;
+            System.Reflection.MethodInfo openBigIntMethod = typeof(Catalog).GetMethod(
+                nameof(OpenBigIntScalar8Index),
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+                ?? throw new MissingMethodException(nameof(Catalog), nameof(OpenBigIntScalar8Index));
+            try
+            {
+                object? opened = openBigIntMethod
+                    .MakeGenericMethod(persistedIdentityType)
+                    .Invoke(this, new object?[] { info, storage });
+                return opened is IIndex index
+                    ? index
+                    : throw new InvalidOperationException("The metadata-driven LibraDex BigInt index open did not return an index handle.");
+            }
+            catch (System.Reflection.TargetInvocationException ex) when (ex.InnerException is not null)
+            {
+                throw ex.InnerException;
+            }
+        }
+
         Type keyType = ResolvePersistedType(info.KeyTypeName);
         Type identityType = ResolvePersistedType(info.IdentityTypeName);
-        if (keyType == typeof(byte[]) || identityType == typeof(byte[]))
-        {
-            throw new NotSupportedException("Metadata-driven byte[] index opening requires persisted scalar-width metadata.");
-        }
+        LibraDexScalarWidth? keyWidth = keyType == typeof(byte[])
+            ? ResolvePersistedBlobWidth(info.VarKeyMaxKeyLength, "key")
+            : null;
+        LibraDexScalarWidth? identityWidth = identityType == typeof(byte[])
+            ? ResolvePersistedBlobWidth(info.VarIdentityMaxLength, "identity")
+            : null;
 
         System.Reflection.MethodInfo openMethod = typeof(Catalog).GetMethod(
             nameof(OpenGenericIndex),
@@ -334,8 +406,8 @@ public sealed class Catalog : IDisposable
                 {
                     info.SlotIndex,
                     new IndexOptions { Keys = info.KeyContract },
-                    null,
-                    null
+                    keyWidth,
+                    identityWidth
                 });
             return opened is IIndex index
                 ? index
@@ -375,7 +447,9 @@ public sealed class Catalog : IDisposable
                     shape.KeyFamily,
                     shape.IdentityFamily,
                     shape.Group,
-                    shape
+                    shape,
+                    -1,
+                    null
                 });
             return created is IIndex index
                 ? index
@@ -385,6 +459,269 @@ public sealed class Catalog : IDisposable
         {
             throw ex.InnerException;
         }
+    }
+
+    /// <summary>
+    /// Creates a metadata-backed routed composite index from a logical shape descriptor.<br/>
+    /// This slice persists the composite part contract into the fixed catalog directory and returns the in-process routed-component proof; durable mini-router contents are connected in a later storage slice.<br/>
+    /// </summary>
+    /// <param name="shape">The logical composite shape to persist and expose.</param>
+    /// <param name="slotIndex">The fixed catalog slot used as the durable metadata anchor.</param>
+    /// <param name="options">Optional per-index options overriding the shape's default index options.</param>
+    /// <returns>A routed composite index handle for the current process.</returns>
+    internal LibraDexRoutedCompositeIndex CreateCompositeIndex(LibraDexIndexShapeSpec shape, int slotIndex, IndexOptions? options = null)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(shape);
+        if (shape.KeyFamily != CatalogIndexKeyFamily.Composite)
+        {
+            throw new ArgumentException("Composite index creation requires a composite logical shape.", nameof(shape));
+        }
+
+        if (TryFindSlot(session, slotIndex, out _))
+        {
+            throw new InvalidOperationException("The requested LibraDex index slot is already active.");
+        }
+
+        CatalogIndexMetadata metadata = CreateCompositeMetadata(shape, options ?? shape.ToIndexOptions());
+        byte[] rootNode = LibraDexCompositeNodePageCodec.Encode(
+            shape,
+            tier: 0,
+            Array.Empty<object>(),
+            Array.Empty<LibraDexCompositeNodeChildPage>());
+        (long rootOffset, _) = session.CreateCompositeNodePageIndex(CreateGenericSlot(slotIndex, shape.Name), metadata, rootNode);
+        return new LibraDexRoutedCompositeIndex(shape, session, slotIndex, rootOffset);
+    }
+
+    /// <summary>
+    /// Opens a metadata-backed routed composite index from catalog discovery information.<br/>
+    /// The returned handle reconstructs the logical shape and can classify/materialize condition-builder routes, while persisted tuple contents remain unavailable until durable composite mini-router storage is implemented.<br/>
+    /// </summary>
+    /// <param name="info">The catalog metadata snapshot for the composite index.</param>
+    /// <returns>A routed composite index handle for the current process.</returns>
+    internal LibraDexRoutedCompositeIndex OpenCompositeIndex(CatalogIndexInfo info)
+    {
+        ThrowIfDisposed();
+        if (info.KeyFamily != CatalogIndexKeyFamily.Composite)
+        {
+            throw new ArgumentException("The supplied catalog index metadata does not describe a composite index.", nameof(info));
+        }
+
+        LibraDexIndexShapeSpec shape = info.CreateShape();
+        if (!TryFindSlot(session, info.SlotIndex, out IndexDirectorySlotSnapshot slot))
+        {
+            return new LibraDexRoutedCompositeIndex(shape, session, info.SlotIndex);
+        }
+
+        if (session.TryReadCompositeNodePage(slot.RootRouterOffset, out _))
+        {
+            return LibraDexRoutedCompositeIndex.OpenFromNodePages(shape, session, info.SlotIndex, slot.RootRouterOffset, info.ItemCount);
+        }
+
+        if (session.TryReadCompositeSnapshot(slot, out byte[] snapshot))
+        {
+            IReadOnlyList<LibraDexCompositeEntry> entries = LibraDexCompositeSnapshotCodec.Decode(shape, snapshot);
+            return new LibraDexRoutedCompositeIndex(shape, session, info.SlotIndex, entries);
+        }
+
+        return new LibraDexRoutedCompositeIndex(shape, session, info.SlotIndex);
+    }
+
+    internal VarKeyScalar8Index CreateVarKeyScalar8Index(string name, int slotIndex, int maxKeyLength)
+    {
+        return CreateVarKeyScalar8Index(name, slotIndex, maxKeyLength, metadata: null);
+    }
+
+    internal VarKeyScalar8Index CreateVarKeyScalar8Index(string name, int slotIndex, int maxKeyLength, CatalogIndexMetadata? metadata)
+    {
+        ThrowIfDisposed();
+        if (TryFindSlot(session, slotIndex, out _))
+        {
+            throw new InvalidOperationException("The requested LibraDex index slot is already active.");
+        }
+
+        VarLenOptimizerMaintenancePolicy policy = VarLenOptimizerMaintenancePolicy.Automatic(
+            depthThreshold: 3,
+            shelfItemThreshold: 32,
+            hitThreshold: 12);
+        (VarKeyScalar8IndexHandle handle, _, _) = metadata.HasValue
+            ? session.CreateVarKeyScalar8RootRouterIndex(
+                CreateGenericSlot(slotIndex, name),
+                metadata.Value,
+                maxKeyLength,
+                optimizerRouteFanout: 16,
+                policy)
+            : session.CreateVarKeyScalar8RootRouterIndex(
+                CreateGenericSlot(slotIndex, name),
+                maxKeyLength,
+                optimizerRouteFanout: 16,
+                policy);
+        return new VarKeyScalar8Index(session, handle, slotIndex, name, ownsSession: false);
+    }
+
+    internal VarKeyScalar8Index OpenVarKeyScalar8Index(int slotIndex, int maxKeyLength)
+    {
+        ThrowIfDisposed();
+        if (!TryFindSlot(session, slotIndex, out IndexDirectorySlotSnapshot slot))
+        {
+            throw new InvalidDataException("The requested LibraDex variable-key index slot is not active.");
+        }
+
+        VarKeyScalar8IndexHandle handle = new(
+            slot.RootRouterOffset,
+            maxKeyLength,
+            OptimizerRouteFanout: 16,
+            VarLenOptimizerMaintenancePolicy.Automatic(
+                depthThreshold: 3,
+                shelfItemThreshold: 32,
+                hitThreshold: 12));
+        handle.Validate();
+        return new VarKeyScalar8Index(session, handle, slotIndex, slot.Name, ownsSession: false);
+    }
+
+    internal LibraDexBigIntScalar8Index<TIdentity> CreateBigIntScalar8Index<TIdentity>(
+        string group,
+        string name,
+        int slotIndex,
+        int maxBytes,
+        LibraDexBigIntKeyStorage storage,
+        IndexOptions options)
+    {
+        ThrowIfDisposed();
+        LibraDexBigIntCodec.ValidateMaxBytes(maxBytes, nameof(maxBytes));
+
+        int maxKeyLength = checked(maxBytes + 3);
+        CatalogIndexMetadata metadata = CreateBigIntMetadata<TIdentity>(group, name, maxKeyLength, storage, options);
+        if (storage == LibraDexBigIntKeyStorage.FixedWidth)
+        {
+            LibraDexScalarWidth identityWidth = LibraDexGenericScalarCodec<TIdentity>.ResolveWidth(null);
+            if (identityWidth == LibraDexScalarWidth.Bytes8)
+            {
+                FixedNScalar8Profile profile = FixedNScalar8Profile.Default64KiB(maxKeyLength);
+                (FixedNScalar8IndexHandle handle, _) = session.CreateFixedNScalar8RootRouterIndex(
+                    CreateGenericSlot(slotIndex, name),
+                    metadata,
+                    profile);
+                FixedNScalar8Index inner = new(session, handle, slotIndex);
+                return new LibraDexBigIntScalar8Index<TIdentity>(group, name, inner, maxBytes, storage, options.Keys);
+            }
+
+            if (identityWidth == LibraDexScalarWidth.Bytes16)
+            {
+                FixedNScalar16Profile profile = FixedNScalar16Profile.Default64KiB(maxKeyLength);
+                (FixedNScalar16IndexHandle handle, _) = session.CreateFixedNScalar16RootRouterIndex(
+                    CreateGenericSlot(slotIndex, name),
+                    metadata,
+                    profile);
+                FixedNScalar16Index inner = new(session, handle, slotIndex);
+                return new LibraDexBigIntScalar8Index<TIdentity>(group, name, inner, maxBytes, storage, options.Keys);
+            }
+
+            throw new NotSupportedException("Fixed BigInt indexes require scalar-8 or scalar-16 identity types.");
+        }
+        else
+        {
+            VarKeyScalar8Index inner = CreateVarKeyScalar8Index(name, slotIndex, maxKeyLength, metadata);
+            return new LibraDexBigIntScalar8Index<TIdentity>(group, name, inner, maxBytes, storage, options.Keys);
+        }
+    }
+
+    internal LibraDexBigIntScalar8Index<TIdentity> OpenBigIntScalar8Index<TIdentity>(
+        CatalogIndexInfo info,
+        LibraDexBigIntKeyStorage expectedStorage)
+    {
+        ThrowIfDisposed();
+        if (info.KeyFamily != CatalogIndexKeyFamily.BigInt ||
+            info.IdentityFamily != CatalogIndexIdentityFamily.Scalar ||
+            info.VarKeyMaxKeyLength < 4)
+        {
+            throw new InvalidDataException("The persisted catalog entry is not a reopenable BigInt/scalar index.");
+        }
+
+        LibraDexIndexProjectionKind expectedProjection = expectedStorage == LibraDexBigIntKeyStorage.FixedWidth
+            ? LibraDexIndexProjectionKind.BigIntFixed
+            : LibraDexIndexProjectionKind.BigIntVarLen;
+        if (info.Projections.Count == 0 || info.Projections[0].Kind != expectedProjection)
+        {
+            throw new InvalidDataException("The requested BigInt storage shape does not match persisted catalog metadata.");
+        }
+
+        Type identityType = ResolvePersistedType(info.IdentityTypeName);
+        if (identityType != typeof(TIdentity))
+        {
+            throw new InvalidDataException($"The requested BigInt identity type {typeof(TIdentity).FullName} does not match persisted metadata type {identityType.FullName}.");
+        }
+
+        int maxBytes = info.VarKeyMaxKeyLength - 3;
+        LibraDexBigIntCodec.ValidateMaxBytes(maxBytes, nameof(info.VarKeyMaxKeyLength));
+        if (expectedStorage == LibraDexBigIntKeyStorage.FixedWidth)
+        {
+            LibraDexScalarWidth identityWidth = LibraDexGenericScalarCodec<TIdentity>.ResolveWidth(null);
+            if (identityWidth == LibraDexScalarWidth.Bytes8)
+            {
+                FixedNScalar8Profile profile = FixedNScalar8Profile.Default64KiB(info.VarKeyMaxKeyLength);
+                FixedNScalar8IndexHandle handle = session.OpenFixedNScalar8ShelfIndex(info.SlotIndex, profile);
+                FixedNScalar8Index inner = new(session, handle, info.SlotIndex);
+                return new LibraDexBigIntScalar8Index<TIdentity>(info.Group, info.Name, inner, maxBytes, expectedStorage, info.KeyContract);
+            }
+
+            if (identityWidth == LibraDexScalarWidth.Bytes16)
+            {
+                FixedNScalar16Profile profile = FixedNScalar16Profile.Default64KiB(info.VarKeyMaxKeyLength);
+                FixedNScalar16IndexHandle handle = session.OpenFixedNScalar16ShelfIndex(info.SlotIndex, profile);
+                FixedNScalar16Index inner = new(session, handle, info.SlotIndex);
+                return new LibraDexBigIntScalar8Index<TIdentity>(info.Group, info.Name, inner, maxBytes, expectedStorage, info.KeyContract);
+            }
+
+            throw new NotSupportedException("Fixed BigInt indexes require scalar-8 or scalar-16 identity types.");
+        }
+        else
+        {
+            VarKeyScalar8Index inner = OpenVarKeyScalar8Index(info.SlotIndex, info.VarKeyMaxKeyLength);
+            return new LibraDexBigIntScalar8Index<TIdentity>(info.Group, info.Name, inner, maxBytes, expectedStorage, info.KeyContract);
+        }
+    }
+
+    internal LibraDexBigIntVarIdentityIndex CreateBigIntVarIdentityIndex(
+        string group,
+        string name,
+        int slotIndex,
+        int maxBytes,
+        int maxIdentityBytes,
+        IndexOptions options)
+    {
+        ThrowIfDisposed();
+        LibraDexBigIntCodec.ValidateMaxBytes(maxBytes, nameof(maxBytes));
+        int maxKeyLength = checked(maxBytes + 3);
+        FixedNVarIdentityProfile profile = FixedNVarIdentityProfile.Default64KiB(maxKeyLength, maxIdentityBytes);
+        CatalogIndexMetadata metadata = CreateBigIntVarIdentityMetadata(group, name, maxKeyLength, maxIdentityBytes, options);
+        (FixedNVarIdentityIndexHandle handle, _) = session.CreateFixedNVarIdentityRootRouterIndex(
+            CreateGenericSlot(slotIndex, name),
+            metadata,
+            profile);
+        FixedNVarIdentityIndex inner = new(session, handle, slotIndex);
+        return new LibraDexBigIntVarIdentityIndex(group, name, inner, maxBytes, maxIdentityBytes, options.Keys);
+    }
+
+    internal LibraDexBigIntVarIdentityIndex OpenBigIntVarIdentityIndex(CatalogIndexInfo info)
+    {
+        ThrowIfDisposed();
+        if (info.KeyFamily != CatalogIndexKeyFamily.BigInt ||
+            info.IdentityFamily != CatalogIndexIdentityFamily.Blob ||
+            info.Projections.Count == 0 ||
+            info.Projections[0].Kind != LibraDexIndexProjectionKind.BigIntFixedVarIdentity ||
+            info.VarKeyMaxKeyLength < 4 ||
+            info.VarIdentityMaxLength <= 0)
+        {
+            throw new InvalidDataException("The persisted catalog entry is not a reopenable BigInt variable-identity index.");
+        }
+
+        int maxBytes = info.VarKeyMaxKeyLength - 3;
+        LibraDexBigIntCodec.ValidateMaxBytes(maxBytes, nameof(info.VarKeyMaxKeyLength));
+        FixedNVarIdentityProfile profile = FixedNVarIdentityProfile.Default64KiB(info.VarKeyMaxKeyLength, info.VarIdentityMaxLength);
+        FixedNVarIdentityIndexHandle handle = new(info.RootRouterOffset, profile, IsRouted: true);
+        FixedNVarIdentityIndex inner = new(session, handle, info.SlotIndex);
+        return new LibraDexBigIntVarIdentityIndex(info.Group, info.Name, inner, maxBytes, info.VarIdentityMaxLength, info.KeyContract);
     }
 
     private void ThrowIfDisposed()
@@ -479,14 +816,23 @@ public sealed class Catalog : IDisposable
         string group,
         string name,
         IndexOptions options,
+        LibraDexScalarWidth? keyWidth,
+        LibraDexScalarWidth? identityWidth,
         CatalogIndexKeyFamily keyFamily,
         CatalogIndexIdentityFamily identityFamily,
-        LibraDexIndexShapeSpec? logicalShape)
+        LibraDexIndexShapeSpec? logicalShape,
+        int exactReversedProjectionSlotIndex = -1)
     {
         LibraDexProjectionDirectionSet directions = logicalShape?.Directions ?? LibraDexProjectionDirectionSet.Forward;
         LibraDexIndexSortOrder sortOrder = logicalShape?.SortOrder ?? LibraDexIndexSortOrder.Ascending;
         IReadOnlyList<LibraDexIndexProjectionSpec> projections = logicalShape?.Projections ?? Array.Empty<LibraDexIndexProjectionSpec>();
         IReadOnlyList<LibraDexCompositeKeyPartSpec> compositeParts = logicalShape?.CompositeParts ?? Array.Empty<LibraDexCompositeKeyPartSpec>();
+        int fixedKeyBytes = typeof(TKey) == typeof(byte[]) && keyWidth.HasValue
+            ? checked((int)keyWidth.Value)
+            : 0;
+        int fixedIdentityBytes = typeof(TIdentity) == typeof(byte[]) && identityWidth.HasValue
+            ? checked((int)identityWidth.Value)
+            : 0;
         return new CatalogIndexMetadata(
             group,
             name,
@@ -498,11 +844,154 @@ public sealed class Catalog : IDisposable
             options.StringKeys,
             options.GuidKeys,
             options.DateKeys,
+            options.DateTimeKeyEncoding,
             directions,
             sortOrder,
             projections,
             compositeParts,
+            fixedKeyBytes,
+            fixedIdentityBytes,
+            exactReversedProjectionSlotIndex,
+            -1,
+            -1,
+            -1,
+            string.Empty,
+            string.Empty,
+            options.StringComparisonPolicy?.Kind ?? LibraDexStringComparisonPolicyKind.Invariant,
+            options.StringComparisonPolicy?.CompareOptions ?? System.Globalization.CompareOptions.None,
+            options.StringComparisonPolicy?.CultureName ?? string.Empty,
+            options.StringComparisonPolicy?.CustomComparerTypeName ?? string.Empty,
             logicalShape is not null);
+    }
+
+    private static LibraDexScalarWidth ResolvePersistedBlobWidth(int width, string side)
+    {
+        return width switch
+        {
+            8 => LibraDexScalarWidth.Bytes8,
+            16 => LibraDexScalarWidth.Bytes16,
+            32 => LibraDexScalarWidth.Bytes32,
+            _ => throw new NotSupportedException($"Metadata-driven byte[] index opening requires a persisted {side} scalar width.")
+        };
+    }
+
+    /// <summary>
+    /// Creates the persisted catalog metadata record for a composite index shape.<br/>
+    /// The record stores `LibraDexCompositeKey` as the public key container type and preserves the ordered part descriptors so reopen can validate part names, types, and projection intent before exposing a handle.<br/>
+    /// </summary>
+    /// <param name="shape">The logical composite shape whose descriptor should be persisted.</param>
+    /// <param name="options">The resolved index options, including duplicate-key and comparison-policy metadata.</param>
+    /// <returns>A catalog metadata record ready for encoding beside the fixed directory slot.</returns>
+    private static CatalogIndexMetadata CreateCompositeMetadata(LibraDexIndexShapeSpec shape, IndexOptions options)
+    {
+        return new CatalogIndexMetadata(
+            shape.Group,
+            shape.Name,
+            GetStableTypeName(typeof(LibraDexCompositeKey)),
+            GetStableTypeName(shape.IdentityType),
+            CatalogIndexKeyFamily.Composite,
+            shape.IdentityFamily,
+            options.Keys,
+            options.StringKeys,
+            options.GuidKeys,
+            options.DateKeys,
+            options.DateTimeKeyEncoding,
+            shape.Directions,
+            shape.SortOrder,
+            shape.Projections,
+            shape.CompositeParts,
+            0,
+            0,
+            -1,
+            -1,
+            -1,
+            -1,
+            string.Empty,
+            string.Empty,
+            options.StringComparisonPolicy?.Kind ?? LibraDexStringComparisonPolicyKind.Invariant,
+            options.StringComparisonPolicy?.CompareOptions ?? System.Globalization.CompareOptions.None,
+            options.StringComparisonPolicy?.CultureName ?? string.Empty,
+            options.StringComparisonPolicy?.CustomComparerTypeName ?? string.Empty,
+            true);
+    }
+
+    private static CatalogIndexMetadata CreateBigIntMetadata<TIdentity>(
+        string group,
+        string name,
+        int maxKeyLength,
+        LibraDexBigIntKeyStorage storage,
+        IndexOptions options)
+    {
+        LibraDexIndexProjectionKind projectionKind = storage == LibraDexBigIntKeyStorage.FixedWidth
+            ? LibraDexIndexProjectionKind.BigIntFixed
+            : LibraDexIndexProjectionKind.BigIntVarLen;
+        return new CatalogIndexMetadata(
+            group,
+            name,
+            GetStableTypeName(typeof(BigInteger)),
+            GetStableTypeName(typeof(TIdentity)),
+            CatalogIndexKeyFamily.BigInt,
+            CatalogIndexIdentityFamily.Scalar,
+            options.Keys,
+            options.StringKeys,
+            options.GuidKeys,
+            options.DateKeys,
+            options.DateTimeKeyEncoding,
+            LibraDexProjectionDirectionSet.Forward,
+            LibraDexIndexSortOrder.Ascending,
+            new[] { new LibraDexIndexProjectionSpec(projectionKind, LibraDexIndexByteDirection.Forward, LibraDexIndexSortOrder.Ascending) },
+            Array.Empty<LibraDexCompositeKeyPartSpec>(),
+            maxKeyLength,
+            0,
+            -1,
+            -1,
+            -1,
+            -1,
+            string.Empty,
+            string.Empty,
+            options.StringComparisonPolicy?.Kind ?? LibraDexStringComparisonPolicyKind.Invariant,
+            options.StringComparisonPolicy?.CompareOptions ?? System.Globalization.CompareOptions.None,
+            options.StringComparisonPolicy?.CultureName ?? string.Empty,
+            options.StringComparisonPolicy?.CustomComparerTypeName ?? string.Empty,
+            true);
+    }
+
+    private static CatalogIndexMetadata CreateBigIntVarIdentityMetadata(
+        string group,
+        string name,
+        int maxKeyLength,
+        int maxIdentityBytes,
+        IndexOptions options)
+    {
+        return new CatalogIndexMetadata(
+            group,
+            name,
+            GetStableTypeName(typeof(BigInteger)),
+            GetStableTypeName(typeof(byte[])),
+            CatalogIndexKeyFamily.BigInt,
+            CatalogIndexIdentityFamily.Blob,
+            options.Keys,
+            options.StringKeys,
+            options.GuidKeys,
+            options.DateKeys,
+            options.DateTimeKeyEncoding,
+            LibraDexProjectionDirectionSet.Forward,
+            LibraDexIndexSortOrder.Ascending,
+            new[] { new LibraDexIndexProjectionSpec(LibraDexIndexProjectionKind.BigIntFixedVarIdentity, LibraDexIndexByteDirection.Forward, LibraDexIndexSortOrder.Ascending) },
+            Array.Empty<LibraDexCompositeKeyPartSpec>(),
+            maxKeyLength,
+            maxIdentityBytes,
+            -1,
+            -1,
+            -1,
+            -1,
+            string.Empty,
+            string.Empty,
+            options.StringComparisonPolicy?.Kind ?? LibraDexStringComparisonPolicyKind.Invariant,
+            options.StringComparisonPolicy?.CompareOptions ?? System.Globalization.CompareOptions.None,
+            options.StringComparisonPolicy?.CultureName ?? string.Empty,
+            options.StringComparisonPolicy?.CustomComparerTypeName ?? string.Empty,
+            true);
     }
 
     private static LibraDexIndexShapeSpec? CreateLogicalShape(CatalogIndexMetadata metadata)
@@ -525,6 +1014,7 @@ public sealed class Catalog : IDisposable
             metadata.StringKeys,
             metadata.GuidKeys,
             metadata.DateKeys,
+            metadata.DateTimeKeyEncoding,
             metadata.Directions,
             metadata.SortOrder,
             metadata.Projections,

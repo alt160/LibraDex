@@ -27,6 +27,8 @@ public sealed partial class LibraDexFileSession : IDisposable
     private const int VarKeyScalar8MutationHintSparseSampleMask = 0x3F;
     private const int VarKeyScalar8MultiByteRouterMinStemBytes = 2;
     private const int VarKeyScalar8MultiByteRouterMaxPrefixBytes = 64;
+    private const int VarKeyPayloadRepackMinimumDeletedBytes = 4096;
+    private const int VarKeyPayloadRepackMinimumDeletedPercent = 25;
     private const int RouterArenaReadCacheMaxBytes = 64 * 1024 * 1024;
 
     private enum PromotedRouteTargetKind : byte
@@ -49,6 +51,14 @@ public sealed partial class LibraDexFileSession : IDisposable
     private readonly Dictionary<long, byte[]> scalar8Scalar16CleanShelfCache = [];
     private readonly Dictionary<long, byte[]> scalar16Scalar16CleanShelfCache = [];
     private readonly Dictionary<long, byte[]> fixed32Scalar8CleanShelfCache = [];
+    private readonly Dictionary<long, byte[]> scalar8Scalar8MutableBatchShelfBytes = [];
+    private readonly Dictionary<long, byte[]> scalar16Scalar8MutableBatchShelfBytes = [];
+    private readonly Dictionary<long, byte[]> scalar8Scalar16MutableBatchShelfBytes = [];
+    private readonly Dictionary<long, byte[]> scalar16Scalar16MutableBatchShelfBytes = [];
+    private readonly Dictionary<long, byte[]> fixed32Scalar8MutableBatchShelfBytes = [];
+    private readonly Dictionary<long, List<ushort>> deletedShelfPayloadOffsets = [];
+    private long deletedShelfPayloadCellsRecorded;
+    private long deletedShelfPayloadCellsConsumed;
     private readonly Dictionary<long, byte[]> varKeyScalar8ReadShelfCache = [];
     private readonly Dictionary<long, byte[]> varKeyScalar16ReadShelfCache = [];
     private readonly Dictionary<long, byte[]> varKeyVarIdentityReadShelfCache = [];
@@ -65,6 +75,7 @@ public sealed partial class LibraDexFileSession : IDisposable
     private readonly Dictionary<long, VarLenRouteOptimizerState> varLenRouteOptimizerStates = [];
     private readonly byte[] varKeyScalar8RouteWalkRouterScratch = ArrayPool<byte>.Shared.Rent(RouterLayout.Size);
     private readonly byte[] varKeyScalar16RouteWalkRouterScratch = ArrayPool<byte>.Shared.Rent(RouterLayout.Size);
+    private readonly Dictionary<long, byte[]> fixed32Scalar16MutableBatchShelfBytes = [];
     private bool durabilityBatchActive;
     private bool routerReadCacheInvalidationPending;
     private bool disposed;
@@ -92,6 +103,12 @@ public sealed partial class LibraDexFileSession : IDisposable
     public DataKernelBackingKind BackingKind => kernel.BackingKind;
 
     /// <summary>
+    /// Gets whether this session currently owns an unpublished durability batch.<br/>
+    /// Mutation bridges use this to choose between compact immediate rewrites and batch-local tombstone accumulation against session-owned dirty shelf images.<br/>
+    /// </summary>
+    internal bool IsDurabilityBatchActive => durabilityBatchActive;
+
+    /// <summary>
     /// Starts a session-scoped durability batch that defers session commit calls until the batch commits or aborts.<br/>
     /// The first batch model controls durability cadence rather than transaction isolation; staged writes remain readable through the DataKernel pending overlay until publication.<br/>
     /// Write intent is stored only for the active batch and gives shape-specific policy code a coarse optimization signal.<br/>
@@ -110,6 +127,12 @@ public sealed partial class LibraDexFileSession : IDisposable
         routerReadCacheInvalidationPending = false;
         deferredDurabilityCommitRequests = 0;
         currentWriteIntent = writeIntent;
+        scalar8Scalar8MutableBatchShelfBytes.Clear();
+        scalar16Scalar8MutableBatchShelfBytes.Clear();
+        scalar8Scalar16MutableBatchShelfBytes.Clear();
+        scalar16Scalar16MutableBatchShelfBytes.Clear();
+        fixed32Scalar8MutableBatchShelfBytes.Clear();
+        fixed32Scalar16MutableBatchShelfBytes.Clear();
         varKeyScalar8MutableBatchShelves.Clear();
         varKeyScalar16MutableBatchShelves.Clear();
         varKeyVarIdentityMutableBatchShelves.Clear();
@@ -356,6 +379,310 @@ public sealed partial class LibraDexFileSession : IDisposable
         return CatalogIndexMetadataCodec.TryRead(bytes, out metadata);
     }
 
+    /// <summary>
+    /// Creates a composite index catalog slot with versioned metadata and an initial persisted composite snapshot.<br/>
+    /// The snapshot offset is stored in the slot root offset for this first durable composite-content slice; later mini-router pages can keep the same catalog anchor while changing the pointed-to byte format.<br/>
+    /// </summary>
+    /// <param name="slot">The fixed index-directory slot values to persist.</param>
+    /// <param name="metadata">The richer catalog metadata to serialize beside the fixed slot.</param>
+    /// <param name="snapshot">The encoded composite snapshot bytes.</param>
+    /// <param name="itemCount">The logical composite tuple count represented by the snapshot.</param>
+    /// <returns>The DataKernel commit telemetry for the metadata, snapshot, and directory update.</returns>
+    internal DataKernelCommitTelemetry CreateCompositeSnapshotIndex(
+        IndexDirectorySlotSnapshot slot,
+        CatalogIndexMetadata metadata,
+        ReadOnlySpan<byte> snapshot,
+        long itemCount)
+    {
+        int metadataLength = CatalogIndexMetadataCodec.GetEncodedSize(metadata);
+        RawDataReservation metadataReservation = kernel.Reserve(metadataLength);
+        CatalogIndexMetadataCodec.Write(metadataReservation.Span, metadata);
+        RawDataReservation snapshotReservation = kernel.Reserve(snapshot.Length);
+        snapshot.CopyTo(snapshotReservation.Span);
+        return UpsertIndexDirectorySlot(slot with
+        {
+            MetadataOffset = metadataReservation.Extent.Offset,
+            RootRouterOffset = snapshotReservation.Extent.Offset,
+            ItemCount = itemCount
+        });
+    }
+
+    /// <summary>
+    /// Creates a composite index catalog slot with versioned metadata and an initial durable root node page.<br/>
+    /// The root node offset is stored in the fixed slot root offset so later inserts can update only the copied path back to the root.<br/>
+    /// </summary>
+    /// <param name="slot">The fixed index-directory slot values to persist.</param>
+    /// <param name="metadata">The richer catalog metadata to serialize beside the fixed slot.</param>
+    /// <param name="rootNode">The encoded root node page bytes.</param>
+    /// <returns>The root node offset and DataKernel commit telemetry.</returns>
+    internal (long RootOffset, DataKernelCommitTelemetry Commit) CreateCompositeNodePageIndex(
+        IndexDirectorySlotSnapshot slot,
+        CatalogIndexMetadata metadata,
+        ReadOnlySpan<byte> rootNode)
+    {
+        int metadataLength = CatalogIndexMetadataCodec.GetEncodedSize(metadata);
+        RawDataReservation metadataReservation = kernel.Reserve(metadataLength);
+        CatalogIndexMetadataCodec.Write(metadataReservation.Span, metadata);
+        RawDataReservation rootReservation = kernel.Reserve(rootNode.Length);
+        rootNode.CopyTo(rootReservation.Span);
+        DataKernelCommitTelemetry commit = UpsertIndexDirectorySlot(slot with
+        {
+            MetadataOffset = metadataReservation.Extent.Offset,
+            RootRouterOffset = rootReservation.Extent.Offset,
+            ItemCount = 0
+        });
+        return (rootReservation.Extent.Offset, commit);
+    }
+
+    /// <summary>
+    /// Persists a replacement composite snapshot and updates the fixed directory slot to point at it.<br/>
+    /// This whole-snapshot rewrite is intentionally a correctness bridge before durable per-tier mini-router pages are introduced.<br/>
+    /// </summary>
+    /// <param name="slotIndex">The fixed index-directory slot to update.</param>
+    /// <param name="snapshot">The encoded composite snapshot bytes.</param>
+    /// <param name="itemCount">The logical composite tuple count represented by the snapshot.</param>
+    /// <returns>The DataKernel commit telemetry for the snapshot and directory update.</returns>
+    internal DataKernelCommitTelemetry UpdateCompositeSnapshotIndex(
+        int slotIndex,
+        ReadOnlySpan<byte> snapshot,
+        long itemCount)
+    {
+        if (!TryFindIndexDirectorySlot(slotIndex, out IndexDirectorySlotSnapshot slot))
+        {
+            throw new InvalidDataException("The requested composite index slot is not active.");
+        }
+
+        RawDataReservation snapshotReservation = kernel.Reserve(snapshot.Length);
+        snapshot.CopyTo(snapshotReservation.Span);
+        return UpsertIndexDirectorySlot(slot with
+        {
+            RootRouterOffset = snapshotReservation.Extent.Offset,
+            ItemCount = itemCount,
+            Generation = slot.Generation + 1
+        });
+    }
+
+    /// <summary>
+    /// Appends one immutable composite node page.<br/>
+    /// The caller decides whether this page is a terminal path copy, a copied parent, or a new child route; publication occurs through the normal DataKernel commit path.<br/>
+    /// </summary>
+    /// <param name="nodePage">The encoded node page bytes.</param>
+    /// <returns>The durable offset of the appended node page.</returns>
+    internal long AppendCompositeNodePage(ReadOnlySpan<byte> nodePage)
+    {
+        RawDataReservation reservation = kernel.Reserve(nodePage.Length);
+        nodePage.CopyTo(reservation.Span);
+        return reservation.Extent.Offset;
+    }
+
+    /// <summary>
+    /// Updates the fixed directory slot to point at a replacement composite root node page.<br/>
+    /// Immutable path-copy inserts append changed nodes first, then publish the new root offset through this directory update.<br/>
+    /// </summary>
+    /// <param name="slotIndex">The fixed index-directory slot to update.</param>
+    /// <param name="rootOffset">The durable offset of the replacement root node page.</param>
+    /// <param name="itemCount">The logical composite tuple count represented by the root.</param>
+    /// <returns>The DataKernel commit telemetry for the directory update.</returns>
+    internal DataKernelCommitTelemetry UpdateCompositeNodeRoot(
+        int slotIndex,
+        long rootOffset,
+        long itemCount)
+    {
+        if (!TryFindIndexDirectorySlot(slotIndex, out IndexDirectorySlotSnapshot slot))
+        {
+            throw new InvalidDataException("The requested composite index slot is not active.");
+        }
+
+        return UpsertIndexDirectorySlot(slot with
+        {
+            RootRouterOffset = rootOffset,
+            ItemCount = itemCount,
+            Generation = slot.Generation + 1
+        });
+    }
+
+    /// <summary>
+    /// Records payload cell offsets made unreachable by slot-table deletion in one shelf.<br/>
+    /// Slot removal is the visibility delete; this session-local queue preserves the orphaned payload locations so future reuse or compaction can avoid rediscovering them by scanning every shelf.<br/>
+    /// The record is intentionally not a transaction log and is not yet persisted across sessions.<br/>
+    /// </summary>
+    /// <param name="shelfOffset">The durable shelf offset whose payload cells became unreachable.</param>
+    /// <param name="payloadOffsets">The shelf-relative payload cell offsets removed from the active slot table.</param>
+    internal void RecordDeletedShelfPayloadOffsets(long shelfOffset, ReadOnlySpan<ushort> payloadOffsets)
+    {
+        if (shelfOffset <= 0 || payloadOffsets.Length == 0)
+        {
+            return;
+        }
+
+        if (!deletedShelfPayloadOffsets.TryGetValue(shelfOffset, out List<ushort>? offsets))
+        {
+            offsets = new List<ushort>(payloadOffsets.Length);
+            deletedShelfPayloadOffsets.Add(shelfOffset, offsets);
+        }
+
+        for (int i = 0; i < payloadOffsets.Length; i++)
+        {
+            offsets.Add(payloadOffsets[i]);
+        }
+
+        deletedShelfPayloadCellsRecorded += payloadOffsets.Length;
+    }
+
+    /// <summary>
+    /// Removes one reclaimed payload cell from the session-local delete queue after a later insert writes into that exact cell.<br/>
+    /// Fixed scalar deletes compact survivors so ordinary no-split inserts naturally reuse the tail cell at the old active count; this method keeps the maintenance-facing ledger from advertising a live payload cell as free.<br/>
+    /// The queue is intentionally best-effort and session-local, so a missing offset is not an error.<br/>
+    /// </summary>
+    /// <param name="shelfOffset">The durable shelf offset that received the insert.</param>
+    /// <param name="payloadOffset">The shelf-relative payload cell offset written by the insert.</param>
+    /// <returns><see langword="true"/> when a queued reclaimed cell was consumed.</returns>
+    internal bool TryConsumeDeletedShelfPayloadOffset(long shelfOffset, ushort payloadOffset)
+    {
+        if (shelfOffset <= 0 ||
+            !deletedShelfPayloadOffsets.TryGetValue(shelfOffset, out List<ushort>? offsets))
+        {
+            return false;
+        }
+
+        int index = offsets.LastIndexOf(payloadOffset);
+        if (index < 0)
+        {
+            return false;
+        }
+
+        offsets.RemoveAt(index);
+        deletedShelfPayloadCellsConsumed++;
+        if (offsets.Count == 0)
+        {
+            deletedShelfPayloadOffsets.Remove(shelfOffset);
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Gets the current session-local reclaimed fixed-shelf payload-cell counters.<br/>
+    /// The queued values are point-in-time observations from the open-session ledger, while recorded and consumed values are cumulative for this session instance only.<br/>
+    /// </summary>
+    /// <returns>A reclaimed-payload stats snapshot for this session.</returns>
+    internal LibraDexReclaimedPayloadStats GetReclaimedPayloadStats()
+    {
+        long queuedCellCount = 0;
+        foreach (KeyValuePair<long, List<ushort>> pair in deletedShelfPayloadOffsets)
+        {
+            queuedCellCount += pair.Value.Count;
+        }
+
+        return new LibraDexReclaimedPayloadStats(
+            deletedShelfPayloadOffsets.Count,
+            queuedCellCount,
+            deletedShelfPayloadCellsRecorded,
+            deletedShelfPayloadCellsConsumed);
+    }
+
+    /// <summary>
+    /// Creates a defensive copy of the session-local deleted payload cell queue.<br/>
+    /// This is the first maintenance-facing observation point for delete bookkeeping; later slices can persist or drain these records into shelf reuse and compaction flows.<br/>
+    /// </summary>
+    /// <returns>A snapshot keyed by durable shelf offset.</returns>
+    internal IReadOnlyDictionary<long, IReadOnlyList<ushort>> SnapshotDeletedShelfPayloadOffsets()
+    {
+        Dictionary<long, IReadOnlyList<ushort>> snapshot = new(deletedShelfPayloadOffsets.Count);
+        foreach (KeyValuePair<long, List<ushort>> pair in deletedShelfPayloadOffsets)
+        {
+            snapshot.Add(pair.Key, pair.Value.ToArray());
+        }
+
+        return snapshot;
+    }
+
+    /// <summary>
+    /// Attempts to read the composite snapshot pointed to by a fixed directory slot.<br/>
+    /// Slots whose root offset does not point at a composite snapshot return <see langword="false"/> so older metadata-only composite slots fail closed instead of being misread as tuple data.<br/>
+    /// </summary>
+    /// <param name="slot">The fixed index-directory slot whose root offset should point at a composite snapshot.</param>
+    /// <param name="snapshot">Receives the encoded snapshot bytes when present.</param>
+    /// <returns><see langword="true"/> when a composite snapshot was decoded from the slot root offset; otherwise <see langword="false"/>.</returns>
+    internal bool TryReadCompositeSnapshot(IndexDirectorySlotSnapshot slot, out byte[] snapshot)
+    {
+        snapshot = [];
+        if (slot.RootRouterOffset <= 0)
+        {
+            return false;
+        }
+
+        Span<byte> header = stackalloc byte[16];
+        kernel.Read(slot.RootRouterOffset, header);
+        if (!LibraDexCompositeSnapshotCodec.TryReadLength(header, out int length))
+        {
+            return false;
+        }
+
+        snapshot = new byte[length];
+        header.CopyTo(snapshot);
+        if (length > header.Length)
+        {
+            kernel.Read(slot.RootRouterOffset + header.Length, snapshot.AsSpan(header.Length));
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Attempts to read a composite node page from a direct DataKernel offset.<br/>
+    /// </summary>
+    /// <param name="offset">The direct node page offset.</param>
+    /// <param name="page">Receives the encoded node page bytes when present.</param>
+    /// <returns><see langword="true"/> when a composite node page was decoded; otherwise <see langword="false"/>.</returns>
+    internal bool TryReadCompositeNodePage(long offset, out byte[] page)
+    {
+        page = [];
+        if (offset <= 0)
+        {
+            return false;
+        }
+
+        Span<byte> header = stackalloc byte[22];
+        kernel.Read(offset, header);
+        if (!LibraDexCompositeNodePageCodec.TryReadLength(header, out int length))
+        {
+            return false;
+        }
+
+        page = new byte[length];
+        header.CopyTo(page);
+        if (length > header.Length)
+        {
+            kernel.Read(offset + header.Length, page.AsSpan(header.Length));
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Finds an active fixed index-directory slot in the cached session directory snapshot.<br/>
+    /// This helper keeps session-owned metadata updates local to the session instead of requiring callers to duplicate directory scanning logic.<br/>
+    /// </summary>
+    /// <param name="slotIndex">The fixed slot index to locate.</param>
+    /// <param name="slot">Receives the active slot snapshot when found.</param>
+    /// <returns><see langword="true"/> when the active slot exists; otherwise <see langword="false"/>.</returns>
+    private bool TryFindIndexDirectorySlot(int slotIndex, out IndexDirectorySlotSnapshot slot)
+    {
+        ReadOnlySpan<IndexDirectorySlotSnapshot> activeSlots = IndexDirectory.ActiveSlots;
+        for (int i = 0; i < activeSlots.Length; i++)
+        {
+            if (activeSlots[i].SlotIndex == slotIndex)
+            {
+                slot = activeSlots[i];
+                return true;
+            }
+        }
+
+        slot = default;
+        return false;
+    }
+
     private (RouterSnapshot Router, DataKernelCommitTelemetry Commit) CreateRootRouterIndexCore(IndexDirectorySlotSnapshot slot)
     {
         if ((uint)slot.SlotIndex >= IndexDirectoryLayout.SlotCount)
@@ -435,6 +762,1570 @@ public sealed partial class LibraDexFileSession : IDisposable
         VarKeyScalar8IndexHandle handle = new(router.Offset, maxKeyLength, optimizerRouteFanout, optimizerPolicy);
         handle.Validate();
         return (handle, router, commit);
+    }
+
+    /// <summary>
+    /// Creates a fully expanded one-byte root router for a metadata-backed public `VS8` varlen index and returns a runtime handle with the commit result.<br/>
+    /// The metadata is persisted beside the fixed index-directory slot in the same commit so reopen can reconstruct logical string projection ownership without parsing slot names.<br/>
+    /// </summary>
+    /// <param name="slot">The index-directory slot values to persist; the root-router and metadata offsets are supplied by this method.</param>
+    /// <param name="metadata">The catalog metadata to persist for this variable-key index.</param>
+    /// <param name="maxKeyLength">The maximum raw key length accepted by the runtime index.</param>
+    /// <param name="optimizerRouteFanout">The compressed-route fanout requested by optimizer maintenance.</param>
+    /// <param name="optimizerPolicy">The internal optimizer observation and maintenance scheduling policy.</param>
+    /// <returns>The runtime `VS8` handle, created router snapshot, and DataKernel commit telemetry.</returns>
+    internal (VarKeyScalar8IndexHandle Index, RouterSnapshot Router, DataKernelCommitTelemetry Commit) CreateVarKeyScalar8RootRouterIndex(
+        IndexDirectorySlotSnapshot slot,
+        CatalogIndexMetadata metadata,
+        int maxKeyLength,
+        int optimizerRouteFanout,
+        VarLenOptimizerMaintenancePolicy optimizerPolicy)
+    {
+        (RouterSnapshot router, DataKernelCommitTelemetry commit) = CreateRootRouterIndex(slot, metadata);
+        VarKeyScalar8IndexHandle handle = new(router.Offset, maxKeyLength, optimizerRouteFanout, optimizerPolicy);
+        handle.Validate();
+        return (handle, router, commit);
+    }
+
+    /// <summary>
+    /// Creates a metadata-backed single-shelf `FixedNScalar8` index and returns its runtime handle.<br/>
+    /// This is the first programmable fixed-key durable bridge; later routed FSN storage can replace the shelf root with a router while preserving the public BigInt shape metadata.<br/>
+    /// </summary>
+    /// <param name="slot">The fixed index-directory slot values to persist.</param>
+    /// <param name="metadata">The catalog metadata to persist for this fixed-key index.</param>
+    /// <param name="profile">The programmable fixed-key shelf profile.</param>
+    /// <returns>The runtime `FSN-8` handle and commit telemetry.</returns>
+    internal (FixedNScalar8IndexHandle Index, DataKernelCommitTelemetry Commit) CreateFixedNScalar8ShelfIndex(
+        IndexDirectorySlotSnapshot slot,
+        CatalogIndexMetadata metadata,
+        FixedNScalar8Profile profile)
+    {
+        int metadataLength = CatalogIndexMetadataCodec.GetEncodedSize(metadata);
+        RawDataReservation metadataReservation = kernel.Reserve(metadataLength);
+        CatalogIndexMetadataCodec.Write(metadataReservation.Span, metadata);
+
+        RawDataReservation shelfReservation = kernel.Reserve(profile.ShelfExtentSize);
+        FixedNScalar8 shelf = new(shelfReservation.Span, profile);
+        shelf.Initialize();
+
+        DataKernelCommitTelemetry commit = UpsertIndexDirectorySlot(slot with
+        {
+            MetadataOffset = metadataReservation.Extent.Offset,
+            RootRouterOffset = shelfReservation.Extent.Offset,
+            ItemCount = 0
+        });
+        FixedNScalar8IndexHandle handle = new(shelfReservation.Extent.Offset, profile, IsRouted: false);
+        handle.Validate();
+        return (handle, commit);
+    }
+
+    /// <summary>
+    /// Creates a metadata-backed root-router `FixedNScalar8` index and returns its runtime handle.<br/>
+    /// Root-prefix routing keeps the public fixed BigInt facade from depending on a single shelf while deeper same-prefix splits are developed.<br/>
+    /// </summary>
+    /// <param name="slot">The fixed index-directory slot values to persist.</param>
+    /// <param name="metadata">The catalog metadata to persist for this fixed-key index.</param>
+    /// <param name="profile">The programmable fixed-key shelf profile.</param>
+    /// <returns>The runtime routed `FSN-8` handle and commit telemetry.</returns>
+    internal (FixedNScalar8IndexHandle Index, DataKernelCommitTelemetry Commit) CreateFixedNScalar8RootRouterIndex(
+        IndexDirectorySlotSnapshot slot,
+        CatalogIndexMetadata metadata,
+        FixedNScalar8Profile profile)
+    {
+        (RouterSnapshot router, DataKernelCommitTelemetry commit) = CreateRootRouterIndex(slot, metadata);
+        FixedNScalar8IndexHandle handle = new(router.Offset, profile, IsRouted: true);
+        handle.Validate();
+        return (handle, commit);
+    }
+
+    /// <summary>
+    /// Creates a metadata-backed root-router `FV` index and returns its runtime handle.<br/>
+    /// This keeps fixed-width key routing durable while variable-length identities remain stored inside shelf-local record arenas.<br/>
+    /// </summary>
+    /// <param name="slot">The fixed index-directory slot values to persist.</param>
+    /// <param name="metadata">The catalog metadata to persist for this fixed-key index.</param>
+    /// <param name="profile">The programmable fixed-key / variable-identity shelf profile.</param>
+    /// <returns>The runtime routed `FV` handle and commit telemetry.</returns>
+    internal (FixedNVarIdentityIndexHandle Index, DataKernelCommitTelemetry Commit) CreateFixedNVarIdentityRootRouterIndex(
+        IndexDirectorySlotSnapshot slot,
+        CatalogIndexMetadata metadata,
+        FixedNVarIdentityProfile profile)
+    {
+        (RouterSnapshot router, DataKernelCommitTelemetry commit) = CreateRootRouterIndex(slot, metadata);
+        FixedNVarIdentityIndexHandle handle = new(router.Offset, profile, IsRouted: true);
+        handle.Validate();
+        return (handle, commit);
+    }
+
+    /// <summary>
+    /// Opens a single-shelf `FixedNScalar8` index from an active directory slot.<br/>
+    /// The pointed shelf is validated against the supplied programmable fixed-key profile before a handle is returned.<br/>
+    /// </summary>
+    /// <param name="slotIndex">The fixed index-directory slot to open.</param>
+    /// <param name="profile">The expected programmable fixed-key shelf profile.</param>
+    /// <returns>The runtime `FSN-8` handle.</returns>
+    internal FixedNScalar8IndexHandle OpenFixedNScalar8ShelfIndex(int slotIndex, FixedNScalar8Profile profile)
+    {
+        if (!TryFindIndexDirectorySlot(slotIndex, out IndexDirectorySlotSnapshot slot))
+        {
+            throw new InvalidDataException("The requested FSN-8 index slot is not active.");
+        }
+
+        byte[] rootBytes = new byte[Math.Max(RouterLayout.Size, profile.ShelfExtentSize)];
+        kernel.Read(slot.RootRouterOffset, rootBytes.AsSpan(0, RouterLayout.Size));
+        RouterReader router = new(rootBytes.AsSpan(0, RouterLayout.Size));
+        if (router.IsValid)
+        {
+            FixedNScalar8IndexHandle routedHandle = new(slot.RootRouterOffset, profile, IsRouted: true);
+            routedHandle.Validate();
+            return routedHandle;
+        }
+
+        kernel.Read(slot.RootRouterOffset, rootBytes.AsSpan(0, profile.ShelfExtentSize));
+        FixedNScalar8ReadOnly shelf = new(rootBytes.AsSpan(0, profile.ShelfExtentSize), profile);
+        if (!shelf.IsValid)
+        {
+            throw new InvalidDataException("The persisted FSN-8 root is neither a valid router nor a valid single shelf.");
+        }
+
+        FixedNScalar8IndexHandle shelfHandle = new(slot.RootRouterOffset, profile, IsRouted: false);
+        shelfHandle.Validate();
+        return shelfHandle;
+    }
+
+    /// <summary>
+    /// Reads the current bytes for a single-shelf `FixedNScalar8` index handle.<br/>
+    /// The returned array is disconnected so callers can mutate it before explicitly publishing a rewrite.<br/>
+    /// </summary>
+    /// <param name="handle">The `FSN-8` index handle.</param>
+    /// <returns>A disconnected copy of the shelf bytes.</returns>
+    internal byte[] ReadFixedNScalar8ShelfBytes(FixedNScalar8IndexHandle handle)
+    {
+        handle.Validate();
+        if (handle.IsRouted)
+        {
+            throw new ArgumentException("A routed FSN-8 handle does not point directly at a shelf.", nameof(handle));
+        }
+
+        return ReadFixedNScalar8ShelfBytes(handle.RootOffset, handle.Profile);
+    }
+
+    /// <summary>
+    /// Reads a single `FixedNScalar8` shelf from a direct shelf offset.<br/>
+    /// The returned array is disconnected so callers can mutate it before explicitly publishing a rewrite.<br/>
+    /// </summary>
+    /// <param name="shelfOffset">The durable offset of the shelf to read.</param>
+    /// <param name="profile">The expected programmable fixed-key shelf profile.</param>
+    /// <returns>A disconnected copy of the shelf bytes.</returns>
+    internal byte[] ReadFixedNScalar8ShelfBytes(long shelfOffset, FixedNScalar8Profile profile)
+    {
+        byte[] shelfBytes = new byte[profile.ShelfExtentSize];
+        kernel.Read(shelfOffset, shelfBytes);
+        FixedNScalar8ReadOnly shelf = new(shelfBytes, profile);
+        if (!shelf.IsValid)
+        {
+            throw new InvalidDataException("The persisted FSN-8 shelf bytes are invalid.");
+        }
+
+        return shelfBytes;
+    }
+
+    /// <summary>
+    /// Reads a single `FV` shelf from a direct shelf offset.<br/>
+    /// The returned array is disconnected so callers can mutate it before explicitly publishing a rewrite.<br/>
+    /// </summary>
+    /// <param name="shelfOffset">The durable offset of the shelf to read.</param>
+    /// <param name="profile">The expected programmable fixed-key / variable-identity shelf profile.</param>
+    /// <returns>A disconnected copy of the shelf bytes.</returns>
+    internal byte[] ReadFixedNVarIdentityShelfBytes(long shelfOffset, FixedNVarIdentityProfile profile)
+    {
+        byte[] shelfBytes = new byte[profile.ShelfExtentSize];
+        kernel.Read(shelfOffset, shelfBytes);
+        LibraDex.Views.FixedNVarIdentityReadOnly shelf = new(shelfBytes, profile);
+        if (!shelf.IsValid)
+        {
+            throw new InvalidDataException("The persisted FV shelf bytes are invalid.");
+        }
+
+        return shelfBytes;
+    }
+
+    /// <summary>
+    /// Rewrites a direct `FV` shelf and updates its directory generation.<br/>
+    /// Routed callers usually rewrite target shelves directly, but the direct handle path uses this helper to preserve the same directory contract as other fixed shapes.<br/>
+    /// </summary>
+    /// <param name="slotIndex">The fixed directory slot that owns the shelf.</param>
+    /// <param name="handle">The direct `FV` handle.</param>
+    /// <param name="shelfBytes">The validated shelf bytes to publish.</param>
+    /// <returns>The commit telemetry for the rewrite.</returns>
+    internal DataKernelCommitTelemetry RewriteFixedNVarIdentityShelf(
+        int slotIndex,
+        FixedNVarIdentityIndexHandle handle,
+        ReadOnlySpan<byte> shelfBytes)
+    {
+        handle.Validate();
+        if (!TryFindIndexDirectorySlot(slotIndex, out IndexDirectorySlotSnapshot slot))
+        {
+            throw new InvalidDataException("The requested FV index slot is not active.");
+        }
+
+        if (handle.IsRouted)
+        {
+            throw new ArgumentException("A routed FV handle does not point directly at a shelf.", nameof(handle));
+        }
+
+        RawDataReservation shelfReservation = kernel.ReserveAt(handle.RootOffset, handle.Profile.ShelfExtentSize);
+        shelfBytes.CopyTo(shelfReservation.Span);
+        return UpsertIndexDirectorySlot(slot with
+        {
+            Generation = slot.Generation + 1
+        });
+    }
+
+    /// <summary>
+    /// Creates a metadata-backed single-shelf `FixedNScalar16` index and returns its runtime handle.<br/>
+    /// This is the first fixed BigInt bridge for 16-byte scalar identities; routed `FSN-16` split behavior remains a later slice.<br/>
+    /// </summary>
+    /// <param name="slot">The fixed index-directory slot values to persist.</param>
+    /// <param name="metadata">The catalog metadata to persist for this fixed-key index.</param>
+    /// <param name="profile">The programmable fixed-key shelf profile.</param>
+    /// <returns>The runtime `FSN-16` handle and commit telemetry.</returns>
+    internal (FixedNScalar16IndexHandle Index, DataKernelCommitTelemetry Commit) CreateFixedNScalar16ShelfIndex(
+        IndexDirectorySlotSnapshot slot,
+        CatalogIndexMetadata metadata,
+        FixedNScalar16Profile profile)
+    {
+        int metadataLength = CatalogIndexMetadataCodec.GetEncodedSize(metadata);
+        RawDataReservation metadataReservation = kernel.Reserve(metadataLength);
+        CatalogIndexMetadataCodec.Write(metadataReservation.Span, metadata);
+
+        RawDataReservation shelfReservation = kernel.Reserve(profile.ShelfExtentSize);
+        FixedNScalar16 shelf = new(shelfReservation.Span, profile);
+        shelf.Initialize();
+
+        DataKernelCommitTelemetry commit = UpsertIndexDirectorySlot(slot with
+        {
+            MetadataOffset = metadataReservation.Extent.Offset,
+            RootRouterOffset = shelfReservation.Extent.Offset,
+            ItemCount = 0
+        });
+        FixedNScalar16IndexHandle handle = new(shelfReservation.Extent.Offset, profile, IsRouted: false);
+        handle.Validate();
+        return (handle, commit);
+    }
+
+    /// <summary>
+    /// Creates a metadata-backed root-router `FixedNScalar16` index and returns its runtime handle.<br/>
+    /// Root-prefix routing gives fixed BigInt indexes with 16-byte identities the same growth path as `FSN-8`.<br/>
+    /// </summary>
+    /// <param name="slot">The fixed index-directory slot values to persist.</param>
+    /// <param name="metadata">The catalog metadata to persist for this fixed-key index.</param>
+    /// <param name="profile">The programmable fixed-key shelf profile.</param>
+    /// <returns>The runtime routed `FSN-16` handle and commit telemetry.</returns>
+    internal (FixedNScalar16IndexHandle Index, DataKernelCommitTelemetry Commit) CreateFixedNScalar16RootRouterIndex(
+        IndexDirectorySlotSnapshot slot,
+        CatalogIndexMetadata metadata,
+        FixedNScalar16Profile profile)
+    {
+        (RouterSnapshot router, DataKernelCommitTelemetry commit) = CreateRootRouterIndex(slot, metadata);
+        FixedNScalar16IndexHandle handle = new(router.Offset, profile, IsRouted: true);
+        handle.Validate();
+        return (handle, commit);
+    }
+
+    /// <summary>
+    /// Opens a single-shelf `FixedNScalar16` index from an active directory slot.<br/>
+    /// The pointed shelf is validated against the supplied programmable fixed-key profile before a handle is returned.<br/>
+    /// </summary>
+    /// <param name="slotIndex">The fixed index-directory slot to open.</param>
+    /// <param name="profile">The expected programmable fixed-key shelf profile.</param>
+    /// <returns>The runtime `FSN-16` handle.</returns>
+    internal FixedNScalar16IndexHandle OpenFixedNScalar16ShelfIndex(int slotIndex, FixedNScalar16Profile profile)
+    {
+        if (!TryFindIndexDirectorySlot(slotIndex, out IndexDirectorySlotSnapshot slot))
+        {
+            throw new InvalidDataException("The requested FSN-16 index slot is not active.");
+        }
+
+        byte[] rootBytes = new byte[Math.Max(RouterLayout.Size, profile.ShelfExtentSize)];
+        kernel.Read(slot.RootRouterOffset, rootBytes.AsSpan(0, RouterLayout.Size));
+        RouterReader router = new(rootBytes.AsSpan(0, RouterLayout.Size));
+        if (router.IsValid)
+        {
+            FixedNScalar16IndexHandle routedHandle = new(slot.RootRouterOffset, profile, IsRouted: true);
+            routedHandle.Validate();
+            return routedHandle;
+        }
+
+        kernel.Read(slot.RootRouterOffset, rootBytes.AsSpan(0, profile.ShelfExtentSize));
+        FixedNScalar16ReadOnly shelf = new(rootBytes.AsSpan(0, profile.ShelfExtentSize), profile);
+        if (!shelf.IsValid)
+        {
+            throw new InvalidDataException("The persisted FSN-16 root is neither a valid router nor a valid single shelf.");
+        }
+
+        FixedNScalar16IndexHandle shelfHandle = new(slot.RootRouterOffset, profile, IsRouted: false);
+        shelfHandle.Validate();
+        return shelfHandle;
+    }
+
+    /// <summary>
+    /// Reads the current bytes for a single-shelf `FixedNScalar16` index handle.<br/>
+    /// The returned array is disconnected so callers can mutate it before explicitly publishing a rewrite.<br/>
+    /// </summary>
+    /// <param name="handle">The `FSN-16` index handle.</param>
+    /// <returns>A disconnected copy of the shelf bytes.</returns>
+    internal byte[] ReadFixedNScalar16ShelfBytes(FixedNScalar16IndexHandle handle)
+    {
+        handle.Validate();
+        if (handle.IsRouted)
+        {
+            throw new ArgumentException("A routed FSN-16 handle does not point directly at a shelf.", nameof(handle));
+        }
+
+        return ReadFixedNScalar16ShelfBytes(handle.RootOffset, handle.Profile);
+    }
+
+    /// <summary>
+    /// Reads a single `FixedNScalar16` shelf from a direct shelf offset.<br/>
+    /// The returned array is disconnected so callers can mutate it before explicitly publishing a rewrite.<br/>
+    /// </summary>
+    /// <param name="shelfOffset">The durable offset of the shelf to read.</param>
+    /// <param name="profile">The expected programmable fixed-key shelf profile.</param>
+    /// <returns>A disconnected copy of the shelf bytes.</returns>
+    internal byte[] ReadFixedNScalar16ShelfBytes(long shelfOffset, FixedNScalar16Profile profile)
+    {
+        byte[] shelfBytes = new byte[profile.ShelfExtentSize];
+        kernel.Read(shelfOffset, shelfBytes);
+        FixedNScalar16ReadOnly shelf = new(shelfBytes, profile);
+        if (!shelf.IsValid)
+        {
+            throw new InvalidDataException("The persisted FSN-16 shelf bytes are invalid.");
+        }
+
+        return shelfBytes;
+    }
+
+    /// <summary>
+    /// Rewrites a single-shelf `FixedNScalar16` index in place and updates the fixed directory item count.<br/>
+    /// This keeps the first fixed BigInt/16-byte identity bridge durable while routed `FSN-16` split handling is still pending.<br/>
+    /// </summary>
+    /// <param name="slotIndex">The fixed index-directory slot to update.</param>
+    /// <param name="handle">The `FSN-16` index handle.</param>
+    /// <param name="shelfBytes">The complete replacement shelf bytes.</param>
+    /// <param name="itemCount">The item count represented by the replacement shelf.</param>
+    /// <returns>The commit telemetry for the shelf rewrite and directory update.</returns>
+    internal DataKernelCommitTelemetry RewriteFixedNScalar16Shelf(
+        int slotIndex,
+        FixedNScalar16IndexHandle handle,
+        ReadOnlySpan<byte> shelfBytes,
+        ushort itemCount)
+    {
+        handle.Validate();
+        if (shelfBytes.Length != handle.Profile.ShelfExtentSize)
+        {
+            throw new ArgumentException("The FSN-16 shelf rewrite bytes must match the handle profile extent size.", nameof(shelfBytes));
+        }
+
+        if (!TryFindIndexDirectorySlot(slotIndex, out IndexDirectorySlotSnapshot slot))
+        {
+            throw new InvalidDataException("The requested FSN-16 index slot is not active.");
+        }
+
+        if (handle.IsRouted)
+        {
+            throw new ArgumentException("A routed FSN-16 handle does not point directly at a shelf.", nameof(handle));
+        }
+
+        RawDataReservation shelfReservation = kernel.ReserveAt(handle.RootOffset, handle.Profile.ShelfExtentSize);
+        shelfBytes.CopyTo(shelfReservation.Span);
+        return UpsertIndexDirectorySlot(slot with
+        {
+            ItemCount = itemCount,
+            Generation = slot.Generation + 1
+        });
+    }
+
+    /// <summary>
+    /// Inserts one tuple into a routed `FixedNScalar16` index and transforms full shelves into child routers when needed.<br/>
+    /// The split behavior mirrors `FSN-8` while preserving the 16-byte identity tie-breaker bytes.<br/>
+    /// </summary>
+    /// <param name="slotIndex">The fixed index-directory slot that owns the routed index.</param>
+    /// <param name="handle">The routed `FSN-16` handle.</param>
+    /// <param name="key">The encoded fixed-width key bytes.</param>
+    /// <param name="encodedIdentity">The encoded sortable scalar-16 identity bytes.</param>
+    /// <param name="allowDuplicateKeys">True for non-unique index behavior; false for unique key behavior.</param>
+    /// <returns>The insert result and commit telemetry.</returns>
+    internal (FixedNScalarInsertResult Result, DataKernelCommitTelemetry Commit) InsertRoutedFixedNScalar16RootNoSplit(
+        int slotIndex,
+        FixedNScalar16IndexHandle handle,
+        ReadOnlySpan<byte> key,
+        ReadOnlySpan<byte> encodedIdentity,
+        bool allowDuplicateKeys)
+    {
+        handle.Validate();
+        if (!handle.IsRouted)
+        {
+            throw new ArgumentException("FSN-16 root-prefix insertion requires a routed handle.", nameof(handle));
+        }
+
+        if (key.Length != handle.Profile.KeySize)
+        {
+            throw new ArgumentException("FSN-16 encoded key length must match the handle profile key size.", nameof(key));
+        }
+
+        if (encodedIdentity.Length != FixedNScalar16Layout.IdentitySize)
+        {
+            throw new ArgumentException("FSN-16 encoded identity length must be sixteen bytes.", nameof(encodedIdentity));
+        }
+
+        if (!TryFindIndexDirectorySlot(slotIndex, out IndexDirectorySlotSnapshot slot))
+        {
+            throw new InvalidDataException("The requested FSN-16 index slot is not active.");
+        }
+
+        byte[] routerBytes = new byte[RouterLayout.Size];
+        long routerOffset = handle.RootOffset;
+        for (int hop = 0; hop < handle.Profile.KeySize; hop++)
+        {
+            kernel.Read(routerOffset, routerBytes);
+            RouterReader routerReader = new(routerBytes);
+            if (!routerReader.IsValid || !routerReader.HasDirectIndex)
+            {
+                throw new InvalidDataException("The routed FSN-16 router is invalid.");
+            }
+
+            byte prefix = key[routerReader.KeyDepth];
+            long targetOffset = routerReader.FindTarget(prefix);
+            if (targetOffset == 0)
+            {
+                RawDataReservation shelfReservation = kernel.Reserve(handle.Profile.ShelfExtentSize);
+                FixedNScalar16 shelf = new(shelfReservation.Span, handle.Profile);
+                shelf.Initialize();
+                FixedNScalarInsertResult result = shelf.Insert(key, encodedIdentity, allowDuplicateKeys);
+                if (result != FixedNScalarInsertResult.Inserted)
+                {
+                    throw new InvalidDataException($"Expected first FSN-16 routed shelf insert to succeed, got {result}.");
+                }
+
+                RawDataReservation routerReservation = kernel.ReserveAt(routerOffset, RouterLayout.Size);
+                routerBytes.CopyTo(routerReservation.Span);
+                RouterWriter routerWriter = new(routerReservation.Span);
+                routerWriter.WriteRoute(prefix, prefix, prefix, shelfReservation.Extent.Offset);
+                DataKernelCommitTelemetry createCommit = UpsertIndexDirectorySlot(slot with
+                {
+                    ItemCount = slot.ItemCount + 1,
+                    Generation = slot.Generation + 1
+                });
+                return (result, createCommit);
+            }
+
+            if (IsFixedNScalar16Router(targetOffset))
+            {
+                routerOffset = targetOffset;
+                continue;
+            }
+
+            byte[] shelfBytes = ReadFixedNScalar16ShelfBytes(targetOffset, handle.Profile);
+            FixedNScalar16 existingShelf = new(shelfBytes, handle.Profile);
+            FixedNScalarInsertResult insertResult = existingShelf.Insert(key, encodedIdentity, allowDuplicateKeys);
+            if (insertResult != FixedNScalarInsertResult.Inserted)
+            {
+                if (insertResult == FixedNScalarInsertResult.Full)
+                {
+                    return SplitRoutedFixedNScalar16ByShelfTransform(
+                        slotIndex,
+                        slot,
+                        handle,
+                        targetOffset,
+                        shelfBytes,
+                        checked((ushort)(routerReader.KeyDepth + 1)),
+                        key,
+                        encodedIdentity,
+                        allowDuplicateKeys);
+                }
+
+                return (insertResult, default);
+            }
+
+            RawDataReservation shelfRewrite = kernel.ReserveAt(targetOffset, handle.Profile.ShelfExtentSize);
+            shelfBytes.CopyTo(shelfRewrite.Span);
+            DataKernelCommitTelemetry rewriteCommit = UpsertIndexDirectorySlot(slot with
+            {
+                ItemCount = slot.ItemCount + 1,
+                Generation = slot.Generation + 1
+            });
+            return (insertResult, rewriteCommit);
+        }
+
+        throw new InvalidDataException("The routed FSN-16 insert exceeded the fixed key depth.");
+    }
+
+    private bool IsFixedNScalar16Router(long offset)
+    {
+        byte[] routerBytes = new byte[RouterLayout.Size];
+        kernel.Read(offset, routerBytes);
+        RouterReader reader = new(routerBytes);
+        return reader.IsValid;
+    }
+
+    private (FixedNScalarInsertResult Result, DataKernelCommitTelemetry Commit) SplitRoutedFixedNScalar16ByShelfTransform(
+        int slotIndex,
+        IndexDirectorySlotSnapshot slot,
+        FixedNScalar16IndexHandle handle,
+        long fullShelfOffset,
+        byte[] existingShelfBytes,
+        ushort firstKeyDepth,
+        ReadOnlySpan<byte> key,
+        ReadOnlySpan<byte> encodedIdentity,
+        bool allowDuplicateKeys)
+    {
+        _ = slotIndex;
+        FixedNScalar16ReadOnly existingShelf = new(existingShelfBytes, handle.Profile);
+        if (!existingShelf.IsValid)
+        {
+            throw new InvalidDataException("The routed FSN-16 shelf selected for transform split is invalid.");
+        }
+
+        int existingCount = existingShelf.ItemCount;
+        byte[][] keys = new byte[existingCount + 1][];
+        byte[][] identities = new byte[existingCount + 1][];
+        bool inserted = false;
+        int writeIndex = 0;
+        for (int slotOrdinal = 0; slotOrdinal < existingCount; slotOrdinal++)
+        {
+            byte[] currentKey = new byte[handle.Profile.KeySize];
+            byte[] currentIdentity = new byte[FixedNScalar16Layout.IdentitySize];
+            existingShelf.CopyKeyAt(slotOrdinal, currentKey);
+            existingShelf.CopyIdentityAt(slotOrdinal, currentIdentity);
+            if (!inserted && CompareFixedNScalar16Tuple(currentKey, currentIdentity, key, encodedIdentity) > 0)
+            {
+                keys[writeIndex] = key.ToArray();
+                identities[writeIndex] = encodedIdentity.ToArray();
+                writeIndex++;
+                inserted = true;
+            }
+
+            if (currentKey.AsSpan().SequenceEqual(key) && currentIdentity.AsSpan().SequenceEqual(encodedIdentity))
+            {
+                return (FixedNScalarInsertResult.AlreadyPresent, default);
+            }
+
+            if (!allowDuplicateKeys && currentKey.AsSpan().SequenceEqual(key))
+            {
+                return (FixedNScalarInsertResult.KeyConflict, default);
+            }
+
+            keys[writeIndex] = currentKey;
+            identities[writeIndex] = currentIdentity;
+            writeIndex++;
+        }
+
+        if (!inserted)
+        {
+            keys[writeIndex] = key.ToArray();
+            identities[writeIndex] = encodedIdentity.ToArray();
+        }
+
+        if (!TryChooseFixedNScalar16Split(keys, firstKeyDepth, out ushort splitKeyDepth, out byte rightPrefixByte))
+        {
+            throw new InvalidDataException("The full FSN-16 shelf could not be split because all keys share every fixed-key byte.");
+        }
+
+        byte[] leftShelfBytes = new byte[handle.Profile.ShelfExtentSize];
+        byte[] rightShelfBytes = new byte[handle.Profile.ShelfExtentSize];
+        FixedNScalar16 leftShelf = new(leftShelfBytes, handle.Profile);
+        FixedNScalar16 rightShelf = new(rightShelfBytes, handle.Profile);
+        leftShelf.Initialize();
+        rightShelf.Initialize();
+        for (int i = 0; i < keys.Length; i++)
+        {
+            bool goesRight = keys[i][splitKeyDepth] >= rightPrefixByte;
+            FixedNScalarInsertResult result = goesRight
+                ? rightShelf.Insert(keys[i], identities[i], allowDuplicateKeys: true)
+                : leftShelf.Insert(keys[i], identities[i], allowDuplicateKeys: true);
+            if (result != FixedNScalarInsertResult.Inserted)
+            {
+                throw new InvalidDataException($"Expected FSN-16 split shelf insert to succeed, got {result}.");
+            }
+        }
+
+        RawDataReservation leftAppend = kernel.Reserve(handle.Profile.ShelfExtentSize);
+        leftShelfBytes.CopyTo(leftAppend.Span);
+        RawDataReservation rightAppend = kernel.Reserve(handle.Profile.ShelfExtentSize);
+        rightShelfBytes.CopyTo(rightAppend.Span);
+
+        int appendedRouterCount = splitKeyDepth - firstKeyDepth;
+        long nextRouterOffset = 0;
+        long[] appendedRouterOffsets = appendedRouterCount > 0 ? new long[appendedRouterCount] : [];
+        for (int i = appendedRouterCount - 1; i >= 0; i--)
+        {
+            appendedRouterOffsets[i] = kernel.Reserve(RouterLayout.Size).Extent.Offset;
+        }
+
+        for (int i = appendedRouterCount - 1; i >= 0; i--)
+        {
+            ushort routerDepth = checked((ushort)(firstKeyDepth + i + 1));
+            long[] targets = routerDepth == splitKeyDepth
+                ? CreateFixedNScalar16SplitTerminalTargets(keys, splitKeyDepth, rightPrefixByte, leftAppend.Extent.Offset, rightAppend.Extent.Offset)
+                : CreateFixedNScalar16SingleTarget(keys[0][routerDepth], nextRouterOffset);
+            RawDataReservation routerReservation = kernel.ReserveAt(appendedRouterOffsets[i], RouterLayout.Size);
+            RouterWriter writer = new(routerReservation.Span);
+            writer.InitializeExpandedOneByte(routerDepth, slot.AllocationClassId, targets);
+            nextRouterOffset = appendedRouterOffsets[i];
+        }
+
+        long rootChildTarget = appendedRouterCount == 0 ? 0 : nextRouterOffset;
+        long[] firstTargets = appendedRouterCount == 0
+            ? CreateFixedNScalar16SplitTerminalTargets(keys, splitKeyDepth, rightPrefixByte, leftAppend.Extent.Offset, rightAppend.Extent.Offset)
+            : CreateFixedNScalar16SingleTarget(keys[0][firstKeyDepth], rootChildTarget);
+        RawDataReservation transformedRouter = kernel.ReserveAt(fullShelfOffset, RouterLayout.Size);
+        RouterWriter transformedWriter = new(transformedRouter.Span);
+        transformedWriter.InitializeExpandedOneByte(firstKeyDepth, slot.AllocationClassId, firstTargets);
+
+        DataKernelCommitTelemetry commit = UpsertIndexDirectorySlot(slot with
+        {
+            ItemCount = slot.ItemCount + 1,
+            Generation = slot.Generation + 1
+        });
+        return (FixedNScalarInsertResult.Inserted, commit);
+    }
+
+    private static long[] CreateFixedNScalar16SplitTerminalTargets(
+        IReadOnlyList<byte[]> keys,
+        ushort splitKeyDepth,
+        byte rightPrefixByte,
+        long leftShelfOffset,
+        long rightShelfOffset)
+    {
+        long[] targets = new long[RouterLayout.MaxOneByteRouteCount];
+        for (int i = 0; i < keys.Count; i++)
+        {
+            byte prefix = keys[i][splitKeyDepth];
+            targets[prefix] = prefix >= rightPrefixByte ? rightShelfOffset : leftShelfOffset;
+        }
+
+        return targets;
+    }
+
+    private static long[] CreateFixedNScalar16SingleTarget(byte prefix, long targetOffset)
+    {
+        long[] targets = new long[RouterLayout.MaxOneByteRouteCount];
+        targets[prefix] = targetOffset;
+        return targets;
+    }
+
+    private static bool TryChooseFixedNScalar16Split(
+        IReadOnlyList<byte[]> sortedKeys,
+        ushort firstKeyDepth,
+        out ushort splitKeyDepth,
+        out byte rightPrefixByte)
+    {
+        return TryChooseFixedNScalar8Split(sortedKeys, firstKeyDepth, out splitKeyDepth, out rightPrefixByte);
+    }
+
+    private static int CompareFixedNScalar16Tuple(ReadOnlySpan<byte> leftKey, ReadOnlySpan<byte> leftIdentity, ReadOnlySpan<byte> rightKey, ReadOnlySpan<byte> rightIdentity)
+    {
+        int keyComparison = leftKey.SequenceCompareTo(rightKey);
+        return keyComparison != 0 ? keyComparison : leftIdentity.SequenceCompareTo(rightIdentity);
+    }
+
+    /// <summary>
+    /// Reads encoded identities from a routed `FixedNScalar16` index over an inclusive fixed-key range.<br/>
+    /// Traversal follows child routers and tracks visited shelves because multiple route prefixes can intentionally point to the same split shelf.<br/>
+    /// </summary>
+    /// <param name="handle">The routed `FSN-16` handle.</param>
+    /// <param name="lowerKey">The inclusive lower encoded fixed-width key.</param>
+    /// <param name="upperKey">The inclusive upper encoded fixed-width key.</param>
+    /// <returns>Concatenated encoded scalar-16 identities matching the requested key range.</returns>
+    internal byte[] ReadRoutedFixedNScalar16IdentityRange(
+        FixedNScalar16IndexHandle handle,
+        ReadOnlySpan<byte> lowerKey,
+        ReadOnlySpan<byte> upperKey)
+    {
+        handle.Validate();
+        if (!handle.IsRouted)
+        {
+            throw new ArgumentException("FSN-16 routed range reads require a routed handle.", nameof(handle));
+        }
+
+        if (lowerKey.Length != handle.Profile.KeySize || upperKey.Length != handle.Profile.KeySize)
+        {
+            throw new ArgumentException("FSN-16 encoded range keys must match the handle profile key size.");
+        }
+
+        if (lowerKey.SequenceCompareTo(upperKey) > 0)
+        {
+            throw new ArgumentException("The FSN-16 upper encoded key must be greater than or equal to the lower encoded key.", nameof(upperKey));
+        }
+
+        List<byte[]> identities = new();
+        HashSet<long> visitedShelves = new();
+        HashSet<long> visitedRouters = new();
+        ReadRoutedFixedNScalar16IdentityRangeFromRouter(handle.RootOffset, handle.Profile, lowerKey, upperKey, identities, visitedShelves, visitedRouters);
+        byte[] result = new byte[identities.Count * FixedNScalar16Layout.IdentitySize];
+        for (int i = 0; i < identities.Count; i++)
+        {
+            identities[i].CopyTo(result.AsSpan(i * FixedNScalar16Layout.IdentitySize, FixedNScalar16Layout.IdentitySize));
+        }
+
+        return result;
+    }
+
+    private void ReadRoutedFixedNScalar16IdentityRangeFromRouter(
+        long routerOffset,
+        FixedNScalar16Profile profile,
+        ReadOnlySpan<byte> lowerKey,
+        ReadOnlySpan<byte> upperKey,
+        List<byte[]> identities,
+        HashSet<long> visitedShelves,
+        HashSet<long> visitedRouters)
+    {
+        if (!visitedRouters.Add(routerOffset))
+        {
+            return;
+        }
+
+        byte[] routerBytes = new byte[RouterLayout.Size];
+        kernel.Read(routerOffset, routerBytes);
+        RouterReader routerReader = new(routerBytes);
+        if (!routerReader.IsValid || !routerReader.HasDirectIndex)
+        {
+            throw new InvalidDataException("The routed FSN-16 router is invalid.");
+        }
+
+        int keyDepth = routerReader.KeyDepth;
+        byte startPrefix = lowerKey[keyDepth];
+        byte endPrefix = upperKey[keyDepth];
+        for (int prefix = startPrefix; prefix <= endPrefix; prefix++)
+        {
+            long targetOffset = routerReader.FindTarget((byte)prefix);
+            if (targetOffset == 0)
+            {
+                continue;
+            }
+
+            if (IsFixedNScalar16Router(targetOffset))
+            {
+                ReadRoutedFixedNScalar16IdentityRangeFromRouter(targetOffset, profile, lowerKey, upperKey, identities, visitedShelves, visitedRouters);
+                continue;
+            }
+
+            if (!visitedShelves.Add(targetOffset))
+            {
+                continue;
+            }
+
+            byte[] shelfBytes = ReadFixedNScalar16ShelfBytes(targetOffset, profile);
+            FixedNScalar16ReadOnly shelf = new(shelfBytes, profile);
+            byte[] shelfIdentities = new byte[shelf.ItemCount * FixedNScalar16Layout.IdentitySize];
+            int copied = shelf.CopyIdentitiesInKeyRange(lowerKey, upperKey, shelfIdentities);
+            for (int i = 0; i < copied; i++)
+            {
+                identities.Add(shelfIdentities.AsSpan(i * FixedNScalar16Layout.IdentitySize, FixedNScalar16Layout.IdentitySize).ToArray());
+            }
+        }
+    }
+
+    /// <summary>
+    /// Rewrites a single-shelf `FixedNScalar8` index in place and updates the fixed directory item count.<br/>
+    /// This keeps the first BigInt fixed-width bridge durable while routed FSN split handling is still pending.<br/>
+    /// </summary>
+    /// <param name="slotIndex">The fixed index-directory slot to update.</param>
+    /// <param name="handle">The `FSN-8` index handle.</param>
+    /// <param name="shelfBytes">The complete replacement shelf bytes.</param>
+    /// <param name="itemCount">The item count represented by the replacement shelf.</param>
+    /// <returns>The commit telemetry for the shelf rewrite and directory update.</returns>
+    internal DataKernelCommitTelemetry RewriteFixedNScalar8Shelf(
+        int slotIndex,
+        FixedNScalar8IndexHandle handle,
+        ReadOnlySpan<byte> shelfBytes,
+        ushort itemCount)
+    {
+        handle.Validate();
+        if (shelfBytes.Length != handle.Profile.ShelfExtentSize)
+        {
+            throw new ArgumentException("The FSN-8 shelf rewrite bytes must match the handle profile extent size.", nameof(shelfBytes));
+        }
+
+        if (!TryFindIndexDirectorySlot(slotIndex, out IndexDirectorySlotSnapshot slot))
+        {
+            throw new InvalidDataException("The requested FSN-8 index slot is not active.");
+        }
+
+        if (handle.IsRouted)
+        {
+            throw new ArgumentException("A routed FSN-8 handle does not point directly at a shelf.", nameof(handle));
+        }
+
+        RawDataReservation shelfReservation = kernel.ReserveAt(handle.RootOffset, handle.Profile.ShelfExtentSize);
+        shelfBytes.CopyTo(shelfReservation.Span);
+        return UpsertIndexDirectorySlot(slot with
+        {
+            ItemCount = itemCount,
+            Generation = slot.Generation + 1
+        });
+    }
+
+    /// <summary>
+    /// Inserts one tuple into a root-prefix routed `FixedNScalar8` index without deeper split handling.<br/>
+    /// Missing root-prefix routes allocate and link a new shelf; existing root-prefix shelves are rewritten in place when they have capacity.<br/>
+    /// </summary>
+    /// <param name="slotIndex">The fixed index-directory slot that owns the routed index.</param>
+    /// <param name="handle">The routed `FSN-8` handle.</param>
+    /// <param name="key">The encoded fixed-width key bytes.</param>
+    /// <param name="encodedIdentity">The encoded sortable scalar-8 identity.</param>
+    /// <param name="allowDuplicateKeys">True for non-unique index behavior; false for unique key behavior.</param>
+    /// <returns>The insert result and commit telemetry.</returns>
+    internal (FixedNScalarInsertResult Result, DataKernelCommitTelemetry Commit) InsertRoutedFixedNScalar8RootNoSplit(
+        int slotIndex,
+        FixedNScalar8IndexHandle handle,
+        ReadOnlySpan<byte> key,
+        ulong encodedIdentity,
+        bool allowDuplicateKeys)
+    {
+        handle.Validate();
+        if (!handle.IsRouted)
+        {
+            throw new ArgumentException("FSN-8 root-prefix insertion requires a routed handle.", nameof(handle));
+        }
+
+        if (key.Length != handle.Profile.KeySize)
+        {
+            throw new ArgumentException("FSN-8 encoded key length must match the handle profile key size.", nameof(key));
+        }
+
+        if (!TryFindIndexDirectorySlot(slotIndex, out IndexDirectorySlotSnapshot slot))
+        {
+            throw new InvalidDataException("The requested FSN-8 index slot is not active.");
+        }
+
+        byte[] routerBytes = new byte[RouterLayout.Size];
+        long routerOffset = handle.RootOffset;
+        long targetOffset;
+        byte prefix;
+        for (int hop = 0; hop < handle.Profile.KeySize; hop++)
+        {
+            kernel.Read(routerOffset, routerBytes);
+            RouterReader routerReader = new(routerBytes);
+            if (!routerReader.IsValid || !routerReader.HasDirectIndex)
+            {
+                throw new InvalidDataException("The routed FSN-8 router is invalid.");
+            }
+
+            prefix = key[routerReader.KeyDepth];
+            targetOffset = routerReader.FindTarget(prefix);
+            if (targetOffset == 0)
+            {
+                RawDataReservation shelfReservation = kernel.Reserve(handle.Profile.ShelfExtentSize);
+                FixedNScalar8 shelf = new(shelfReservation.Span, handle.Profile);
+                shelf.Initialize();
+                FixedNScalarInsertResult result = shelf.Insert(key, encodedIdentity, allowDuplicateKeys);
+                if (result != FixedNScalarInsertResult.Inserted)
+                {
+                    throw new InvalidDataException($"Expected first FSN-8 routed shelf insert to succeed, got {result}.");
+                }
+
+                RawDataReservation routerReservation = kernel.ReserveAt(routerOffset, RouterLayout.Size);
+                routerBytes.CopyTo(routerReservation.Span);
+                RouterWriter routerWriter = new(routerReservation.Span);
+                routerWriter.WriteRoute(prefix, prefix, prefix, shelfReservation.Extent.Offset);
+                DataKernelCommitTelemetry createCommit = UpsertIndexDirectorySlot(slot with
+                {
+                    ItemCount = slot.ItemCount + 1,
+                    Generation = slot.Generation + 1
+                });
+                return (result, createCommit);
+            }
+
+            if (IsFixedNScalar8Router(targetOffset))
+            {
+                routerOffset = targetOffset;
+                continue;
+            }
+
+            byte[] shelfBytes = ReadFixedNScalar8ShelfBytes(targetOffset, handle.Profile);
+            FixedNScalar8 existingShelf = new(shelfBytes, handle.Profile);
+            FixedNScalarInsertResult insertResult = existingShelf.Insert(key, encodedIdentity, allowDuplicateKeys);
+            if (insertResult != FixedNScalarInsertResult.Inserted)
+            {
+                if (insertResult == FixedNScalarInsertResult.Full)
+                {
+                    return SplitRoutedFixedNScalar8ByShelfTransform(
+                        slotIndex,
+                        slot,
+                        handle,
+                        targetOffset,
+                        shelfBytes,
+                        checked((ushort)(routerReader.KeyDepth + 1)),
+                        key,
+                        encodedIdentity,
+                        allowDuplicateKeys);
+                }
+
+                return (insertResult, default);
+            }
+
+            RawDataReservation shelfRewrite = kernel.ReserveAt(targetOffset, handle.Profile.ShelfExtentSize);
+            shelfBytes.CopyTo(shelfRewrite.Span);
+            DataKernelCommitTelemetry rewriteCommit = UpsertIndexDirectorySlot(slot with
+            {
+                ItemCount = slot.ItemCount + 1,
+                Generation = slot.Generation + 1
+            });
+            return (insertResult, rewriteCommit);
+        }
+
+        throw new InvalidDataException("The routed FSN-8 insert exceeded the fixed key depth.");
+    }
+
+    /// <summary>
+    /// Inserts one tuple into a routed `FV` index.<br/>
+    /// Missing routes allocate and link a new `FV` shelf; full shelves transform into child routers at the next separating key byte.<br/>
+    /// </summary>
+    /// <param name="slotIndex">The fixed index-directory slot that owns the routed index.</param>
+    /// <param name="handle">The routed `FV` handle.</param>
+    /// <param name="key">The encoded fixed-width key bytes.</param>
+    /// <param name="identity">The raw variable-length identity bytes.</param>
+    /// <param name="allowDuplicateKeys">True for non-unique key behavior; false for unique key behavior.</param>
+    /// <returns>The insert result and commit telemetry.</returns>
+    internal (FixedNVarIdentityInsertResult Result, DataKernelCommitTelemetry Commit) InsertRoutedFixedNVarIdentityRootNoSplit(
+        int slotIndex,
+        FixedNVarIdentityIndexHandle handle,
+        ReadOnlySpan<byte> key,
+        ReadOnlySpan<byte> identity,
+        bool allowDuplicateKeys)
+    {
+        handle.Validate();
+        if (!handle.IsRouted)
+        {
+            throw new ArgumentException("FV root-prefix insertion requires a routed handle.", nameof(handle));
+        }
+
+        if (key.Length != handle.Profile.KeySize)
+        {
+            throw new ArgumentException("FV encoded key length must match the handle profile key size.", nameof(key));
+        }
+
+        if (!TryFindIndexDirectorySlot(slotIndex, out IndexDirectorySlotSnapshot slot))
+        {
+            throw new InvalidDataException("The requested FV index slot is not active.");
+        }
+
+        byte[] routerBytes = new byte[RouterLayout.Size];
+        long routerOffset = handle.RootOffset;
+        for (int hop = 0; hop < handle.Profile.KeySize; hop++)
+        {
+            kernel.Read(routerOffset, routerBytes);
+            RouterReader routerReader = new(routerBytes);
+            if (!routerReader.IsValid || !routerReader.HasDirectIndex)
+            {
+                throw new InvalidDataException("The routed FV router is invalid.");
+            }
+
+            byte prefix = key[routerReader.KeyDepth];
+            long targetOffset = routerReader.FindTarget(prefix);
+            if (targetOffset == 0)
+            {
+                byte[] shelfBytes = LibraDex.Views.FixedNVarIdentity.CreateEmpty(handle.Profile);
+                FixedNVarIdentityInsertResult result = LibraDex.Views.FixedNVarIdentity.InsertInPlace(shelfBytes, handle.Profile, key, identity, allowDuplicateKeys, out shelfBytes);
+                if (result != FixedNVarIdentityInsertResult.Inserted)
+                {
+                    throw new InvalidDataException($"Expected first FV routed shelf insert to succeed, got {result}.");
+                }
+
+                RawDataReservation shelfReservation = kernel.Reserve(handle.Profile.ShelfExtentSize);
+                shelfBytes.CopyTo(shelfReservation.Span);
+                RawDataReservation routerReservation = kernel.ReserveAt(routerOffset, RouterLayout.Size);
+                routerBytes.CopyTo(routerReservation.Span);
+                RouterWriter routerWriter = new(routerReservation.Span);
+                routerWriter.WriteRoute(prefix, prefix, prefix, shelfReservation.Extent.Offset);
+                DataKernelCommitTelemetry createCommit = UpsertIndexDirectorySlot(slot with
+                {
+                    ItemCount = slot.ItemCount + 1,
+                    Generation = slot.Generation + 1
+                });
+                return (result, createCommit);
+            }
+
+            if (IsFixedNVarIdentityRouter(targetOffset))
+            {
+                routerOffset = targetOffset;
+                continue;
+            }
+
+            byte[] existingShelfBytes = ReadFixedNVarIdentityShelfBytes(targetOffset, handle.Profile);
+            FixedNVarIdentityInsertResult insertResult = LibraDex.Views.FixedNVarIdentity.InsertInPlace(existingShelfBytes, handle.Profile, key, identity, allowDuplicateKeys, out existingShelfBytes);
+            if (insertResult != FixedNVarIdentityInsertResult.Inserted)
+            {
+                if (insertResult == FixedNVarIdentityInsertResult.Full)
+                {
+                    return SplitRoutedFixedNVarIdentityByShelfTransform(
+                        slot,
+                        handle,
+                        targetOffset,
+                        existingShelfBytes,
+                        checked((ushort)(routerReader.KeyDepth + 1)),
+                        key,
+                        identity,
+                        allowDuplicateKeys);
+                }
+
+                return (insertResult, default);
+            }
+
+            RawDataReservation shelfRewrite = kernel.ReserveAt(targetOffset, handle.Profile.ShelfExtentSize);
+            existingShelfBytes.CopyTo(shelfRewrite.Span);
+            DataKernelCommitTelemetry rewriteCommit = UpsertIndexDirectorySlot(slot with
+            {
+                ItemCount = slot.ItemCount + 1,
+                Generation = slot.Generation + 1
+            });
+            return (insertResult, rewriteCommit);
+        }
+
+        throw new InvalidDataException("The routed FV insert exceeded the fixed key depth.");
+    }
+
+    private (FixedNVarIdentityInsertResult Result, DataKernelCommitTelemetry Commit) SplitRoutedFixedNVarIdentityByShelfTransform(
+        IndexDirectorySlotSnapshot slot,
+        FixedNVarIdentityIndexHandle handle,
+        long fullShelfOffset,
+        byte[] existingShelfBytes,
+        ushort firstKeyDepth,
+        ReadOnlySpan<byte> key,
+        ReadOnlySpan<byte> identity,
+        bool allowDuplicateKeys)
+    {
+        LibraDex.Views.FixedNVarIdentityReadOnly existingShelf = new(existingShelfBytes, handle.Profile);
+        if (!existingShelf.IsValid)
+        {
+            throw new InvalidDataException("The routed FV shelf selected for transform split is invalid.");
+        }
+
+        int existingCount = existingShelf.ItemCount;
+        byte[][] keys = new byte[existingCount + 1][];
+        byte[][] identities = new byte[existingCount + 1][];
+        bool inserted = false;
+        int writeIndex = 0;
+        for (int slotOrdinal = 0; slotOrdinal < existingCount; slotOrdinal++)
+        {
+            byte[] currentKey = existingShelf.ReadKeyAt(slotOrdinal).ToArray();
+            byte[] currentIdentity = existingShelf.ReadIdentityAt(slotOrdinal).ToArray();
+            if (!inserted && CompareFixedNVarIdentityTuple(currentKey, currentIdentity, key, identity) > 0)
+            {
+                keys[writeIndex] = key.ToArray();
+                identities[writeIndex] = identity.ToArray();
+                writeIndex++;
+                inserted = true;
+            }
+
+            if (currentKey.AsSpan().SequenceEqual(key) && currentIdentity.AsSpan().SequenceEqual(identity))
+            {
+                return (FixedNVarIdentityInsertResult.AlreadyPresent, default);
+            }
+
+            if (!allowDuplicateKeys && currentKey.AsSpan().SequenceEqual(key))
+            {
+                return (FixedNVarIdentityInsertResult.KeyConflict, default);
+            }
+
+            keys[writeIndex] = currentKey;
+            identities[writeIndex] = currentIdentity;
+            writeIndex++;
+        }
+
+        if (!inserted)
+        {
+            keys[writeIndex] = key.ToArray();
+            identities[writeIndex] = identity.ToArray();
+        }
+
+        if (!TryChooseFixedNVarIdentitySplit(keys, firstKeyDepth, out ushort splitKeyDepth, out byte rightPrefixByte))
+        {
+            throw new InvalidDataException("The full FV shelf could not be split because all keys share every fixed-key byte.");
+        }
+
+        byte[] leftShelfBytes = LibraDex.Views.FixedNVarIdentity.CreateEmpty(handle.Profile);
+        byte[] rightShelfBytes = LibraDex.Views.FixedNVarIdentity.CreateEmpty(handle.Profile);
+        for (int i = 0; i < keys.Length; i++)
+        {
+            bool goesRight = keys[i][splitKeyDepth] >= rightPrefixByte;
+            FixedNVarIdentityInsertResult result = goesRight
+                ? LibraDex.Views.FixedNVarIdentity.InsertInPlace(rightShelfBytes, handle.Profile, keys[i], identities[i], allowDuplicateKeys: true, out rightShelfBytes)
+                : LibraDex.Views.FixedNVarIdentity.InsertInPlace(leftShelfBytes, handle.Profile, keys[i], identities[i], allowDuplicateKeys: true, out leftShelfBytes);
+            if (result != FixedNVarIdentityInsertResult.Inserted)
+            {
+                throw new InvalidDataException($"Expected FV split shelf insert to succeed, got {result}.");
+            }
+        }
+
+        RawDataReservation leftAppend = kernel.Reserve(handle.Profile.ShelfExtentSize);
+        leftShelfBytes.CopyTo(leftAppend.Span);
+        RawDataReservation rightAppend = kernel.Reserve(handle.Profile.ShelfExtentSize);
+        rightShelfBytes.CopyTo(rightAppend.Span);
+
+        int appendedRouterCount = splitKeyDepth - firstKeyDepth;
+        long nextRouterOffset = 0;
+        long[] appendedRouterOffsets = appendedRouterCount > 0 ? new long[appendedRouterCount] : [];
+        for (int i = appendedRouterCount - 1; i >= 0; i--)
+        {
+            appendedRouterOffsets[i] = kernel.Reserve(RouterLayout.Size).Extent.Offset;
+        }
+
+        for (int i = appendedRouterCount - 1; i >= 0; i--)
+        {
+            ushort routerDepth = checked((ushort)(firstKeyDepth + i + 1));
+            long[] targets = routerDepth == splitKeyDepth
+                ? CreateFixedNVarIdentitySplitTerminalTargets(keys, splitKeyDepth, rightPrefixByte, leftAppend.Extent.Offset, rightAppend.Extent.Offset)
+                : CreateFixedNVarIdentitySingleTarget(keys[0][routerDepth], nextRouterOffset);
+            RawDataReservation routerReservation = kernel.ReserveAt(appendedRouterOffsets[i], RouterLayout.Size);
+            RouterWriter writer = new(routerReservation.Span);
+            writer.InitializeExpandedOneByte(routerDepth, slot.AllocationClassId, targets);
+            nextRouterOffset = appendedRouterOffsets[i];
+        }
+
+        long rootChildTarget = appendedRouterCount == 0 ? 0 : nextRouterOffset;
+        long[] firstTargets = appendedRouterCount == 0
+            ? CreateFixedNVarIdentitySplitTerminalTargets(keys, splitKeyDepth, rightPrefixByte, leftAppend.Extent.Offset, rightAppend.Extent.Offset)
+            : CreateFixedNVarIdentitySingleTarget(keys[0][firstKeyDepth], rootChildTarget);
+        RawDataReservation transformedRouter = kernel.ReserveAt(fullShelfOffset, RouterLayout.Size);
+        RouterWriter transformedWriter = new(transformedRouter.Span);
+        transformedWriter.InitializeExpandedOneByte(firstKeyDepth, slot.AllocationClassId, firstTargets);
+
+        DataKernelCommitTelemetry commit = UpsertIndexDirectorySlot(slot with
+        {
+            ItemCount = slot.ItemCount + 1,
+            Generation = slot.Generation + 1
+        });
+        return (FixedNVarIdentityInsertResult.Inserted, commit);
+    }
+
+    private static long[] CreateFixedNVarIdentitySplitTerminalTargets(
+        IReadOnlyList<byte[]> keys,
+        ushort splitKeyDepth,
+        byte rightPrefixByte,
+        long leftShelfOffset,
+        long rightShelfOffset)
+    {
+        long[] targets = new long[RouterLayout.MaxOneByteRouteCount];
+        for (int i = 0; i < keys.Count; i++)
+        {
+            byte prefix = keys[i][splitKeyDepth];
+            targets[prefix] = prefix >= rightPrefixByte ? rightShelfOffset : leftShelfOffset;
+        }
+
+        return targets;
+    }
+
+    private static long[] CreateFixedNVarIdentitySingleTarget(byte prefix, long targetOffset)
+    {
+        long[] targets = new long[RouterLayout.MaxOneByteRouteCount];
+        targets[prefix] = targetOffset;
+        return targets;
+    }
+
+    private static bool TryChooseFixedNVarIdentitySplit(
+        IReadOnlyList<byte[]> sortedKeys,
+        ushort firstKeyDepth,
+        out ushort splitKeyDepth,
+        out byte rightPrefixByte)
+    {
+        return TryChooseFixedNScalar8Split(sortedKeys, firstKeyDepth, out splitKeyDepth, out rightPrefixByte);
+    }
+
+    private static int CompareFixedNVarIdentityTuple(ReadOnlySpan<byte> leftKey, ReadOnlySpan<byte> leftIdentity, ReadOnlySpan<byte> rightKey, ReadOnlySpan<byte> rightIdentity)
+    {
+        int keyComparison = leftKey.SequenceCompareTo(rightKey);
+        return keyComparison != 0 ? keyComparison : leftIdentity.SequenceCompareTo(rightIdentity);
+    }
+
+    private bool IsFixedNVarIdentityRouter(long offset)
+    {
+        byte[] routerBytes = new byte[RouterLayout.Size];
+        kernel.Read(offset, routerBytes);
+        RouterReader reader = new(routerBytes);
+        return reader.IsValid;
+    }
+
+    private bool IsFixedNScalar8Router(long offset)
+    {
+        byte[] routerBytes = new byte[RouterLayout.Size];
+        kernel.Read(offset, routerBytes);
+        RouterReader reader = new(routerBytes);
+        return reader.IsValid;
+    }
+
+    private (FixedNScalarInsertResult Result, DataKernelCommitTelemetry Commit) SplitRoutedFixedNScalar8ByShelfTransform(
+        int slotIndex,
+        IndexDirectorySlotSnapshot slot,
+        FixedNScalar8IndexHandle handle,
+        long fullShelfOffset,
+        byte[] existingShelfBytes,
+        ushort firstKeyDepth,
+        ReadOnlySpan<byte> key,
+        ulong encodedIdentity,
+        bool allowDuplicateKeys)
+    {
+        _ = slotIndex;
+        FixedNScalar8ReadOnly existingShelf = new(existingShelfBytes, handle.Profile);
+        if (!existingShelf.IsValid)
+        {
+            throw new InvalidDataException("The routed FSN-8 shelf selected for transform split is invalid.");
+        }
+
+        int existingCount = existingShelf.ItemCount;
+        byte[][] keys = new byte[existingCount + 1][];
+        ulong[] identities = new ulong[existingCount + 1];
+        bool inserted = false;
+        int writeIndex = 0;
+        for (int slotOrdinal = 0; slotOrdinal < existingCount; slotOrdinal++)
+        {
+            byte[] currentKey = new byte[handle.Profile.KeySize];
+            existingShelf.CopyKeyAt(slotOrdinal, currentKey);
+            ulong currentIdentity = existingShelf.ReadIdentityAt(slotOrdinal);
+            if (!inserted && CompareFixedNScalar8Tuple(currentKey, currentIdentity, key, encodedIdentity) > 0)
+            {
+                keys[writeIndex] = key.ToArray();
+                identities[writeIndex] = encodedIdentity;
+                writeIndex++;
+                inserted = true;
+            }
+
+            if (currentKey.AsSpan().SequenceEqual(key) && currentIdentity == encodedIdentity)
+            {
+                return (FixedNScalarInsertResult.AlreadyPresent, default);
+            }
+
+            if (!allowDuplicateKeys && currentKey.AsSpan().SequenceEqual(key))
+            {
+                return (FixedNScalarInsertResult.KeyConflict, default);
+            }
+
+            keys[writeIndex] = currentKey;
+            identities[writeIndex] = currentIdentity;
+            writeIndex++;
+        }
+
+        if (!inserted)
+        {
+            keys[writeIndex] = key.ToArray();
+            identities[writeIndex] = encodedIdentity;
+        }
+
+        if (!TryChooseFixedNScalar8Split(keys, firstKeyDepth, out ushort splitKeyDepth, out byte rightPrefixByte))
+        {
+            throw new InvalidDataException("The full FSN-8 shelf could not be split because all keys share every fixed-key byte.");
+        }
+
+        byte[] leftShelfBytes = new byte[handle.Profile.ShelfExtentSize];
+        byte[] rightShelfBytes = new byte[handle.Profile.ShelfExtentSize];
+        FixedNScalar8 leftShelf = new(leftShelfBytes, handle.Profile);
+        FixedNScalar8 rightShelf = new(rightShelfBytes, handle.Profile);
+        leftShelf.Initialize();
+        rightShelf.Initialize();
+        for (int i = 0; i < keys.Length; i++)
+        {
+            bool goesRight = keys[i][splitKeyDepth] >= rightPrefixByte;
+            FixedNScalarInsertResult result = goesRight
+                ? rightShelf.Insert(keys[i], identities[i], allowDuplicateKeys: true)
+                : leftShelf.Insert(keys[i], identities[i], allowDuplicateKeys: true);
+            if (result != FixedNScalarInsertResult.Inserted)
+            {
+                throw new InvalidDataException($"Expected FSN-8 split shelf insert to succeed, got {result}.");
+            }
+        }
+
+        RawDataReservation leftAppend = kernel.Reserve(handle.Profile.ShelfExtentSize);
+        leftShelfBytes.CopyTo(leftAppend.Span);
+        RawDataReservation rightAppend = kernel.Reserve(handle.Profile.ShelfExtentSize);
+        rightShelfBytes.CopyTo(rightAppend.Span);
+
+        int appendedRouterCount = splitKeyDepth - firstKeyDepth;
+        long nextRouterOffset = 0;
+        long[] appendedRouterOffsets = appendedRouterCount > 0 ? new long[appendedRouterCount] : [];
+        for (int i = appendedRouterCount - 1; i >= 0; i--)
+        {
+            appendedRouterOffsets[i] = kernel.Reserve(RouterLayout.Size).Extent.Offset;
+        }
+
+        for (int i = appendedRouterCount - 1; i >= 0; i--)
+        {
+            ushort routerDepth = checked((ushort)(firstKeyDepth + i + 1));
+            long[] targets = routerDepth == splitKeyDepth
+                ? CreateFixedNScalar8SplitTerminalTargets(keys, splitKeyDepth, rightPrefixByte, leftAppend.Extent.Offset, rightAppend.Extent.Offset)
+                : CreateFixedNScalar8SingleTarget(keys[0][routerDepth], nextRouterOffset);
+            RawDataReservation routerReservation = kernel.ReserveAt(appendedRouterOffsets[i], RouterLayout.Size);
+            RouterWriter writer = new(routerReservation.Span);
+            writer.InitializeExpandedOneByte(routerDepth, slot.AllocationClassId, targets);
+            nextRouterOffset = appendedRouterOffsets[i];
+        }
+
+        long rootChildTarget = appendedRouterCount == 0 ? 0 : nextRouterOffset;
+        long[] firstTargets = appendedRouterCount == 0
+            ? CreateFixedNScalar8SplitTerminalTargets(keys, splitKeyDepth, rightPrefixByte, leftAppend.Extent.Offset, rightAppend.Extent.Offset)
+            : CreateFixedNScalar8SingleTarget(keys[0][firstKeyDepth], rootChildTarget);
+        RawDataReservation transformedRouter = kernel.ReserveAt(fullShelfOffset, RouterLayout.Size);
+        RouterWriter transformedWriter = new(transformedRouter.Span);
+        transformedWriter.InitializeExpandedOneByte(firstKeyDepth, slot.AllocationClassId, firstTargets);
+
+        DataKernelCommitTelemetry commit = UpsertIndexDirectorySlot(slot with
+        {
+            ItemCount = slot.ItemCount + 1,
+            Generation = slot.Generation + 1
+        });
+        return (FixedNScalarInsertResult.Inserted, commit);
+    }
+
+    private static long[] CreateFixedNScalar8SplitTerminalTargets(
+        IReadOnlyList<byte[]> keys,
+        ushort splitKeyDepth,
+        byte rightPrefixByte,
+        long leftShelfOffset,
+        long rightShelfOffset)
+    {
+        long[] targets = new long[RouterLayout.MaxOneByteRouteCount];
+        for (int i = 0; i < keys.Count; i++)
+        {
+            byte prefix = keys[i][splitKeyDepth];
+            targets[prefix] = prefix >= rightPrefixByte ? rightShelfOffset : leftShelfOffset;
+        }
+
+        return targets;
+    }
+
+    private static long[] CreateFixedNScalar8SingleTarget(byte prefix, long targetOffset)
+    {
+        long[] targets = new long[RouterLayout.MaxOneByteRouteCount];
+        targets[prefix] = targetOffset;
+        return targets;
+    }
+
+    private static bool TryChooseFixedNScalar8Split(
+        IReadOnlyList<byte[]> sortedKeys,
+        ushort firstKeyDepth,
+        out ushort splitKeyDepth,
+        out byte rightPrefixByte)
+    {
+        splitKeyDepth = 0;
+        rightPrefixByte = 0;
+        if (sortedKeys.Count < 2)
+        {
+            return false;
+        }
+
+        int midpoint = sortedKeys.Count / 2;
+        for (ushort keyDepth = firstKeyDepth; keyDepth < sortedKeys[0].Length; keyDepth++)
+        {
+            for (int delta = 0; delta < sortedKeys.Count; delta++)
+            {
+                int left = midpoint - 1 - delta;
+                if (left >= 0 && sortedKeys[left][keyDepth] != sortedKeys[left + 1][keyDepth])
+                {
+                    splitKeyDepth = keyDepth;
+                    rightPrefixByte = sortedKeys[left + 1][keyDepth];
+                    return true;
+                }
+
+                int right = midpoint + delta;
+                if (right > 0 && right < sortedKeys.Count && sortedKeys[right - 1][keyDepth] != sortedKeys[right][keyDepth])
+                {
+                    splitKeyDepth = keyDepth;
+                    rightPrefixByte = sortedKeys[right][keyDepth];
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private static int CompareFixedNScalar8Tuple(ReadOnlySpan<byte> leftKey, ulong leftIdentity, ReadOnlySpan<byte> rightKey, ulong rightIdentity)
+    {
+        int keyComparison = leftKey.SequenceCompareTo(rightKey);
+        if (keyComparison != 0)
+        {
+            return keyComparison;
+        }
+
+        if (leftIdentity < rightIdentity)
+        {
+            return -1;
+        }
+
+        return leftIdentity > rightIdentity ? 1 : 0;
+    }
+
+    /// <summary>
+    /// Reads encoded identities from a root-prefix routed `FixedNScalar8` index over an inclusive fixed-key range.<br/>
+    /// The first routed slice scans only root-prefix shelves touched by the range; deeper child-router traversal is reserved for the next FSN split slice.<br/>
+    /// </summary>
+    /// <param name="handle">The routed `FSN-8` handle.</param>
+    /// <param name="lowerKey">The inclusive lower encoded fixed-width key.</param>
+    /// <param name="upperKey">The inclusive upper encoded fixed-width key.</param>
+    /// <returns>Encoded scalar-8 identities matching the requested key range.</returns>
+    internal ulong[] ReadRoutedFixedNScalar8IdentityRange(
+        FixedNScalar8IndexHandle handle,
+        ReadOnlySpan<byte> lowerKey,
+        ReadOnlySpan<byte> upperKey)
+    {
+        handle.Validate();
+        if (!handle.IsRouted)
+        {
+            throw new ArgumentException("FSN-8 routed range reads require a routed handle.", nameof(handle));
+        }
+
+        if (lowerKey.Length != handle.Profile.KeySize || upperKey.Length != handle.Profile.KeySize)
+        {
+            throw new ArgumentException("FSN-8 encoded range keys must match the handle profile key size.");
+        }
+
+        if (lowerKey.SequenceCompareTo(upperKey) > 0)
+        {
+            throw new ArgumentException("The FSN-8 upper encoded key must be greater than or equal to the lower encoded key.", nameof(upperKey));
+        }
+
+        List<ulong> identities = new();
+        HashSet<long> visitedShelves = new();
+        HashSet<long> visitedRouters = new();
+        ReadRoutedFixedNScalar8IdentityRangeFromRouter(handle.RootOffset, handle.Profile, lowerKey, upperKey, identities, visitedShelves, visitedRouters);
+        return identities.ToArray();
+    }
+
+    /// <summary>
+    /// Reads raw identities from a root-prefix routed `FV` index over an inclusive fixed-key range.<br/>
+    /// This first durable FV route reads root-prefix shelves and preserves raw identity bytes without decoding or comparer callbacks.<br/>
+    /// </summary>
+    /// <param name="handle">The routed `FV` handle.</param>
+    /// <param name="lowerKey">The inclusive lower encoded fixed-width key.</param>
+    /// <param name="upperKey">The inclusive upper encoded fixed-width key.</param>
+    /// <returns>Raw variable-length identities matching the requested key range.</returns>
+    internal IReadOnlyList<byte[]> ReadRoutedFixedNVarIdentityRange(
+        FixedNVarIdentityIndexHandle handle,
+        ReadOnlySpan<byte> lowerKey,
+        ReadOnlySpan<byte> upperKey)
+    {
+        handle.Validate();
+        if (!handle.IsRouted)
+        {
+            throw new ArgumentException("FV routed range reads require a routed handle.", nameof(handle));
+        }
+
+        if (lowerKey.Length != handle.Profile.KeySize || upperKey.Length != handle.Profile.KeySize)
+        {
+            throw new ArgumentException("FV encoded range keys must match the handle profile key size.");
+        }
+
+        if (lowerKey.SequenceCompareTo(upperKey) > 0)
+        {
+            throw new ArgumentException("The FV upper encoded key must be greater than or equal to the lower encoded key.", nameof(upperKey));
+        }
+
+        List<byte[]> identities = [];
+        HashSet<long> visitedShelves = [];
+        HashSet<long> visitedRouters = [];
+        ReadRoutedFixedNVarIdentityRangeFromRouter(handle.RootOffset, handle.Profile, lowerKey, upperKey, identities, visitedShelves, visitedRouters);
+        return identities;
+    }
+
+    private void ReadRoutedFixedNVarIdentityRangeFromRouter(
+        long routerOffset,
+        FixedNVarIdentityProfile profile,
+        ReadOnlySpan<byte> lowerKey,
+        ReadOnlySpan<byte> upperKey,
+        List<byte[]> identities,
+        HashSet<long> visitedShelves,
+        HashSet<long> visitedRouters)
+    {
+        if (!visitedRouters.Add(routerOffset))
+        {
+            return;
+        }
+
+        byte[] routerBytes = new byte[RouterLayout.Size];
+        kernel.Read(routerOffset, routerBytes);
+        RouterReader routerReader = new(routerBytes);
+        if (!routerReader.IsValid || !routerReader.HasDirectIndex)
+        {
+            throw new InvalidDataException("The routed FV router is invalid.");
+        }
+
+        int keyDepth = routerReader.KeyDepth;
+        byte startPrefix = lowerKey[keyDepth];
+        byte endPrefix = upperKey[keyDepth];
+        for (int prefix = startPrefix; prefix <= endPrefix; prefix++)
+        {
+            long targetOffset = routerReader.FindTarget((byte)prefix);
+            if (targetOffset == 0 || !visitedShelves.Add(targetOffset))
+            {
+                continue;
+            }
+
+            if (IsFixedNVarIdentityRouter(targetOffset))
+            {
+                ReadRoutedFixedNVarIdentityRangeFromRouter(targetOffset, profile, lowerKey, upperKey, identities, visitedShelves, visitedRouters);
+                continue;
+            }
+
+            byte[] shelfBytes = ReadFixedNVarIdentityShelfBytes(targetOffset, profile);
+            LibraDex.Views.FixedNVarIdentityReadOnly shelf = new(shelfBytes, profile);
+            shelf.CopyIdentitiesInKeyRange(lowerKey, upperKey, identities);
+        }
+    }
+
+    private void ReadRoutedFixedNScalar8IdentityRangeFromRouter(
+        long routerOffset,
+        FixedNScalar8Profile profile,
+        ReadOnlySpan<byte> lowerKey,
+        ReadOnlySpan<byte> upperKey,
+        List<ulong> identities,
+        HashSet<long> visitedShelves,
+        HashSet<long> visitedRouters)
+    {
+        if (!visitedRouters.Add(routerOffset))
+        {
+            return;
+        }
+
+        byte[] routerBytes = new byte[RouterLayout.Size];
+        kernel.Read(routerOffset, routerBytes);
+        RouterReader routerReader = new(routerBytes);
+        if (!routerReader.IsValid || !routerReader.HasDirectIndex)
+        {
+            throw new InvalidDataException("The routed FSN-8 router is invalid.");
+        }
+
+        int keyDepth = routerReader.KeyDepth;
+        byte startPrefix = lowerKey[keyDepth];
+        byte endPrefix = upperKey[keyDepth];
+        for (int prefix = startPrefix; prefix <= endPrefix; prefix++)
+        {
+            long targetOffset = routerReader.FindTarget((byte)prefix);
+            if (targetOffset == 0)
+            {
+                continue;
+            }
+
+            if (IsFixedNScalar8Router(targetOffset))
+            {
+                ReadRoutedFixedNScalar8IdentityRangeFromRouter(targetOffset, profile, lowerKey, upperKey, identities, visitedShelves, visitedRouters);
+                continue;
+            }
+
+            if (!visitedShelves.Add(targetOffset))
+            {
+                continue;
+            }
+
+            byte[] shelfBytes = ReadFixedNScalar8ShelfBytes(targetOffset, profile);
+            FixedNScalar8ReadOnly shelf = new(shelfBytes, profile);
+            ulong[] shelfIdentities = new ulong[shelf.ItemCount];
+            int copied = shelf.CopyIdentitiesInKeyRange(lowerKey, upperKey, shelfIdentities);
+            for (int i = 0; i < copied; i++)
+            {
+                identities.Add(shelfIdentities[i]);
+            }
+        }
     }
 
     /// <summary>
@@ -3144,14 +5035,28 @@ public sealed partial class LibraDexFileSession : IDisposable
 
     /// <summary>
     /// Reads and validates one full `SS8-8` shelf extent for a batch-local mutation cache.<br/>
-    /// The read uses normal `DataKernel` semantics, so any already-staged pending shelf bytes are visible before committed backing bytes.<br/>
+    /// During an active durability batch this is the pending writer view: an existing dirty shelf image is returned before committed backing bytes.<br/>
+    /// Dirty images are normalized before reuse by default so writer-side search/insert code can keep using ordinary compact shelf algorithms.<br/>
     /// </summary>
     /// <param name="shelfOffset">The offset of the shelf extent to read.</param>
     /// <param name="profile">The `SS8-8` profile that determines the shelf extent size.</param>
+    /// <param name="normalizePendingBeforeReturn">Whether an existing dirty image should be normalized before it is returned for writer-side search or insertion.</param>
     /// <returns>A mutable byte array containing the current shelf image.</returns>
     /// <exception cref="InvalidDataException">Thrown when the bytes at <paramref name="shelfOffset"/> are not a valid `SS8-8` shelf.</exception>
-    internal byte[] ReadScalar8Scalar8ShelfBytesForBatch(long shelfOffset, Scalar8Scalar8Profile profile)
+    internal byte[] ReadScalar8Scalar8ShelfBytesForBatch(long shelfOffset, Scalar8Scalar8Profile profile, bool normalizePendingBeforeReturn = true)
     {
+        if (durabilityBatchActive &&
+            scalar8Scalar8MutableBatchShelfBytes.TryGetValue(shelfOffset, out byte[]? dirtyShelfBytes))
+        {
+            if (normalizePendingBeforeReturn)
+            {
+                Scalar8Scalar8 shelf = new(dirtyShelfBytes, profile);
+                _ = shelf.NormalizeDeletedSlotsForPublication();
+            }
+
+            return dirtyShelfBytes;
+        }
+
         if (scalar8Scalar8CleanShelfCache.Remove(shelfOffset, out byte[]? cachedShelfBytes))
         {
             Scalar8Scalar8ReadOnly cachedReadOnly = new(cachedShelfBytes, profile);
@@ -3269,6 +5174,12 @@ public sealed partial class LibraDexFileSession : IDisposable
             throw new InvalidDataException("The batch-local SS8-8 shelf cache attempted to stage invalid shelf bytes.");
         }
 
+        if (durabilityBatchActive)
+        {
+            scalar8Scalar8MutableBatchShelfBytes[shelfOffset] = shelfBytes.ToArray();
+            return CommitWithoutInvalidatingRouterReadCache();
+        }
+
         RawDataReservation rewrite = kernel.ReserveAt(shelfOffset, profile.ShelfExtentSize);
         shelfBytes.CopyTo(rewrite.Span);
         return CommitWithoutInvalidatingRouterReadCache();
@@ -3301,6 +5212,19 @@ public sealed partial class LibraDexFileSession : IDisposable
             return default;
         }
 
+        if (durabilityBatchActive)
+        {
+            if (!scalar8Scalar8MutableBatchShelfBytes.TryGetValue(shelfOffset, out byte[]? dirtyShelfBytes))
+            {
+                dirtyShelfBytes = new byte[profile.ShelfExtentSize];
+                kernel.Read(shelfOffset, dirtyShelfBytes);
+                scalar8Scalar8MutableBatchShelfBytes[shelfOffset] = dirtyShelfBytes;
+            }
+
+            sliceBytes.CopyTo(dirtyShelfBytes.AsSpan(sliceOffset, sliceBytes.Length));
+            return CommitWithoutInvalidatingRouterReadCache();
+        }
+
         RawDataReservation rewrite = kernel.ReserveAt(shelfOffset + sliceOffset, sliceBytes.Length);
         sliceBytes.CopyTo(rewrite.Span);
         return CommitWithoutInvalidatingRouterReadCache();
@@ -3308,14 +5232,28 @@ public sealed partial class LibraDexFileSession : IDisposable
 
     /// <summary>
     /// Reads and validates one full `SS16-8` shelf extent for a batch-local mutation cache.<br/>
-    /// The read uses normal `DataKernel` semantics, so pending staged bytes are visible before committed backing bytes.<br/>
+    /// During an active durability batch this is the pending writer view: an existing dirty shelf image is returned before committed backing bytes.<br/>
+    /// Dirty images are normalized before reuse by default so writer-side search/insert code can keep using ordinary compact shelf algorithms.<br/>
     /// </summary>
     /// <param name="shelfOffset">The offset of the shelf extent to read.</param>
     /// <param name="profile">The `SS16-8` profile that determines the shelf extent size.</param>
+    /// <param name="normalizePendingBeforeReturn">Whether an existing dirty image should be normalized before it is returned for writer-side search or insertion.</param>
     /// <returns>A mutable byte array containing the current shelf image.</returns>
     /// <exception cref="InvalidDataException">Thrown when the bytes at <paramref name="shelfOffset"/> are not a valid `SS16-8` shelf.</exception>
-    internal byte[] ReadScalar16Scalar8ShelfBytesForBatch(long shelfOffset, Scalar16Scalar8Profile profile)
+    internal byte[] ReadScalar16Scalar8ShelfBytesForBatch(long shelfOffset, Scalar16Scalar8Profile profile, bool normalizePendingBeforeReturn = true)
     {
+        if (durabilityBatchActive &&
+            scalar16Scalar8MutableBatchShelfBytes.TryGetValue(shelfOffset, out byte[]? dirtyShelfBytes))
+        {
+            if (normalizePendingBeforeReturn)
+            {
+                Scalar16Scalar8 shelf = new(dirtyShelfBytes, profile);
+                _ = shelf.NormalizeDeletedSlotsForPublication();
+            }
+
+            return dirtyShelfBytes;
+        }
+
         if (scalar16Scalar8CleanShelfCache.Remove(shelfOffset, out byte[]? cachedShelfBytes))
         {
             Scalar16Scalar8ReadOnly cachedReadOnly = new(cachedShelfBytes, profile);
@@ -3389,6 +5327,12 @@ public sealed partial class LibraDexFileSession : IDisposable
             throw new InvalidDataException("The batch-local SS16-8 shelf cache attempted to stage invalid shelf bytes.");
         }
 
+        if (durabilityBatchActive)
+        {
+            scalar16Scalar8MutableBatchShelfBytes[shelfOffset] = shelfBytes.ToArray();
+            return CommitWithoutInvalidatingRouterReadCache();
+        }
+
         RawDataReservation rewrite = kernel.ReserveAt(shelfOffset, profile.ShelfExtentSize);
         shelfBytes.CopyTo(rewrite.Span);
         return CommitWithoutInvalidatingRouterReadCache();
@@ -3421,6 +5365,19 @@ public sealed partial class LibraDexFileSession : IDisposable
             return default;
         }
 
+        if (durabilityBatchActive)
+        {
+            if (!scalar16Scalar8MutableBatchShelfBytes.TryGetValue(shelfOffset, out byte[]? dirtyShelfBytes))
+            {
+                dirtyShelfBytes = new byte[profile.ShelfExtentSize];
+                kernel.Read(shelfOffset, dirtyShelfBytes);
+                scalar16Scalar8MutableBatchShelfBytes[shelfOffset] = dirtyShelfBytes;
+            }
+
+            sliceBytes.CopyTo(dirtyShelfBytes.AsSpan(sliceOffset, sliceBytes.Length));
+            return CommitWithoutInvalidatingRouterReadCache();
+        }
+
         RawDataReservation rewrite = kernel.ReserveAt(shelfOffset + sliceOffset, sliceBytes.Length);
         sliceBytes.CopyTo(rewrite.Span);
         return CommitWithoutInvalidatingRouterReadCache();
@@ -3428,14 +5385,28 @@ public sealed partial class LibraDexFileSession : IDisposable
 
     /// <summary>
     /// Reads and validates one full `SS8-16` shelf extent for a batch-local mutation cache.<br/>
-    /// The read uses normal `DataKernel` semantics, so pending staged bytes are visible before committed backing bytes.<br/>
+    /// During an active durability batch this is the pending writer view: an existing dirty shelf image is returned before committed backing bytes.<br/>
+    /// Dirty images are normalized before reuse by default so writer-side search/insert code can keep using ordinary compact shelf algorithms.<br/>
     /// </summary>
     /// <param name="shelfOffset">The offset of the shelf extent to read.</param>
     /// <param name="profile">The `SS8-16` profile that determines the shelf extent size.</param>
+    /// <param name="normalizePendingBeforeReturn">Whether an existing dirty image should be normalized before it is returned for writer-side search or insertion.</param>
     /// <returns>A mutable byte array containing the current shelf image.</returns>
     /// <exception cref="InvalidDataException">Thrown when the bytes at <paramref name="shelfOffset"/> are not a valid `SS8-16` shelf.</exception>
-    internal byte[] ReadScalar8Scalar16ShelfBytesForBatch(long shelfOffset, Scalar8Scalar16Profile profile)
+    internal byte[] ReadScalar8Scalar16ShelfBytesForBatch(long shelfOffset, Scalar8Scalar16Profile profile, bool normalizePendingBeforeReturn = true)
     {
+        if (durabilityBatchActive &&
+            scalar8Scalar16MutableBatchShelfBytes.TryGetValue(shelfOffset, out byte[]? dirtyShelfBytes))
+        {
+            if (normalizePendingBeforeReturn)
+            {
+                Scalar8Scalar16 shelf = new(dirtyShelfBytes, profile);
+                _ = shelf.NormalizeDeletedSlotsForPublication();
+            }
+
+            return dirtyShelfBytes;
+        }
+
         if (scalar8Scalar16CleanShelfCache.Remove(shelfOffset, out byte[]? cachedShelfBytes))
         {
             Scalar8Scalar16ReadOnly cachedReadOnly = new(cachedShelfBytes, profile);
@@ -3509,6 +5480,12 @@ public sealed partial class LibraDexFileSession : IDisposable
             throw new InvalidDataException("The batch-local SS8-16 shelf cache attempted to stage invalid shelf bytes.");
         }
 
+        if (durabilityBatchActive)
+        {
+            scalar8Scalar16MutableBatchShelfBytes[shelfOffset] = shelfBytes.ToArray();
+            return CommitWithoutInvalidatingRouterReadCache();
+        }
+
         RawDataReservation rewrite = kernel.ReserveAt(shelfOffset, profile.ShelfExtentSize);
         shelfBytes.CopyTo(rewrite.Span);
         return CommitWithoutInvalidatingRouterReadCache();
@@ -3541,6 +5518,19 @@ public sealed partial class LibraDexFileSession : IDisposable
             return default;
         }
 
+        if (durabilityBatchActive)
+        {
+            if (!scalar8Scalar16MutableBatchShelfBytes.TryGetValue(shelfOffset, out byte[]? dirtyShelfBytes))
+            {
+                dirtyShelfBytes = new byte[profile.ShelfExtentSize];
+                kernel.Read(shelfOffset, dirtyShelfBytes);
+                scalar8Scalar16MutableBatchShelfBytes[shelfOffset] = dirtyShelfBytes;
+            }
+
+            sliceBytes.CopyTo(dirtyShelfBytes.AsSpan(sliceOffset, sliceBytes.Length));
+            return CommitWithoutInvalidatingRouterReadCache();
+        }
+
         RawDataReservation rewrite = kernel.ReserveAt(shelfOffset + sliceOffset, sliceBytes.Length);
         sliceBytes.CopyTo(rewrite.Span);
         return CommitWithoutInvalidatingRouterReadCache();
@@ -3548,14 +5538,28 @@ public sealed partial class LibraDexFileSession : IDisposable
 
     /// <summary>
     /// Reads and validates one full `SS16-16` shelf extent for a batch-local mutation cache.<br/>
-    /// The read uses normal `DataKernel` semantics, so pending staged bytes are visible before committed backing bytes.<br/>
+    /// During an active durability batch this is the pending writer view: an existing dirty shelf image is returned before committed backing bytes.<br/>
+    /// Dirty images are normalized before reuse by default so writer-side search/insert code can keep using ordinary compact shelf algorithms.<br/>
     /// </summary>
     /// <param name="shelfOffset">The offset of the shelf extent to read.</param>
     /// <param name="profile">The `SS16-16` profile that determines the shelf extent size.</param>
+    /// <param name="normalizePendingBeforeReturn">Whether an existing dirty image should be normalized before it is returned for writer-side search or insertion.</param>
     /// <returns>A mutable byte array containing the current shelf image.</returns>
     /// <exception cref="InvalidDataException">Thrown when the bytes at <paramref name="shelfOffset"/> are not a valid `SS16-16` shelf.</exception>
-    internal byte[] ReadScalar16Scalar16ShelfBytesForBatch(long shelfOffset, Scalar16Scalar16Profile profile)
+    internal byte[] ReadScalar16Scalar16ShelfBytesForBatch(long shelfOffset, Scalar16Scalar16Profile profile, bool normalizePendingBeforeReturn = true)
     {
+        if (durabilityBatchActive &&
+            scalar16Scalar16MutableBatchShelfBytes.TryGetValue(shelfOffset, out byte[]? dirtyShelfBytes))
+        {
+            if (normalizePendingBeforeReturn)
+            {
+                Scalar16Scalar16 shelf = new(dirtyShelfBytes, profile);
+                _ = shelf.NormalizeDeletedSlotsForPublication();
+            }
+
+            return dirtyShelfBytes;
+        }
+
         if (scalar16Scalar16CleanShelfCache.Remove(shelfOffset, out byte[]? cachedShelfBytes))
         {
             Scalar16Scalar16ReadOnly cachedReadOnly = new(cachedShelfBytes, profile);
@@ -3629,6 +5633,12 @@ public sealed partial class LibraDexFileSession : IDisposable
             throw new InvalidDataException("The batch-local SS16-16 shelf cache attempted to stage invalid shelf bytes.");
         }
 
+        if (durabilityBatchActive)
+        {
+            scalar16Scalar16MutableBatchShelfBytes[shelfOffset] = shelfBytes.ToArray();
+            return CommitWithoutInvalidatingRouterReadCache();
+        }
+
         RawDataReservation rewrite = kernel.ReserveAt(shelfOffset, profile.ShelfExtentSize);
         shelfBytes.CopyTo(rewrite.Span);
         return CommitWithoutInvalidatingRouterReadCache();
@@ -3661,6 +5671,19 @@ public sealed partial class LibraDexFileSession : IDisposable
             return default;
         }
 
+        if (durabilityBatchActive)
+        {
+            if (!scalar16Scalar16MutableBatchShelfBytes.TryGetValue(shelfOffset, out byte[]? dirtyShelfBytes))
+            {
+                dirtyShelfBytes = new byte[profile.ShelfExtentSize];
+                kernel.Read(shelfOffset, dirtyShelfBytes);
+                scalar16Scalar16MutableBatchShelfBytes[shelfOffset] = dirtyShelfBytes;
+            }
+
+            sliceBytes.CopyTo(dirtyShelfBytes.AsSpan(sliceOffset, sliceBytes.Length));
+            return CommitWithoutInvalidatingRouterReadCache();
+        }
+
         RawDataReservation rewrite = kernel.ReserveAt(shelfOffset + sliceOffset, sliceBytes.Length);
         sliceBytes.CopyTo(rewrite.Span);
         return CommitWithoutInvalidatingRouterReadCache();
@@ -3668,14 +5691,28 @@ public sealed partial class LibraDexFileSession : IDisposable
 
     /// <summary>
     /// Reads and validates one full `FS32-8` shelf extent for a batch-local mutation cache.<br/>
-    /// The read uses normal `DataKernel` semantics, so pending staged bytes are visible before committed backing bytes.<br/>
+    /// During an active durability batch this is the pending writer view: an existing dirty shelf image is returned before committed backing bytes.<br/>
+    /// Dirty images are normalized before reuse by default so writer-side search/insert code can keep using ordinary compact shelf algorithms.<br/>
     /// </summary>
     /// <param name="shelfOffset">The offset of the shelf extent to read.</param>
     /// <param name="profile">The `FS32-8` profile that determines the shelf extent size.</param>
+    /// <param name="normalizePendingBeforeReturn">Whether an existing dirty image should be normalized before it is returned for writer-side search or insertion.</param>
     /// <returns>A mutable byte array containing the current shelf image.</returns>
     /// <exception cref="InvalidDataException">Thrown when the bytes at <paramref name="shelfOffset"/> are not a valid `FS32-8` shelf.</exception>
-    internal byte[] ReadFixed32Scalar8ShelfBytesForBatch(long shelfOffset, Fixed32Scalar8Profile profile)
+    internal byte[] ReadFixed32Scalar8ShelfBytesForBatch(long shelfOffset, Fixed32Scalar8Profile profile, bool normalizePendingBeforeReturn = true)
     {
+        if (durabilityBatchActive &&
+            fixed32Scalar8MutableBatchShelfBytes.TryGetValue(shelfOffset, out byte[]? dirtyShelfBytes))
+        {
+            if (normalizePendingBeforeReturn)
+            {
+                Fixed32Scalar8 shelf = new(dirtyShelfBytes, profile);
+                _ = shelf.NormalizeDeletedSlotsForPublication();
+            }
+
+            return dirtyShelfBytes;
+        }
+
         if (fixed32Scalar8CleanShelfCache.Remove(shelfOffset, out byte[]? cachedShelfBytes))
         {
             Fixed32Scalar8ReadOnly cachedReadOnly = new(cachedShelfBytes, profile);
@@ -3749,6 +5786,12 @@ public sealed partial class LibraDexFileSession : IDisposable
             throw new InvalidDataException("The batch-local FS32-8 shelf cache attempted to stage invalid shelf bytes.");
         }
 
+        if (durabilityBatchActive)
+        {
+            fixed32Scalar8MutableBatchShelfBytes[shelfOffset] = shelfBytes.ToArray();
+            return CommitWithoutInvalidatingRouterReadCache();
+        }
+
         RawDataReservation rewrite = kernel.ReserveAt(shelfOffset, profile.ShelfExtentSize);
         shelfBytes.CopyTo(rewrite.Span);
         return CommitWithoutInvalidatingRouterReadCache();
@@ -3779,6 +5822,19 @@ public sealed partial class LibraDexFileSession : IDisposable
         if (sliceBytes.Length == 0)
         {
             return default;
+        }
+
+        if (durabilityBatchActive)
+        {
+            if (!fixed32Scalar8MutableBatchShelfBytes.TryGetValue(shelfOffset, out byte[]? dirtyShelfBytes))
+            {
+                dirtyShelfBytes = new byte[profile.ShelfExtentSize];
+                kernel.Read(shelfOffset, dirtyShelfBytes);
+                fixed32Scalar8MutableBatchShelfBytes[shelfOffset] = dirtyShelfBytes;
+            }
+
+            sliceBytes.CopyTo(dirtyShelfBytes.AsSpan(sliceOffset, sliceBytes.Length));
+            return CommitWithoutInvalidatingRouterReadCache();
         }
 
         RawDataReservation rewrite = kernel.ReserveAt(shelfOffset + sliceOffset, sliceBytes.Length);
@@ -10900,9 +12956,10 @@ public sealed partial class LibraDexFileSession : IDisposable
         byte[] rewrittenShelf = new byte[profile.ShelfExtentSize];
         existingShelf.CopyTo(rewrittenShelf.AsSpan());
         Scalar16Scalar16 shelf = new(rewrittenShelf, profile);
-        Scalar16Scalar16InsertResult insertResult = shelf.Insert(encodedKeyHigh, encodedKeyLow, encodedIdentityHigh, encodedIdentityLow, allowDuplicateKeys);
+        Scalar16Scalar16InsertResult insertResult = shelf.InsertWithMutationBounds(encodedKeyHigh, encodedKeyLow, encodedIdentityHigh, encodedIdentityLow, allowDuplicateKeys, out Scalar16Scalar16MutationBounds mutationBounds);
         if (insertResult == Scalar16Scalar16InsertResult.Inserted)
         {
+            _ = TryConsumeDeletedShelfPayloadOffset(target.Offset, checked((ushort)mutationBounds.ItemOffset));
             RawDataReservation shelfRewrite = kernel.ReserveAt(target.Offset, profile.ShelfExtentSize);
             rewrittenShelf.CopyTo(shelfRewrite.Span);
             DataKernelCommitTelemetry telemetry = CommitAndInvalidateRouterReadCache();
@@ -11302,9 +13359,10 @@ public sealed partial class LibraDexFileSession : IDisposable
         byte[] rewrittenShelf = new byte[profile.ShelfExtentSize];
         existingShelf.CopyTo(rewrittenShelf.AsSpan());
         Scalar8Scalar16 shelf = new(rewrittenShelf, profile);
-        Scalar8Scalar16InsertResult insertResult = shelf.Insert(encodedKey, encodedIdentityHigh, encodedIdentityLow, allowDuplicateKeys);
+        Scalar8Scalar16InsertResult insertResult = shelf.InsertWithMutationBounds(encodedKey, encodedIdentityHigh, encodedIdentityLow, allowDuplicateKeys, out Scalar8Scalar16MutationBounds mutationBounds);
         if (insertResult == Scalar8Scalar16InsertResult.Inserted)
         {
+            _ = TryConsumeDeletedShelfPayloadOffset(target.Offset, checked((ushort)mutationBounds.ItemOffset));
             RawDataReservation shelfRewrite = kernel.ReserveAt(target.Offset, profile.ShelfExtentSize);
             rewrittenShelf.CopyTo(shelfRewrite.Span);
             DataKernelCommitTelemetry telemetry = CommitAndInvalidateRouterReadCache();
@@ -11927,9 +13985,10 @@ public sealed partial class LibraDexFileSession : IDisposable
         byte[] rewrittenShelf = new byte[profile.ShelfExtentSize];
         existingShelf.CopyTo(rewrittenShelf.AsSpan());
         Scalar16Scalar8 shelf = new(rewrittenShelf, profile);
-        Scalar16Scalar8InsertResult insertResult = shelf.Insert(encodedKeyHigh, encodedKeyLow, encodedIdentity, allowDuplicateKeys);
+        Scalar16Scalar8InsertResult insertResult = shelf.InsertWithMutationBounds(encodedKeyHigh, encodedKeyLow, encodedIdentity, allowDuplicateKeys, out Scalar16Scalar8MutationBounds mutationBounds);
         if (insertResult == Scalar16Scalar8InsertResult.Inserted)
         {
+            _ = TryConsumeDeletedShelfPayloadOffset(target.Offset, checked((ushort)mutationBounds.ItemOffset));
             RawDataReservation shelfRewrite = kernel.ReserveAt(target.Offset, profile.ShelfExtentSize);
             rewrittenShelf.CopyTo(shelfRewrite.Span);
             DataKernelCommitTelemetry telemetry = CommitAndInvalidateRouterReadCache();
@@ -12072,9 +14131,10 @@ public sealed partial class LibraDexFileSession : IDisposable
         byte[] rewrittenShelf = new byte[profile.ShelfExtentSize];
         existingShelf.CopyTo(rewrittenShelf.AsSpan());
         Fixed32Scalar8 shelf = new(rewrittenShelf, profile);
-        Fixed32Scalar8InsertResult insertResult = shelf.Insert(key0, key1, key2, key3, encodedIdentity, allowDuplicateKeys);
+        Fixed32Scalar8InsertResult insertResult = shelf.InsertWithMutationBounds(key0, key1, key2, key3, encodedIdentity, allowDuplicateKeys, out Fixed32Scalar8MutationBounds mutationBounds);
         if (insertResult == Fixed32Scalar8InsertResult.Inserted)
         {
+            _ = TryConsumeDeletedShelfPayloadOffset(target.Offset, checked((ushort)mutationBounds.ItemOffset));
             RawDataReservation shelfRewrite = kernel.ReserveAt(target.Offset, profile.ShelfExtentSize);
             rewrittenShelf.CopyTo(shelfRewrite.Span);
             DataKernelCommitTelemetry telemetry = CommitAndInvalidateRouterReadCache();
@@ -12217,9 +14277,10 @@ public sealed partial class LibraDexFileSession : IDisposable
         byte[] rewrittenShelf = new byte[profile.ShelfExtentSize];
         existingShelf.CopyTo(rewrittenShelf.AsSpan());
         Scalar8Scalar8 shelf = new(rewrittenShelf, profile);
-        Scalar8Scalar8InsertResult insertResult = shelf.Insert(encodedKey, encodedIdentity, allowDuplicateKeys);
+        Scalar8Scalar8InsertResult insertResult = shelf.InsertWithMutationBounds(encodedKey, encodedIdentity, allowDuplicateKeys, out Scalar8Scalar8MutationBounds mutationBounds);
         if (insertResult == Scalar8Scalar8InsertResult.Inserted)
         {
+            _ = TryConsumeDeletedShelfPayloadOffset(target.Offset, checked((ushort)mutationBounds.ItemOffset));
             RawDataReservation shelfRewrite = kernel.ReserveAt(target.Offset, profile.ShelfExtentSize);
             rewrittenShelf.CopyTo(shelfRewrite.Span);
             DataKernelCommitTelemetry telemetry = CommitAndInvalidateRouterReadCache();
@@ -12285,9 +14346,10 @@ public sealed partial class LibraDexFileSession : IDisposable
         byte[] rewrittenShelf = new byte[profile.ShelfExtentSize];
         existingShelf.CopyTo(rewrittenShelf.AsSpan());
         Scalar8Scalar8 shelf = new(rewrittenShelf, profile);
-        Scalar8Scalar8InsertResult insertResult = shelf.Insert(encodedKey, encodedIdentity, allowDuplicateKeys);
+        Scalar8Scalar8InsertResult insertResult = shelf.InsertWithMutationBounds(encodedKey, encodedIdentity, allowDuplicateKeys, out Scalar8Scalar8MutationBounds mutationBounds);
         if (insertResult == Scalar8Scalar8InsertResult.Inserted)
         {
+            _ = TryConsumeDeletedShelfPayloadOffset(target.Offset, checked((ushort)mutationBounds.ItemOffset));
             RawDataReservation shelfRewrite = kernel.ReserveAt(target.Offset, profile.ShelfExtentSize);
             rewrittenShelf.CopyTo(shelfRewrite.Span);
             DataKernelCommitTelemetry telemetry = CommitAndInvalidateRouterReadCache();
@@ -13563,6 +15625,95 @@ public sealed partial class LibraDexFileSession : IDisposable
         return copied;
     }
 
+    /// <summary>
+    /// Deletes encoded identities for an inclusive raw-byte `VS8` key range across the routed varlen-key tree.<br/>
+    /// The traversal mirrors the range reader's target pruning, but shelf mutation uses the mutable sidecar view so active durability batches keep tombstones until commit-time slot normalization.<br/>
+    /// Non-batch callers are also supported by normalizing the touched shelf before immediate publication, which preserves durable delete correctness without exposing tombstones in the persisted shelf format.<br/>
+    /// </summary>
+    /// <param name="rootRouterOffset">The root router offset for the index.</param>
+    /// <param name="maxKeyLength">The maximum raw key length accepted by the profile family.</param>
+    /// <param name="lowerKey">The inclusive lower raw key.</param>
+    /// <param name="upperKey">The inclusive upper raw key.</param>
+    /// <param name="maxRouterHops">The maximum number of router pages to follow.</param>
+    /// <returns>The number of live tuples deleted.</returns>
+    internal long DeleteVarKeyScalar8KeyRange(
+        long rootRouterOffset,
+        int maxKeyLength,
+        ReadOnlySpan<byte> lowerKey,
+        ReadOnlySpan<byte> upperKey,
+        int maxRouterHops = DefaultVarKeyScalar8MaxRouterHops)
+    {
+        if (lowerKey.SequenceCompareTo(upperKey) > 0)
+        {
+            return 0;
+        }
+
+        byte lowerPrefix = GetVarKeyScalar8Prefix(lowerKey, 0);
+        byte upperPrefix = GetVarKeyScalar8Prefix(upperKey, 0);
+        long deleted = 0;
+        using RouteVisitedOffsetSet visitedShelves = RouteVisitedOffsetSet.Rent();
+        using RouteVisitedOffsetSet visitedRouters = RouteVisitedOffsetSet.Rent();
+        for (int prefix = lowerPrefix; prefix <= upperPrefix; prefix++)
+        {
+            long targetOffset = FindRouterTarget(rootRouterOffset, (byte)prefix);
+            if (targetOffset == 0)
+            {
+                continue;
+            }
+
+            deleted += DeleteVarKeyScalar8RangeFromTarget(
+                targetOffset,
+                maxKeyLength,
+                lowerKey,
+                upperKey,
+                visitedShelves,
+                visitedRouters,
+                maxRouterHops);
+        }
+
+        return deleted;
+    }
+
+    /// <summary>
+    /// Deletes one exact raw-key and encoded-identity tuple from a routed `VS8` index.<br/>
+    /// The route walk targets the shelf that owns the key bytes, then the mutable shelf sidecar marks only the matching tuple slot.<br/>
+    /// Active durability batches retain the tombstone until commit-time normalization; non-batch callers normalize immediately before publication.<br/>
+    /// </summary>
+    /// <param name="rootRouterOffset">The root router offset for the index.</param>
+    /// <param name="maxKeyLength">The maximum raw key length accepted by the profile family.</param>
+    /// <param name="key">The exact raw key bytes.</param>
+    /// <param name="encodedIdentity">The exact encoded identity.</param>
+    /// <param name="maxRouterHops">The maximum number of router pages to follow.</param>
+    /// <returns><see langword="true"/> when a live tuple was deleted.</returns>
+    internal bool DeleteVarKeyScalar8ExactTuple(
+        long rootRouterOffset,
+        int maxKeyLength,
+        ReadOnlySpan<byte> key,
+        ulong encodedIdentity,
+        int maxRouterHops = DefaultVarKeyScalar8MaxRouterHops)
+    {
+        VarKeyScalar8RoutePathTarget pathTarget = WalkVarKeyScalar8RoutePathTarget(rootRouterOffset, key, maxRouterHops);
+        VarKeyScalar8RouteTarget target = pathTarget.Target;
+        if (target.Kind != VarKeyScalar8RouteTargetKind.Shelf)
+        {
+            throw new InvalidDataException("The classified route walker did not terminate at a VS8 shelf for exact tuple delete.");
+        }
+
+        VarKeyScalar8MutableShelf shelf = ReadVarKeyScalar8MutableShelf(target.Offset, maxKeyLength);
+        if (!shelf.MarkTupleDeleted(key, encodedIdentity))
+        {
+            return false;
+        }
+
+        if (!durabilityBatchActive)
+        {
+            _ = shelf.NormalizeDeletedSlotsForPublication();
+        }
+
+        _ = StageVarKeyScalar8ShelfRewrite(target.Offset, shelf);
+        return true;
+    }
+
     internal VarKeyScalar16RoutedInsertResult InsertWalkedRoutedVarKeyScalar16(
         long rootRouterOffset,
         int maxKeyLength,
@@ -13785,6 +15936,96 @@ public sealed partial class LibraDexFileSession : IDisposable
         return copied;
     }
 
+    /// <summary>
+    /// Deletes encoded identities for an inclusive raw-byte `VS16` key range across the routed varlen-key tree.<br/>
+    /// The traversal mirrors the range reader's target pruning, but shelf mutation uses the mutable sidecar view so active durability batches keep tombstones until commit-time slot normalization.<br/>
+    /// Non-batch callers are also supported by normalizing the touched shelf before immediate publication, which preserves durable delete correctness without exposing tombstones in the persisted shelf format.<br/>
+    /// </summary>
+    /// <param name="rootRouterOffset">The root router offset for the index.</param>
+    /// <param name="maxKeyLength">The maximum raw key length accepted by the profile family.</param>
+    /// <param name="lowerKey">The inclusive lower raw key.</param>
+    /// <param name="upperKey">The inclusive upper raw key.</param>
+    /// <param name="maxRouterHops">The maximum number of router pages to follow.</param>
+    /// <returns>The number of live tuples deleted.</returns>
+    internal long DeleteVarKeyScalar16KeyRange(
+        long rootRouterOffset,
+        int maxKeyLength,
+        ReadOnlySpan<byte> lowerKey,
+        ReadOnlySpan<byte> upperKey,
+        int maxRouterHops = DefaultVarKeyScalar16MaxRouterHops)
+    {
+        if (lowerKey.SequenceCompareTo(upperKey) > 0)
+        {
+            return 0;
+        }
+
+        byte lowerPrefix = GetVarKeyScalar16Prefix(lowerKey, 0);
+        byte upperPrefix = GetVarKeyScalar16Prefix(upperKey, 0);
+        long deleted = 0;
+        using RouteVisitedOffsetSet visitedShelves = RouteVisitedOffsetSet.Rent();
+        using RouteVisitedOffsetSet visitedRouters = RouteVisitedOffsetSet.Rent();
+        for (int prefix = lowerPrefix; prefix <= upperPrefix; prefix++)
+        {
+            long targetOffset = FindRouterTarget(rootRouterOffset, (byte)prefix);
+            if (targetOffset == 0)
+            {
+                continue;
+            }
+
+            deleted += DeleteVarKeyScalar16RangeFromTarget(
+                targetOffset,
+                maxKeyLength,
+                lowerKey,
+                upperKey,
+                visitedShelves,
+                visitedRouters,
+                maxRouterHops);
+        }
+
+        return deleted;
+    }
+
+    /// <summary>
+    /// Deletes one exact raw-key and encoded 16-byte identity tuple from a routed `VS16` index.<br/>
+    /// The route walk targets the shelf that owns the key bytes, then the mutable shelf sidecar marks only the matching tuple slot.<br/>
+    /// </summary>
+    /// <param name="rootRouterOffset">The root router offset for the index.</param>
+    /// <param name="maxKeyLength">The maximum raw key length accepted by the profile family.</param>
+    /// <param name="key">The exact raw key bytes.</param>
+    /// <param name="encodedIdentityHigh">The high 8 bytes of the exact encoded identity.</param>
+    /// <param name="encodedIdentityLow">The low 8 bytes of the exact encoded identity.</param>
+    /// <param name="maxRouterHops">The maximum number of router pages to follow.</param>
+    /// <returns><see langword="true"/> when a live tuple was deleted.</returns>
+    internal bool DeleteVarKeyScalar16ExactTuple(
+        long rootRouterOffset,
+        int maxKeyLength,
+        ReadOnlySpan<byte> key,
+        ulong encodedIdentityHigh,
+        ulong encodedIdentityLow,
+        int maxRouterHops = DefaultVarKeyScalar16MaxRouterHops)
+    {
+        VarKeyScalar16RoutePathTarget pathTarget = WalkVarKeyScalar16RoutePathTarget(rootRouterOffset, key, maxRouterHops);
+        VarKeyScalar16RouteTarget target = pathTarget.Target;
+        if (target.Kind != VarKeyScalar16RouteTargetKind.Shelf)
+        {
+            throw new InvalidDataException("The classified route walker did not terminate at a VS16 shelf for exact tuple delete.");
+        }
+
+        VarKeyScalar16MutableShelf shelf = ReadVarKeyScalar16MutableShelf(target.Offset, maxKeyLength);
+        if (!shelf.MarkTupleDeleted(key, encodedIdentityHigh, encodedIdentityLow))
+        {
+            return false;
+        }
+
+        if (!durabilityBatchActive)
+        {
+            _ = shelf.NormalizeDeletedSlotsForPublication();
+        }
+
+        _ = StageVarKeyScalar16ShelfRewrite(target.Offset, shelf);
+        return true;
+    }
+
     private int CopyVarKeyScalar8RangeFromTarget(
         long targetOffset,
         int maxKeyLength,
@@ -13885,6 +16126,109 @@ public sealed partial class LibraDexFileSession : IDisposable
         }
 
         return copied;
+    }
+
+    private long DeleteVarKeyScalar8RangeFromTarget(
+        long targetOffset,
+        int maxKeyLength,
+        ReadOnlySpan<byte> lowerKey,
+        ReadOnlySpan<byte> upperKey,
+        RouteVisitedOffsetSet visitedShelves,
+        RouteVisitedOffsetSet visitedRouters,
+        int remainingRouterHops)
+    {
+        VarKeyScalar8RouteTargetKind kind = ClassifyVarKeyScalar8RouteTarget(targetOffset);
+        if (kind == VarKeyScalar8RouteTargetKind.Shelf)
+        {
+            if (!visitedShelves.Add(targetOffset))
+            {
+                return 0;
+            }
+
+            VarKeyScalar8MutableShelf shelf = ReadVarKeyScalar8MutableShelf(targetOffset, maxKeyLength);
+            int deleted = shelf.MarkKeyRangeDeleted(lowerKey, upperKey);
+            if (deleted == 0)
+            {
+                return 0;
+            }
+
+            if (!durabilityBatchActive)
+            {
+                _ = shelf.NormalizeDeletedSlotsForPublication();
+            }
+
+            _ = StageVarKeyScalar8ShelfRewrite(targetOffset, shelf);
+            return deleted;
+        }
+
+        if (kind != VarKeyScalar8RouteTargetKind.Router)
+        {
+            throw new InvalidDataException("The routed VS8 delete target is not a shelf or router.");
+        }
+
+        if (!visitedRouters.Add(targetOffset))
+        {
+            return 0;
+        }
+
+        if (remainingRouterHops <= 0)
+        {
+            throw new InvalidDataException("The routed VS8 range delete exceeded the configured router hop count.");
+        }
+
+        long deletedFromChildren = 0;
+        byte[] routerBytes = new byte[RouterLayout.Size];
+        ReadRouterPageUsingArenaCache(targetOffset, routerBytes);
+        RouterReader reader = new(routerBytes);
+        if (!reader.IsValid)
+        {
+            throw new InvalidDataException("The routed VS8 range delete router is invalid.");
+        }
+
+        if (reader.PrefixByteCount > 1)
+        {
+            for (int routeIndex = 0; routeIndex < reader.RouteCount; routeIndex++)
+            {
+                long childTargetOffset = reader.GetRouteTargetAt(routeIndex);
+                if (childTargetOffset == 0)
+                {
+                    continue;
+                }
+
+                deletedFromChildren += DeleteVarKeyScalar8RangeFromTarget(
+                    childTargetOffset,
+                    maxKeyLength,
+                    lowerKey,
+                    upperKey,
+                    visitedShelves,
+                    visitedRouters,
+                    remainingRouterHops - 1);
+            }
+
+            return deletedFromChildren;
+        }
+
+        byte lowerPrefix = GetVarKeyScalar8Prefix(lowerKey, reader.KeyDepth);
+        byte upperPrefix = GetVarKeyScalar8Prefix(upperKey, reader.KeyDepth);
+        for (int prefix = lowerPrefix; prefix <= upperPrefix; prefix++)
+        {
+            long childTargetOffset = reader.FindTarget((byte)prefix);
+            if (childTargetOffset == 0)
+            {
+                continue;
+            }
+
+            deletedFromChildren += DeleteVarKeyScalar8RangeFromTarget(
+                childTargetOffset,
+                maxKeyLength,
+                lowerKey,
+                upperKey,
+                visitedShelves,
+                visitedRouters,
+                remainingRouterHops - 1);
+        }
+
+        return deletedFromChildren;
     }
 
     private int CopyVarKeyScalar16RangeFromTarget(
@@ -13990,6 +16334,109 @@ public sealed partial class LibraDexFileSession : IDisposable
         }
 
         return copied;
+    }
+
+    private long DeleteVarKeyScalar16RangeFromTarget(
+        long targetOffset,
+        int maxKeyLength,
+        ReadOnlySpan<byte> lowerKey,
+        ReadOnlySpan<byte> upperKey,
+        RouteVisitedOffsetSet visitedShelves,
+        RouteVisitedOffsetSet visitedRouters,
+        int remainingRouterHops)
+    {
+        VarKeyScalar16RouteTargetKind kind = ClassifyVarKeyScalar16RouteTarget(targetOffset);
+        if (kind == VarKeyScalar16RouteTargetKind.Shelf)
+        {
+            if (!visitedShelves.Add(targetOffset))
+            {
+                return 0;
+            }
+
+            VarKeyScalar16MutableShelf shelf = ReadVarKeyScalar16MutableShelf(targetOffset, maxKeyLength);
+            int deleted = shelf.MarkKeyRangeDeleted(lowerKey, upperKey);
+            if (deleted == 0)
+            {
+                return 0;
+            }
+
+            if (!durabilityBatchActive)
+            {
+                _ = shelf.NormalizeDeletedSlotsForPublication();
+            }
+
+            _ = StageVarKeyScalar16ShelfRewrite(targetOffset, shelf);
+            return deleted;
+        }
+
+        if (kind != VarKeyScalar16RouteTargetKind.Router)
+        {
+            throw new InvalidDataException("The routed VS16 delete target is not a shelf or router.");
+        }
+
+        if (!visitedRouters.Add(targetOffset))
+        {
+            return 0;
+        }
+
+        if (remainingRouterHops <= 0)
+        {
+            throw new InvalidDataException("The routed VS16 range delete exceeded the configured router hop count.");
+        }
+
+        long deletedFromChildren = 0;
+        byte[] routerBytes = new byte[RouterLayout.Size];
+        ReadRouterPageUsingArenaCache(targetOffset, routerBytes);
+        RouterReader reader = new(routerBytes);
+        if (!reader.IsValid)
+        {
+            throw new InvalidDataException("The routed VS16 range delete router is invalid.");
+        }
+
+        if (reader.PrefixByteCount > 1)
+        {
+            for (int routeIndex = 0; routeIndex < reader.RouteCount; routeIndex++)
+            {
+                long childTargetOffset = reader.GetRouteTargetAt(routeIndex);
+                if (childTargetOffset == 0)
+                {
+                    continue;
+                }
+
+                deletedFromChildren += DeleteVarKeyScalar16RangeFromTarget(
+                    childTargetOffset,
+                    maxKeyLength,
+                    lowerKey,
+                    upperKey,
+                    visitedShelves,
+                    visitedRouters,
+                    remainingRouterHops - 1);
+            }
+
+            return deletedFromChildren;
+        }
+
+        byte lowerPrefix = GetVarKeyScalar16Prefix(lowerKey, reader.KeyDepth);
+        byte upperPrefix = GetVarKeyScalar16Prefix(upperKey, reader.KeyDepth);
+        for (int prefix = lowerPrefix; prefix <= upperPrefix; prefix++)
+        {
+            long childTargetOffset = reader.FindTarget((byte)prefix);
+            if (childTargetOffset == 0)
+            {
+                continue;
+            }
+
+            deletedFromChildren += DeleteVarKeyScalar16RangeFromTarget(
+                childTargetOffset,
+                maxKeyLength,
+                lowerKey,
+                upperKey,
+                visitedShelves,
+                visitedRouters,
+                remainingRouterHops - 1);
+        }
+
+        return deletedFromChildren;
     }
 
     private byte[] ReadVarKeyScalar8ShelfBytes(long shelfOffset, int maxKeyLength, out VarKeyScalar8Profile profile)
@@ -14200,8 +16647,10 @@ public sealed partial class LibraDexFileSession : IDisposable
             return CommitWithoutInvalidatingRouterReadCache();
         }
 
+        PrepareVarKeyScalar8ShelfForPublication(shelf);
         RawDataReservation shelfRewrite = kernel.ReserveAt(shelfOffset, shelf.Profile.ShelfExtentSize);
         shelf.Bytes.AsSpan(0, shelf.Profile.ShelfExtentSize).CopyTo(shelfRewrite.Span);
+        varKeyScalar8ReadShelfCache.Remove(shelfOffset);
         return CommitAndInvalidateRouterReadCache();
     }
 
@@ -14220,9 +16669,33 @@ public sealed partial class LibraDexFileSession : IDisposable
             return CommitWithoutInvalidatingRouterReadCache();
         }
 
+        PrepareVarKeyScalar16ShelfForPublication(shelf);
         RawDataReservation shelfRewrite = kernel.ReserveAt(shelfOffset, shelf.Profile.ShelfExtentSize);
         shelf.Bytes.AsSpan(0, shelf.Profile.ShelfExtentSize).CopyTo(shelfRewrite.Span);
+        varKeyScalar16ReadShelfCache.Remove(shelfOffset);
         return CommitAndInvalidateRouterReadCache();
+    }
+
+    /// <summary>
+    /// Prepares a dirty `VS8` mutable shelf for publication by normalizing deleted slots and applying the first conservative payload-repack policy.<br/>
+    /// The policy requires both a minimum orphaned payload byte count and a minimum deleted-payload ratio so routine deletes do not rebuild record arenas too eagerly.<br/>
+    /// </summary>
+    /// <param name="shelf">The dirty `VS8` mutable shelf to prepare.</param>
+    private static void PrepareVarKeyScalar8ShelfForPublication(VarKeyScalar8MutableShelf shelf)
+    {
+        _ = shelf.NormalizeDeletedSlotsForPublication();
+        _ = shelf.RepackPayloadIfWorthwhile(VarKeyPayloadRepackMinimumDeletedBytes, VarKeyPayloadRepackMinimumDeletedPercent);
+    }
+
+    /// <summary>
+    /// Prepares a dirty `VS16` mutable shelf for publication by normalizing deleted slots and applying the first conservative payload-repack policy.<br/>
+    /// The policy requires both a minimum orphaned payload byte count and a minimum deleted-payload ratio so routine deletes do not rebuild record arenas too eagerly.<br/>
+    /// </summary>
+    /// <param name="shelf">The dirty `VS16` mutable shelf to prepare.</param>
+    private static void PrepareVarKeyScalar16ShelfForPublication(VarKeyScalar16MutableShelf shelf)
+    {
+        _ = shelf.NormalizeDeletedSlotsForPublication();
+        _ = shelf.RepackPayloadIfWorthwhile(VarKeyPayloadRepackMinimumDeletedBytes, VarKeyPayloadRepackMinimumDeletedPercent);
     }
 
     private (
@@ -15271,6 +17744,12 @@ public sealed partial class LibraDexFileSession : IDisposable
             throw new InvalidOperationException("No LibraDex session durability batch is active.");
         }
 
+        FlushDirtyScalar8Scalar8MutableBatchShelfBytes();
+        FlushDirtyScalar16Scalar8MutableBatchShelfBytes();
+        FlushDirtyScalar8Scalar16MutableBatchShelfBytes();
+        FlushDirtyScalar16Scalar16MutableBatchShelfBytes();
+        FlushDirtyFixed32Scalar8MutableBatchShelfBytes();
+        FlushDirtyFixed32Scalar16MutableBatchShelfBytes();
         FlushDirtyVarKeyScalar8MutableBatchShelves();
         FlushDirtyVarKeyScalar16MutableBatchShelves();
         FlushDirtyVarKeyVarIdentityMutableBatchShelves();
@@ -15287,6 +17766,12 @@ public sealed partial class LibraDexFileSession : IDisposable
         routerReadCacheInvalidationPending = false;
         deferredDurabilityCommitRequests = 0;
         currentWriteIntent = default;
+        scalar8Scalar8MutableBatchShelfBytes.Clear();
+        scalar16Scalar8MutableBatchShelfBytes.Clear();
+        scalar8Scalar16MutableBatchShelfBytes.Clear();
+        scalar16Scalar16MutableBatchShelfBytes.Clear();
+        fixed32Scalar8MutableBatchShelfBytes.Clear();
+        fixed32Scalar16MutableBatchShelfBytes.Clear();
         ReleaseVarKeyScalar8MutableBatchShelves(clearShelfBytes: true);
         ReleaseVarKeyScalar16MutableBatchShelves(clearShelfBytes: true);
         ReleaseVarKeyVarIdentityMutableBatchShelves(clearShelfBytes: true);
@@ -15315,12 +17800,114 @@ public sealed partial class LibraDexFileSession : IDisposable
         routerReadCacheInvalidationPending = false;
         deferredDurabilityCommitRequests = 0;
         currentWriteIntent = default;
+        scalar8Scalar8MutableBatchShelfBytes.Clear();
+        scalar16Scalar8MutableBatchShelfBytes.Clear();
+        scalar8Scalar16MutableBatchShelfBytes.Clear();
+        scalar16Scalar16MutableBatchShelfBytes.Clear();
+        fixed32Scalar8MutableBatchShelfBytes.Clear();
+        fixed32Scalar16MutableBatchShelfBytes.Clear();
         ReleaseVarKeyScalar8MutableBatchShelves(clearShelfBytes: true);
         ReleaseVarKeyScalar16MutableBatchShelves(clearShelfBytes: true);
         ReleaseVarKeyVarIdentityMutableBatchShelves(clearShelfBytes: true);
         ReleaseScalar8VarIdentityMutableBatchShelves(clearShelfBytes: true);
         ReleaseScalar16VarIdentityMutableBatchShelves(clearShelfBytes: true);
         return deferredRequests;
+    }
+
+    /// <summary>
+    /// Flushes dirty `SS8-8` fixed-shelf batch images into DataKernel staging before the durability batch publishes.<br/>
+    /// The image is normalized at this boundary so persisted fixed shelves remain compact even after future batch-local tombstone accumulation.<br/>
+    /// </summary>
+    private void FlushDirtyScalar8Scalar8MutableBatchShelfBytes()
+    {
+        foreach (KeyValuePair<long, byte[]> dirtyShelf in scalar8Scalar8MutableBatchShelfBytes)
+        {
+            Scalar8Scalar8Profile profile = Scalar8Scalar8Profile.Create(dirtyShelf.Value.Length);
+            Scalar8Scalar8 shelf = new(dirtyShelf.Value, profile);
+            _ = shelf.NormalizeDeletedSlotsForPublication();
+            RawDataReservation shelfRewrite = kernel.ReserveAt(dirtyShelf.Key, profile.ShelfExtentSize);
+            dirtyShelf.Value.CopyTo(shelfRewrite.Span);
+        }
+    }
+
+    /// <summary>
+    /// Flushes dirty `SS16-8` fixed-shelf batch images into DataKernel staging before the durability batch publishes.<br/>
+    /// Publication normalizes tombstoned slots so committed shelf bytes preserve the ordinary dense fixed-payload invariant.<br/>
+    /// </summary>
+    private void FlushDirtyScalar16Scalar8MutableBatchShelfBytes()
+    {
+        foreach (KeyValuePair<long, byte[]> dirtyShelf in scalar16Scalar8MutableBatchShelfBytes)
+        {
+            Scalar16Scalar8Profile profile = Scalar16Scalar8Profile.Create(dirtyShelf.Value.Length);
+            Scalar16Scalar8 shelf = new(dirtyShelf.Value, profile);
+            _ = shelf.NormalizeDeletedSlotsForPublication();
+            RawDataReservation shelfRewrite = kernel.ReserveAt(dirtyShelf.Key, profile.ShelfExtentSize);
+            dirtyShelf.Value.CopyTo(shelfRewrite.Span);
+        }
+    }
+
+    /// <summary>
+    /// Flushes dirty `SS8-16` fixed-shelf batch images into DataKernel staging before the durability batch publishes.<br/>
+    /// Publication normalizes tombstoned slots so committed shelf bytes preserve the ordinary dense fixed-payload invariant.<br/>
+    /// </summary>
+    private void FlushDirtyScalar8Scalar16MutableBatchShelfBytes()
+    {
+        foreach (KeyValuePair<long, byte[]> dirtyShelf in scalar8Scalar16MutableBatchShelfBytes)
+        {
+            Scalar8Scalar16Profile profile = Scalar8Scalar16Profile.Create(dirtyShelf.Value.Length);
+            Scalar8Scalar16 shelf = new(dirtyShelf.Value, profile);
+            _ = shelf.NormalizeDeletedSlotsForPublication();
+            RawDataReservation shelfRewrite = kernel.ReserveAt(dirtyShelf.Key, profile.ShelfExtentSize);
+            dirtyShelf.Value.CopyTo(shelfRewrite.Span);
+        }
+    }
+
+    /// <summary>
+    /// Flushes dirty `SS16-16` fixed-shelf batch images into DataKernel staging before the durability batch publishes.<br/>
+    /// Publication normalizes tombstoned slots so committed shelf bytes preserve the ordinary dense fixed-payload invariant.<br/>
+    /// </summary>
+    private void FlushDirtyScalar16Scalar16MutableBatchShelfBytes()
+    {
+        foreach (KeyValuePair<long, byte[]> dirtyShelf in scalar16Scalar16MutableBatchShelfBytes)
+        {
+            Scalar16Scalar16Profile profile = Scalar16Scalar16Profile.Create(dirtyShelf.Value.Length);
+            Scalar16Scalar16 shelf = new(dirtyShelf.Value, profile);
+            _ = shelf.NormalizeDeletedSlotsForPublication();
+            RawDataReservation shelfRewrite = kernel.ReserveAt(dirtyShelf.Key, profile.ShelfExtentSize);
+            dirtyShelf.Value.CopyTo(shelfRewrite.Span);
+        }
+    }
+
+    /// <summary>
+    /// Flushes dirty `FS32-8` fixed-shelf batch images into DataKernel staging before the durability batch publishes.<br/>
+    /// Publication normalizes tombstoned slots so committed shelf bytes preserve the ordinary dense fixed-payload invariant.<br/>
+    /// </summary>
+    private void FlushDirtyFixed32Scalar8MutableBatchShelfBytes()
+    {
+        foreach (KeyValuePair<long, byte[]> dirtyShelf in fixed32Scalar8MutableBatchShelfBytes)
+        {
+            Fixed32Scalar8Profile profile = Fixed32Scalar8Profile.Create(dirtyShelf.Value.Length);
+            Fixed32Scalar8 shelf = new(dirtyShelf.Value, profile);
+            _ = shelf.NormalizeDeletedSlotsForPublication();
+            RawDataReservation shelfRewrite = kernel.ReserveAt(dirtyShelf.Key, profile.ShelfExtentSize);
+            dirtyShelf.Value.CopyTo(shelfRewrite.Span);
+        }
+    }
+
+    /// <summary>
+    /// Flushes dirty `FS32-16` fixed-shelf batch images into DataKernel staging before the durability batch publishes.<br/>
+    /// Publication normalizes tombstoned slots so committed shelf bytes preserve the ordinary dense fixed-payload invariant.<br/>
+    /// </summary>
+    private void FlushDirtyFixed32Scalar16MutableBatchShelfBytes()
+    {
+        foreach (KeyValuePair<long, byte[]> dirtyShelf in fixed32Scalar16MutableBatchShelfBytes)
+        {
+            Fixed32Scalar16Profile profile = Fixed32Scalar16Profile.Create(dirtyShelf.Value.Length);
+            Fixed32Scalar16 shelf = new(dirtyShelf.Value, profile);
+            _ = shelf.NormalizeDeletedSlotsForPublication();
+            RawDataReservation shelfRewrite = kernel.ReserveAt(dirtyShelf.Key, profile.ShelfExtentSize);
+            dirtyShelf.Value.CopyTo(shelfRewrite.Span);
+        }
     }
 
     private void FlushDirtyVarKeyScalar8MutableBatchShelves()
@@ -15333,8 +17920,10 @@ public sealed partial class LibraDexFileSession : IDisposable
             }
 
             int shelfExtentSize = mutableShelf.Value.Profile.ShelfExtentSize;
+            PrepareVarKeyScalar8ShelfForPublication(mutableShelf.Value);
             RawDataReservation shelfRewrite = kernel.ReserveAt(mutableShelf.Key, shelfExtentSize);
             mutableShelf.Value.Bytes.AsSpan(0, shelfExtentSize).CopyTo(shelfRewrite.Span);
+            varKeyScalar8ReadShelfCache.Remove(mutableShelf.Key);
         }
     }
 
@@ -15348,8 +17937,10 @@ public sealed partial class LibraDexFileSession : IDisposable
             }
 
             int shelfExtentSize = mutableShelf.Value.Profile.ShelfExtentSize;
+            PrepareVarKeyScalar16ShelfForPublication(mutableShelf.Value);
             RawDataReservation shelfRewrite = kernel.ReserveAt(mutableShelf.Key, shelfExtentSize);
             mutableShelf.Value.Bytes.AsSpan(0, shelfExtentSize).CopyTo(shelfRewrite.Span);
+            varKeyScalar16ReadShelfCache.Remove(mutableShelf.Key);
         }
     }
 
@@ -15367,8 +17958,11 @@ public sealed partial class LibraDexFileSession : IDisposable
             }
 
             int shelfExtentSize = mutableShelf.Value.Profile.ShelfExtentSize;
+            _ = mutableShelf.Value.NormalizeDeletedSlotsForPublication();
             RawDataReservation shelfRewrite = kernel.ReserveAt(mutableShelf.Key, shelfExtentSize);
             mutableShelf.Value.Bytes.AsSpan(0, shelfExtentSize).CopyTo(shelfRewrite.Span);
+            varKeyVarIdentityReadShelfCache.Remove(mutableShelf.Key);
+            varKeyVarIdentityReadOnlyShelfCache.Remove(mutableShelf.Key);
         }
     }
 
@@ -15386,6 +17980,7 @@ public sealed partial class LibraDexFileSession : IDisposable
             }
 
             int shelfExtentSize = mutableShelf.Value.Profile.ShelfExtentSize;
+            _ = mutableShelf.Value.NormalizeDeletedSlotsForPublication();
             mutableShelf.Value.EnsureSlotBytesCurrent();
             RawDataReservation shelfRewrite = kernel.ReserveAt(mutableShelf.Key, shelfExtentSize);
             mutableShelf.Value.Bytes.AsSpan(0, shelfExtentSize).CopyTo(shelfRewrite.Span);
@@ -15406,6 +18001,7 @@ public sealed partial class LibraDexFileSession : IDisposable
             }
 
             int shelfExtentSize = mutableShelf.Value.Profile.ShelfExtentSize;
+            _ = mutableShelf.Value.NormalizeDeletedSlotsForPublication();
             mutableShelf.Value.EnsureSlotBytesCurrent();
             RawDataReservation shelfRewrite = kernel.ReserveAt(mutableShelf.Key, shelfExtentSize);
             mutableShelf.Value.Bytes.AsSpan(0, shelfExtentSize).CopyTo(shelfRewrite.Span);
@@ -16363,14 +18959,28 @@ public sealed partial class LibraDexFileSession : IDisposable
 
     /// <summary>
     /// Reads and validates one full `FS32-16` shelf extent for a batch-local mutation cache.<br/>
-    /// The read uses normal `DataKernel` semantics, so pending staged bytes are visible before committed backing bytes.<br/>
+    /// During an active durability batch this is the pending writer view: an existing dirty shelf image is returned before committed backing bytes.<br/>
+    /// Dirty images are normalized before reuse by default so writer-side search/insert code can keep using ordinary compact shelf algorithms.<br/>
     /// </summary>
     /// <param name="shelfOffset">The offset of the shelf extent to read.</param>
     /// <param name="profile">The `FS32-16` profile that determines the shelf extent size.</param>
+    /// <param name="normalizePendingBeforeReturn">Whether an existing dirty image should be normalized before it is returned for writer-side search or insertion.</param>
     /// <returns>A mutable byte array containing the current shelf image.</returns>
     /// <exception cref="InvalidDataException">Thrown when the bytes at <paramref name="shelfOffset"/> are not a valid `FS32-16` shelf.</exception>
-    internal byte[] ReadFixed32Scalar16ShelfBytesForBatch(long shelfOffset, Fixed32Scalar16Profile profile)
+    internal byte[] ReadFixed32Scalar16ShelfBytesForBatch(long shelfOffset, Fixed32Scalar16Profile profile, bool normalizePendingBeforeReturn = true)
     {
+        if (durabilityBatchActive &&
+            fixed32Scalar16MutableBatchShelfBytes.TryGetValue(shelfOffset, out byte[]? dirtyShelfBytes))
+        {
+            if (normalizePendingBeforeReturn)
+            {
+                Fixed32Scalar16 shelf = new(dirtyShelfBytes, profile);
+                _ = shelf.NormalizeDeletedSlotsForPublication();
+            }
+
+            return dirtyShelfBytes;
+        }
+
         if (fixed32Scalar16CleanShelfCache.Remove(shelfOffset, out byte[]? cachedShelfBytes))
         {
             Fixed32Scalar16ReadOnly cachedReadOnly = new(cachedShelfBytes, profile);
@@ -16446,6 +19056,12 @@ public sealed partial class LibraDexFileSession : IDisposable
             throw new InvalidDataException("The batch-local FS32-16 shelf cache attempted to stage invalid shelf bytes.");
         }
 
+        if (durabilityBatchActive)
+        {
+            fixed32Scalar16MutableBatchShelfBytes[shelfOffset] = shelfBytes.ToArray();
+            return CommitWithoutInvalidatingRouterReadCache();
+        }
+
         RawDataReservation rewrite = kernel.ReserveAt(shelfOffset, profile.ShelfExtentSize);
         shelfBytes.CopyTo(rewrite.Span);
         return CommitWithoutInvalidatingRouterReadCache();
@@ -16477,6 +19093,19 @@ public sealed partial class LibraDexFileSession : IDisposable
         if (sliceBytes.Length == 0)
         {
             return default;
+        }
+
+        if (durabilityBatchActive)
+        {
+            if (!fixed32Scalar16MutableBatchShelfBytes.TryGetValue(shelfOffset, out byte[]? dirtyShelfBytes))
+            {
+                dirtyShelfBytes = new byte[profile.ShelfExtentSize];
+                kernel.Read(shelfOffset, dirtyShelfBytes);
+                fixed32Scalar16MutableBatchShelfBytes[shelfOffset] = dirtyShelfBytes;
+            }
+
+            sliceBytes.CopyTo(dirtyShelfBytes.AsSpan(sliceOffset, sliceBytes.Length));
+            return CommitWithoutInvalidatingRouterReadCache();
         }
 
         RawDataReservation rewrite = kernel.ReserveAt(shelfOffset + sliceOffset, sliceBytes.Length);
@@ -18328,9 +20957,10 @@ public sealed partial class LibraDexFileSession : IDisposable
         byte[] rewrittenShelf = new byte[profile.ShelfExtentSize];
         existingShelf.CopyTo(rewrittenShelf.AsSpan());
         Fixed32Scalar16 shelf = new(rewrittenShelf, profile);
-        Fixed32Scalar16InsertResult insertResult = shelf.Insert(key0, key1, key2, key3, encodedIdentityHigh, encodedIdentityLow, allowDuplicateKeys);
+        Fixed32Scalar16InsertResult insertResult = shelf.InsertWithMutationBounds(key0, key1, key2, key3, encodedIdentityHigh, encodedIdentityLow, allowDuplicateKeys, out Fixed32Scalar16MutationBounds mutationBounds);
         if (insertResult == Fixed32Scalar16InsertResult.Inserted)
         {
+            _ = TryConsumeDeletedShelfPayloadOffset(target.Offset, checked((ushort)mutationBounds.ItemOffset));
             RawDataReservation shelfRewrite = kernel.ReserveAt(target.Offset, profile.ShelfExtentSize);
             rewrittenShelf.CopyTo(shelfRewrite.Span);
             DataKernelCommitTelemetry telemetry = CommitAndInvalidateRouterReadCache();

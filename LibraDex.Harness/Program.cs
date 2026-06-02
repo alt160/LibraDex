@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using System.Diagnostics;
 using System.Globalization;
+using System.Numerics;
 using System.Text;
 using LibraDex;
 using LibraDex.Layouts;
@@ -161,8 +162,13 @@ internal static class RawHarness
             "ss8-8-profile-sanity" => RunScalar8Scalar8ProfileSanity(args),
             "ss8-8-typed-api-sanity" => RunUnsignedScalar8Scalar8IndexApiSanity(args),
             "generic-index-api-sanity" => RunGenericIndexApiSanity(args),
+            "bigint-api-sanity" => RunBigIntApiSanity(args),
+            "fixedn-shelf-sanity" => RunFixedNShelfSanity(args),
+            "fixedn-shelf-perf" => RunFixedNShelfPerf(args),
+            "fixedn-varidentity-routed-sanity" => RunFixedNVarIdentityRoutedSanity(args),
             "catalog-api-sanity" => RunCatalogApiSanity(args),
             "public-surface-api-sanity" => RunPublicSurfaceApiSanity(args),
+            "solution-quality-sanity" => RunSolutionQualitySanity(args),
             "fixed-reader-perf" => RunFixedReaderPerf(args),
             "var-identity-buffer-perf" => RunVarIdentityBufferPerf(args),
             "write-intent-sanity" => RunWriteIntentSanity(args),
@@ -6715,7 +6721,6 @@ internal static class RawHarness
         using (Scalar8Scalar8Index created = Indexes.SS88.Create(
             path,
             DataKernelBackingKind.File,
-            slotIndex: 0,
             name: "api",
             options: options,
             developerMetadata: CreateDesignPerfMetadata(71),
@@ -6742,7 +6747,6 @@ internal static class RawHarness
         Array.Clear(identities);
         using (Scalar8Scalar8Index opened = Indexes.SS88.Open(
             path,
-            slotIndex: 0,
             options: options,
             telemetryOptions: DataKernelTelemetryOptions.EnabledOptions))
         {
@@ -6756,7 +6760,6 @@ internal static class RawHarness
         using (Scalar8Scalar8Index createOrOpen = Indexes.SS88.CreateOrOpen(
             path,
             DataKernelBackingKind.File,
-            slotIndex: 0,
             name: "ignored",
             options: options,
             developerMetadata: CreateDesignPerfMetadata(72),
@@ -6834,7 +6837,6 @@ internal static class RawHarness
         Array.Clear(identities);
         using (Scalar8Scalar8Index memory = Indexes.SS88.CreateOrOpen(
             backingKind: DataKernelBackingKind.Memory,
-            slotIndex: 0,
             name: "memory",
             options: options,
             developerMetadata: CreateDesignPerfMetadata(73),
@@ -6856,7 +6858,6 @@ internal static class RawHarness
         Array.Clear(identities);
         using (UnsignedScalar8Scalar8Index unsigned = Indexes.SS88.Unsigned.Create(
             backingKind: DataKernelBackingKind.Memory,
-            slotIndex: 0,
             name: "unsigned-reader",
             options: options,
             developerMetadata: CreateDesignPerfMetadata(74),
@@ -6942,7 +6943,6 @@ internal static class RawHarness
         using (Scalar8Scalar8Index created = Indexes.SS88.Create(
             path,
             DataKernelBackingKind.File,
-            slotIndex: 0,
             name: "profile24",
             options: options,
             developerMetadata: CreateDesignPerfMetadata(91),
@@ -6965,7 +6965,6 @@ internal static class RawHarness
         Array.Clear(identities);
         using (Scalar8Scalar8Index opened = Indexes.SS88.Open(
             path,
-            slotIndex: 0,
             options: options,
             telemetryOptions: DataKernelTelemetryOptions.EnabledOptions))
         {
@@ -6984,7 +6983,6 @@ internal static class RawHarness
         using (Scalar8Scalar8Index createOrOpen = Indexes.SS88.CreateOrOpen(
             path,
             DataKernelBackingKind.File,
-            slotIndex: 0,
             name: "ignored",
             options: options,
             developerMetadata: CreateDesignPerfMetadata(92),
@@ -7006,7 +7004,6 @@ internal static class RawHarness
         Array.Clear(identities);
         using (Scalar8Scalar8Index memory = Indexes.SS88.CreateOrOpen(
             backingKind: DataKernelBackingKind.Memory,
-            slotIndex: 0,
             name: "profile-memory",
             options: options,
             developerMetadata: CreateDesignPerfMetadata(93),
@@ -7058,7 +7055,6 @@ internal static class RawHarness
         using (UnsignedScalar8Scalar8Index created = Indexes.SS88.Unsigned.Create(
             path,
             DataKernelBackingKind.File,
-            slotIndex: 0,
             name: "typed",
             options: options,
             developerMetadata: CreateDesignPerfMetadata(74),
@@ -7093,7 +7089,6 @@ internal static class RawHarness
         Array.Clear(identities);
         using (UnsignedScalar8Scalar8Index opened = Indexes.SS88.Unsigned.Open(
             path,
-            slotIndex: 0,
             options: options,
             telemetryOptions: DataKernelTelemetryOptions.EnabledOptions))
         {
@@ -7107,7 +7102,6 @@ internal static class RawHarness
         using (UnsignedScalar8Scalar8Index createOrOpen = Indexes.SS88.Unsigned.CreateOrOpen(
             path,
             DataKernelBackingKind.File,
-            slotIndex: 0,
             name: "ignored",
             options: options,
             developerMetadata: CreateDesignPerfMetadata(75),
@@ -7129,7 +7123,6 @@ internal static class RawHarness
         Array.Clear(identities);
         using (UnsignedScalar8Scalar8Index reopened = Indexes.SS88.Unsigned.Open(
             path,
-            slotIndex: 0,
             options: options,
             telemetryOptions: DataKernelTelemetryOptions.EnabledOptions))
         {
@@ -7143,7 +7136,6 @@ internal static class RawHarness
         Array.Clear(identities);
         using (UnsignedScalar8Scalar8Index memory = Indexes.SS88.Unsigned.CreateOrOpen(
             backingKind: DataKernelBackingKind.Memory,
-            slotIndex: 0,
             name: "typed-memory",
             options: options,
             developerMetadata: CreateDesignPerfMetadata(76),
@@ -7377,6 +7369,23 @@ internal static class RawHarness
             ValidateGenericGuidReader(reader, new Guid[] { guidIdentity }, "byte32[]/Guid same-session reader");
         }
 
+        using (LibraDexIndex<TimeSpan, long> index = Indexes.CreateOrOpen<TimeSpan, long>(
+            path,
+            DataKernelBackingKind.File,
+            slotIndex: 11,
+            name: "timespan-long",
+            options: options,
+            telemetryOptions: DataKernelTelemetryOptions.EnabledOptions))
+        {
+            TimeSpan duration = TimeSpan.FromMinutes(90);
+            ValidateGenericInsert(index.Insert(duration, 11001), "TimeSpan/long insert");
+            long[] identities = new long[2];
+            LibraDexGenericRangeReadResult read = index.ReadRange(TimeSpan.FromHours(1), TimeSpan.FromHours(2), identities);
+            ValidateGenericRead(read, identities, new long[] { 11001 }, "TimeSpan/long same-session range read");
+            using LibraDexRangeReader<TimeSpan, long> reader = index.OpenRangeReader(duration, duration);
+            ValidateGenericLongReader(reader, new long[] { 11001 }, "TimeSpan/long same-session reader");
+        }
+
         using (LibraDexIndex<long, long> opened = Indexes.Open<long, long>(path, slotIndex: 0, options: options, telemetryOptions: DataKernelTelemetryOptions.EnabledOptions))
         {
             if (opened.RootRouterOffset == 0)
@@ -7437,6 +7446,18 @@ internal static class RawHarness
             ValidateGenericGuidRead(read, identities, new Guid[] { guidIdentity }, "byte32[]/Guid reopened read");
         }
 
+        using (LibraDexIndex<TimeSpan, long> openedTimeSpan = Indexes.Open<TimeSpan, long>(path, slotIndex: 11, options: options, telemetryOptions: DataKernelTelemetryOptions.EnabledOptions))
+        {
+            if (openedTimeSpan.RootRouterOffset == 0)
+            {
+                throw new InvalidDataException("Generic Open did not resolve the TimeSpan/long root-router offset.");
+            }
+
+            long[] identities = new long[2];
+            LibraDexGenericRangeReadResult read = openedTimeSpan.ReadRange(TimeSpan.FromMinutes(90), TimeSpan.FromMinutes(90), identities);
+            ValidateGenericRead(read, identities, new long[] { 11001 }, "TimeSpan/long reopened read");
+        }
+
         using (LibraDexIndex<long, byte[]> openedLongBytes = Indexes.Open<long, byte[]>(path, slotIndex: 6, identityWidth: LibraDexScalarWidth.Bytes16, options: options, telemetryOptions: DataKernelTelemetryOptions.EnabledOptions))
         {
             if (openedLongBytes.RootRouterOffset == 0)
@@ -7447,7 +7468,6 @@ internal static class RawHarness
 
         using (LibraDexIndex<int, Guid> memory = Indexes.Create<int, Guid>(
             backingKind: DataKernelBackingKind.Memory,
-            slotIndex: 0,
             name: "memory-generic",
             options: options,
             developerMetadata: CreateDesignPerfMetadata(902),
@@ -7463,7 +7483,6 @@ internal static class RawHarness
 
         using (LibraDexIndex<long, long> memoryRead = Indexes.Create<long, long>(
             backingKind: DataKernelBackingKind.Memory,
-            slotIndex: 1,
             name: "memory-generic-read",
             options: options,
             developerMetadata: CreateDesignPerfMetadata(903),
@@ -7489,6 +7508,7 @@ internal static class RawHarness
         Console.WriteLine("genericWideRead ok");
         Console.WriteLine("genericBytes32Long ok");
         Console.WriteLine("genericBytes32Guid ok");
+        Console.WriteLine("genericTimeSpanLong ok");
         Console.WriteLine("genericMemory ok");
         Console.WriteLine($"generic-index-api-sanity ok path={path}");
         return 0;
@@ -7514,7 +7534,6 @@ internal static class RawHarness
 
         LibraDexIndex<long, long> index = catalog.Indexes.Scalar.Scalar.Create<long, long>(
             "primary",
-            slotIndex: 0,
             keys: IndexKeys.NonUnique);
         if (index.KeyContract != IndexKeys.NonUnique)
         {
@@ -7572,35 +7591,225 @@ internal static class RawHarness
 
         using Catalog catalogWithDisposeCommit = Catalog.CreateMemory();
         LibraDexIndex<long, long> disposeCommitIndex = catalogWithDisposeCommit.Indexes.Scalar.Scalar.Create<long, long>(
-            "dispose-commit",
-            slotIndex: 0);
+            "dispose-commit");
         disposeCommitIndex.Batch.Enable();
         ValidateGenericInsert(disposeCommitIndex.Insert(21, 2100), "catalog dispose commit insert");
         disposeCommitIndex.Close();
+
+        using (Catalog distinctScopeCatalog = Catalog.CreateMemory())
+        {
+            LibraDexIndex<int, long> duplicateIndex = distinctScopeCatalog.Indexes["scope"]["dups"].Create<int, long>(
+                keys: IndexKeys.NonUnique);
+            ValidateGenericInsert(duplicateIndex.Insert(1, 100), "distinct scope insert 1/100");
+            ValidateGenericInsert(duplicateIndex.Insert(1, 101), "distinct scope insert 1/101");
+            ValidateGenericInsert(duplicateIndex.Insert(2, 200), "distinct scope insert 2/200");
+            ValidateGenericInsert(duplicateIndex.Insert(2, 201), "distinct scope insert 2/201");
+            ValidateGenericInsert(duplicateIndex.Insert(3, 300), "distinct scope insert 3/300");
+            Func<string, IIndex> duplicateResolver = indexName => string.Equals(indexName, "dups", StringComparison.Ordinal)
+                ? duplicateIndex
+                : throw new KeyNotFoundException(indexName);
+            LibraDexConditionEndCondition duplicateRangeCondition = LibraDexCondition
+                .ForGroup("scope")
+                .Index("dups").AsInt32.Between(1, 2)
+                .EndCondition;
+            LibraDexConditionEndCondition duplicateMembershipCondition = LibraDexCondition
+                .ForGroup("scope")
+                .Index("dups").AsInt32.InSet(new[] { 1, 2 })
+                .EndCondition;
+            LibraDexConditionEndCondition duplicateNotFindCondition = LibraDexCondition
+                .ForGroup("scope")
+                .Index("dups").AsInt32.NotEqualTo(1)
+                .EndCondition;
+            IReadOnlyList<long> duplicateRangeIds = duplicateRangeCondition.ToList<long>(duplicateResolver, deduplication: IdentityDeduplication.Preserve);
+            IReadOnlyList<long> pagedRangeIds = duplicateRangeCondition.ToList<long>(
+                duplicateResolver,
+                deduplication: IdentityDeduplication.Preserve,
+                skip: 2,
+                take: 1);
+            IReadOnlyList<long> duplicateMembershipIds = duplicateMembershipCondition.ToList<long>(duplicateResolver, deduplication: IdentityDeduplication.Preserve);
+            IReadOnlyList<long> notFindIds = duplicateNotFindCondition.ToList<long>(duplicateResolver, deduplication: IdentityDeduplication.Preserve);
+            if (duplicateRangeIds.Count != 4 ||
+                duplicateRangeIds[0] != 100 ||
+                duplicateRangeIds[3] != 201 ||
+                pagedRangeIds.Count != 1 ||
+                pagedRangeIds[0] != 200 ||
+                duplicateMembershipIds.Count != 4 ||
+                duplicateMembershipIds[0] != 100 ||
+                duplicateMembershipIds[3] != 201 ||
+                notFindIds.Count != 3 ||
+                notFindIds[0] != 200 ||
+                notFindIds[1] != 201 ||
+                notFindIds[2] != 300 ||
+                duplicateRangeCondition.Count(duplicateResolver, IdentityDeduplication.Preserve) != 4 ||
+                duplicateRangeCondition.Count(duplicateResolver, IdentityDeduplication.Distinct) != 4 ||
+                duplicateMembershipCondition.Count(duplicateResolver, IdentityDeduplication.Preserve) != 4)
+            {
+                throw new InvalidDataException("Condition-builder duplicate-key retrieval did not return expected identities.");
+            }
+
+            try
+            {
+                _ = duplicateRangeCondition.ToList<long>(duplicateResolver, bookmark: new LibraDexBookmark(0, -1));
+                throw new InvalidDataException("Condition range retrieval accepted a negative bookmark position.");
+            }
+            catch (ArgumentOutOfRangeException)
+            {
+            }
+
+            LibraDexConditionEndCondition duplicateAllCondition = LibraDexCondition
+                .ForGroup("scope")
+                .Index("dups").AsInt32.Between(1, 3)
+                .EndCondition;
+            LibraDexConditionGroupQuery<int, long> duplicateGroups = duplicateAllCondition.Groups(duplicateResolver).By(duplicateIndex);
+            IReadOnlyList<LibraDexGroupMetadata<int, long>> duplicateGroupMetadata = duplicateGroups.Metadata(
+                IdentityResultOrdering.PlanNatural,
+                IdentityDeduplication.Preserve);
+            IReadOnlyList<LibraDexGroup<int, long>> duplicateGroupList = duplicateGroups.ToList(
+                IdentityResultOrdering.PlanNatural,
+                IdentityDeduplication.Preserve);
+            IReadOnlyDictionary<int, long> duplicateGroupCounts = duplicateGroups.Counts(
+                IdentityResultOrdering.PlanNatural,
+                IdentityDeduplication.Preserve);
+            IReadOnlyDictionary<int, long> duplicateFirstRepresentatives = duplicateGroups.FirstIdentities(
+                IdentityResultOrdering.PlanNatural,
+                IdentityDeduplication.Preserve);
+            IReadOnlyDictionary<int, long> duplicateLastRepresentatives = duplicateGroups.LastIdentities(
+                IdentityResultOrdering.PlanNatural,
+                IdentityDeduplication.Preserve);
+            IReadOnlyList<LibraDexGroupMetadata<int, long>> duplicateOnlyMetadata = duplicateGroups.Duplicates().Metadata(
+                IdentityResultOrdering.PlanNatural,
+                IdentityDeduplication.Preserve);
+            IReadOnlyList<LibraDexGroupMetadata<int, long>> singletonMetadata = duplicateGroups.Singletons().Metadata(
+                IdentityResultOrdering.PlanNatural,
+                IdentityDeduplication.Preserve);
+            IReadOnlyList<LibraDexGroupMetadata<int, long>> atMostTwoMetadata = duplicateGroups.WhereCountAtMost(2).Metadata(
+                IdentityResultOrdering.PlanNatural,
+                IdentityDeduplication.Preserve);
+            IReadOnlyList<LibraDexGroupMetadata<int, long>> descendingGroupMetadata = duplicateGroups
+                .OrderBy(LibraDexGroupOrder.KeyDescending)
+                .Metadata(IdentityResultOrdering.PlanNatural, IdentityDeduplication.Preserve);
+            IReadOnlyList<LibraDexGroupMetadata<int, long>> countDescendingMetadata = duplicateGroups
+                .OrderBy(LibraDexGroupOrder.CountDescending)
+                .Metadata(IdentityResultOrdering.PlanNatural, IdentityDeduplication.Preserve);
+            IReadOnlyList<LibraDexGroup<int, long>> descendingItemsGroups = duplicateGroups
+                .OrderItemsBy(QueryDirection.Descending)
+                .ToList(IdentityResultOrdering.PlanNatural, IdentityDeduplication.Preserve);
+            IReadOnlyList<LibraDexGroupMetadata<int, long>> topDuplicateMetadata = duplicateGroups
+                .TopDuplicates(1)
+                .Metadata(IdentityResultOrdering.PlanNatural, IdentityDeduplication.Preserve);
+            LibraDexGroup<int, long>? firstDuplicateGroup = duplicateGroups.FirstGroup(
+                IdentityResultOrdering.PlanNatural,
+                IdentityDeduplication.Preserve);
+            LibraDexGroup<int, long>? lastDuplicateGroup = duplicateGroups.LastGroup(
+                IdentityResultOrdering.PlanNatural,
+                IdentityDeduplication.Preserve);
+            LibraDexGroupMetadata<int, long>? firstDuplicateMetadata = duplicateGroups.FirstMetadata(
+                IdentityResultOrdering.PlanNatural,
+                IdentityDeduplication.Preserve);
+            LibraDexGroupMetadata<int, long>? lastDuplicateMetadata = duplicateGroups.LastMetadata(
+                IdentityResultOrdering.PlanNatural,
+                IdentityDeduplication.Preserve);
+            if (duplicateGroupMetadata.Count != 3 ||
+                duplicateGroupMetadata[0].Key != 1 ||
+                duplicateGroupMetadata[0].Count != 2 ||
+                duplicateGroupMetadata[0].FirstIdentity != 100 ||
+                duplicateGroupMetadata[0].LastIdentity != 101 ||
+                duplicateGroupList.Count != 3 ||
+                duplicateGroupList[0].Key != 1 ||
+                duplicateGroupList[0].Items.Count != 2 ||
+                duplicateGroupCounts[1] != 2 ||
+                duplicateGroupCounts[2] != 2 ||
+                duplicateGroupCounts[3] != 1 ||
+                duplicateFirstRepresentatives[1] != 100 ||
+                duplicateLastRepresentatives[1] != 101 ||
+                duplicateFirstRepresentatives[2] != 200 ||
+                duplicateLastRepresentatives[2] != 201 ||
+                duplicateOnlyMetadata.Count != 2 ||
+                singletonMetadata.Count != 1 ||
+                singletonMetadata[0].Key != 3 ||
+                singletonMetadata[0].FirstIdentity != 300 ||
+                atMostTwoMetadata.Count != 3 ||
+                descendingGroupMetadata.Count != 3 ||
+                descendingGroupMetadata[0].Key != 3 ||
+                descendingGroupMetadata[2].Key != 1 ||
+                countDescendingMetadata.Count != 3 ||
+                countDescendingMetadata[0].Count != 2 ||
+                countDescendingMetadata[2].Count != 1 ||
+                descendingItemsGroups[0].Items[0] != 101 ||
+                descendingItemsGroups[0].Items[1] != 100 ||
+                topDuplicateMetadata.Count != 1 ||
+                topDuplicateMetadata[0].Count != 2 ||
+                firstDuplicateGroup is null ||
+                firstDuplicateGroup.Key != 1 ||
+                firstDuplicateGroup.Count != 2 ||
+                firstDuplicateGroup.Items[0] != 100 ||
+                firstDuplicateGroup.Items[1] != 101 ||
+                lastDuplicateGroup is null ||
+                lastDuplicateGroup.Key != 3 ||
+                lastDuplicateGroup.Items[0] != 300 ||
+                firstDuplicateMetadata is null ||
+                firstDuplicateMetadata.Value.Key != 1 ||
+                firstDuplicateMetadata.Value.FirstIdentity != 100 ||
+                lastDuplicateMetadata is null ||
+                lastDuplicateMetadata.Value.Key != 3 ||
+                lastDuplicateMetadata.Value.LastIdentity != 300)
+            {
+                throw new InvalidDataException("Condition grouping did not preserve duplicate-key group metadata or representatives.");
+            }
+        }
 
         using (Catalog fileCatalog = Catalog.Create(path))
         {
             _ = fileCatalog.Indexes.Scalar.Scalar.Create<long, long>(
                 "file-primary",
-                slotIndex: 0,
                 keys: IndexKeys.Unique);
             LibraDexIndex<int, long> age = fileCatalog.Indexes["people"]["age"].Scalar.Scalar<int, long>().Create(
-                slotIndex: 1,
                 keys: IndexKeys.NonUnique);
             ValidateGenericInsert(age.Insert(42, 4200), "grouped age insert");
             LibraDexIndex<int, long> gender = fileCatalog.Indexes["people"]["gender"].Create<int, long>(
-                slotIndex: 2,
                 keys: IndexKeys.NonUnique);
             LibraDexIndexShapeSpec scoreShape = fileCatalog.Indexes["people"]["score"].Shape.Scalar<long, long>(
                 keys: IndexKeys.NonUnique,
                 sortOrder: LibraDexIndexSortOrder.Descending,
                 directions: LibraDexProjectionDirectionSet.ForwardAndReversed);
-            IIndex score = fileCatalog.Indexes.Create(scoreShape, slotIndex: 3);
+            IIndex score = fileCatalog.Indexes.Create(scoreShape);
             _ = score.Insert(900L, 4200L);
             LibraDexIndex<int, long> status = fileCatalog.Indexes["people"]["status"].Create<int, long>(
-                slotIndex: 4,
                 keys: IndexKeys.NonUnique);
             ValidateGenericInsert(status.Insert(7, 9900), "grouped status insert for identity-universe complement");
+            using LibraDexStringScalar8Index displayName = fileCatalog.Indexes["people"]["displayName"].String.Create(
+                stringKeys: StringKeys.ExactFoldedAndSortKey,
+                directions: LibraDexProjectionDirectionSet.ForwardAndReversed,
+                sortKeyCulture: "en-US");
+            ValidateGenericInsert(displayName.Insert("Eric", 501UL), "grouped displayName insert Eric");
+            ValidateGenericInsert(displayName.Insert("erin", 502UL), "grouped displayName insert erin");
+            ValidateGenericInsert(displayName.Insert("Alice", 503UL), "grouped displayName insert Alice");
+            using LibraDexStringScalar8Index policyName = fileCatalog.Indexes["people"]["policyName"].String.Create(
+                stringKeys: StringKeys.Exact,
+                stringComparisonPolicy: LibraDexStringComparisonPolicy.Custom(StringComparer.OrdinalIgnoreCase));
+            ValidateGenericInsert(policyName.Insert("Casey", 901UL), "grouped policyName insert Casey");
+            using LibraDexStringScalar8Index persistedPolicyName = fileCatalog.Indexes["people"]["persistedPolicyName"].String.Create(
+                stringKeys: StringKeys.Exact,
+                stringComparisonPolicy: LibraDexStringComparisonPolicy.OrdinalIgnoreCase);
+            ValidateGenericInsert(persistedPolicyName.Insert("Jordan", 902UL), "grouped persistedPolicyName insert Jordan");
+            using LibraDexStringScalar8Index exactSuffixName = fileCatalog.Indexes["people"]["exactSuffixName"].String.Create(
+                stringKeys: StringKeys.Exact,
+                directions: LibraDexProjectionDirectionSet.ForwardAndReversed);
+            ValidateGenericInsert(exactSuffixName.Insert("Topic", 903UL), "grouped exactSuffixName insert Topic");
+            IIndex tenantUserCompositeMetadata = fileCatalog.Indexes["people"]["tenantUser"].Composite<long>(
+                C.Guid("tenantId"),
+                C.Text("username", StringKeys.ExactFoldedAndSortKey))
+                .Create(C.Unique);
+            if (tenantUserCompositeMetadata.LogicalShape is null ||
+                tenantUserCompositeMetadata.LogicalShape.KeyFamily != CatalogIndexKeyFamily.Composite ||
+                tenantUserCompositeMetadata.LogicalShape.CompositeParts.Count != 2)
+            {
+                throw new InvalidDataException("Composite create did not expose logical shape metadata.");
+            }
+            Guid persistedTenant = Guid.Parse("cccccccc-cccc-cccc-cccc-cccccccccccc");
+            ValidateGenericInsert(tenantUserCompositeMetadata.Insert(Key.Of(persistedTenant, "Cora"), 7301L), "persisted routed composite tenant/Cora insert");
+            ValidateGenericInsert(tenantUserCompositeMetadata.Insert(Key.Of(persistedTenant, "Cole"), 7302L), "persisted routed composite tenant/Cole insert");
+
             CatalogIdentityGroupBatchManager peopleBatch = fileCatalog.Indexes["people"].Batch;
             peopleBatch.Enable(new LibraDexWriteIntent(
                 LibraDexWriteOrder.Sorted,
@@ -7649,7 +7858,37 @@ internal static class RawHarness
                 scoreInfo.Projections.Count != 2 ||
                 scoreInfo.Projections[1].Direction != LibraDexIndexByteDirection.Reversed ||
                 !scoreInfo.TryCreateShape(out LibraDexIndexShapeSpec? scoreInfoShape) ||
-                scoreInfoShape.SortOrder != LibraDexIndexSortOrder.Descending)
+                scoreInfoShape.SortOrder != LibraDexIndexSortOrder.Descending ||
+                !reopened.Indexes["people"].TryGetInfo("displayName", out CatalogIndexInfo displayNameInfo) ||
+                displayNameInfo.StringKeys != StringKeys.ExactFoldedAndSortKey ||
+                displayNameInfo.VarKeyMaxKeyLength != 1024 ||
+                displayNameInfo.ExactReversedProjectionSlotIndex < 0 ||
+                displayNameInfo.FoldedProjectionSlotIndex < 0 ||
+                displayNameInfo.SortKeyProjectionSlotIndex < 0 ||
+                displayNameInfo.FoldedReversedProjectionSlotIndex < 0 ||
+                displayNameInfo.SortKeyCulture != "en-US" ||
+                displayNameInfo.Directions != LibraDexProjectionDirectionSet.ForwardAndReversed ||
+                displayNameInfo.Projections.Count != 5 ||
+                !reopened.Indexes["people"].TryGetInfo("policyName", out CatalogIndexInfo policyNameInfo) ||
+                policyNameInfo.StringComparisonPolicyKind != LibraDexStringComparisonPolicyKind.Custom ||
+                string.IsNullOrWhiteSpace(policyNameInfo.StringComparisonCustomComparerTypeName) ||
+                !reopened.Indexes["people"].TryGetInfo("persistedPolicyName", out CatalogIndexInfo persistedPolicyNameInfo) ||
+                persistedPolicyNameInfo.StringComparisonPolicyKind != LibraDexStringComparisonPolicyKind.OrdinalIgnoreCase ||
+                !reopened.Indexes["people"].TryGetInfo("exactSuffixName", out CatalogIndexInfo exactSuffixNameInfo) ||
+                exactSuffixNameInfo.ExactReversedProjectionSlotIndex < 0 ||
+                !exactSuffixNameInfo.Projections.Any(static projection => projection.Kind == LibraDexIndexProjectionKind.Exact && projection.Direction == LibraDexIndexByteDirection.Reversed) ||
+                !reopened.Indexes["people"].TryGetInfo("tenantUser", out CatalogIndexInfo tenantUserInfo) ||
+                tenantUserInfo.KeyFamily != CatalogIndexKeyFamily.Composite ||
+                tenantUserInfo.IdentityFamily != CatalogIndexIdentityFamily.Scalar ||
+                tenantUserInfo.KeyContract != IndexKeys.Unique ||
+                tenantUserInfo.CompositeParts.Count != 2 ||
+                tenantUserInfo.CompositeParts[0].Name != "tenantId" ||
+                tenantUserInfo.CompositeParts[0].KeyType != typeof(Guid) ||
+                tenantUserInfo.CompositeParts[1].Name != "username" ||
+                tenantUserInfo.CompositeParts[1].StringKeys != StringKeys.ExactFoldedAndSortKey ||
+                !tenantUserInfo.TryCreateShape(out LibraDexIndexShapeSpec? tenantUserInfoShape) ||
+                tenantUserInfoShape.KeyFamily != CatalogIndexKeyFamily.Composite ||
+                tenantUserInfoShape.CompositeParts.Count != 2)
             {
                 throw new InvalidDataException("Reopened catalog did not preserve grouped index metadata.");
             }
@@ -7667,6 +7906,308 @@ internal static class RawHarness
                 throw new InvalidDataException("Reopened shape-driven index did not preserve logical shape metadata.");
             }
 
+            IIndex reopenedTenantUser = reopened.Indexes["people"]["tenantUser"].Composite<long>(
+                C.Guid("tenantId"),
+                C.Text("username", StringKeys.ExactFoldedAndSortKey))
+                .Open(C.Unique);
+            Guid persistedTenant = Guid.Parse("cccccccc-cccc-cccc-cccc-cccccccccccc");
+            LibraDexConditionEndCondition reopenedTenantUserCondition = LibraDexCondition
+                .ForGroup("people")
+                .Index("tenantUser").AsComposite.Where(
+                    LibraDexCompositePart.Scalar<Guid>("tenantId").EqualTo(persistedTenant),
+                    LibraDexCompositePart.String("username").StartsWith("Co"))
+                .EndCondition;
+            IReadOnlyList<long> reopenedTenantUserIds = reopenedTenantUserCondition.ToList<long>(
+                indexName => string.Equals(indexName, "tenantUser", StringComparison.Ordinal)
+                    ? reopenedTenantUser
+                    : throw new KeyNotFoundException(indexName),
+                deduplication: IdentityDeduplication.Preserve);
+            IReadOnlyList<object> reopenedTenantUserExactIds = ((IIdentityPrimitiveExecutor)reopenedTenantUser)
+                .ExecuteIdentityPrimitive(new LibraDexIdentityPrimitiveRequest(
+                    LibraDexCriteriaKind.Find,
+                    new object?[] { Key.Of(persistedTenant, "Cole") }));
+            LibraDexConditionEndCondition reopenedTenantUserRangeCondition = LibraDexCondition
+                .ForGroup("people")
+                .Index("tenantUser").AsComposite.Where(
+                    LibraDexCompositePart.Scalar<Guid>("tenantId").EqualTo(persistedTenant),
+                    LibraDexCompositePart.String("username").Between("Cole", "Cora"))
+                .EndCondition;
+            IReadOnlyList<long> reopenedTenantUserRangeIds = reopenedTenantUserRangeCondition.ToList<long>(
+                indexName => string.Equals(indexName, "tenantUser", StringComparison.Ordinal)
+                    ? reopenedTenantUser
+                    : throw new KeyNotFoundException(indexName),
+                deduplication: IdentityDeduplication.Preserve);
+            LibraDexConditionEndCondition reopenedTenantUserLowerBoundCondition = LibraDexCondition
+                .ForGroup("people")
+                .Index("tenantUser").AsComposite.Where(
+                    LibraDexCompositePart.Scalar<Guid>("tenantId").EqualTo(persistedTenant),
+                    LibraDexCompositePart.String("username").GreaterOrEqual("Cole"))
+                .EndCondition;
+            IReadOnlyList<long> reopenedTenantUserLowerBoundIds = reopenedTenantUserLowerBoundCondition.ToList<long>(
+                indexName => string.Equals(indexName, "tenantUser", StringComparison.Ordinal)
+                    ? reopenedTenantUser
+                    : throw new KeyNotFoundException(indexName),
+                deduplication: IdentityDeduplication.Preserve);
+            LibraDexConditionEndCondition reopenedTenantUserContainsCondition = LibraDexCondition
+                .ForGroup("people")
+                .Index("tenantUser").AsComposite.Where(
+                    LibraDexCompositePart.Scalar<Guid>("tenantId").EqualTo(persistedTenant),
+                    LibraDexCompositePart.String("username").Contains("or"))
+                .EndCondition;
+            LibraDexConditionEndCondition reopenedTenantUserSuffixCondition = LibraDexCondition
+                .ForGroup("people")
+                .Index("tenantUser").AsComposite.Where(
+                    LibraDexCompositePart.Scalar<Guid>("tenantId").EqualTo(persistedTenant),
+                    LibraDexCompositePart.String("username").EndsWith("le"))
+                .EndCondition;
+            LibraDexConditionEndCondition reopenedTenantUserPatternCondition = LibraDexCondition
+                .ForGroup("people")
+                .Index("tenantUser").AsComposite.Where(
+                    LibraDexCompositePart.Scalar<Guid>("tenantId").EqualTo(persistedTenant),
+                    LibraDexCompositePart.String("username").MatchesPattern("C?r?"))
+                .EndCondition;
+            IReadOnlyList<long> reopenedTenantUserContainsIds = reopenedTenantUserContainsCondition.ToList<long>(
+                indexName => string.Equals(indexName, "tenantUser", StringComparison.Ordinal)
+                    ? reopenedTenantUser
+                    : throw new KeyNotFoundException(indexName),
+                deduplication: IdentityDeduplication.Preserve);
+            IReadOnlyList<long> reopenedTenantUserSuffixIds = reopenedTenantUserSuffixCondition.ToList<long>(
+                indexName => string.Equals(indexName, "tenantUser", StringComparison.Ordinal)
+                    ? reopenedTenantUser
+                    : throw new KeyNotFoundException(indexName),
+                deduplication: IdentityDeduplication.Preserve);
+            IReadOnlyList<long> reopenedTenantUserPatternIds = reopenedTenantUserPatternCondition.ToList<long>(
+                indexName => string.Equals(indexName, "tenantUser", StringComparison.Ordinal)
+                    ? reopenedTenantUser
+                    : throw new KeyNotFoundException(indexName),
+                deduplication: IdentityDeduplication.Preserve);
+            LibraDexConditionEndCondition reopenedTenantUserAnyStringCondition = LibraDexCondition
+                .ForGroup("people")
+                .Index("tenantUser").AsComposite.Where(
+                    LibraDexCompositePart.Scalar<Guid>("tenantId").EqualTo(persistedTenant),
+                    LibraDexCompositePart.AnyString().Contains("or"))
+                .EndCondition;
+            LibraDexConditionEndCondition reopenedTenantUserAnyStringPatternCondition = LibraDexCondition
+                .ForGroup("people")
+                .Index("tenantUser").AsComposite.Where(
+                    LibraDexCompositePart.Scalar<Guid>("tenantId").EqualTo(persistedTenant),
+                    LibraDexCompositePart.AnyString().MatchesPattern("C*l?"))
+                .EndCondition;
+            IReadOnlyList<long> reopenedTenantUserAnyStringIds = reopenedTenantUserAnyStringCondition.ToList<long>(
+                indexName => string.Equals(indexName, "tenantUser", StringComparison.Ordinal)
+                    ? reopenedTenantUser
+                    : throw new KeyNotFoundException(indexName),
+                deduplication: IdentityDeduplication.Preserve);
+            IReadOnlyList<long> reopenedTenantUserAnyStringPatternIds = reopenedTenantUserAnyStringPatternCondition.ToList<long>(
+                indexName => string.Equals(indexName, "tenantUser", StringComparison.Ordinal)
+                    ? reopenedTenantUser
+                    : throw new KeyNotFoundException(indexName),
+                deduplication: IdentityDeduplication.Preserve);
+            LibraDexConditionEndCondition reopenedTenantUserJoinedCondition = LibraDexCondition
+                .ForGroup("people")
+                .Index("tenantUser").AsComposite.Where(
+                    LibraDexCompositePart.Joined().Contains("Cora"))
+                .EndCondition;
+            LibraDexConditionEndCondition reopenedTenantUserDelimitedJoinedCondition = LibraDexCondition
+                .ForGroup("people")
+                .Index("tenantUser").AsComposite.Where(
+                    LibraDexCompositePart.Joined("|").Contains("|Cole"))
+                .EndCondition;
+            LibraDexConditionEndCondition reopenedTenantUserSelectedJoinedCondition = LibraDexCondition
+                .ForGroup("people")
+                .Index("tenantUser").AsComposite.Where(
+                    LibraDexCompositePart.Joined("|").Parts("username").EqualTo("Cora"))
+                .EndCondition;
+            LibraDexConditionEndCondition reopenedTenantUserTypedJoinedCondition = LibraDexCondition
+                .ForGroup("people")
+                .Index("tenantUser").AsComposite.Where(
+                    LibraDexCompositePart.Joined().Contains((object)persistedTenant))
+                .EndCondition;
+            LibraDexConditionEndCondition reopenedTenantUserJoinedPatternCondition = LibraDexCondition
+                .ForGroup("people")
+                .Index("tenantUser").AsComposite.Where(
+                    LibraDexCompositePart.Joined("|").Parts("username").MatchesPattern("Co*"))
+                .EndCondition;
+            LibraDexConditionEndCondition reopenedTenantUserMixedJoinedCondition = LibraDexCondition
+                .ForGroup("people")
+                .Index("tenantUser").AsComposite.Where(
+                    LibraDexCompositePart.Scalar<Guid>("tenantId").EqualTo(persistedTenant),
+                    LibraDexCompositePart.Joined("|").Parts("username").Contains("or"))
+                .EndCondition;
+            LibraDexConditionEndCondition reopenedTenantUserExcludedJoinedCondition = LibraDexCondition
+                .ForGroup("people")
+                .Index("tenantUser").AsComposite.Where(
+                    LibraDexCompositePart.Joined("|").Excluding("tenantId").EqualTo("Cole"))
+                .EndCondition;
+            IReadOnlyList<long> reopenedTenantUserJoinedIds = reopenedTenantUserJoinedCondition.ToList<long>(
+                indexName => string.Equals(indexName, "tenantUser", StringComparison.Ordinal)
+                    ? reopenedTenantUser
+                    : throw new KeyNotFoundException(indexName),
+                deduplication: IdentityDeduplication.Preserve);
+            IReadOnlyList<long> reopenedTenantUserDelimitedJoinedIds = reopenedTenantUserDelimitedJoinedCondition.ToList<long>(
+                indexName => string.Equals(indexName, "tenantUser", StringComparison.Ordinal)
+                    ? reopenedTenantUser
+                    : throw new KeyNotFoundException(indexName),
+                deduplication: IdentityDeduplication.Preserve);
+            IReadOnlyList<long> reopenedTenantUserSelectedJoinedIds = reopenedTenantUserSelectedJoinedCondition.ToList<long>(
+                indexName => string.Equals(indexName, "tenantUser", StringComparison.Ordinal)
+                    ? reopenedTenantUser
+                    : throw new KeyNotFoundException(indexName),
+                deduplication: IdentityDeduplication.Preserve);
+            IReadOnlyList<long> reopenedTenantUserTypedJoinedIds = reopenedTenantUserTypedJoinedCondition.ToList<long>(
+                indexName => string.Equals(indexName, "tenantUser", StringComparison.Ordinal)
+                    ? reopenedTenantUser
+                    : throw new KeyNotFoundException(indexName),
+                deduplication: IdentityDeduplication.Preserve);
+            IReadOnlyList<long> reopenedTenantUserJoinedPatternIds = reopenedTenantUserJoinedPatternCondition.ToList<long>(
+                indexName => string.Equals(indexName, "tenantUser", StringComparison.Ordinal)
+                    ? reopenedTenantUser
+                    : throw new KeyNotFoundException(indexName),
+                deduplication: IdentityDeduplication.Preserve);
+            IReadOnlyList<long> reopenedTenantUserMixedJoinedIds = reopenedTenantUserMixedJoinedCondition.ToList<long>(
+                indexName => string.Equals(indexName, "tenantUser", StringComparison.Ordinal)
+                    ? reopenedTenantUser
+                    : throw new KeyNotFoundException(indexName),
+                deduplication: IdentityDeduplication.Preserve);
+            IReadOnlyList<long> reopenedTenantUserExcludedJoinedIds = reopenedTenantUserExcludedJoinedCondition.ToList<long>(
+                indexName => string.Equals(indexName, "tenantUser", StringComparison.Ordinal)
+                    ? reopenedTenantUser
+                    : throw new KeyNotFoundException(indexName),
+                deduplication: IdentityDeduplication.Preserve);
+            if (reopenedTenantUser.LogicalShape is null ||
+                reopenedTenantUser.LogicalShape.KeyFamily != CatalogIndexKeyFamily.Composite ||
+                reopenedTenantUser.LogicalShape.CompositeParts.Count != 2 ||
+                reopenedTenantUser.LogicalShape.CompositeParts[1].Name != "username" ||
+                reopenedTenantUserIds.Count != 2 ||
+                reopenedTenantUserIds[0] != 7302L ||
+                reopenedTenantUserIds[1] != 7301L ||
+                reopenedTenantUserExactIds.Count != 1 ||
+                (long)reopenedTenantUserExactIds[0] != 7302L ||
+                reopenedTenantUserRangeIds.Count != 2 ||
+                reopenedTenantUserRangeIds[0] != 7302L ||
+                reopenedTenantUserRangeIds[1] != 7301L ||
+                reopenedTenantUserLowerBoundIds.Count != 2 ||
+                reopenedTenantUserLowerBoundIds[0] != 7302L ||
+                reopenedTenantUserLowerBoundIds[1] != 7301L ||
+                reopenedTenantUserContainsIds.Count != 1 ||
+                reopenedTenantUserContainsIds[0] != 7301L ||
+                reopenedTenantUserSuffixIds.Count != 1 ||
+                reopenedTenantUserSuffixIds[0] != 7302L ||
+                reopenedTenantUserPatternIds.Count != 1 ||
+                reopenedTenantUserPatternIds[0] != 7301L ||
+                reopenedTenantUserAnyStringIds.Count != 1 ||
+                reopenedTenantUserAnyStringIds[0] != 7301L ||
+                reopenedTenantUserAnyStringPatternIds.Count != 1 ||
+                reopenedTenantUserAnyStringPatternIds[0] != 7302L ||
+                reopenedTenantUserJoinedIds.Count != 1 ||
+                reopenedTenantUserJoinedIds[0] != 7301L ||
+                reopenedTenantUserDelimitedJoinedIds.Count != 1 ||
+                reopenedTenantUserDelimitedJoinedIds[0] != 7302L ||
+                reopenedTenantUserSelectedJoinedIds.Count != 1 ||
+                reopenedTenantUserSelectedJoinedIds[0] != 7301L ||
+                reopenedTenantUserTypedJoinedIds.Count != 2 ||
+                reopenedTenantUserTypedJoinedIds[0] != 7302L ||
+                reopenedTenantUserTypedJoinedIds[1] != 7301L ||
+                reopenedTenantUserJoinedPatternIds.Count != 2 ||
+                reopenedTenantUserJoinedPatternIds[0] != 7302L ||
+                reopenedTenantUserJoinedPatternIds[1] != 7301L ||
+                reopenedTenantUserMixedJoinedIds.Count != 1 ||
+                reopenedTenantUserMixedJoinedIds[0] != 7301L ||
+                reopenedTenantUserExcludedJoinedIds.Count != 1 ||
+                reopenedTenantUserExcludedJoinedIds[0] != 7302L)
+            {
+                throw new InvalidDataException("Reopened composite index did not preserve logical shape metadata, durable contents, or page-native constrained traversal.");
+            }
+            ValidateGenericInsert(reopenedTenantUser.Insert(Key.Of(persistedTenant, "Cody"), 7303L), "reopened routed composite tenant/Cody insert");
+            LibraDexConditionEndCondition reopenedTenantUserDeleteCondition = LibraDexCondition
+                .ForGroup("people")
+                .Index("tenantUser").AsComposite.Where(
+                    LibraDexCompositePart.Scalar<Guid>("tenantId").EqualTo(persistedTenant),
+                    LibraDexCompositePart.String("username").EqualTo("Cody"))
+                .EndCondition;
+            LibraDexIdentityMutationResult reopenedTenantUserDeleteResult = reopenedTenantUserDeleteCondition.Delete(
+                indexName => string.Equals(indexName, "tenantUser", StringComparison.Ordinal)
+                    ? reopenedTenantUser
+                    : throw new KeyNotFoundException(indexName));
+            IReadOnlyList<long> reopenedTenantUserDeletedIds = reopenedTenantUserDeleteCondition.ToList<long>(
+                indexName => string.Equals(indexName, "tenantUser", StringComparison.Ordinal)
+                    ? reopenedTenantUser
+                    : throw new KeyNotFoundException(indexName),
+                deduplication: IdentityDeduplication.Preserve);
+            if (reopenedTenantUserDeleteResult.ChangedCount != 1 ||
+                reopenedTenantUserDeleteResult.MatchedCount != 1 ||
+                reopenedTenantUserDeletedIds.Count != 0)
+            {
+                throw new InvalidDataException("Composite condition delete did not remove the matched terminal tuple.");
+            }
+            LibraDexCompositeKey coleCompositeKey = Key.Of(persistedTenant, "Cole");
+            LibraDexCompositeKey colinCompositeKey = Key.Of(persistedTenant, "Colin");
+            LibraDexIdentityMutationResult reopenedTenantUserSetKeyResult = LibraDexCondition
+                .ForGroup("people")
+                .Index("tenantUser").AsComposite.Where(
+                    LibraDexCompositePart.Scalar<Guid>("tenantId").EqualTo(persistedTenant),
+                    LibraDexCompositePart.String("username").EqualTo("Cole"))
+                .EndCondition
+                .SetKey(indexName => string.Equals(indexName, "tenantUser", StringComparison.Ordinal)
+                    ? reopenedTenantUser
+                    : throw new KeyNotFoundException(indexName),
+                    colinCompositeKey);
+            IReadOnlyList<long> reopenedTenantUserOldSetKeyIds = LibraDexCondition
+                .ForGroup("people")
+                .Index("tenantUser").AsComposite.Where(
+                    LibraDexCompositePart.Scalar<Guid>("tenantId").EqualTo(persistedTenant),
+                    LibraDexCompositePart.String("username").EqualTo("Cole"))
+                .EndCondition
+                .ToList<long>(indexName => string.Equals(indexName, "tenantUser", StringComparison.Ordinal)
+                    ? reopenedTenantUser
+                    : throw new KeyNotFoundException(indexName));
+            IReadOnlyList<long> reopenedTenantUserNewSetKeyIds = LibraDexCondition
+                .ForGroup("people")
+                .Index("tenantUser").AsComposite.Where(
+                    LibraDexCompositePart.Scalar<Guid>("tenantId").EqualTo(persistedTenant),
+                    LibraDexCompositePart.String("username").EqualTo("Colin"))
+                .EndCondition
+                .ToList<long>(indexName => string.Equals(indexName, "tenantUser", StringComparison.Ordinal)
+                    ? reopenedTenantUser
+                    : throw new KeyNotFoundException(indexName));
+            if (reopenedTenantUserSetKeyResult.MatchedCount != 1 ||
+                reopenedTenantUserSetKeyResult.ChangedCount != 1 ||
+                reopenedTenantUserOldSetKeyIds.Count != 0 ||
+                reopenedTenantUserNewSetKeyIds.Count != 1 ||
+                reopenedTenantUserNewSetKeyIds[0] != 7302L)
+            {
+                throw new InvalidDataException("Composite condition SetKey did not replace the exact old composite tuple.");
+            }
+            ValidateGenericInsert(reopenedTenantUser.Insert(coleCompositeKey, 7302L), "reopened routed composite tenant/Cole restore insert");
+            if (!((LibraDexRoutedCompositeIndex)reopenedTenantUser).Delete(colinCompositeKey, 7302L))
+            {
+                throw new InvalidDataException("Composite direct Delete(key, identity) did not remove the Colin tuple.");
+            }
+            IReadOnlyList<long> reopenedTenantUserRestoredColeIds = LibraDexCondition
+                .ForGroup("people")
+                .Index("tenantUser").AsComposite.Where(
+                    LibraDexCompositePart.Scalar<Guid>("tenantId").EqualTo(persistedTenant),
+                    LibraDexCompositePart.String("username").EqualTo("Cole"))
+                .EndCondition
+                .ToList<long>(indexName => string.Equals(indexName, "tenantUser", StringComparison.Ordinal)
+                    ? reopenedTenantUser
+                    : throw new KeyNotFoundException(indexName));
+            if (reopenedTenantUserRestoredColeIds.Count != 1 ||
+                reopenedTenantUserRestoredColeIds[0] != 7302L)
+            {
+                throw new InvalidDataException("Composite exact tuple mutation did not leave the restored Cole tuple visible.");
+            }
+            if (!((LibraDexRoutedCompositeIndex)reopenedTenantUser).Rekey(7302L, coleCompositeKey, colinCompositeKey) ||
+                !((LibraDexRoutedCompositeIndex)reopenedTenantUser).Rekey(7302L, colinCompositeKey, coleCompositeKey))
+            {
+                throw new InvalidDataException("Composite direct Rekey(identity, oldKey, newKey) did not move and restore the tuple.");
+            }
+            if (((LibraDexRoutedCompositeIndex)reopenedTenantUser).Rekey(7302L, colinCompositeKey) != 1 ||
+                ((LibraDexRoutedCompositeIndex)reopenedTenantUser).Rekey(7302L, coleCompositeKey) != 1)
+            {
+                throw new InvalidDataException("Composite direct Rekey(identity, newKey) did not discover, move, and restore the tuple.");
+            }
+
             LibraDexIndex<int, long> reopenedAge = reopened.Indexes["people"]["age"].Scalar.Scalar<int, long>().Open();
             long[] ageIdentities = new long[2];
             LibraDexGenericRangeReadResult ageRead = reopenedAge.ReadRange(42, 42, ageIdentities);
@@ -7674,48 +8215,905 @@ internal static class RawHarness
             long[] groupBatchAgeIdentities = new long[4];
             LibraDexGenericRangeReadResult groupBatchAgeRead = reopenedAge.ReadRange(44, 44, groupBatchAgeIdentities);
             ValidateGenericRead(groupBatchAgeRead, groupBatchAgeIdentities, new long[] { 4400 }, "group batch age reopened read");
-            IReadOnlyList<LibraDexTuple<int, long>> directRangeTuples = reopenedAge.Between(42, 44).ToList();
-            IReadOnlyList<int> directRangeKeys = reopenedAge.Between(42, 44).Keys.ToList();
-            IReadOnlyList<long> directDescendingRangeIds = reopenedAge.Between(42, 44, QueryDirection.Descending).IDs.ToList();
-            IReadOnlyList<long> directCriteriaScanIds = reopenedAge.Matches(new Predicate<int>(ageKey => ageKey >= 44)).IDs.ToList();
-            IReadOnlyList<LibraDexTuple<int, long>> directCriteriaMembershipTuples = reopenedAge.In(new[] { 42, 44 }).ToList();
-            IReadOnlyList<long> directDescendingCriteriaIds = reopenedAge.In(new[] { 42, 44 }, QueryDirection.Descending).IDs.ToList();
-            IReadOnlyList<LibraDexTuple<int, long>> directRangeUnionTuples = reopenedAge
-                .Between(42, 42)
-                .Union(reopenedAge.Between(44, 44))
-                .Iterate()
-                .ToList();
-            IReadOnlyList<LibraDexTuple<int, long>> directCriteriaExceptTuples = reopenedAge
-                .In(new[] { 42, 44 })
-                .Except(reopenedAge.Matches(new Predicate<int>(ageKey => ageKey >= 44)))
-                .Iterate()
-                .ToList();
-            if (directRangeTuples.Count != 2 ||
-                directRangeTuples[0].Key != 42 ||
-                directRangeTuples[0].Identity != 4200 ||
-                directRangeTuples[1].Key != 44 ||
-                directRangeTuples[1].Identity != 4400 ||
-                directRangeKeys.Count != 2 ||
-                directRangeKeys[0] != 42 ||
-                directRangeKeys[1] != 44 ||
-                directDescendingRangeIds.Count != 2 ||
-                directDescendingRangeIds[0] != 4400 ||
-                directDescendingRangeIds[1] != 4200 ||
-                directCriteriaScanIds.Count != 1 ||
-                directCriteriaScanIds[0] != 4400 ||
-                directCriteriaMembershipTuples.Count != 2 ||
-                directCriteriaMembershipTuples[0].Identity != 4200 ||
-                directCriteriaMembershipTuples[1].Identity != 4400 ||
-                directDescendingCriteriaIds.Count != 2 ||
-                directDescendingCriteriaIds[0] != 4400 ||
-                directDescendingCriteriaIds[1] != 4200 ||
-                directRangeUnionTuples.Count != 2 ||
-                directRangeUnionTuples[0].Identity != 4200 ||
-                directRangeUnionTuples[1].Identity != 4400 ||
-                directCriteriaExceptTuples.Count != 1 ||
-                directCriteriaExceptTuples[0].Identity != 4200)
+            using LibraDexStringScalar8Index reopenedDisplayName = reopened.Indexes["people"]["displayName"].String.Open();
+            LibraDexConditionEndCondition reopenedDisplayPrefixCondition = LibraDexCondition
+                .ForGroup("people")
+                .Index("displayName").AsString.StartsWith("er", ignoreCase: true)
+                .EndCondition;
+            LibraDexConditionEndCondition reopenedDisplaySortKeyCondition = LibraDexCondition
+                .ForGroup("people")
+                .Index("displayName").AsString.Between("alice", "eriz", ignoreCase: true, culture: "en-US")
+                .EndCondition;
+            LibraDexConditionEndCondition reopenedDisplaySuffixCondition = LibraDexCondition
+                .ForGroup("people")
+                .Index("displayName").AsString.EndsWith("ic", ignoreCase: true)
+                .EndCondition;
+            IReadOnlyList<ulong> reopenedDisplayPrefixIds = reopenedDisplayPrefixCondition
+                .MaterializeWithProjectionBridge(reopenedDisplayName.ResolveIndex, reopenedDisplayName.ResolveProjection)
+                .IDsWith(deduplication: IdentityDeduplication.Preserve)
+                .ToList<ulong>();
+            IReadOnlyList<ulong> reopenedDisplaySortKeyIds = reopenedDisplaySortKeyCondition
+                .MaterializeWithProjectionBridge(reopenedDisplayName.ResolveIndex, reopenedDisplayName.ResolveProjection)
+                .IDsWith(deduplication: IdentityDeduplication.Preserve)
+                .ToList<ulong>();
+            IReadOnlyList<ulong> reopenedDisplaySuffixIds = reopenedDisplaySuffixCondition
+                .MaterializeWithProjectionBridge(reopenedDisplayName.ResolveIndex, reopenedDisplayName.ResolveProjection)
+                .IDsWith(deduplication: IdentityDeduplication.Preserve)
+                .ToList<ulong>();
+            if (reopenedDisplayPrefixIds.Count != 2 ||
+                reopenedDisplayPrefixIds[0] != 501UL ||
+                reopenedDisplayPrefixIds[1] != 502UL ||
+                reopenedDisplaySortKeyIds.Count != 3 ||
+                reopenedDisplaySortKeyIds[0] != 503UL ||
+                reopenedDisplaySortKeyIds[1] != 501UL ||
+                reopenedDisplaySortKeyIds[2] != 502UL ||
+                reopenedDisplaySuffixIds.Count != 1 ||
+                reopenedDisplaySuffixIds[0] != 501UL)
             {
-                throw new InvalidDataException("Direct range and criteria retrieval materializers did not return expected tuples, keys, or identities.");
+                throw new InvalidDataException("Reopened string projection index did not resolve folded and sort-key condition branches.");
+            }
+
+            LibraDexIdentityMutationResult reopenedDisplayDeleteResult = LibraDexCondition
+                .ForGroup("people")
+                .Index("displayName").AsString.Contains("ri")
+                .EndCondition
+                .Delete(reopenedDisplayName.ResolveIndex);
+            IReadOnlyList<ulong> reopenedDisplayAfterDeleteIds = LibraDexCondition
+                .ForGroup("people")
+                .Index("displayName").AsString.All()
+                .EndCondition
+                .Materialize(reopenedDisplayName.ResolveIndex)
+                .IDsWith(deduplication: IdentityDeduplication.Preserve)
+                .ToList<ulong>();
+            IReadOnlyList<ulong> reopenedDisplayPrefixAfterDeleteIds = reopenedDisplayPrefixCondition
+                .MaterializeWithProjectionBridge(reopenedDisplayName.ResolveIndex, reopenedDisplayName.ResolveProjection)
+                .IDsWith(deduplication: IdentityDeduplication.Preserve)
+                .ToList<ulong>();
+            IReadOnlyList<ulong> reopenedDisplaySortKeyAfterDeleteIds = reopenedDisplaySortKeyCondition
+                .MaterializeWithProjectionBridge(reopenedDisplayName.ResolveIndex, reopenedDisplayName.ResolveProjection)
+                .IDsWith(deduplication: IdentityDeduplication.Preserve)
+                .ToList<ulong>();
+            IReadOnlyList<ulong> reopenedDisplaySuffixAfterDeleteIds = reopenedDisplaySuffixCondition
+                .MaterializeWithProjectionBridge(reopenedDisplayName.ResolveIndex, reopenedDisplayName.ResolveProjection)
+                .IDsWith(deduplication: IdentityDeduplication.Preserve)
+                .ToList<ulong>();
+            if (reopenedDisplayDeleteResult.MatchedCount != 2 ||
+                reopenedDisplayDeleteResult.ChangedCount != 2 ||
+                reopenedDisplayAfterDeleteIds.Count != 1 ||
+                reopenedDisplayAfterDeleteIds[0] != 503UL ||
+                reopenedDisplayPrefixAfterDeleteIds.Count != 0 ||
+                reopenedDisplaySortKeyAfterDeleteIds.Count != 1 ||
+                reopenedDisplaySortKeyAfterDeleteIds[0] != 503UL ||
+                reopenedDisplaySuffixAfterDeleteIds.Count != 0)
+            {
+                throw new InvalidDataException($"String condition delete did not maintain exact, folded, sort-key, and reversed projection tuples. matched={reopenedDisplayDeleteResult.MatchedCount} changed={reopenedDisplayDeleteResult.ChangedCount} exact={string.Join(",", reopenedDisplayAfterDeleteIds)} prefix={string.Join(",", reopenedDisplayPrefixAfterDeleteIds)} sortkey={string.Join(",", reopenedDisplaySortKeyAfterDeleteIds)} suffix={string.Join(",", reopenedDisplaySuffixAfterDeleteIds)}");
+            }
+
+            LibraDexIdentityMutationResult reopenedDisplaySetKeyResult = LibraDexCondition
+                .ForGroup("people")
+                .Index("displayName").AsString.EqualTo("Alice")
+                .EndCondition
+                .Materialize(reopenedDisplayName.ResolveIndex)
+                .Mutate
+                .SetKey("Alicia")
+                .Execute();
+            IReadOnlyList<ulong> reopenedDisplayOldKeyAfterSetKeyIds = LibraDexCondition
+                .ForGroup("people")
+                .Index("displayName").AsString.EqualTo("Alice")
+                .EndCondition
+                .Materialize(reopenedDisplayName.ResolveIndex)
+                .IDsWith(deduplication: IdentityDeduplication.Preserve)
+                .ToList<ulong>();
+            IReadOnlyList<ulong> reopenedDisplayNewKeyAfterSetKeyIds = LibraDexCondition
+                .ForGroup("people")
+                .Index("displayName").AsString.EqualTo("Alicia")
+                .EndCondition
+                .Materialize(reopenedDisplayName.ResolveIndex)
+                .IDsWith(deduplication: IdentityDeduplication.Preserve)
+                .ToList<ulong>();
+            IReadOnlyList<ulong> reopenedDisplayFoldedAfterSetKeyIds = LibraDexCondition
+                .ForGroup("people")
+                .Index("displayName").AsString.StartsWith("ali", ignoreCase: true)
+                .EndCondition
+                .MaterializeWithProjectionBridge(reopenedDisplayName.ResolveIndex, reopenedDisplayName.ResolveProjection)
+                .IDsWith(deduplication: IdentityDeduplication.Preserve)
+                .ToList<ulong>();
+            IReadOnlyList<ulong> reopenedDisplayOldSuffixAfterSetKeyIds = LibraDexCondition
+                .ForGroup("people")
+                .Index("displayName").AsString.EndsWith("ice", ignoreCase: true)
+                .EndCondition
+                .MaterializeWithProjectionBridge(reopenedDisplayName.ResolveIndex, reopenedDisplayName.ResolveProjection)
+                .IDsWith(deduplication: IdentityDeduplication.Preserve)
+                .ToList<ulong>();
+            if (reopenedDisplaySetKeyResult.MatchedCount != 1 ||
+                reopenedDisplaySetKeyResult.ChangedCount != 1 ||
+                reopenedDisplayOldKeyAfterSetKeyIds.Count != 0 ||
+                reopenedDisplayNewKeyAfterSetKeyIds.Count != 1 ||
+                reopenedDisplayNewKeyAfterSetKeyIds[0] != 503UL ||
+                reopenedDisplayFoldedAfterSetKeyIds.Count != 1 ||
+                reopenedDisplayFoldedAfterSetKeyIds[0] != 503UL ||
+                reopenedDisplayOldSuffixAfterSetKeyIds.Count != 0)
+            {
+                throw new InvalidDataException($"String condition SetKey did not maintain exact and projection tuples. matched={reopenedDisplaySetKeyResult.MatchedCount} changed={reopenedDisplaySetKeyResult.ChangedCount} old={string.Join(",", reopenedDisplayOldKeyAfterSetKeyIds)} new={string.Join(",", reopenedDisplayNewKeyAfterSetKeyIds)} folded={string.Join(",", reopenedDisplayFoldedAfterSetKeyIds)} oldSuffix={string.Join(",", reopenedDisplayOldSuffixAfterSetKeyIds)}");
+            }
+
+            bool reopenedDisplayDirectRekey = reopenedDisplayName.Rekey(503UL, "Alicia", "Alina");
+            long reopenedDisplayScannedRekey = reopenedDisplayName.Rekey(503UL, "Alice");
+            bool reopenedDisplayDirectDelete = reopenedDisplayName.Delete("Alice", 503UL);
+            IReadOnlyList<ulong> reopenedDisplayAfterDirectMutationIds = LibraDexCondition
+                .ForGroup("people")
+                .Index("displayName").AsString.All()
+                .EndCondition
+                .Materialize(reopenedDisplayName.ResolveIndex)
+                .IDsWith(deduplication: IdentityDeduplication.Preserve)
+                .ToList<ulong>();
+            IReadOnlyList<ulong> reopenedDisplayProjectionAfterDirectDeleteIds = LibraDexCondition
+                .ForGroup("people")
+                .Index("displayName").AsString.StartsWith("ali", ignoreCase: true)
+                .EndCondition
+                .MaterializeWithProjectionBridge(reopenedDisplayName.ResolveIndex, reopenedDisplayName.ResolveProjection)
+                .IDsWith(deduplication: IdentityDeduplication.Preserve)
+                .ToList<ulong>();
+            if (!reopenedDisplayDirectRekey ||
+                reopenedDisplayScannedRekey != 1 ||
+                !reopenedDisplayDirectDelete ||
+                reopenedDisplayAfterDirectMutationIds.Count != 0 ||
+                reopenedDisplayProjectionAfterDirectDeleteIds.Count != 0)
+            {
+                throw new InvalidDataException($"String direct Delete/Rekey did not maintain exact and projection tuples. directRekey={reopenedDisplayDirectRekey} scannedRekey={reopenedDisplayScannedRekey} directDelete={reopenedDisplayDirectDelete} exact={string.Join(",", reopenedDisplayAfterDirectMutationIds)} folded={string.Join(",", reopenedDisplayProjectionAfterDirectDeleteIds)}");
+            }
+
+            using LibraDexStringScalar8Index reopenedPersistedPolicyName = reopened.Indexes["people"]["persistedPolicyName"].String.Open();
+            IReadOnlyList<ulong> reopenedPersistedPolicyIds = LibraDexCondition
+                .ForGroup("people")
+                .Index("persistedPolicyName").AsString.InSet(new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "JORDAN" })
+                .EndCondition
+                .Materialize(reopenedPersistedPolicyName.ResolveIndex)
+                .IDsWith(deduplication: IdentityDeduplication.Preserve)
+                .ToList<ulong>();
+            if (reopenedPersistedPolicyIds.Count != 1 ||
+                reopenedPersistedPolicyIds[0] != 902UL)
+            {
+                throw new InvalidDataException("Reopened standard string comparison policy did not rehydrate for exact-only membership fallback.");
+            }
+
+            using LibraDexStringScalar8Index reopenedExactSuffixName = reopened.Indexes["people"]["exactSuffixName"].String.Open();
+            IIdentityCriterion reopenedExactSuffixCriterion = LibraDexCondition
+                .ForGroup("people")
+                .Index("exactSuffixName").AsString.EndsWith("ic")
+                .EndCondition
+                .MaterializeWithProjectionBridge(reopenedExactSuffixName.ResolveIndex, reopenedExactSuffixName.ResolveProjection);
+            IReadOnlyList<ulong> reopenedExactSuffixIds = reopenedExactSuffixCriterion.IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<ulong>();
+            if (reopenedExactSuffixCriterion.CriteriaKind != LibraDexCriteriaKind.Between ||
+                reopenedExactSuffixCriterion.Index?.Name != "exactSuffixName#exact-rev" ||
+                reopenedExactSuffixIds.Count != 1 ||
+                reopenedExactSuffixIds[0] != 903UL)
+            {
+                throw new InvalidDataException("Reopened exact reversed string projection did not route case-sensitive suffix conditions.");
+            }
+
+            Func<string, IIndex> reopenedPeopleResolver = indexName => indexName switch
+            {
+                "age" => reopenedAge,
+                _ => throw new KeyNotFoundException(indexName)
+            };
+            LibraDexConditionEndCondition reopenedAgeRangeCondition = LibraDexCondition
+                .ForGroup("people")
+                .Index("age").AsInt32.Between(42, 44)
+                .EndCondition;
+            LibraDexConditionEndCondition reopenedAgeScanCondition = LibraDexCondition
+                .ForGroup("people")
+                .Index("age").AsInt32.GreaterOrEqual(44)
+                .EndCondition;
+            LibraDexConditionEndCondition reopenedAgeMembershipCondition = LibraDexCondition
+                .ForGroup("people")
+                .Index("age").AsInt32.InSet(new[] { 42, 44 })
+                .EndCondition;
+            LibraDexConditionEndCondition reopenedAgeExceptCondition = LibraDexCondition
+                .ForGroup("people")
+                .Index("age").AsInt32.EqualTo(42)
+                .EndCondition;
+            IReadOnlyList<long> reopenedAgeRangeIds = reopenedAgeRangeCondition.ToList<long>(reopenedPeopleResolver, deduplication: IdentityDeduplication.Preserve);
+            IReadOnlyList<long> reopenedAgeDescendingIds = reopenedAgeRangeCondition.ToList<long>(
+                reopenedPeopleResolver,
+                IdentityResultOrdering.IdentityDescending,
+                IdentityDeduplication.Preserve);
+            IReadOnlyList<long> reopenedAgeScanIds = reopenedAgeScanCondition.ToList<long>(reopenedPeopleResolver, deduplication: IdentityDeduplication.Preserve);
+            IReadOnlyList<long> reopenedAgeMembershipIds = reopenedAgeMembershipCondition.ToList<long>(reopenedPeopleResolver, deduplication: IdentityDeduplication.Preserve);
+            IReadOnlyList<long> reopenedAgeExceptIds = reopenedAgeExceptCondition.ToList<long>(reopenedPeopleResolver, deduplication: IdentityDeduplication.Preserve);
+            if (reopenedAgeRangeIds.Count != 2 ||
+                reopenedAgeRangeIds[0] != 4200 ||
+                reopenedAgeRangeIds[1] != 4400 ||
+                reopenedAgeDescendingIds.Count != 2 ||
+                reopenedAgeDescendingIds[0] != 4400 ||
+                reopenedAgeDescendingIds[1] != 4200 ||
+                reopenedAgeScanIds.Count != 1 ||
+                reopenedAgeScanIds[0] != 4400 ||
+                reopenedAgeMembershipIds.Count != 2 ||
+                reopenedAgeMembershipIds[0] != 4200 ||
+                reopenedAgeMembershipIds[1] != 4400 ||
+                reopenedAgeExceptIds.Count != 1 ||
+                reopenedAgeExceptIds[0] != 4200)
+            {
+                throw new InvalidDataException("Condition range and criteria retrieval materializers did not return expected identities.");
+            }
+
+            using Catalog scalarDeleteCatalog = Catalog.CreateMemory();
+            LibraDexIndex<int, long> scalarDeleteAge = scalarDeleteCatalog.Indexes["people"]["deleteAge"].Create<int, long>();
+            ValidateGenericInsert(scalarDeleteAge.Insert(10, 1000L), "scalar condition delete age 10 insert");
+            ValidateGenericInsert(scalarDeleteAge.Insert(12, 1200L), "scalar condition delete age 12 insert");
+            ValidateGenericInsert(scalarDeleteAge.Insert(14, 1400L), "scalar condition delete age 14 insert");
+            LibraDexConditionEndCondition scalarDeleteCondition = LibraDexCondition
+                .ForGroup("people")
+                .Index("deleteAge").AsInt32.Between(11, 14)
+                .EndCondition;
+            LibraDexIdentityMutationResult scalarDeleteResult = scalarDeleteCondition.Delete(
+                indexName => string.Equals(indexName, "deleteAge", StringComparison.Ordinal)
+                    ? scalarDeleteAge
+                    : throw new KeyNotFoundException(indexName));
+            IReadOnlyList<long> scalarDeleteRemainingIds = LibraDexCondition
+                .ForGroup("people")
+                .Index("deleteAge").AsInt32.All()
+                .EndCondition
+                .ToList<long>(
+                    indexName => string.Equals(indexName, "deleteAge", StringComparison.Ordinal)
+                        ? scalarDeleteAge
+                        : throw new KeyNotFoundException(indexName),
+                    deduplication: IdentityDeduplication.Preserve);
+            if (scalarDeleteResult.ChangedCount != 2 ||
+                scalarDeleteResult.MatchedCount != 2 ||
+                scalarDeleteRemainingIds.Count != 1 ||
+                scalarDeleteRemainingIds[0] != 1000L)
+            {
+                throw new InvalidDataException("Scalar SS8-8 condition delete did not remove only the matched range tuples.");
+            }
+
+            using Catalog scalarDeleteCompactionCatalog = Catalog.CreateMemory();
+            LibraDexIndex<int, long> scalarDeleteCompaction = scalarDeleteCompactionCatalog.Indexes["people"]["deleteCompaction"].Create<int, long>();
+            ValidateGenericInsert(scalarDeleteCompaction.Insert(10, 1010L), "scalar delete compaction age 10 insert");
+            ValidateGenericInsert(scalarDeleteCompaction.Insert(12, 1212L), "scalar delete compaction age 12 insert");
+            ValidateGenericInsert(scalarDeleteCompaction.Insert(14, 1414L), "scalar delete compaction age 14 insert");
+            LibraDexStatsMarker scalarDeleteCompactionStatsMarker = scalarDeleteCompactionCatalog.Stats.Mark();
+            LibraDexIdentityMutationResult scalarDeleteCompactionResult = LibraDexCondition
+                .ForGroup("people")
+                .Index("deleteCompaction").AsInt32.EqualTo(12)
+                .EndCondition
+                .Delete(indexName => string.Equals(indexName, "deleteCompaction", StringComparison.Ordinal)
+                    ? scalarDeleteCompaction
+                    : throw new KeyNotFoundException(indexName));
+            LibraDexReclaimedPayloadStats scalarDeleteCompactionQueuedStats = scalarDeleteCompactionCatalog.Stats.ReclaimedPayload;
+            long scalarDeleteCompactionQueuedOffsets = scalarDeleteCompactionQueuedStats.QueuedCellCount;
+            string scalarDeleteCompactionQueuedOffsetText = string.Join(
+                ";",
+                scalarDeleteCompactionCatalog.Session.SnapshotDeletedShelfPayloadOffsets()
+                    .Select(pair => $"{pair.Key}:{string.Join(",", pair.Value)}"));
+            ValidateGenericInsert(scalarDeleteCompaction.Insert(16, 1616L), "scalar delete compaction age 16 insert");
+            LibraDexReclaimedPayloadStats scalarDeleteCompactionRemainingStats = scalarDeleteCompactionCatalog.Stats.ReclaimedPayload;
+            LibraDexStatsDelta scalarDeleteCompactionStatsDelta = scalarDeleteCompactionCatalog.Stats.Since(scalarDeleteCompactionStatsMarker);
+            long scalarDeleteCompactionRemainingOffsets = scalarDeleteCompactionRemainingStats.QueuedCellCount;
+            string scalarDeleteCompactionRemainingOffsetText = string.Join(
+                ";",
+                scalarDeleteCompactionCatalog.Session.SnapshotDeletedShelfPayloadOffsets()
+                    .Select(pair => $"{pair.Key}:{string.Join(",", pair.Value)}"));
+            IReadOnlyList<long> scalarDeleteCompactionIds = LibraDexCondition
+                .ForGroup("people")
+                .Index("deleteCompaction").AsInt32.All()
+                .EndCondition
+                .ToList<long>(indexName => string.Equals(indexName, "deleteCompaction", StringComparison.Ordinal)
+                    ? scalarDeleteCompaction
+                    : throw new KeyNotFoundException(indexName),
+                    deduplication: IdentityDeduplication.Preserve);
+            if (scalarDeleteCompactionResult.ChangedCount != 1 ||
+                scalarDeleteCompactionQueuedOffsets != 0 ||
+                scalarDeleteCompactionQueuedStats.QueuedShelfCount != 0 ||
+                scalarDeleteCompactionQueuedStats.RecordedCellCount != 0 ||
+                scalarDeleteCompactionQueuedStats.ConsumedCellCount != 0 ||
+                scalarDeleteCompactionRemainingOffsets != 0 ||
+                scalarDeleteCompactionRemainingStats.RecordedCellCount != 0 ||
+                scalarDeleteCompactionRemainingStats.ConsumedCellCount != 0 ||
+                scalarDeleteCompactionStatsDelta.ReclaimedPayloadCellsRecorded != 0 ||
+                scalarDeleteCompactionStatsDelta.ReclaimedPayloadCellsConsumed != 0 ||
+                scalarDeleteCompactionIds.Count != 3 ||
+                scalarDeleteCompactionIds[0] != 1010L ||
+                scalarDeleteCompactionIds[1] != 1414L ||
+                scalarDeleteCompactionIds[2] != 1616L)
+            {
+                throw new InvalidDataException($"Scalar SS8-8 tombstone-normalized delete did not preserve survivor visibility without using the reclaimed-offset ledger. changed={scalarDeleteCompactionResult.ChangedCount} queued={scalarDeleteCompactionQueuedOffsets} queuedOffsets={scalarDeleteCompactionQueuedOffsetText} remaining={scalarDeleteCompactionRemainingOffsets} remainingOffsets={scalarDeleteCompactionRemainingOffsetText} ids={string.Join(",", scalarDeleteCompactionIds)}");
+            }
+
+            LibraDexIndex<int, long> scalarBatchDelete = scalarDeleteCompactionCatalog.Indexes["people"]["batchDelete"].Create<int, long>();
+            ValidateGenericInsert(scalarBatchDelete.Insert(10, 1010L), "scalar batch delete age 10 insert");
+            ValidateGenericInsert(scalarBatchDelete.Insert(12, 1212L), "scalar batch delete age 12 insert");
+            ValidateGenericInsert(scalarBatchDelete.Insert(14, 1414L), "scalar batch delete age 14 insert");
+            ValidateGenericInsert(scalarBatchDelete.Insert(16, 1616L), "scalar batch delete age 16 insert");
+            scalarBatchDelete.Batch.Enable();
+            LibraDexIdentityMutationResult firstBatchDeleteResult = LibraDexCondition
+                .ForGroup("people")
+                .Index("batchDelete").AsInt32.Between(11, 13)
+                .EndCondition
+                .Delete(indexName => string.Equals(indexName, "batchDelete", StringComparison.Ordinal)
+                    ? scalarBatchDelete
+                    : throw new KeyNotFoundException(indexName));
+            LibraDexIdentityMutationResult secondBatchDeleteResult = LibraDexCondition
+                .ForGroup("people")
+                .Index("batchDelete").AsInt32.Between(13, 15)
+                .EndCondition
+                .Delete(indexName => string.Equals(indexName, "batchDelete", StringComparison.Ordinal)
+                    ? scalarBatchDelete
+                    : throw new KeyNotFoundException(indexName));
+            LibraDexGenericBatchCommitResult batchDeleteCommit = scalarBatchDelete.Batch.CommitAndDisable();
+            IReadOnlyList<long> scalarBatchDeleteIds = LibraDexCondition
+                .ForGroup("people")
+                .Index("batchDelete").AsInt32.All()
+                .EndCondition
+                .ToList<long>(indexName => string.Equals(indexName, "batchDelete", StringComparison.Ordinal)
+                    ? scalarBatchDelete
+                    : throw new KeyNotFoundException(indexName),
+                    deduplication: IdentityDeduplication.Preserve);
+            if (firstBatchDeleteResult.ChangedCount != 1 ||
+                secondBatchDeleteResult.ChangedCount != 1 ||
+                batchDeleteCommit.DeferredCommitRequests == 0 ||
+                scalarBatchDeleteIds.Count != 2 ||
+                scalarBatchDeleteIds[0] != 1010L ||
+                scalarBatchDeleteIds[1] != 1616L)
+            {
+                throw new InvalidDataException($"Scalar SS8-8 batch-local tombstone deletes did not preserve cumulative dirty-shelf state. first={firstBatchDeleteResult.ChangedCount} second={secondBatchDeleteResult.ChangedCount} ids={string.Join(",", scalarBatchDeleteIds)} deferred={batchDeleteCommit.DeferredCommitRequests}");
+            }
+
+            Guid guidBatchDeleteA = Guid.Parse("11111111-1111-1111-1111-111111111111");
+            Guid guidBatchDeleteB = Guid.Parse("22222222-2222-2222-2222-222222222222");
+            Guid guidBatchDeleteC = Guid.Parse("33333333-3333-3333-3333-333333333333");
+            LibraDexIndex<Guid, long> guidBatchDelete = scalarDeleteCompactionCatalog.Indexes["people"]["guidBatchDelete"].Create<Guid, long>();
+            ValidateGenericInsert(guidBatchDelete.Insert(guidBatchDeleteA, 2101L), "scalar batch delete Guid A insert");
+            ValidateGenericInsert(guidBatchDelete.Insert(guidBatchDeleteB, 2202L), "scalar batch delete Guid B insert");
+            ValidateGenericInsert(guidBatchDelete.Insert(guidBatchDeleteC, 2303L), "scalar batch delete Guid C insert");
+            guidBatchDelete.Batch.Enable();
+            LibraDexIdentityMutationResult guidBatchDeleteResult = LibraDexCondition
+                .ForGroup("people")
+                .Index("guidBatchDelete").AsGuid.Between(guidBatchDeleteA, guidBatchDeleteB)
+                .EndCondition
+                .Delete(indexName => string.Equals(indexName, "guidBatchDelete", StringComparison.Ordinal)
+                    ? guidBatchDelete
+                    : throw new KeyNotFoundException(indexName));
+            _ = guidBatchDelete.Batch.CommitAndDisable();
+            IReadOnlyList<long> guidBatchDeleteIds = LibraDexCondition
+                .ForGroup("people")
+                .Index("guidBatchDelete").AsGuid.All()
+                .EndCondition
+                .ToList<long>(indexName => string.Equals(indexName, "guidBatchDelete", StringComparison.Ordinal)
+                    ? guidBatchDelete
+                    : throw new KeyNotFoundException(indexName),
+                    deduplication: IdentityDeduplication.Preserve);
+            if (guidBatchDeleteResult.ChangedCount != 2 ||
+                guidBatchDeleteIds.Count != 1 ||
+                guidBatchDeleteIds[0] != 2303L)
+            {
+                throw new InvalidDataException("Scalar SS16-8 batch-local tombstone delete did not preserve survivor visibility after commit.");
+            }
+
+            LibraDexIndex<int, long> cursorDeleteAge = scalarDeleteCompactionCatalog.Indexes["people"]["cursorDeleteAge"].Create<int, long>();
+            ValidateGenericInsert(cursorDeleteAge.Insert(10, 1010L), "cursor delete SS8-8 age 10 insert");
+            ValidateGenericInsert(cursorDeleteAge.Insert(12, 1212L), "cursor delete SS8-8 age 12 insert");
+            ValidateGenericInsert(cursorDeleteAge.Insert(14, 1414L), "cursor delete SS8-8 age 14 insert");
+            using (LibraDexRangeReader<int, long> cursorDeleteReader = cursorDeleteAge.OpenRangeReader(10, 14))
+            {
+                if (!cursorDeleteReader.TryReadNext(out int key10, out long id1010) ||
+                    key10 != 10 ||
+                    id1010 != 1010L ||
+                    !cursorDeleteReader.TryReadNext(out int key12, out long id1212) ||
+                    key12 != 12 ||
+                    id1212 != 1212L ||
+                    !cursorDeleteReader.DeleteCurrent())
+                {
+                    throw new InvalidDataException("Cursor-local SS8-8 delete could not delete the positioned row.");
+                }
+
+                bool currentInvalidated = false;
+                try
+                {
+                    _ = cursorDeleteReader.CurrentIdentity;
+                }
+                catch (InvalidOperationException)
+                {
+                    currentInvalidated = true;
+                }
+
+                if (!currentInvalidated ||
+                    !cursorDeleteReader.TryReadNext(out int key14, out long id1414) ||
+                    key14 != 14 ||
+                    id1414 != 1414L ||
+                    cursorDeleteReader.TryReadNext(out _, out _))
+                {
+                    throw new InvalidDataException("Cursor-local SS8-8 delete did not continue at the next surviving row.");
+                }
+            }
+
+            IReadOnlyList<long> cursorDeleteAgeIds = LibraDexCondition
+                .ForGroup("people")
+                .Index("cursorDeleteAge").AsInt32.All()
+                .EndCondition
+                .ToList<long>(indexName => string.Equals(indexName, "cursorDeleteAge", StringComparison.Ordinal)
+                    ? cursorDeleteAge
+                    : throw new KeyNotFoundException(indexName),
+                    deduplication: IdentityDeduplication.Preserve);
+            if (cursorDeleteAgeIds.Count != 2 ||
+                cursorDeleteAgeIds[0] != 1010L ||
+                cursorDeleteAgeIds[1] != 1414L)
+            {
+                throw new InvalidDataException("Cursor-local SS8-8 delete did not durably remove only the current tuple.");
+            }
+
+            Guid cursorDeleteGuidA = Guid.Parse("10101010-1010-1010-1010-101010101010");
+            Guid cursorDeleteGuidB = Guid.Parse("20202020-2020-2020-2020-202020202020");
+            Guid cursorDeleteGuidC = Guid.Parse("30303030-3030-3030-3030-303030303030");
+            Guid cursorDeleteIdentityA = Guid.Parse("a1a1a1a1-a1a1-a1a1-a1a1-a1a1a1a1a1a1");
+            Guid cursorDeleteIdentityB = Guid.Parse("b2b2b2b2-b2b2-b2b2-b2b2-b2b2b2b2b2b2");
+            Guid cursorDeleteIdentityC = Guid.Parse("c3c3c3c3-c3c3-c3c3-c3c3-c3c3c3c3c3c3");
+
+            LibraDexIndex<Guid, long> cursorDeleteGuid = scalarDeleteCompactionCatalog.Indexes["people"]["cursorDeleteGuid"].Create<Guid, long>();
+            ValidateGenericInsert(cursorDeleteGuid.Insert(cursorDeleteGuidA, 2101L), "cursor delete SS16-8 Guid A insert");
+            ValidateGenericInsert(cursorDeleteGuid.Insert(cursorDeleteGuidB, 2202L), "cursor delete SS16-8 Guid B insert");
+            ValidateGenericInsert(cursorDeleteGuid.Insert(cursorDeleteGuidC, 2303L), "cursor delete SS16-8 Guid C insert");
+            using (LibraDexRangeReader<Guid, long> cursorDeleteGuidReader = cursorDeleteGuid.OpenRangeReader(cursorDeleteGuidA, cursorDeleteGuidC))
+            {
+                _ = cursorDeleteGuidReader.TryReadNext(out _, out _);
+                _ = cursorDeleteGuidReader.TryReadNext(out _, out _);
+                if (!cursorDeleteGuidReader.DeleteCurrent() ||
+                    !cursorDeleteGuidReader.TryReadNext(out Guid nextKey, out long nextIdentity) ||
+                    nextKey != cursorDeleteGuidC ||
+                    nextIdentity != 2303L)
+                {
+                    throw new InvalidDataException("Cursor-local SS16-8 delete did not continue at the next surviving row.");
+                }
+            }
+
+            LibraDexIndex<int, Guid> cursorDeleteAgeGuid = scalarDeleteCompactionCatalog.Indexes["people"]["cursorDeleteAgeGuid"].Create<int, Guid>();
+            ValidateGenericInsert(cursorDeleteAgeGuid.Insert(10, cursorDeleteIdentityA), "cursor delete SS8-16 age 10 insert");
+            ValidateGenericInsert(cursorDeleteAgeGuid.Insert(12, cursorDeleteIdentityB), "cursor delete SS8-16 age 12 insert");
+            ValidateGenericInsert(cursorDeleteAgeGuid.Insert(14, cursorDeleteIdentityC), "cursor delete SS8-16 age 14 insert");
+            using (LibraDexRangeReader<int, Guid> cursorDeleteAgeGuidReader = cursorDeleteAgeGuid.OpenRangeReader(10, 14))
+            {
+                _ = cursorDeleteAgeGuidReader.TryReadNext(out _, out _);
+                _ = cursorDeleteAgeGuidReader.TryReadNext(out _, out _);
+                if (!cursorDeleteAgeGuidReader.DeleteCurrent() ||
+                    !cursorDeleteAgeGuidReader.TryReadNext(out int nextKey, out Guid nextIdentity) ||
+                    nextKey != 14 ||
+                    nextIdentity != cursorDeleteIdentityC)
+                {
+                    throw new InvalidDataException("Cursor-local SS8-16 delete did not continue at the next surviving row.");
+                }
+            }
+
+            LibraDexIndex<Guid, Guid> cursorDeleteGuidGuid = scalarDeleteCompactionCatalog.Indexes["people"]["cursorDeleteGuidGuid"].Create<Guid, Guid>();
+            ValidateGenericInsert(cursorDeleteGuidGuid.Insert(cursorDeleteGuidA, cursorDeleteIdentityA), "cursor delete SS16-16 Guid A insert");
+            ValidateGenericInsert(cursorDeleteGuidGuid.Insert(cursorDeleteGuidB, cursorDeleteIdentityB), "cursor delete SS16-16 Guid B insert");
+            ValidateGenericInsert(cursorDeleteGuidGuid.Insert(cursorDeleteGuidC, cursorDeleteIdentityC), "cursor delete SS16-16 Guid C insert");
+            using (LibraDexRangeReader<Guid, Guid> cursorDeleteGuidGuidReader = cursorDeleteGuidGuid.OpenRangeReader(cursorDeleteGuidA, cursorDeleteGuidC))
+            {
+                _ = cursorDeleteGuidGuidReader.TryReadNext(out _, out _);
+                _ = cursorDeleteGuidGuidReader.TryReadNext(out _, out _);
+                if (!cursorDeleteGuidGuidReader.DeleteCurrent() ||
+                    !cursorDeleteGuidGuidReader.TryReadNext(out Guid nextKey, out Guid nextIdentity) ||
+                    nextKey != cursorDeleteGuidC ||
+                    nextIdentity != cursorDeleteIdentityC)
+                {
+                    throw new InvalidDataException("Cursor-local SS16-16 delete did not continue at the next surviving row.");
+                }
+            }
+
+            byte[] cursorDeleteFingerprintA = Convert.FromHexString("00000000000000000000000000000000000000000000000000000000000000A1");
+            byte[] cursorDeleteFingerprintB = Convert.FromHexString("00000000000000000000000000000000000000000000000000000000000000B2");
+            byte[] cursorDeleteFingerprintC = Convert.FromHexString("00000000000000000000000000000000000000000000000000000000000000C3");
+            LibraDexIndex<byte[], long> cursorDeleteFingerprint = scalarDeleteCompactionCatalog.Indexes["people"]["cursorDeleteFingerprint"].Blob.Scalar<long>(LibraDexScalarWidth.Bytes32).Create();
+            ValidateGenericInsert(cursorDeleteFingerprint.Insert(cursorDeleteFingerprintA, 3101L), "cursor delete FS32-8 fingerprint A insert");
+            ValidateGenericInsert(cursorDeleteFingerprint.Insert(cursorDeleteFingerprintB, 3202L), "cursor delete FS32-8 fingerprint B insert");
+            ValidateGenericInsert(cursorDeleteFingerprint.Insert(cursorDeleteFingerprintC, 3303L), "cursor delete FS32-8 fingerprint C insert");
+            using (LibraDexRangeReader<byte[], long> cursorDeleteFingerprintReader = cursorDeleteFingerprint.OpenRangeReader(cursorDeleteFingerprintA, cursorDeleteFingerprintC))
+            {
+                _ = cursorDeleteFingerprintReader.TryReadNext(out _, out _);
+                _ = cursorDeleteFingerprintReader.TryReadNext(out _, out _);
+                if (!cursorDeleteFingerprintReader.DeleteCurrent() ||
+                    !cursorDeleteFingerprintReader.TryReadNext(out byte[] nextKey, out long nextIdentity) ||
+                    !nextKey.SequenceEqual(cursorDeleteFingerprintC) ||
+                    nextIdentity != 3303L)
+                {
+                    throw new InvalidDataException("Cursor-local FS32-8 delete did not continue at the next surviving row.");
+                }
+            }
+
+            LibraDexIndex<byte[], Guid> cursorDeleteFingerprintGuid = scalarDeleteCompactionCatalog.Indexes["people"]["cursorDeleteFingerprintGuid"].Blob.Scalar<Guid>(LibraDexScalarWidth.Bytes32).Create();
+            ValidateGenericInsert(cursorDeleteFingerprintGuid.Insert(cursorDeleteFingerprintA, cursorDeleteIdentityA), "cursor delete FS32-16 fingerprint A insert");
+            ValidateGenericInsert(cursorDeleteFingerprintGuid.Insert(cursorDeleteFingerprintB, cursorDeleteIdentityB), "cursor delete FS32-16 fingerprint B insert");
+            ValidateGenericInsert(cursorDeleteFingerprintGuid.Insert(cursorDeleteFingerprintC, cursorDeleteIdentityC), "cursor delete FS32-16 fingerprint C insert");
+            using (LibraDexRangeReader<byte[], Guid> cursorDeleteFingerprintGuidReader = cursorDeleteFingerprintGuid.OpenRangeReader(cursorDeleteFingerprintA, cursorDeleteFingerprintC))
+            {
+                _ = cursorDeleteFingerprintGuidReader.TryReadNext(out _, out _);
+                _ = cursorDeleteFingerprintGuidReader.TryReadNext(out _, out _);
+                if (!cursorDeleteFingerprintGuidReader.DeleteCurrent() ||
+                    !cursorDeleteFingerprintGuidReader.TryReadNext(out byte[] nextKey, out Guid nextIdentity) ||
+                    !nextKey.SequenceEqual(cursorDeleteFingerprintC) ||
+                    nextIdentity != cursorDeleteIdentityC)
+                {
+                    throw new InvalidDataException("Cursor-local FS32-16 delete did not continue at the next surviving row.");
+                }
+            }
+
+            using (LibraDexRangeReader<int, long> cursorSetKeyAgeReader = cursorDeleteAge.OpenRangeReader(10, 14))
+            {
+                using LibraDexRangeReader<int, long> expectedReader = cursorDeleteAge.OpenRangeReader(10, 14);
+                _ = expectedReader.TryReadNext(out _, out _);
+                _ = expectedReader.TryReadNext(out int expectedNextKey, out long expectedNextIdentity);
+                if (!cursorSetKeyAgeReader.TryReadNext(out _, out _) ||
+                    !cursorSetKeyAgeReader.SetKey(16).Inserted ||
+                    !cursorSetKeyAgeReader.TryReadNext(out int nextKey, out long nextIdentity) ||
+                    nextKey != expectedNextKey ||
+                    nextIdentity != expectedNextIdentity)
+                {
+                    throw new InvalidDataException("Cursor-local SS8-8 SetKey did not continue at the next original surviving row.");
+                }
+            }
+
+            Guid cursorDeleteGuidD = Guid.Parse("40404040-4040-4040-4040-404040404040");
+            using (LibraDexRangeReader<Guid, long> cursorSetKeyGuidReader = cursorDeleteGuid.OpenRangeReader(cursorDeleteGuidA, cursorDeleteGuidC))
+            {
+                using LibraDexRangeReader<Guid, long> expectedReader = cursorDeleteGuid.OpenRangeReader(cursorDeleteGuidA, cursorDeleteGuidC);
+                _ = expectedReader.TryReadNext(out _, out _);
+                _ = expectedReader.TryReadNext(out Guid expectedNextKey, out long expectedNextIdentity);
+                bool movedFirst = cursorSetKeyGuidReader.TryReadNext(out Guid firstKey, out long firstIdentity);
+                LibraDexGenericInsertResult setKeyResult = movedFirst ? cursorSetKeyGuidReader.SetKey(cursorDeleteGuidD) : default;
+                bool movedNext = cursorSetKeyGuidReader.TryReadNext(out Guid nextKey, out long nextIdentity);
+                if (!movedFirst ||
+                    !setKeyResult.Inserted ||
+                    !movedNext ||
+                    nextKey != expectedNextKey ||
+                    nextIdentity != expectedNextIdentity)
+                {
+                    throw new InvalidDataException($"Cursor-local SS16-8 SetKey did not continue at the next original surviving row. first={firstKey}/{firstIdentity} expected={expectedNextKey}/{expectedNextIdentity} movedNext={movedNext} next={nextKey}/{nextIdentity} inserted={setKeyResult.Inserted}");
+                }
+            }
+
+            using (LibraDexRangeReader<int, Guid> cursorSetKeyAgeGuidReader = cursorDeleteAgeGuid.OpenRangeReader(10, 14))
+            {
+                using LibraDexRangeReader<int, Guid> expectedReader = cursorDeleteAgeGuid.OpenRangeReader(10, 14);
+                _ = expectedReader.TryReadNext(out _, out _);
+                _ = expectedReader.TryReadNext(out int expectedNextKey, out Guid expectedNextIdentity);
+                if (!cursorSetKeyAgeGuidReader.TryReadNext(out _, out _) ||
+                    !cursorSetKeyAgeGuidReader.SetKey(16).Inserted ||
+                    !cursorSetKeyAgeGuidReader.TryReadNext(out int nextKey, out Guid nextIdentity) ||
+                    nextKey != expectedNextKey ||
+                    nextIdentity != expectedNextIdentity)
+                {
+                    throw new InvalidDataException("Cursor-local SS8-16 SetKey did not continue at the next original surviving row.");
+                }
+            }
+
+            using (LibraDexRangeReader<Guid, Guid> cursorSetKeyGuidGuidReader = cursorDeleteGuidGuid.OpenRangeReader(cursorDeleteGuidA, cursorDeleteGuidC))
+            {
+                using LibraDexRangeReader<Guid, Guid> expectedReader = cursorDeleteGuidGuid.OpenRangeReader(cursorDeleteGuidA, cursorDeleteGuidC);
+                _ = expectedReader.TryReadNext(out _, out _);
+                _ = expectedReader.TryReadNext(out Guid expectedNextKey, out Guid expectedNextIdentity);
+                if (!cursorSetKeyGuidGuidReader.TryReadNext(out _, out _) ||
+                    !cursorSetKeyGuidGuidReader.SetKey(cursorDeleteGuidD).Inserted ||
+                    !cursorSetKeyGuidGuidReader.TryReadNext(out Guid nextKey, out Guid nextIdentity) ||
+                    nextKey != expectedNextKey ||
+                    nextIdentity != expectedNextIdentity)
+                {
+                    throw new InvalidDataException("Cursor-local SS16-16 SetKey did not continue at the next original surviving row.");
+                }
+            }
+
+            byte[] cursorDeleteFingerprintD = Convert.FromHexString("00000000000000000000000000000000000000000000000000000000000000D4");
+            using (LibraDexRangeReader<byte[], long> cursorSetKeyFingerprintReader = cursorDeleteFingerprint.OpenRangeReader(cursorDeleteFingerprintA, cursorDeleteFingerprintC))
+            {
+                using LibraDexRangeReader<byte[], long> expectedReader = cursorDeleteFingerprint.OpenRangeReader(cursorDeleteFingerprintA, cursorDeleteFingerprintC);
+                _ = expectedReader.TryReadNext(out _, out _);
+                _ = expectedReader.TryReadNext(out byte[] expectedNextKey, out long expectedNextIdentity);
+                if (!cursorSetKeyFingerprintReader.TryReadNext(out _, out _) ||
+                    !cursorSetKeyFingerprintReader.SetKey(cursorDeleteFingerprintD).Inserted ||
+                    !cursorSetKeyFingerprintReader.TryReadNext(out byte[] nextKey, out long nextIdentity) ||
+                    !nextKey.SequenceEqual(expectedNextKey) ||
+                    nextIdentity != expectedNextIdentity)
+                {
+                    throw new InvalidDataException("Cursor-local FS32-8 SetKey did not continue at the next original surviving row.");
+                }
+            }
+
+            using (LibraDexRangeReader<byte[], Guid> cursorSetKeyFingerprintGuidReader = cursorDeleteFingerprintGuid.OpenRangeReader(cursorDeleteFingerprintA, cursorDeleteFingerprintC))
+            {
+                using LibraDexRangeReader<byte[], Guid> expectedReader = cursorDeleteFingerprintGuid.OpenRangeReader(cursorDeleteFingerprintA, cursorDeleteFingerprintC);
+                _ = expectedReader.TryReadNext(out _, out _);
+                _ = expectedReader.TryReadNext(out byte[] expectedNextKey, out Guid expectedNextIdentity);
+                if (!cursorSetKeyFingerprintGuidReader.TryReadNext(out _, out _) ||
+                    !cursorSetKeyFingerprintGuidReader.SetKey(cursorDeleteFingerprintD).Inserted ||
+                    !cursorSetKeyFingerprintGuidReader.TryReadNext(out byte[] nextKey, out Guid nextIdentity) ||
+                    !nextKey.SequenceEqual(expectedNextKey) ||
+                    nextIdentity != expectedNextIdentity)
+                {
+                    throw new InvalidDataException("Cursor-local FS32-16 SetKey did not continue at the next original surviving row.");
+                }
+            }
+
+            LibraDexIndex<Guid, long> scalarDeleteGuid = scalarDeleteCatalog.Indexes["people"]["deleteGuid"].Create<Guid, long>();
+            Guid deleteGuidA = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+            Guid deleteGuidB = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+            ValidateGenericInsert(scalarDeleteGuid.Insert(deleteGuidA, 2100L), "scalar condition delete Guid A insert");
+            ValidateGenericInsert(scalarDeleteGuid.Insert(deleteGuidB, 2200L), "scalar condition delete Guid B insert");
+            LibraDexIdentityMutationResult scalarDeleteGuidResult = LibraDexCondition
+                .ForGroup("people")
+                .Index("deleteGuid").AsGuid.EqualTo(deleteGuidB)
+                .EndCondition
+                .Delete(indexName => string.Equals(indexName, "deleteGuid", StringComparison.Ordinal)
+                    ? scalarDeleteGuid
+                    : throw new KeyNotFoundException(indexName));
+            IReadOnlyList<long> scalarDeleteGuidRemainingIds = LibraDexCondition
+                .ForGroup("people")
+                .Index("deleteGuid").AsGuid.EqualTo(deleteGuidA)
+                .EndCondition
+                .ToList<long>(indexName => string.Equals(indexName, "deleteGuid", StringComparison.Ordinal)
+                    ? scalarDeleteGuid
+                    : throw new KeyNotFoundException(indexName));
+            if (scalarDeleteGuidResult.ChangedCount != 1 ||
+                scalarDeleteGuidRemainingIds.Count != 1 ||
+                scalarDeleteGuidRemainingIds[0] != 2100L)
+            {
+                throw new InvalidDataException("Scalar SS16-8 condition delete did not remove only the matched GUID tuple.");
+            }
+            LibraDexIndex<byte[], long> scalarDeleteFingerprint = scalarDeleteCatalog.Indexes["people"]["deleteFingerprint"].Blob.Scalar<long>(LibraDexScalarWidth.Bytes32).Create();
+            byte[] deleteFingerprintA = Convert.FromHexString("000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F");
+            byte[] deleteFingerprintB = Convert.FromHexString("202122232425262728292A2B2C2D2E2F303132333435363738393A3B3C3D3E3F");
+            ValidateGenericInsert(scalarDeleteFingerprint.Insert(deleteFingerprintA, 3100L), "scalar condition delete fingerprint A insert");
+            ValidateGenericInsert(scalarDeleteFingerprint.Insert(deleteFingerprintB, 3200L), "scalar condition delete fingerprint B insert");
+            LibraDexIdentityMutationResult scalarDeleteFingerprintResult = LibraDexCondition
+                .ForGroup("people")
+                .Index("deleteFingerprint").AsBinary.EqualTo(deleteFingerprintB)
+                .EndCondition
+                .Delete(indexName => string.Equals(indexName, "deleteFingerprint", StringComparison.Ordinal)
+                    ? scalarDeleteFingerprint
+                    : throw new KeyNotFoundException(indexName));
+            IReadOnlyList<long> scalarDeleteFingerprintRemainingIds = LibraDexCondition
+                .ForGroup("people")
+                .Index("deleteFingerprint").AsBinary.EqualTo(deleteFingerprintA)
+                .EndCondition
+                .ToList<long>(indexName => string.Equals(indexName, "deleteFingerprint", StringComparison.Ordinal)
+                    ? scalarDeleteFingerprint
+                    : throw new KeyNotFoundException(indexName));
+            if (scalarDeleteFingerprintResult.ChangedCount != 1 ||
+                scalarDeleteFingerprintRemainingIds.Count != 1 ||
+                scalarDeleteFingerprintRemainingIds[0] != 3100L)
+            {
+                throw new InvalidDataException("Scalar FS32-8 condition delete did not remove only the matched fixed binary tuple.");
+            }
+            LibraDexIndex<int, Guid> scalarDeleteAgeGuid = scalarDeleteCatalog.Indexes["people"]["deleteAgeGuid"].Create<int, Guid>();
+            Guid deleteIdentityA = Guid.Parse("11111111-1111-1111-1111-111111111111");
+            Guid deleteIdentityB = Guid.Parse("22222222-2222-2222-2222-222222222222");
+            ValidateGenericInsert(scalarDeleteAgeGuid.Insert(20, deleteIdentityA), "scalar condition delete SS8-16 age 20 insert");
+            ValidateGenericInsert(scalarDeleteAgeGuid.Insert(22, deleteIdentityB), "scalar condition delete SS8-16 age 22 insert");
+            LibraDexIdentityMutationResult scalarDeleteAgeGuidResult = LibraDexCondition
+                .ForGroup("people")
+                .Index("deleteAgeGuid").AsInt32.GreaterOrEqual(22)
+                .EndCondition
+                .Delete(indexName => string.Equals(indexName, "deleteAgeGuid", StringComparison.Ordinal)
+                    ? scalarDeleteAgeGuid
+                    : throw new KeyNotFoundException(indexName));
+            IReadOnlyList<Guid> scalarDeleteAgeGuidRemainingIds = LibraDexCondition
+                .ForGroup("people")
+                .Index("deleteAgeGuid").AsInt32.All()
+                .EndCondition
+                .ToList<Guid>(indexName => string.Equals(indexName, "deleteAgeGuid", StringComparison.Ordinal)
+                    ? scalarDeleteAgeGuid
+                    : throw new KeyNotFoundException(indexName));
+            if (scalarDeleteAgeGuidResult.ChangedCount != 1 ||
+                scalarDeleteAgeGuidRemainingIds.Count != 1 ||
+                scalarDeleteAgeGuidRemainingIds[0] != deleteIdentityA)
+            {
+                throw new InvalidDataException("Scalar SS8-16 condition delete did not remove only the matched widened-identity tuple.");
+            }
+            LibraDexIndex<Guid, Guid> scalarDeleteGuidGuid = scalarDeleteCatalog.Indexes["people"]["deleteGuidGuid"].Create<Guid, Guid>();
+            ValidateGenericInsert(scalarDeleteGuidGuid.Insert(deleteGuidA, deleteIdentityA), "scalar condition delete SS16-16 Guid A insert");
+            ValidateGenericInsert(scalarDeleteGuidGuid.Insert(deleteGuidB, deleteIdentityB), "scalar condition delete SS16-16 Guid B insert");
+            LibraDexIdentityMutationResult scalarDeleteGuidGuidResult = LibraDexCondition
+                .ForGroup("people")
+                .Index("deleteGuidGuid").AsGuid.EqualTo(deleteGuidA)
+                .EndCondition
+                .Delete(indexName => string.Equals(indexName, "deleteGuidGuid", StringComparison.Ordinal)
+                    ? scalarDeleteGuidGuid
+                    : throw new KeyNotFoundException(indexName));
+            IReadOnlyList<Guid> scalarDeleteGuidGuidRemainingIds = LibraDexCondition
+                .ForGroup("people")
+                .Index("deleteGuidGuid").AsGuid.EqualTo(deleteGuidB)
+                .EndCondition
+                .ToList<Guid>(indexName => string.Equals(indexName, "deleteGuidGuid", StringComparison.Ordinal)
+                    ? scalarDeleteGuidGuid
+                    : throw new KeyNotFoundException(indexName));
+            if (scalarDeleteGuidGuidResult.ChangedCount != 1 ||
+                scalarDeleteGuidGuidRemainingIds.Count != 1 ||
+                scalarDeleteGuidGuidRemainingIds[0] != deleteIdentityB)
+            {
+                throw new InvalidDataException("Scalar SS16-16 condition delete did not remove only the matched widened-key widened-identity tuple.");
+            }
+            LibraDexIndex<byte[], Guid> scalarDeleteFingerprintGuid = scalarDeleteCatalog.Indexes["people"]["deleteFingerprintGuid"].Blob.Scalar<Guid>(LibraDexScalarWidth.Bytes32).Create();
+            ValidateGenericInsert(scalarDeleteFingerprintGuid.Insert(deleteFingerprintA, deleteIdentityA), "scalar condition delete FS32-16 fingerprint A insert");
+            ValidateGenericInsert(scalarDeleteFingerprintGuid.Insert(deleteFingerprintB, deleteIdentityB), "scalar condition delete FS32-16 fingerprint B insert");
+            LibraDexIdentityMutationResult scalarDeleteFingerprintGuidResult = LibraDexCondition
+                .ForGroup("people")
+                .Index("deleteFingerprintGuid").AsBinary.EqualTo(deleteFingerprintA)
+                .EndCondition
+                .Delete(indexName => string.Equals(indexName, "deleteFingerprintGuid", StringComparison.Ordinal)
+                    ? scalarDeleteFingerprintGuid
+                    : throw new KeyNotFoundException(indexName));
+            IReadOnlyList<Guid> scalarDeleteFingerprintGuidRemainingIds = LibraDexCondition
+                .ForGroup("people")
+                .Index("deleteFingerprintGuid").AsBinary.EqualTo(deleteFingerprintB)
+                .EndCondition
+                .ToList<Guid>(indexName => string.Equals(indexName, "deleteFingerprintGuid", StringComparison.Ordinal)
+                    ? scalarDeleteFingerprintGuid
+                    : throw new KeyNotFoundException(indexName));
+            if (scalarDeleteFingerprintGuidResult.ChangedCount != 1 ||
+                scalarDeleteFingerprintGuidRemainingIds.Count != 1 ||
+                scalarDeleteFingerprintGuidRemainingIds[0] != deleteIdentityB)
+            {
+                throw new InvalidDataException("Scalar FS32-16 condition delete did not remove only the matched fixed binary widened-identity tuple.");
+            }
+
+            LibraDexIndex<int, long> scalarSetKeyAge = scalarDeleteCatalog.Indexes["people"]["setKeyAge"].Create<int, long>();
+            ValidateGenericInsert(scalarSetKeyAge.Insert(30, 3000L), "scalar condition SetKey age 30 identity 3000 insert");
+            ValidateGenericInsert(scalarSetKeyAge.Insert(30, 3001L), "scalar condition SetKey age 30 identity 3001 insert");
+            ValidateGenericInsert(scalarSetKeyAge.Insert(40, 4000L), "scalar condition SetKey age 40 identity 4000 insert");
+            LibraDexIdentityMutationResult scalarSetKeyResult = LibraDexCondition
+                .ForGroup("people")
+                .Index("setKeyAge").AsInt32.EqualTo(30)
+                .EndCondition
+                .Materialize(indexName => string.Equals(indexName, "setKeyAge", StringComparison.Ordinal)
+                    ? scalarSetKeyAge
+                    : throw new KeyNotFoundException(indexName))
+                .Mutate
+                .SetKey(35)
+                .Execute();
+            IReadOnlyList<long> scalarSetKeyOldIds = LibraDexCondition
+                .ForGroup("people")
+                .Index("setKeyAge").AsInt32.EqualTo(30)
+                .EndCondition
+                .ToList<long>(indexName => string.Equals(indexName, "setKeyAge", StringComparison.Ordinal)
+                    ? scalarSetKeyAge
+                    : throw new KeyNotFoundException(indexName));
+            IReadOnlyList<long> scalarSetKeyNewIds = LibraDexCondition
+                .ForGroup("people")
+                .Index("setKeyAge").AsInt32.EqualTo(35)
+                .EndCondition
+                .ToList<long>(
+                    indexName => string.Equals(indexName, "setKeyAge", StringComparison.Ordinal)
+                        ? scalarSetKeyAge
+                        : throw new KeyNotFoundException(indexName),
+                    deduplication: IdentityDeduplication.Preserve);
+            if (scalarSetKeyResult.MatchedCount != 2 ||
+                scalarSetKeyResult.ChangedCount != 2 ||
+                scalarSetKeyOldIds.Count != 0 ||
+                scalarSetKeyNewIds.Count != 2 ||
+                scalarSetKeyNewIds[0] != 3000L ||
+                scalarSetKeyNewIds[1] != 3001L)
+            {
+                throw new InvalidDataException("Scalar SS8-8 condition SetKey did not replace exact old tuples with the requested new key.");
+            }
+
+            LibraDexIndex<Guid, Guid> scalarSetKeyGuidGuid = scalarDeleteCatalog.Indexes["people"]["setKeyGuidGuid"].Create<Guid, Guid>();
+            Guid setKeyGuidOld = Guid.Parse("cccccccc-cccc-cccc-cccc-cccccccccccc");
+            Guid setKeyGuidNew = Guid.Parse("dddddddd-dddd-dddd-dddd-dddddddddddd");
+            Guid setKeyIdentity = Guid.Parse("33333333-3333-3333-3333-333333333333");
+            ValidateGenericInsert(scalarSetKeyGuidGuid.Insert(setKeyGuidOld, setKeyIdentity), "scalar condition SetKey SS16-16 old insert");
+            LibraDexIdentityMutationResult scalarSetKeyGuidResult = LibraDexCondition
+                .ForGroup("people")
+                .Index("setKeyGuidGuid").AsGuid.EqualTo(setKeyGuidOld)
+                .EndCondition
+                .Materialize(indexName => string.Equals(indexName, "setKeyGuidGuid", StringComparison.Ordinal)
+                    ? scalarSetKeyGuidGuid
+                    : throw new KeyNotFoundException(indexName))
+                .Mutate
+                .SetKey(setKeyGuidNew)
+                .Execute();
+            IReadOnlyList<Guid> scalarSetKeyGuidNewIds = LibraDexCondition
+                .ForGroup("people")
+                .Index("setKeyGuidGuid").AsGuid.EqualTo(setKeyGuidNew)
+                .EndCondition
+                .ToList<Guid>(indexName => string.Equals(indexName, "setKeyGuidGuid", StringComparison.Ordinal)
+                    ? scalarSetKeyGuidGuid
+                    : throw new KeyNotFoundException(indexName));
+            if (scalarSetKeyGuidResult.ChangedCount != 1 ||
+                scalarSetKeyGuidNewIds.Count != 1 ||
+                scalarSetKeyGuidNewIds[0] != setKeyIdentity)
+            {
+                throw new InvalidDataException("Scalar SS16-16 condition SetKey did not move the widened identity to the requested key.");
+            }
+            scalarSetKeyGuidGuid.Rekey(setKeyIdentity, setKeyGuidNew, setKeyGuidOld);
+            IReadOnlyList<Guid> scalarDirectRekeyIds = LibraDexCondition
+                .ForGroup("people")
+                .Index("setKeyGuidGuid").AsGuid.EqualTo(setKeyGuidOld)
+                .EndCondition
+                .ToList<Guid>(indexName => string.Equals(indexName, "setKeyGuidGuid", StringComparison.Ordinal)
+                    ? scalarSetKeyGuidGuid
+                    : throw new KeyNotFoundException(indexName));
+            if (scalarDirectRekeyIds.Count != 1 ||
+                scalarDirectRekeyIds[0] != setKeyIdentity)
+            {
+                throw new InvalidDataException("Direct scalar Rekey(identity, oldKey, newKey) did not restore the exact tuple.");
+            }
+            scalarSetKeyGuidGuid.Rekey(setKeyIdentity, setKeyGuidNew);
+            IReadOnlyList<Guid> scalarScannedRekeyIds = LibraDexCondition
+                .ForGroup("people")
+                .Index("setKeyGuidGuid").AsGuid.EqualTo(setKeyGuidNew)
+                .EndCondition
+                .ToList<Guid>(indexName => string.Equals(indexName, "setKeyGuidGuid", StringComparison.Ordinal)
+                    ? scalarSetKeyGuidGuid
+                    : throw new KeyNotFoundException(indexName));
+            if (scalarScannedRekeyIds.Count != 1 ||
+                scalarScannedRekeyIds[0] != setKeyIdentity)
+            {
+                throw new InvalidDataException("Direct scalar Rekey(identity, newKey) did not discover and move the old tuple.");
+            }
+            scalarSetKeyGuidGuid.Rekey(setKeyIdentity, setKeyGuidNew, setKeyGuidOld);
+
+            using Catalog targetMutationCatalog = Catalog.CreateMemory();
+            LibraDexIndex<int, long> targetMutationAge = targetMutationCatalog.Indexes["people"]["targetAge"].Create<int, long>();
+            LibraDexIndex<int, long> targetMutationGender = targetMutationCatalog.Indexes["people"]["targetGender"].Create<int, long>();
+            ValidateGenericInsert(targetMutationAge.Insert(42, 4200L), "targeted composed mutation age 42 insert");
+            ValidateGenericInsert(targetMutationAge.Insert(44, 4400L), "targeted composed mutation age 44 insert");
+            ValidateGenericInsert(targetMutationGender.Insert(1, 4200L), "targeted composed mutation gender 1 insert");
+            ValidateGenericInsert(targetMutationGender.Insert(2, 4400L), "targeted composed mutation gender 2 insert");
+            ValidateGenericInsert(targetMutationGender.Insert(9, 5000L), "targeted composed mutation gender 9 insert");
+            Dictionary<string, IIndex> targetMutationIndexes = new(StringComparer.Ordinal)
+            {
+                ["targetAge"] = targetMutationAge,
+                ["targetGender"] = targetMutationGender
+            };
+            Func<string, IIndex> targetMutationResolver = indexName => targetMutationIndexes.TryGetValue(indexName, out IIndex? index)
+                ? index
+                : throw new KeyNotFoundException(indexName);
+            LibraDexConditionEndCondition targetMutationCondition = LibraDexCondition
+                .ForGroup("people")
+                .Index("targetAge").AsInt32.InSet(new[] { 42, 44 })
+                .AND.Index("targetGender").AsInt32.InSet(new[] { 1, 2 })
+                .EndCondition;
+            LibraDexIdentityMutationResult targetDeleteResult = targetMutationCondition.DeleteFrom("targetAge", targetMutationIndexes);
+            IReadOnlyList<long> targetAgeAfterDeleteIds = LibraDexCondition
+                .ForGroup("people")
+                .Index("targetAge").AsInt32.All()
+                .EndCondition
+                .ToList<long>(targetMutationResolver, deduplication: IdentityDeduplication.Preserve);
+            IReadOnlyList<long> targetGenderAfterDeleteIds = LibraDexCondition
+                .ForGroup("people")
+                .Index("targetGender").AsInt32.InSet(new[] { 1, 2 })
+                .EndCondition
+                .ToList<long>(targetMutationResolver, deduplication: IdentityDeduplication.Preserve);
+            if (targetDeleteResult.MatchedCount != 2 ||
+                targetDeleteResult.ChangedCount != 2 ||
+                targetAgeAfterDeleteIds.Count != 0 ||
+                targetGenderAfterDeleteIds.Count != 2 ||
+                targetGenderAfterDeleteIds[0] != 4200L ||
+                targetGenderAfterDeleteIds[1] != 4400L)
+            {
+                throw new InvalidDataException("Targeted composed DeleteFrom did not mutate only the explicit target index.");
+            }
+
+            ValidateGenericInsert(targetMutationAge.Insert(42, 4200L), "targeted composed mutation age 42 restore insert");
+            ValidateGenericInsert(targetMutationAge.Insert(44, 4400L), "targeted composed mutation age 44 restore insert");
+            LibraDexIdentityMutationResult targetSetKeyResult = targetMutationCondition.SetKeyOn("targetAge", targetMutationIndexes, 99);
+            IReadOnlyList<long> targetAgeAfterSetKeyIds = LibraDexCondition
+                .ForGroup("people")
+                .Index("targetAge").AsInt32.EqualTo(99)
+                .EndCondition
+                .ToList<long>(targetMutationResolver, deduplication: IdentityDeduplication.Preserve);
+            IReadOnlyList<long> targetAgeOldKeysAfterSetKeyIds = LibraDexCondition
+                .ForGroup("people")
+                .Index("targetAge").AsInt32.InSet(new[] { 42, 44 })
+                .EndCondition
+                .ToList<long>(targetMutationResolver, deduplication: IdentityDeduplication.Preserve);
+            if (targetSetKeyResult.MatchedCount != 2 ||
+                targetSetKeyResult.ChangedCount != 2 ||
+                targetAgeAfterSetKeyIds.Count != 2 ||
+                targetAgeAfterSetKeyIds[0] != 4200L ||
+                targetAgeAfterSetKeyIds[1] != 4400L ||
+                targetAgeOldKeysAfterSetKeyIds.Count != 0)
+            {
+                throw new InvalidDataException("Targeted composed SetKeyOn did not re-key only the explicit target index.");
             }
 
             LibraDexIndex<int, long> reopenedGender = reopened.Indexes["people"]["gender"].Open<int, long>();
@@ -7725,148 +9123,76 @@ internal static class RawHarness
 
             IIndex criteriaAge = reopened.Indexes["people"]["age"].Open();
             IIndex criteriaGender = reopened.Indexes["people"]["gender"].Open();
-            IIdentityCriterion adultCriterion = criteriaAge.Criteria.AtOrAfter(40);
-            IIdentityCriterion genderCriterion = criteriaGender.Criteria.In(new object[] { 1, 2 });
-            IIdentityCriterion patternCriterion = criteriaAge.Criteria.Matches(new { Min = 40, Max = 99 });
-            IIdentityCriterion composedCriterion = adultCriterion.And(genderCriterion);
-            IIdentityCriterion negatedCriterion = composedCriterion.Not();
-            IIdentityCriterion expandedCriterion = composedCriterion.Or(criteriaAge.Criteria.Find(42));
-            IIdentityCriterion exceptCriterion = expandedCriterion.Except(criteriaGender.Criteria.Find(1));
-            IIdentityCriterionProjection pagedIds = composedCriterion.IDsWith(
-                IdentityResultOrdering.IdentityAscending,
-                IdentityDeduplication.Distinct,
-                skip: 1,
-                take: 2,
-                bookmark: new LibraDexBookmark(7, 42));
-            LibraDexIdentityExecutionPlan singlePlan = adultCriterion.IDsWith(deduplication: IdentityDeduplication.Preserve).Plan();
-            LibraDexIdentityExecutionPlan intersectionPlan = composedCriterion.IDsWith(deduplication: IdentityDeduplication.Preserve).Plan();
-            LibraDexIdentityExecutionPlan unionPlan = expandedCriterion.IDsWith(deduplication: IdentityDeduplication.Preserve).Plan();
-            LibraDexIdentityExecutionPlan exceptPlan = exceptCriterion.IDsWith(deduplication: IdentityDeduplication.Preserve).Plan();
-            LibraDexIdentityExecutionPlan complementPlan = negatedCriterion.IDsWith(deduplication: IdentityDeduplication.Preserve).Plan();
-            LibraDexIdentityExecutionPlan pagedPlan = pagedIds.Plan();
-            IReadOnlyList<object> intersectionIds = composedCriterion.IDsWith(deduplication: IdentityDeduplication.Distinct).ToList();
-            IReadOnlyList<object> unionIds = expandedCriterion.IDsWith(
-                IdentityResultOrdering.IdentityAscending,
-                IdentityDeduplication.Distinct).ToList();
-            IReadOnlyList<object> exceptIds = exceptCriterion.IDsWith(deduplication: IdentityDeduplication.Distinct).ToList();
-            IReadOnlyList<object> complementIds = negatedCriterion.IDsWith(deduplication: IdentityDeduplication.Distinct).ToList();
-            IReadOnlyList<object> pagedExecutionIds = composedCriterion.IDsWith(
-                IdentityResultOrdering.IdentityAscending,
-                IdentityDeduplication.Distinct,
-                skip: 1,
-                take: 1).ToList();
-            IReadOnlyList<long> typedIntersectionIds = composedCriterion.IDsWith(
-                IdentityResultOrdering.IdentityAscending,
-                IdentityDeduplication.Distinct).ToList<long>();
-            LibraDexIdentityExecutionResult executionResult = composedCriterion.IDsWith(
-                IdentityResultOrdering.IdentityAscending,
-                IdentityDeduplication.Distinct,
-                take: 1).Execute();
-            LibraDexPreparedObjectSet executableGenderSet = criteriaGender.PrepareInSet(new object[] { 1, 2 });
-            LibraDexIdentityCondition executableLeafCondition = LibraDexIdentityConditions
+            Func<string, IIndex> criteriaResolver = indexName => indexName switch
+            {
+                "age" => criteriaAge,
+                "gender" => criteriaGender,
+                _ => throw new KeyNotFoundException(indexName)
+            };
+            LibraDexConditionEndCondition adultCondition = LibraDexCondition
                 .ForGroup("people")
-                .Where(criteriaAge).AtOrAfter(40)
-                .End();
-            LibraDexIdentityCondition executableCondition = LibraDexIdentityConditions
+                .Index("age").AsInt32.GreaterOrEqual(40)
+                .EndCondition;
+            LibraDexConditionEndCondition executableCondition = LibraDexCondition
                 .ForGroup("people")
-                .Where(criteriaAge).AtOrAfter(40)
-                .And(criteriaGender).InSet(executableGenderSet)
-                .End();
-            LibraDexIdentityCondition executablePatternScanCondition = LibraDexIdentityConditions
-                .ForGroup("people")
-                .Where(criteriaAge).Matches(new Predicate<int>(ageKey => ageKey >= 44))
-                .End();
-            bool executableLeafExists = executableLeafCondition.Exists(IdentityDeduplication.Preserve);
-            long executableLeafCount = executableLeafCondition.Count(IdentityDeduplication.Preserve);
-            LibraDexIdentityExecutionPlan executableConditionPlan = executableCondition.Plan(deduplication: IdentityDeduplication.Preserve);
+                .Index("age").AsInt32.GreaterOrEqual(40)
+                .AND.Index("gender").AsInt32.InSet(new[] { 1, 2 })
+                .EndCondition;
+            bool executableLeafExists = adultCondition.Exists(criteriaResolver, IdentityDeduplication.Preserve);
+            long executableLeafCount = adultCondition.Count(criteriaResolver, IdentityDeduplication.Preserve);
+            LibraDexIdentityExecutionPlan executableConditionPlan = executableCondition.Plan(criteriaResolver, deduplication: IdentityDeduplication.Preserve);
             LibraDexIdentityExecutionResult executableConditionGet = executableCondition.Get(
+                criteriaResolver,
                 IdentityResultOrdering.IdentityAscending,
                 IdentityDeduplication.Distinct);
-            bool executableConditionExists = executableCondition.Exists();
-            long executableConditionCount = executableCondition.Count();
+            bool executableConditionExists = executableCondition.Exists(criteriaResolver);
+            long executableConditionCount = executableCondition.Count(criteriaResolver);
             IIdentityCriterionProjection executableConditionIds = executableCondition.IDsWith(
+                criteriaResolver,
                 IdentityResultOrdering.IdentityAscending,
                 IdentityDeduplication.Distinct);
             IReadOnlyList<long> executableConditionProjectionIds = executableConditionIds.ToList<long>();
             object[] executableConditionPagedIterated = executableCondition
-                .IDsWith(deduplication: IdentityDeduplication.Distinct, skip: 1, take: 1)
+                .IDsWith(criteriaResolver, deduplication: IdentityDeduplication.Distinct, skip: 1, take: 1)
                 .Iterate()
                 .ToArray();
             object[] executableConditionIterated = executableCondition.Iterate(
+                criteriaResolver,
                 IdentityResultOrdering.IdentityAscending,
                 IdentityDeduplication.Distinct).ToArray();
-            long[] executableConditionTypedIterated = executableCondition.Iterate<long>(
+            long[] executableConditionTypedIterated = executableCondition.Iterate(
+                criteriaResolver,
                 IdentityResultOrdering.PlanNatural,
-                IdentityDeduplication.Distinct).ToArray();
+                IdentityDeduplication.Distinct)
+                .Cast<long>()
+                .ToArray();
             IReadOnlyList<long> executableConditionTypedIds = executableCondition.ToList<long>(
+                criteriaResolver,
                 IdentityResultOrdering.IdentityAscending,
                 IdentityDeduplication.Distinct);
-            IReadOnlyList<long> executablePatternScanIds = executablePatternScanCondition.ToList<long>(
+            LibraDexConditionGroupQuery<int, long> executableConditionAgeGroups = executableCondition.Groups(criteriaResolver).By(reopenedAge);
+            IReadOnlyDictionary<int, IReadOnlyList<long>> executableConditionAgeGroupDictionary = executableConditionAgeGroups.ToDictionary(
                 IdentityResultOrdering.IdentityAscending,
                 IdentityDeduplication.Distinct);
-            long executablePatternScanCount = executablePatternScanCondition.Count(IdentityDeduplication.Preserve);
-            IIdentityCriterionMutation executableConditionDelete = executableCondition.Mutate.Delete();
-            IIdentityCriterionMutation executableConditionSetKey = executableCondition.Mutate.SetKey(identity => 60);
-            IIdentityCriterionMutation deleteMutation = composedCriterion.Mutate.Delete();
-            IIdentityCriterionMutation setKeyMutation = composedCriterion.Mutate.SetKey(identity => 50);
-            if (adultCriterion.NodeKind != LibraDexIdentityCriterionNodeKind.Leaf ||
-                adultCriterion.CriteriaKind != LibraDexCriteriaKind.AtOrAfter ||
-                adultCriterion.Index != criteriaAge ||
-                adultCriterion.Values.Count != 1 ||
-                !Equals(adultCriterion.Values[0], 40) ||
-                genderCriterion.Values.Count != 2 ||
-                !Equals(genderCriterion.Values[0], 1) ||
-                patternCriterion.CriteriaKind != LibraDexCriteriaKind.Matches ||
-                patternCriterion.Values.Count != 1 ||
-                composedCriterion.NodeKind != LibraDexIdentityCriterionNodeKind.And ||
-                composedCriterion.Group != "people" ||
-                composedCriterion.Left != adultCriterion ||
-                composedCriterion.Right != genderCriterion ||
-                composedCriterion.IDs.Projection != LibraDexProjectionKind.Identities ||
-                negatedCriterion.NodeKind != LibraDexIdentityCriterionNodeKind.Not ||
-                negatedCriterion.Left != composedCriterion ||
-                expandedCriterion.NodeKind != LibraDexIdentityCriterionNodeKind.Or ||
-                exceptCriterion.NodeKind != LibraDexIdentityCriterionNodeKind.Except ||
-                exceptCriterion.Diagnostics.ExecutionKind != LibraDexExecutionKind.Projection ||
-                pagedIds.Options.Ordering != IdentityResultOrdering.IdentityAscending ||
-                pagedIds.Options.Deduplication != IdentityDeduplication.Distinct ||
-                pagedIds.Options.SkipCount != 1 ||
-                pagedIds.Options.TakeCount != 2 ||
-                pagedIds.Options.Bookmark?.Position != 42 ||
-                singlePlan.Kind != LibraDexIdentityPlanKind.SingleIndex ||
-                singlePlan.Materialization != LibraDexIdentityPlanMaterialization.None ||
-                intersectionPlan.Kind != LibraDexIdentityPlanKind.Intersection ||
-                intersectionPlan.Materialization != LibraDexIdentityPlanMaterialization.StreamingMerge ||
-                intersectionPlan.LeafCount != 2 ||
-                intersectionPlan.Indexes.Count != 2 ||
-                unionPlan.Kind != LibraDexIdentityPlanKind.Union ||
-                unionPlan.Materialization != LibraDexIdentityPlanMaterialization.IdentitySet ||
-                exceptPlan.Kind != LibraDexIdentityPlanKind.Difference ||
-                complementPlan.Kind != LibraDexIdentityPlanKind.Complement ||
-                complementPlan.ContainsNegation != true ||
-                pagedPlan.RequiresOrdering != true ||
-                pagedPlan.RequiresPaging != true ||
-                pagedPlan.Materialization != LibraDexIdentityPlanMaterialization.IdentitySet ||
-                intersectionIds.Count != 2 ||
-                !Equals(intersectionIds[0], 4200L) ||
-                !Equals(intersectionIds[1], 4400L) ||
-                unionIds.Count != 2 ||
-                !Equals(unionIds[0], 4200L) ||
-                !Equals(unionIds[1], 4400L) ||
-                exceptIds.Count != 1 ||
-                !Equals(exceptIds[0], 4400L) ||
-                complementIds.Count != 1 ||
-                !Equals(complementIds[0], 9900L) ||
-                pagedExecutionIds.Count != 1 ||
-                !Equals(pagedExecutionIds[0], 4400L) ||
-                typedIntersectionIds.Count != 2 ||
-                typedIntersectionIds[0] != 4200L ||
-                typedIntersectionIds[1] != 4400L ||
-                executionResult.Identities.Count != 1 ||
-                executionResult.Plan.Kind != LibraDexIdentityPlanKind.Intersection ||
-                executionResult.Diagnostics.RowsReturned != 1 ||
-                executionResult.Diagnostics.RowsScanned != 2 ||
-                !executableLeafExists ||
+            IReadOnlyList<LibraDexGroup<int, long>> executableConditionAgeGroupList = executableConditionAgeGroups.ToList(
+                IdentityResultOrdering.IdentityAscending,
+                IdentityDeduplication.Distinct);
+            IReadOnlyDictionary<int, long> executableConditionAgeGroupCounts = executableConditionAgeGroups.Counts(
+                IdentityResultOrdering.IdentityAscending,
+                IdentityDeduplication.Distinct);
+            IReadOnlyList<LibraDexGroupMetadata<int, long>> executableConditionAgeGroupMetadata = executableConditionAgeGroups.Metadata(
+                IdentityResultOrdering.IdentityAscending,
+                IdentityDeduplication.Distinct);
+            IReadOnlyDictionary<int, long> executableConditionAgeFirstIdentities = executableConditionAgeGroups.FirstIdentities(
+                IdentityResultOrdering.IdentityAscending,
+                IdentityDeduplication.Distinct);
+            IReadOnlyDictionary<int, long> executableConditionAgeLastIdentities = executableConditionAgeGroups.LastIdentities(
+                IdentityResultOrdering.IdentityAscending,
+                IdentityDeduplication.Distinct);
+            using LibraDexGroupReader<int, long> executableConditionAgeGroupReader = executableConditionAgeGroups.OpenReader(
+                IdentityResultOrdering.IdentityAscending,
+                IdentityDeduplication.Distinct);
+            if (!executableLeafExists ||
                 executableLeafCount != 2 ||
                 executableConditionPlan.Kind != LibraDexIdentityPlanKind.Intersection ||
                 executableConditionPlan.LeafCount != 2 ||
@@ -7875,7 +9201,7 @@ internal static class RawHarness
                 !Equals(executableConditionGet.Identities[1], 4400L) ||
                 !executableConditionExists ||
                 executableConditionCount != 2 ||
-                executableCondition.IDs.Projection != LibraDexProjectionKind.Identities ||
+                executableConditionIds.Projection != LibraDexProjectionKind.Identities ||
                 executableConditionIds.Options.Ordering != IdentityResultOrdering.IdentityAscending ||
                 executableConditionProjectionIds.Count != 2 ||
                 executableConditionProjectionIds[0] != 4200L ||
@@ -7891,21 +9217,30 @@ internal static class RawHarness
                 executableConditionTypedIds.Count != 2 ||
                 executableConditionTypedIds[0] != 4200L ||
                 executableConditionTypedIds[1] != 4400L ||
-                executablePatternScanIds.Count != 1 ||
-                executablePatternScanIds[0] != 4400L ||
-                executablePatternScanCount != 1 ||
-                executableConditionDelete.Kind != LibraDexCriteriaMutationKind.Delete ||
-                executableConditionDelete.Criterion.NodeKind != LibraDexIdentityCriterionNodeKind.And ||
-                executableConditionSetKey.Kind != LibraDexCriteriaMutationKind.SetKey ||
-                executableConditionSetKey.NewKeyFactory?.Invoke(4200L) is not int executableGeneratedKey ||
-                executableGeneratedKey != 60 ||
-                deleteMutation.Kind != LibraDexCriteriaMutationKind.Delete ||
-                deleteMutation.Criterion != composedCriterion ||
-                setKeyMutation.Kind != LibraDexCriteriaMutationKind.SetKey ||
-                setKeyMutation.NewKeyFactory?.Invoke(4200L) is not int generatedKey ||
-                generatedKey != 50)
+                executableConditionAgeGroupDictionary.Count != 2 ||
+                executableConditionAgeGroupDictionary[42][0] != 4200L ||
+                executableConditionAgeGroupDictionary[44][0] != 4400L ||
+                executableConditionAgeGroupList.Count != 2 ||
+                executableConditionAgeGroupList[0].Key != 42 ||
+                executableConditionAgeGroupList[0].Items[0] != 4200L ||
+                executableConditionAgeGroupCounts[42] != 1 ||
+                executableConditionAgeGroupCounts[44] != 1 ||
+                executableConditionAgeGroupMetadata.Count != 2 ||
+                executableConditionAgeGroupMetadata[0].Key != 42 ||
+                executableConditionAgeGroupMetadata[0].Count != 1 ||
+                executableConditionAgeGroupMetadata[0].FirstIdentity != 4200L ||
+                executableConditionAgeGroupMetadata[0].LastIdentity != 4200L ||
+                executableConditionAgeFirstIdentities[42] != 4200L ||
+                executableConditionAgeFirstIdentities[44] != 4400L ||
+                executableConditionAgeLastIdentities[42] != 4200L ||
+                executableConditionAgeLastIdentities[44] != 4400L ||
+                !executableConditionAgeGroupReader.MoveNextGroup() ||
+                executableConditionAgeGroupReader.Current.Key != 42 ||
+                executableConditionAgeGroupReader.Current.Items[0] != 4200L ||
+                !executableConditionAgeGroupReader.MoveNextGroup() ||
+                executableConditionAgeGroupReader.Current.Key != 44)
             {
-                throw new InvalidDataException("Programmatic identity criteria did not preserve the expected object-model shape.");
+                throw new InvalidDataException("Adopted condition terminals did not preserve the expected execution shape.");
             }
 
             LibraDexIndex<int, long> shortOpenedAge = reopened.Indexes["people"]["age"].Open<int, long>();
@@ -7923,41 +9258,53 @@ internal static class RawHarness
             }
 
             IIndex metadataOpenedAge = reopened.Indexes["people"]["age"].Open();
-            IIndexQuery metadataOpenedQuery = metadataOpenedAge.Find(42);
             LibraDexGenericInsertResult metadataInsert = metadataOpenedAge.Insert(43, 4300L);
-            IIndexQuery metadataAll = metadataOpenedAge.All();
-            IIndexQuery metadataAfter = metadataOpenedAge.After(40);
-            IIndexQuery metadataAtOrBefore = metadataOpenedAge.AtOrBefore(43);
-            IIndexQuery metadataPrefix = metadataOpenedAge.Prefix(4);
-            IIndexQuery metadataSuffix = metadataOpenedAge.Suffix(3);
-            IIndexQuery metadataContains = metadataOpenedAge.Contains(4);
-            IIndexQuery metadataIn = metadataOpenedAge.In(new object[] { 42, 43 });
-            IIndexQuery metadataInSet = metadataOpenedAge.InSet(new object[] { 42, 43 });
             LibraDexPreparedObjectSet metadataPreparedSet = metadataOpenedAge.PrepareInSet(new object[] { 42, 43 });
-            IIndexQuery metadataPreparedInSet = metadataOpenedAge.InSet(metadataPreparedSet);
+            Func<string, IIndex> metadataResolver = indexName => string.Equals(indexName, "age", StringComparison.Ordinal)
+                ? metadataOpenedAge
+                : throw new KeyNotFoundException(indexName);
+            LibraDexConditionEndCondition metadataExactCondition = LibraDexCondition
+                .ForGroup("people")
+                .Index("age").AsInt32.EqualTo(43)
+                .EndCondition;
+            LibraDexConditionEndCondition metadataAllCondition = LibraDexCondition
+                .ForGroup("people")
+                .Index("age").AsInt32.All()
+                .EndCondition;
+            LibraDexConditionEndCondition metadataAfterCondition = LibraDexCondition
+                .ForGroup("people")
+                .Index("age").AsInt32.GreaterThan(40)
+                .EndCondition;
+            LibraDexConditionEndCondition metadataAtOrBeforeCondition = LibraDexCondition
+                .ForGroup("people")
+                .Index("age").AsInt32.LessOrEqual(43)
+                .EndCondition;
+            LibraDexConditionEndCondition metadataMembershipCondition = LibraDexCondition
+                .ForGroup("people")
+                .Index("age").AsInt32.InSet(new[] { 99, 43 })
+                .EndCondition;
+            long metadataExactCount = metadataExactCondition.ToList<long>(metadataResolver).Count;
+            long metadataMissingCount = LibraDexCondition.ForGroup("people").Index("age").AsInt32.EqualTo(99).EndCondition.ToList<long>(metadataResolver).Count;
+            long metadataAllCount = metadataAllCondition.Count(metadataResolver, IdentityDeduplication.Preserve);
+            long metadataAfterCount = metadataAfterCondition.Count(metadataResolver, IdentityDeduplication.Preserve);
+            long metadataAtOrBeforeCount = metadataAtOrBeforeCondition.Count(metadataResolver, IdentityDeduplication.Preserve);
+            long metadataMembershipCount = metadataMembershipCondition.ToList<long>(metadataResolver).Count;
             if (metadataOpenedAge.Group != "people" ||
                 metadataOpenedAge.Name != "age" ||
                 metadataOpenedAge.KeyType != typeof(int) ||
                 metadataOpenedAge.IdentityType != typeof(long) ||
                 !metadataInsert.Inserted ||
-                metadataOpenedQuery.IDs.Projection != LibraDexProjectionKind.Identities ||
-                metadataAll.Tuples.Projection != LibraDexProjectionKind.Tuples ||
-                metadataAfter.Keys.Projection != LibraDexProjectionKind.Keys ||
-                metadataAtOrBefore.IDs.Projection != LibraDexProjectionKind.Identities ||
-                metadataPrefix.Diagnostics.ExecutionKind != LibraDexExecutionKind.Scan ||
-                metadataSuffix.Diagnostics.ExecutionKind != LibraDexExecutionKind.Scan ||
-                metadataContains.Diagnostics.ExecutionKind != LibraDexExecutionKind.Scan ||
-                metadataIn.Diagnostics.ExecutionKind != LibraDexExecutionKind.Projection ||
-                metadataInSet.Diagnostics.ExecutionKind != LibraDexExecutionKind.Projection ||
                 metadataPreparedSet.KeyType != typeof(int) ||
                 metadataPreparedSet.Values.Count != 2 ||
-                metadataPreparedInSet.Diagnostics.ExecutionKind != LibraDexExecutionKind.Projection ||
-                !metadataOpenedAge.Exists(43) ||
-                metadataOpenedAge.Exists(99) ||
-                !metadataOpenedAge.ExistsIn(new object[] { 99, 43 }) ||
-                !metadataOpenedAge.ExistsInSet(new object[] { 99, 43 }))
+                metadataExactCount == 0 ||
+                metadataMissingCount != 0 ||
+                metadataAllCount != 3 ||
+                metadataAfterCount != 3 ||
+                metadataAtOrBeforeCount != 2 ||
+                metadataMembershipCount == 0)
             {
-                throw new InvalidDataException("Metadata-driven non-generic grouped index open did not preserve type or projection metadata.");
+                throw new InvalidDataException(
+                    $"Metadata-driven non-generic grouped index open did not preserve type or projection metadata. exact={metadataExactCount}; missing={metadataMissingCount}; all={metadataAllCount}; after={metadataAfterCount}; atOrBefore={metadataAtOrBeforeCount}; membership={metadataMembershipCount}; inserted={metadataInsert.Inserted}.");
             }
 
             long[] metadataInsertedIdentities = new long[4];
@@ -7965,23 +9312,24 @@ internal static class RawHarness
             ValidateGenericRead(metadataInsertedRead, metadataInsertedIdentities, new long[] { 4200, 4300 }, "metadata-driven insert read");
 
             IIndex untypedAge = reopenedAge;
-            IIndexQuery untypedQuery = untypedAge.Between(40, 50);
+            LibraDexConditionEndCondition untypedQuery = LibraDexCondition
+                .ForGroup("people")
+                .Index("age").AsInt32.Between(40, 50)
+                .EndCondition;
             if (untypedAge.Group != "people" ||
                 untypedAge.Name != "age" ||
                 untypedAge.KeyType != typeof(int) ||
                 untypedAge.IdentityType != typeof(long) ||
                 untypedAge.KeyFamily != CatalogIndexKeyFamily.Scalar ||
                 untypedAge.IdentityFamily != CatalogIndexIdentityFamily.Scalar ||
-                untypedQuery.Keys.Projection != LibraDexProjectionKind.Keys ||
-                untypedQuery.IDs.Projection != LibraDexProjectionKind.Identities ||
-                untypedQuery.Tuples.Projection != LibraDexProjectionKind.Tuples)
+                untypedQuery.ToList<long>(metadataResolver, deduplication: IdentityDeduplication.Preserve).Count != 3)
             {
-                throw new InvalidDataException("Non-generic index/query facade did not preserve grouped metadata or projection shape.");
+                throw new InvalidDataException("Non-generic index condition binding did not preserve grouped metadata or retrieval shape.");
             }
 
             try
             {
-                _ = untypedAge.Find("42");
+                _ = LibraDexCondition.ForGroup("people").Index("age").AsString.EqualTo("42").EndCondition.ToList<long>(metadataResolver);
                 throw new InvalidDataException("Non-generic index facade accepted a key with the wrong runtime type.");
             }
             catch (ArgumentException)
@@ -7990,7 +9338,7 @@ internal static class RawHarness
 
             try
             {
-                _ = metadataOpenedAge.In(new object[] { 44, "45" });
+                _ = LibraDexCondition.ForGroup("people").Index("age").AsString.InSet(new[] { "44", "45" }).EndCondition.ToList<long>(metadataResolver);
                 throw new InvalidDataException("Non-generic index facade accepted a membership key with the wrong runtime type.");
             }
             catch (ArgumentException)
@@ -8008,49 +9356,71 @@ internal static class RawHarness
 
             try
             {
-                _ = metadataOpenedAge.Criteria.Find("42");
-                throw new InvalidDataException("Programmatic criteria builder accepted a key with the wrong runtime type.");
-            }
-            catch (ArgumentException)
-            {
-            }
-
-            try
-            {
-                _ = metadataOpenedAge.Criteria.In(new object[] { 44, "45" });
-                throw new InvalidDataException("Programmatic criteria builder accepted a membership key with the wrong runtime type.");
-            }
-            catch (ArgumentException)
-            {
-            }
-
-            try
-            {
-                _ = metadataOpenedAge.Criteria.InSet(new LibraDexPreparedObjectSet(typeof(long), new object[] { 42L }));
-                throw new InvalidDataException("Programmatic criteria builder accepted a prepared set with the wrong key type.");
-            }
-            catch (ArgumentException)
-            {
-            }
-
-            try
-            {
-                _ = composedCriterion.IDsWith(bookmark: new LibraDexBookmark(0, -1)).ToList();
-                throw new InvalidDataException("Identity criteria execution accepted a negative bookmark position.");
+                _ = metadataExactCondition.ToList<long>(metadataResolver, bookmark: new LibraDexBookmark(0, -1));
+                throw new InvalidDataException("Adopted condition execution accepted a negative bookmark position.");
             }
             catch (ArgumentOutOfRangeException)
             {
             }
         }
 
+        using (Catalog reopenedAfterCompositePathCopy = Catalog.Open(path))
+        {
+            IIndex reopenedTenantUser = reopenedAfterCompositePathCopy.Indexes["people"]["tenantUser"].Composite<long>(
+                C.Guid("tenantId"),
+                C.Text("username", StringKeys.ExactFoldedAndSortKey))
+                .Open(C.Unique);
+            Guid persistedTenant = Guid.Parse("cccccccc-cccc-cccc-cccc-cccccccccccc");
+            LibraDexConditionEndCondition condition = LibraDexCondition
+                .ForGroup("people")
+                .Index("tenantUser").AsComposite.Where(
+                    LibraDexCompositePart.Scalar<Guid>("tenantId").EqualTo(persistedTenant),
+                    LibraDexCompositePart.String("username").StartsWith("Co"))
+                .EndCondition;
+            IReadOnlyList<long> ids = condition.ToList<long>(
+                indexName => string.Equals(indexName, "tenantUser", StringComparison.Ordinal)
+                    ? reopenedTenantUser
+                    : throw new KeyNotFoundException(indexName),
+                deduplication: IdentityDeduplication.Preserve);
+            if (ids.Count != 2 ||
+                ids[0] != 7302L ||
+                ids[1] != 7301L)
+            {
+                throw new InvalidDataException($"Composite condition delete did not survive second catalog reopen. ids={string.Join(",", ids)}");
+            }
+        }
+
         using (Catalog mismatchCatalog = Catalog.CreateMemory())
         {
-            IIndex peopleAge = mismatchCatalog.Indexes["people"]["age"].Create<int, long>(slotIndex: 0);
-            IIndex ordersTotal = mismatchCatalog.Indexes["orders"]["total"].Create<int, long>(slotIndex: 1);
+            LibraDexIndex<int, long> peopleAge = mismatchCatalog.Indexes["people"]["age"].Create<int, long>();
+            LibraDexIndex<int, long> ordersTotal = mismatchCatalog.Indexes["orders"]["total"].Create<int, long>();
             try
             {
-                _ = peopleAge.Criteria.Find(1).And(ordersTotal.Criteria.Find(1));
+                _ = LibraDexCondition
+                    .ForGroup("people")
+                    .Index("age").AsInt32.EqualTo(1)
+                    .AND.Index("total").AsInt32.EqualTo(1)
+                    .EndCondition
+                    .Materialize(indexName => indexName switch
+                    {
+                        "age" => peopleAge,
+                        "total" => ordersTotal,
+                        _ => throw new KeyNotFoundException(indexName)
+                    });
                 throw new InvalidDataException("Programmatic identity criteria allowed composition across different identity groups.");
+            }
+            catch (InvalidOperationException)
+            {
+            }
+
+            LibraDexConditionEndCondition peopleCondition = LibraDexCondition
+                .ForGroup("people")
+                .Index("age").AsInt32.All()
+                .EndCondition;
+            try
+            {
+                _ = peopleCondition.Groups(indexName => indexName == "age" ? peopleAge : throw new KeyNotFoundException(indexName)).By(ordersTotal);
+                throw new InvalidDataException("Condition grouping accepted an index from a different identity group.");
             }
             catch (InvalidOperationException)
             {
@@ -8063,12 +9433,13 @@ internal static class RawHarness
         Console.WriteLine("catalogIndexDiscovery ok");
         Console.WriteLine("catalogIndexMetadataReopen ok");
         Console.WriteLine("catalogGroupedIndexMetadataReopen ok");
+        Console.WriteLine("catalogCompositePathCopyReopen ok");
         Console.WriteLine("catalogIdentityGroupBatch ok");
         Console.WriteLine("catalogShortGenericGroupedOpen ok");
         Console.WriteLine("catalogMetadataDrivenOpen ok");
         Console.WriteLine("catalogMetadataDrivenInsert ok");
         Console.WriteLine("catalogNonGenericIndexFacade ok");
-        Console.WriteLine("catalogProgrammaticCriteria ok");
+        Console.WriteLine("catalogAdoptedConditionBridge ok");
         Console.WriteLine("catalogNormalInsert ok");
         Console.WriteLine("catalogBatchCommit ok");
         Console.WriteLine("catalogBatchCommitAndDisable ok");
@@ -8102,9 +9473,29 @@ internal static class RawHarness
             throw new InvalidDataException("Catalog maintenance/tools/compatibility descriptors did not capture expected intent.");
         }
 
-        LibraDexIndex<long, long> index = catalog.Indexes.Scalar.Scalar.Create<long, long>(
-            "public-surface",
-            slotIndex: 0,
+        ValidateBinaryReversedProjectionHardening();
+        ValidateDeterministicStructuredDateTimeCoverage();
+        ValidateDeterministicScalarConditionCoverage();
+        ValidateDeterministicStringConditionCoverage();
+        ValidateDeterministicCompositionTerminalCoverage();
+
+        using (Catalog policyCatalog = Catalog.CreateMemory(new CatalogOptions { StringComparisonPolicy = LibraDexStringComparisonPolicy.OrdinalIgnoreCase }))
+        {
+            using LibraDexStringScalar8Index policyDefaultIndex = policyCatalog.Indexes["policy"]["alias"].String.Create(
+                stringKeys: StringKeys.Exact);
+            ValidateGenericInsert(policyDefaultIndex.Add("Eric", 9001UL), "catalog policy alias string add Eric");
+            LibraDexConditionEndCondition catalogPolicyInSetCondition = LibraDexCondition
+                .ForGroup("policy")
+                .Index("alias").AsString.InSet(new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "ERIC" })
+                .EndCondition;
+            IReadOnlyList<ulong> catalogPolicyInSetIds = catalogPolicyInSetCondition.Materialize(policyDefaultIndex.ResolveIndex).IDs.ToList<ulong>();
+            if (catalogPolicyInSetIds.Count != 1 || catalogPolicyInSetIds[0] != 9001UL)
+            {
+                throw new InvalidDataException("Catalog-level string comparison policy did not flow into exact-only membership fallback.");
+            }
+        }
+
+        LibraDexIndex<long, long> index = catalog.Indexes["surface"]["public-surface"].Int64Keys<long>().Create(
             keys: IndexKeys.NonUnique);
 
         LibraDexStatsMarker indexMarker = index.Stats.Mark();
@@ -8112,11 +9503,15 @@ internal static class RawHarness
         if (publicSurfaceIndexes.Length != 1 ||
             publicSurfaceIndexes[0].SlotIndex != 0 ||
             publicSurfaceIndexes[0].Name != "public-surface" ||
-            !catalog.Indexes.TryGetInfo("public-surface", out CatalogIndexInfo namedInfo) ||
+            publicSurfaceIndexes[0].Group != "surface" ||
+            !catalog.Indexes.TryGetInfo("surface", "public-surface", out CatalogIndexInfo namedInfo) ||
             namedInfo.RootRouterOffset != publicSurfaceIndexes[0].RootRouterOffset)
         {
             throw new InvalidDataException("Public surface catalog discovery did not return expected index metadata.");
         }
+
+        LibraDexIndex<long, long> alternateIndex = catalog.Indexes["surface"]["alternate"].Int64Keys<long>().Create(
+            keys: IndexKeys.NonUnique);
 
         LibraDexIndexShapeSpec firstNameShape = catalog.Indexes["people"]["firstName"].Shape.String<long>(
             StringKeys.ExactFoldedAndSortKey,
@@ -8129,10 +9524,21 @@ internal static class RawHarness
             GuidKeys.ExactSegmentsAndText,
             keys: IndexKeys.Unique,
             sortOrder: LibraDexIndexSortOrder.Descending);
-        LibraDexIndexShapeSpec compositeShape = catalog.Indexes["people"]["tenantUser"].Shape.Composite<long>(
-            IndexKeys.Unique,
-            LibraDexCompositeKeyPart.Guid("tenantId"),
-            LibraDexCompositeKeyPart.String("username", StringKeys.ExactFoldedAndSortKey));
+        CatalogCompositeIndexBuilder<long> compositeBuilder = catalog.Indexes["people"]["tenantUser"].Composite<long>(
+            C.Guid("tenantId"),
+            C.Text("username", StringKeys.ExactFoldedAndSortKey));
+        CatalogCompositeIndexBuilder<long> groupedCompositeBuilder = catalog.Indexes.Group("people").Composite<long>(
+            "tenantUser",
+            C.Guid("tenantId"),
+            C.Text("username", StringKeys.ExactFoldedAndSortKey));
+        LibraDexIndexShapeSpec compositeShape = compositeBuilder.Shape(C.Unique);
+        LibraDexIndexShapeSpec groupedCompositeShape = groupedCompositeBuilder.Shape(C.Unique);
+        LibraDexCompositeKey positionalCompositeKey = Key.Of(Guid.Empty, "eric");
+        LibraDexCompositeKey namedCompositeKey = Key.Named(
+            Key.Part("tenantId", Guid.Empty),
+            Key.Part("username", "eric"));
+        positionalCompositeKey.ValidateAgainst(compositeShape);
+        namedCompositeKey.ValidateAgainst(compositeShape);
         if (firstNameShape.Group != "people" ||
             firstNameShape.Name != "firstName" ||
             firstNameShape.KeyFamily != CatalogIndexKeyFamily.String ||
@@ -8150,17 +9556,94 @@ internal static class RawHarness
             !idShape.HasProjection(LibraDexIndexProjectionKind.GuidText) ||
             compositeShape.KeyFamily != CatalogIndexKeyFamily.Composite ||
             compositeShape.KeyContract != IndexKeys.Unique ||
+            groupedCompositeShape.KeyFamily != CatalogIndexKeyFamily.Composite ||
+            groupedCompositeShape.CompositeParts.Count != compositeShape.CompositeParts.Count ||
             compositeShape.CompositeParts.Count != 2 ||
             compositeShape.CompositeParts[0].Name != "tenantId" ||
-            compositeShape.CompositeParts[1].StringKeys != StringKeys.ExactFoldedAndSortKey)
+            compositeShape.CompositeParts[1].StringKeys != StringKeys.ExactFoldedAndSortKey ||
+            compositeBuilder.Parts.Count != 2 ||
+            positionalCompositeKey.Count != 2 ||
+            !Equals(positionalCompositeKey[1], "eric") ||
+            namedCompositeKey.Values[0].Name != "tenantId")
         {
             throw new InvalidDataException("Index shape descriptors did not capture expected projection intent.");
         }
 
+        try
+        {
+            Key.Named(
+                Key.Part("username", "eric"),
+                Key.Part("tenantId", Guid.Empty)).ValidateAgainst(compositeShape);
+            throw new InvalidDataException("Composite key validation accepted mismatched named part order.");
+        }
+        catch (ArgumentException)
+        {
+        }
+
         LibraDexIndexShapeSpec peopleAgeShape = catalog.Indexes["people"]["age"].Shape.Scalar<long, long>();
         LibraDexIndexShapeSpec peopleGenderShape = catalog.Indexes["people"]["gender"].Shape.Scalar<long, long>();
-        IIndex peopleAge = catalog.Indexes.Create(peopleAgeShape, slotIndex: 1);
-        IIndex peopleGender = catalog.Indexes.Create(peopleGenderShape, slotIndex: 2);
+        LibraDexIndexShapeSpec peopleCreatedDateShape = catalog.Indexes["people"]["createdDate"].Shape.Date<DateOnly, long>(
+            DateKeys.ExactAndStructured,
+            keys: IndexKeys.NonUnique);
+        LibraDexIndexShapeSpec peopleCreatedOffsetShape = catalog.Indexes["people"]["createdOffset"].Shape.Date<DateTimeOffset, long>(
+            DateKeys.ExactAndStructured,
+            keys: IndexKeys.NonUnique);
+        LibraDexIndexShapeSpec peopleCreatedTimeShape = catalog.Indexes["people"]["createdTime"].Shape.Date<TimeOnly, long>(
+            DateKeys.ExactAndStructured,
+            keys: IndexKeys.NonUnique);
+        LibraDexIndexShapeSpec peopleDurationShape = catalog.Indexes["people"]["duration"].Shape.Date<TimeSpan, long>(
+            DateKeys.Exact,
+            keys: IndexKeys.NonUnique);
+        LibraDexIndexShapeSpec peopleScoreShape = catalog.Indexes["people"]["score"].Shape.Scalar<uint, long>();
+        LibraDexIndexShapeSpec peopleActiveShape = catalog.Indexes["people"]["active"].Shape.Scalar<bool, long>();
+        IIndex peopleAge = catalog.Indexes.Create(peopleAgeShape);
+        IIndex peopleGender = catalog.Indexes.Create(peopleGenderShape);
+        IIndex peopleCreated = catalog.Indexes.Create(createdShape);
+        IIndex peopleCreatedDate = catalog.Indexes.Create(peopleCreatedDateShape);
+        IIndex peopleCreatedOffset = catalog.Indexes.Create(peopleCreatedOffsetShape);
+        IIndex peopleCreatedTime = catalog.Indexes.Create(peopleCreatedTimeShape);
+        IIndex peopleExternalId = catalog.Indexes.Create(idShape);
+        IIndex peopleDuration = catalog.Indexes.Create(peopleDurationShape);
+        IIndex peopleScore = catalog.Indexes.Create(peopleScoreShape);
+        IIndex peopleActive = catalog.Indexes.Create(peopleActiveShape);
+        LibraDexIndex<byte[], long> peopleFingerprint = catalog.Indexes["people"]["fingerprint"].Blob.Scalar<long>(LibraDexScalarWidth.Bytes16).Create();
+        LibraDexIndex<byte[], long> peopleFingerprintReversed = catalog.Indexes["people"]["fingerprintReversed"].Blob.Scalar<long>(
+            LibraDexScalarWidth.Bytes16,
+            directions: LibraDexProjectionDirectionSet.ForwardAndReversed).Create();
+        LibraDexIndex<byte[], long> peopleTypedFingerprint = catalog.Indexes["people"]["typedFingerprint"].Blob.Scalar<long>(LibraDexScalarWidth.Bytes16).Create();
+        CatalogIndexInfo[] peopleIndexesAfterBinaryProjection = catalog.Indexes["people"].List();
+        if (!catalog.Indexes.TryGetInfo("people", "fingerprintReversed", out CatalogIndexInfo fingerprintReversedInfo) ||
+            fingerprintReversedInfo.ExactReversedProjectionSlotIndex < 0 ||
+            !fingerprintReversedInfo.Projections.Any(static projection =>
+                projection.Kind == LibraDexIndexProjectionKind.Exact &&
+                projection.Direction == LibraDexIndexByteDirection.Reversed) ||
+            peopleIndexesAfterBinaryProjection.Any(static info => info.Name.Contains("#exact-rev", StringComparison.Ordinal)))
+        {
+            throw new InvalidDataException("Binary reversed projection metadata did not stay hidden behind the owning grouped index.");
+        }
+
+        using LibraDexStringScalar8Index peopleDisplayName = catalog.Indexes["people"]["displayName"].String.Create(
+            stringKeys: StringKeys.ExactFoldedAndSortKey,
+            directions: LibraDexProjectionDirectionSet.ForwardAndReversed,
+            sortKeyCulture: "en-US");
+        ValidateGenericInsert(peopleDisplayName.Insert("Eric", 501UL), "displayName string insert Eric");
+        ValidateGenericInsert(peopleDisplayName.Insert("erin", 502UL), "displayName string insert erin");
+        ValidateGenericInsert(peopleDisplayName.Insert("Alice", 503UL), "displayName string insert Alice");
+        using LibraDexStringScalar8Index peopleAlias = catalog.Indexes["people"]["alias"].String.Create(
+            stringKeys: StringKeys.Exact);
+        ValidateGenericInsert(peopleAlias.Insert("Eric", 601UL), "alias string insert Eric");
+        ValidateGenericInsert(peopleAlias.Insert("erin", 602UL), "alias string insert erin");
+        ValidateGenericInsert(peopleAlias.Insert("Alice", 603UL), "alias string insert Alice");
+        ValidateGenericInsert(peopleAlias.Insert("Maverick", 604UL), "alias string insert Maverick");
+        using LibraDexStringScalar8Index peopleAliasExactSuffix = catalog.Indexes["people"]["aliasExactSuffix"].String.Create(
+            stringKeys: StringKeys.Exact,
+            directions: LibraDexProjectionDirectionSet.ForwardAndReversed);
+        ValidateGenericInsert(peopleAliasExactSuffix.Insert("Topic", 605UL), "alias exact suffix string insert Topic");
+        using LibraDexStringScalar8Index peoplePolicyAlias = catalog.Indexes["people"]["policyAlias"].String.Create(
+            stringKeys: StringKeys.Exact,
+            stringComparisonPolicy: LibraDexStringComparisonPolicy.OrdinalIgnoreCase);
+        ValidateGenericInsert(peoplePolicyAlias.Insert("Eric", 701UL), "policy alias string insert Eric");
+        ValidateGenericInsert(peoplePolicyAlias.Insert("Alice", 702UL), "policy alias string insert Alice");
         if (peopleAge.Group != "people" ||
             peopleAge.Name != "age" ||
             peopleAge.KeyType != typeof(long) ||
@@ -8178,471 +9661,2122 @@ internal static class RawHarness
         }
 
         IIndex reopenedPeopleAge = catalog.Indexes.Open(peopleAgeShape);
-        IIndex createOrOpenPeopleGender = catalog.Indexes.CreateOrOpen(peopleGenderShape, slotIndex: 2);
+        IIndex createOrOpenPeopleGender = catalog.Indexes.CreateOrOpen(peopleGenderShape);
         if (reopenedPeopleAge.Name != "age" ||
             createOrOpenPeopleGender.Name != "gender")
         {
             throw new InvalidDataException("Shape-driven catalog open/create-or-open did not return expected handles.");
         }
 
-        LibraDexIdentityCondition condition = LibraDexIdentityConditions
+        HashSet<object> peopleAgeHashSet = new() { 18L, 21L };
+        LibraDexPreparedObjectSet peopleAgeSet = peopleAge.PrepareInSet(peopleAgeHashSet);
+        LibraDexConditionEndCondition adoptedCondition = LibraDexCondition
             .ForGroup("people")
-            .Grouped(group => group
-                .Where(peopleAge).AtOrAfter(18L, "ageMin")
-                .Or(peopleGender).Find(2L)
-                .End())
-            .And(peopleAge).Before(80L)
-            .End();
-        IIdentityCriterion materializedCondition = condition.Materialize();
-        IIdentityCriterion rematerializedCondition = condition.Materialize();
-        IReadOnlyList<string> conditionParameterNames = condition.ParameterNames;
-        IIdentityCriterion replacedCondition = condition.Replace("ageMin", 21L).Materialize();
-        IIdentityCriterion negatedLeafCondition = LibraDexIdentityConditions
+            .Index("age").AsInt64.GreaterOrEqual(18L)
+            .AND.Index("gender").AsInt64.EqualTo(2L)
+            .EndCondition;
+        HashSet<long> adoptedAgeMembershipSet = new() { 18L, 21L };
+        LibraDexConditionEndCondition adoptedHashSetMembershipCondition = LibraDexCondition
             .ForGroup("people")
-            .Where(peopleAge).Not.Between(13L, 17L)
-            .AndNot(peopleGender).Find(0L)
-            .End()
-            .Materialize();
-        int deferredMaxAge = 65;
-        LibraDexIdentityCondition deferredBoundaryDescriptor = LibraDexIdentityConditions
+            .Index("age").AsInt64.InSet(adoptedAgeMembershipSet)
+            .EndCondition;
+        HashSet<long> adoptedAgeInAliasSet = new() { 18L, 21L };
+        LibraDexConditionEndCondition adoptedInAliasMembershipCondition = LibraDexCondition
             .ForGroup("people")
-            .Where(peopleAge).AtOrBefore(LibraDexConditionOperand.Deferred(() => (long)deferredMaxAge, "maxAge"))
-            .End();
-        IIdentityCriterion deferredBoundaryCondition = deferredBoundaryDescriptor.Materialize();
-        deferredMaxAge = 66;
-        IIdentityCriterion refreshedDeferredBoundaryCondition = deferredBoundaryDescriptor.Materialize();
-        IIdentityCriterion replacedDeferredBoundaryCondition = deferredBoundaryDescriptor
-            .Replace("maxAge", 64L)
-            .Materialize();
-        LibraDexIdentityCondition invalidDeferredCondition = LibraDexIdentityConditions
+            .Index("age").AsInt64.In(adoptedAgeInAliasSet)
+            .EndCondition;
+        LibraDexConditionEndCondition adoptedIsInAliasMembershipCondition = LibraDexCondition
             .ForGroup("people")
-            .Where(peopleAge).AtOrBefore(LibraDexConditionOperand.Deferred(() => "65", "maxAge"))
-            .End();
-        IIdentityCriterion negatedGroupCondition = LibraDexIdentityConditions
+            .Index("age").AsInt64.IsIn(adoptedAgeMembershipSet)
+            .EndCondition;
+        LibraDexConditionEndCondition adoptedNotInAliasMembershipCondition = LibraDexCondition
             .ForGroup("people")
-            .Grouped(group => group
-                .Where(peopleAge).After(10L)
-                .Or(peopleGender).Find(1L)
-                .End())
-            .AndNotGroup(group => group
-                .Where(peopleAge).Before(5L)
-                .Or(peopleGender).Find(0L)
-                .End())
-            .End()
-            .Materialize();
-        IIdentityCriterionProjection materializedIds = materializedCondition.IDsWith(
-            IdentityResultOrdering.IdentityDescending,
-            IdentityDeduplication.Preserve,
-            skip: 2,
-            take: 5,
-            bookmark: new LibraDexBookmark(3, 9));
-        LibraDexIdentityExecutionPlan conditionPlan = materializedIds.Plan();
-        LibraDexIdentityExecutionPlan notGroupPlan = negatedGroupCondition.IDsWith(deduplication: IdentityDeduplication.Preserve).Plan();
-        IIdentityCriterionMutation materializedMutation = materializedCondition.Mutate.SetKey(99L);
-        LibraDexPreparedObjectSet peopleAgeSet = peopleAge.PrepareInSet(new object[] { 18L, 21L });
-        if (materializedCondition.NodeKind != LibraDexIdentityCriterionNodeKind.And ||
-            !ReferenceEquals(materializedCondition, rematerializedCondition) ||
-            conditionParameterNames.Count != 1 ||
-            conditionParameterNames[0] != "ageMin" ||
-            materializedCondition.Left?.NodeKind != LibraDexIdentityCriterionNodeKind.Or ||
-            materializedCondition.Left.Left?.CriteriaKind != LibraDexCriteriaKind.AtOrAfter ||
-            materializedCondition.Left.Left.Values[0] is not long originalAgeMin ||
-            originalAgeMin != 18L ||
-            replacedCondition.Left?.Left?.Values[0] is not long replacedAgeMin ||
-            replacedAgeMin != 21L ||
-            negatedLeafCondition.NodeKind != LibraDexIdentityCriterionNodeKind.And ||
-            negatedLeafCondition.Left?.NodeKind != LibraDexIdentityCriterionNodeKind.Not ||
-            negatedLeafCondition.Left.Left?.CriteriaKind != LibraDexCriteriaKind.Between ||
-            negatedLeafCondition.Right?.NodeKind != LibraDexIdentityCriterionNodeKind.Not ||
-            negatedLeafCondition.Right.Left?.CriteriaKind != LibraDexCriteriaKind.Find ||
-            deferredBoundaryCondition.CriteriaKind != LibraDexCriteriaKind.AtOrBefore ||
-            deferredBoundaryCondition.Values[0] is not long firstDeferredMaxAge ||
-            firstDeferredMaxAge != 65L ||
-            refreshedDeferredBoundaryCondition.Values[0] is not long secondDeferredMaxAge ||
-            secondDeferredMaxAge != 66L ||
-            ReferenceEquals(deferredBoundaryCondition, refreshedDeferredBoundaryCondition) ||
-            replacedDeferredBoundaryCondition.Values[0] is not long replacedMaxAge ||
-            replacedMaxAge != 64L ||
-            negatedGroupCondition.NodeKind != LibraDexIdentityCriterionNodeKind.And ||
-            negatedGroupCondition.Right?.NodeKind != LibraDexIdentityCriterionNodeKind.Not ||
-            negatedGroupCondition.Right.Left?.NodeKind != LibraDexIdentityCriterionNodeKind.Or ||
-            materializedIds.Options.Ordering != IdentityResultOrdering.IdentityDescending ||
-            materializedIds.Options.Deduplication != IdentityDeduplication.Preserve ||
-            materializedIds.Options.SkipCount != 2 ||
-            materializedIds.Options.TakeCount != 5 ||
-            materializedIds.Options.Bookmark?.Generation != 3 ||
-            conditionPlan.Kind != LibraDexIdentityPlanKind.Intersection ||
-            conditionPlan.LeafCount != 3 ||
-            conditionPlan.Indexes.Count != 2 ||
-            conditionPlan.RequiresOrdering != true ||
-            conditionPlan.RequiresPaging != true ||
-            conditionPlan.Materialization != LibraDexIdentityPlanMaterialization.IdentitySet ||
-            notGroupPlan.ContainsNegation != true ||
-            notGroupPlan.Materialization != LibraDexIdentityPlanMaterialization.IdentitySet ||
-            materializedMutation.Kind != LibraDexCriteriaMutationKind.SetKey ||
-            !Equals(materializedMutation.NewKey, 99L) ||
-            peopleAgeSet.KeyType != typeof(long) ||
-            peopleAgeSet.Values.Count != 2 ||
-            peopleAge.Criteria.InSet(peopleAgeSet).CriteriaKind != LibraDexCriteriaKind.InSet ||
-            peopleAge.InSet(peopleAgeSet).Diagnostics.ExecutionKind != LibraDexExecutionKind.Projection ||
-            peopleAge.Criteria.InSet(new object[] { 18L, 21L }).CriteriaKind != LibraDexCriteriaKind.InSet ||
-            LibraDexIdentityConditions
-                .ForGroup("people")
-                .Where(peopleAge).InSet(new object[] { 18L, 21L })
-                .End()
-                .Materialize()
-                .CriteriaKind != LibraDexCriteriaKind.InSet)
+            .Index("age").AsInt64.NotIn(adoptedAgeMembershipSet)
+            .EndCondition;
+        IReadOnlyDictionary<string, IIndex> adoptedIndexes = new Dictionary<string, IIndex>(StringComparer.Ordinal)
         {
-            throw new InvalidDataException("Identity condition builder did not preserve grouping or replace late-bound operands.");
+            ["age"] = peopleAge,
+            ["gender"] = peopleGender
+        };
+        IIdentityCriterion adoptedCriterion = adoptedCondition.Materialize(adoptedIndexes);
+        IIdentityCriterion adoptedHashSetMembershipCriterion = adoptedHashSetMembershipCondition.Materialize(adoptedIndexes);
+        IIdentityCriterion adoptedInAliasMembershipCriterion = adoptedInAliasMembershipCondition.Materialize(adoptedIndexes);
+        IReadOnlyList<LibraDexConditionLeafClassification> adoptedClassifications = adoptedCondition.Classify(adoptedIndexes);
+        LibraDexConditionBridgePlan adoptedBridgePlan = adoptedCondition.PlanBridge(adoptedIndexes);
+        LibraDexConditionEndCondition adoptedTextCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("firstName").AsString.StartsWith("er", ignoreCase: true, culture: "en-US")
+            .EndCondition;
+        IReadOnlyList<LibraDexConditionLeafDescriptor> adoptedTextLeaves = adoptedTextCondition.Leaves;
+        IIndex firstNameClassificationIndex = new ClassificationOnlyIndex(firstNameShape);
+        IReadOnlyList<LibraDexConditionLeafClassification> adoptedTextClassifications = adoptedTextCondition.Classify(
+            new Dictionary<string, IIndex>(StringComparer.Ordinal)
+            {
+                ["firstName"] = firstNameClassificationIndex
+            });
+        LibraDexConditionBridgePlan adoptedTextBridgePlan = adoptedTextCondition.PlanBridge(
+            new Dictionary<string, IIndex>(StringComparer.Ordinal)
+            {
+                ["firstName"] = firstNameClassificationIndex
+            });
+        IIndex firstNameFoldedProjectionIndex = new ClassificationOnlyIndex(catalog.Indexes["people"]["firstNameFolded"].Shape.String<long>());
+        IIdentityCriterion adoptedTextFoldedProjectionCriterion = adoptedTextCondition.MaterializeWithProjectionBridge(
+            indexName => string.Equals(indexName, "firstName", StringComparison.Ordinal)
+                ? firstNameClassificationIndex
+                : throw new KeyNotFoundException($"Unexpected projection test index '{indexName}'."),
+            (_, _) => firstNameFoldedProjectionIndex);
+        LibraDexConditionEndCondition adoptedTextSortKeyCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("firstName").AsString.Between("Alice", "zoe", ignoreCase: true, culture: "en-US")
+            .EndCondition;
+        IIndex firstNameSortKeyProjectionIndex = new ClassificationOnlyIndex(catalog.Indexes["people"]["firstNameSortKey"].Shape.Scalar<byte[], long>());
+        IReadOnlyList<LibraDexConditionLeafClassification> adoptedTextSortKeyClassifications = adoptedTextSortKeyCondition.Classify(
+            new Dictionary<string, IIndex>(StringComparer.Ordinal)
+            {
+                ["firstName"] = firstNameClassificationIndex
+            });
+        IIdentityCriterion adoptedTextSortKeyProjectionCriterion = adoptedTextSortKeyCondition.MaterializeWithProjectionBridge(
+            indexName => string.Equals(indexName, "firstName", StringComparison.Ordinal)
+                ? firstNameClassificationIndex
+                : throw new KeyNotFoundException($"Unexpected projection test index '{indexName}'."),
+            (_, _) => firstNameSortKeyProjectionIndex);
+        LibraDexConditionEndCondition adoptedPhysicalFoldedTextCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("displayName").AsString.StartsWith("er", ignoreCase: true)
+            .EndCondition;
+        IIdentityCriterion adoptedPhysicalFoldedTextCriterion = adoptedPhysicalFoldedTextCondition.MaterializeWithProjectionBridge(
+            peopleDisplayName.ResolveIndex,
+            peopleDisplayName.ResolveProjection);
+        IReadOnlyList<ulong> adoptedPhysicalFoldedTextIds = adoptedPhysicalFoldedTextCriterion.IDs.ToList<ulong>();
+        LibraDexConditionEndCondition adoptedPhysicalSortKeyCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("displayName").AsString.Between("alice", "eriz", ignoreCase: true, culture: "en-US")
+            .EndCondition;
+        IIdentityCriterion adoptedPhysicalSortKeyCriterion = adoptedPhysicalSortKeyCondition.MaterializeWithProjectionBridge(
+            peopleDisplayName.ResolveIndex,
+            peopleDisplayName.ResolveProjection);
+        IReadOnlyList<ulong> adoptedPhysicalSortKeyIds = adoptedPhysicalSortKeyCriterion.IDs.ToList<ulong>();
+        LibraDexConditionEndCondition adoptedPhysicalSortKeyMembershipCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("displayName").AsString.InSet(new[] { "ERIC", "ALICE" }, ignoreCase: true, culture: "en-US")
+            .EndCondition;
+        IIdentityCriterion adoptedPhysicalSortKeyMembershipCriterion = adoptedPhysicalSortKeyMembershipCondition.MaterializeWithProjectionBridge(
+            peopleDisplayName.ResolveIndex,
+            peopleDisplayName.ResolveProjection);
+        IReadOnlyList<ulong> adoptedPhysicalSortKeyMembershipIds = adoptedPhysicalSortKeyMembershipCriterion.IDs.ToList<ulong>();
+        LibraDexConditionEndCondition adoptedPhysicalSuffixCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("displayName").AsString.EndsWith("ic", ignoreCase: true)
+            .EndCondition;
+        IIdentityCriterion adoptedPhysicalSuffixCriterion = adoptedPhysicalSuffixCondition.MaterializeWithProjectionBridge(
+            peopleDisplayName.ResolveIndex,
+            peopleDisplayName.ResolveProjection);
+        IReadOnlyList<ulong> adoptedPhysicalSuffixIds = adoptedPhysicalSuffixCriterion.IDs.ToList<ulong>();
+        LibraDexConditionEndCondition adoptedExactScanPrefixCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("alias").AsString.StartsWith("er", ignoreCase: true)
+            .EndCondition;
+        IIdentityCriterion adoptedExactScanPrefixCriterion = adoptedExactScanPrefixCondition.Materialize(peopleAlias.ResolveIndex);
+        IReadOnlyList<ulong> adoptedExactScanPrefixIds = adoptedExactScanPrefixCriterion.IDs.ToList<ulong>();
+        LibraDexConditionEndCondition adoptedExactPrefixCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("alias").AsString.StartsWith("Er")
+            .EndCondition;
+        IIdentityCriterion adoptedExactPrefixCriterion = adoptedExactPrefixCondition.Materialize(peopleAlias.ResolveIndex);
+        IReadOnlyList<ulong> adoptedExactPrefixIds = adoptedExactPrefixCriterion.IDs.ToList<ulong>();
+        LibraDexConditionEndCondition adoptedExactScanSuffixCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("alias").AsString.EndsWith("IC", ignoreCase: true)
+            .EndCondition;
+        IIdentityCriterion adoptedExactScanSuffixCriterion = adoptedExactScanSuffixCondition.Materialize(peopleAlias.ResolveIndex);
+        IReadOnlyList<ulong> adoptedExactScanSuffixIds = adoptedExactScanSuffixCriterion.IDs.ToList<ulong>();
+        LibraDexConditionEndCondition adoptedExactProjectionSuffixCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("aliasExactSuffix").AsString.EndsWith("ic")
+            .EndCondition;
+        IIdentityCriterion adoptedExactProjectionSuffixCriterion = adoptedExactProjectionSuffixCondition.MaterializeWithProjectionBridge(
+            peopleAliasExactSuffix.ResolveIndex,
+            peopleAliasExactSuffix.ResolveProjection);
+        IReadOnlyList<ulong> adoptedExactProjectionSuffixIds = adoptedExactProjectionSuffixCriterion.IDs.ToList<ulong>();
+        LibraDexConditionEndCondition adoptedExactScanContainsCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("alias").AsString.Contains("ve", ignoreCase: true)
+            .EndCondition;
+        IIdentityCriterion adoptedExactScanContainsCriterion = adoptedExactScanContainsCondition.Materialize(peopleAlias.ResolveIndex);
+        IReadOnlyList<ulong> adoptedExactScanContainsIds = adoptedExactScanContainsCriterion.IDs.ToList<ulong>();
+        LibraDexConditionEndCondition adoptedExactScanPatternCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("alias").AsString.MatchesPattern("ma*ck", ignoreCase: true)
+            .EndCondition;
+        IIdentityCriterion adoptedExactScanPatternCriterion = adoptedExactScanPatternCondition.Materialize(peopleAlias.ResolveIndex);
+        IReadOnlyList<ulong> adoptedExactScanPatternIds = adoptedExactScanPatternCriterion.IDs.ToList<ulong>();
+        LibraDexConditionEndCondition adoptedExactScanEqualCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("alias").AsString.EqualTo("ERIC", ignoreCase: true, culture: "en-US")
+            .EndCondition;
+        IIdentityCriterion adoptedExactScanEqualCriterion = adoptedExactScanEqualCondition.Materialize(peopleAlias.ResolveIndex);
+        IReadOnlyList<ulong> adoptedExactScanEqualIds = adoptedExactScanEqualCriterion.IDs.ToList<ulong>();
+        LibraDexConditionEndCondition adoptedExactScanRangeCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("alias").AsString.Between("alice", "eriz", ignoreCase: true, culture: "en-US")
+            .EndCondition;
+        IIdentityCriterion adoptedExactScanRangeCriterion = adoptedExactScanRangeCondition.Materialize(peopleAlias.ResolveIndex);
+        IReadOnlyList<ulong> adoptedExactScanRangeIds = adoptedExactScanRangeCriterion.IDs.ToList<ulong>();
+        LibraDexConditionEndCondition adoptedExactScanGreaterCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("alias").AsString.GreaterOrEqual("m", ignoreCase: true, culture: "en-US")
+            .EndCondition;
+        IIdentityCriterion adoptedExactScanGreaterCriterion = adoptedExactScanGreaterCondition.Materialize(peopleAlias.ResolveIndex);
+        IReadOnlyList<ulong> adoptedExactScanGreaterIds = adoptedExactScanGreaterCriterion.IDs.ToList<ulong>();
+        LibraDexConditionEndCondition adoptedExactScanInSetCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("alias").AsString.InSet(new[] { "ERIC", "erin" }, ignoreCase: true, culture: "en-US")
+            .EndCondition;
+        IIdentityCriterion adoptedExactScanInSetCriterion = adoptedExactScanInSetCondition.Materialize(peopleAlias.ResolveIndex);
+        IReadOnlyList<ulong> adoptedExactScanInSetIds = adoptedExactScanInSetCriterion.IDs.ToList<ulong>();
+        LibraDexConditionEndCondition adoptedExactScanInAliasCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("alias").AsString.In(new[] { "ERIC", "erin" }, ignoreCase: true, culture: "en-US")
+            .EndCondition;
+        IIdentityCriterion adoptedExactScanInAliasCriterion = adoptedExactScanInAliasCondition.Materialize(peopleAlias.ResolveIndex);
+        IReadOnlyList<ulong> adoptedExactScanInAliasIds = adoptedExactScanInAliasCriterion.IDs.ToList<ulong>();
+        HashSet<string> adoptedDeferredAliasSet = new(StringComparer.OrdinalIgnoreCase) { "ERIC", "erin" };
+        LibraDexConditionEndCondition adoptedExactScanDeferredInSetCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("alias").AsString.InSet(() => adoptedDeferredAliasSet, ignoreCase: true, culture: "en-US")
+            .EndCondition;
+        IIdentityCriterion adoptedExactScanDeferredInSetCriterion = adoptedExactScanDeferredInSetCondition.Materialize(peopleAlias.ResolveIndex);
+        IReadOnlyList<ulong> adoptedExactScanDeferredInSetIds = adoptedExactScanDeferredInSetCriterion.IDs.ToList<ulong>();
+        adoptedDeferredAliasSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "Alice" };
+        IIdentityCriterion updatedAdoptedExactScanDeferredInSetCriterion = adoptedExactScanDeferredInSetCondition.Materialize(peopleAlias.ResolveIndex);
+        IReadOnlyList<ulong> updatedAdoptedExactScanDeferredInSetIds = updatedAdoptedExactScanDeferredInSetCriterion.IDs.ToList<ulong>();
+        LibraDexConditionEndCondition adoptedExactScanNotInSetCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("alias").AsString.NotInSet(new[] { "ERIC", "ERIN" }, ignoreCase: true, culture: "en-US")
+            .EndCondition;
+        IIdentityCriterion adoptedExactScanNotInSetCriterion = adoptedExactScanNotInSetCondition.Materialize(peopleAlias.ResolveIndex);
+        IReadOnlyList<ulong> adoptedExactScanNotInSetIds = adoptedExactScanNotInSetCriterion.IDs.ToList<ulong>();
+        LibraDexConditionEndCondition adoptedExactScanNotInAliasCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("alias").AsString.NotIn(new[] { "ERIC", "ERIN" }, ignoreCase: true, culture: "en-US")
+            .EndCondition;
+        HashSet<string> policyAliasSet = new(StringComparer.OrdinalIgnoreCase) { "ERIC" };
+        LibraDexConditionEndCondition adoptedIndexPolicyInSetCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("policyAlias").AsString.InSet(policyAliasSet)
+            .EndCondition;
+        IIdentityCriterion adoptedIndexPolicyInSetCriterion = adoptedIndexPolicyInSetCondition.Materialize(peoplePolicyAlias.ResolveIndex);
+        IReadOnlyList<ulong> adoptedIndexPolicyInSetIds = adoptedIndexPolicyInSetCriterion.IDs.ToList<ulong>();
+        LibraDexConditionEndCondition adoptedMethodPolicyInSetCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("policyAlias").AsString.InSet(policyAliasSet, LibraDexStringComparisonPolicy.Default)
+            .EndCondition;
+        IIdentityCriterion adoptedMethodPolicyInSetCriterion = adoptedMethodPolicyInSetCondition.Materialize(peoplePolicyAlias.ResolveIndex);
+        IReadOnlyList<ulong> adoptedMethodPolicyInSetIds = adoptedMethodPolicyInSetCriterion.IDs.ToList<ulong>();
+        byte[] expectedAliceSortKey = CultureInfo.GetCultureInfo("en-US").CompareInfo.GetSortKey("Alice", CompareOptions.IgnoreCase).KeyData;
+        byte[] expectedZoeSortKey = CultureInfo.GetCultureInfo("en-US").CompareInfo.GetSortKey("zoe", CompareOptions.IgnoreCase).KeyData;
+        if (adoptedTextFoldedProjectionCriterion.CriteriaKind != LibraDexCriteriaKind.Between ||
+            adoptedTextFoldedProjectionCriterion.Index?.Name != "firstNameFolded" ||
+            adoptedTextFoldedProjectionCriterion.Values[0] is not string adoptedFoldedLower ||
+            adoptedFoldedLower != "er" ||
+            adoptedTextFoldedProjectionCriterion.Values[1] is not string adoptedFoldedUpper ||
+            adoptedFoldedUpper != "er\uffff" ||
+            adoptedTextSortKeyClassifications[0].ExecutionClass != LibraDexConditionExecutionClass.ProjectionBacked ||
+            adoptedTextSortKeyClassifications[0].ProjectionKind != LibraDexIndexProjectionKind.SortKey ||
+            adoptedTextSortKeyProjectionCriterion.CriteriaKind != LibraDexCriteriaKind.Between ||
+            adoptedTextSortKeyProjectionCriterion.Index?.Name != "firstNameSortKey" ||
+            adoptedTextSortKeyProjectionCriterion.Values[0] is not byte[] adoptedSortKeyLower ||
+            !adoptedSortKeyLower.SequenceEqual(expectedAliceSortKey) ||
+            adoptedTextSortKeyProjectionCriterion.Values[1] is not byte[] adoptedSortKeyUpper ||
+            !adoptedSortKeyUpper.SequenceEqual(expectedZoeSortKey) ||
+            adoptedPhysicalFoldedTextCriterion.CriteriaKind != LibraDexCriteriaKind.Between ||
+            adoptedPhysicalFoldedTextIds.Count != 2 ||
+            adoptedPhysicalFoldedTextIds[0] != 501UL ||
+            adoptedPhysicalFoldedTextIds[1] != 502UL ||
+            adoptedPhysicalSortKeyCriterion.CriteriaKind != LibraDexCriteriaKind.Between ||
+            adoptedPhysicalSortKeyCriterion.Index?.Name != "displayName#sortkey" ||
+            adoptedPhysicalSortKeyIds.Count != 3 ||
+            adoptedPhysicalSortKeyIds[0] != 503UL ||
+            adoptedPhysicalSortKeyIds[1] != 501UL ||
+            adoptedPhysicalSortKeyIds[2] != 502UL ||
+            adoptedPhysicalSortKeyMembershipCriterion.CriteriaKind != LibraDexCriteriaKind.InSet ||
+            adoptedPhysicalSortKeyMembershipCriterion.Index?.Name != "displayName#sortkey" ||
+            adoptedPhysicalSortKeyMembershipCriterion.Values.Count != 1 ||
+            adoptedPhysicalSortKeyMembershipIds.Count != 2 ||
+            adoptedPhysicalSortKeyMembershipIds[0] != 501UL ||
+            adoptedPhysicalSortKeyMembershipIds[1] != 503UL ||
+            adoptedPhysicalSuffixCriterion.CriteriaKind != LibraDexCriteriaKind.Between ||
+            adoptedPhysicalSuffixCriterion.Index?.Name != "displayName#folded-rev" ||
+            adoptedPhysicalSuffixIds.Count != 1 ||
+            adoptedPhysicalSuffixIds[0] != 501UL ||
+            adoptedExactScanPrefixCriterion.CriteriaKind != LibraDexCriteriaKind.StringPattern ||
+            adoptedExactScanPrefixIds.Count != 2 ||
+            adoptedExactScanPrefixIds[0] != 601UL ||
+            adoptedExactScanPrefixIds[1] != 602UL ||
+            adoptedExactPrefixCriterion.CriteriaKind != LibraDexCriteriaKind.Between ||
+            adoptedExactPrefixIds.Count != 1 ||
+            adoptedExactPrefixIds[0] != 601UL ||
+            adoptedExactScanSuffixCriterion.CriteriaKind != LibraDexCriteriaKind.StringPattern ||
+            adoptedExactScanSuffixIds.Count != 1 ||
+            adoptedExactScanSuffixIds[0] != 601UL ||
+            adoptedExactProjectionSuffixCriterion.CriteriaKind != LibraDexCriteriaKind.Between ||
+            adoptedExactProjectionSuffixCriterion.Index?.Name != "aliasExactSuffix#exact-rev" ||
+            adoptedExactProjectionSuffixIds.Count != 1 ||
+            adoptedExactProjectionSuffixIds[0] != 605UL ||
+            adoptedExactScanContainsCriterion.CriteriaKind != LibraDexCriteriaKind.StringPattern ||
+            adoptedExactScanContainsIds.Count != 1 ||
+            adoptedExactScanContainsIds[0] != 604UL ||
+            adoptedExactScanPatternCriterion.CriteriaKind != LibraDexCriteriaKind.StringPattern ||
+            adoptedExactScanPatternIds.Count != 1 ||
+            adoptedExactScanPatternIds[0] != 604UL ||
+            adoptedExactScanEqualCriterion.CriteriaKind != LibraDexCriteriaKind.StringPattern ||
+            adoptedExactScanEqualIds.Count != 1 ||
+            adoptedExactScanEqualIds[0] != 601UL ||
+            adoptedExactScanRangeCriterion.CriteriaKind != LibraDexCriteriaKind.StringPattern ||
+            adoptedExactScanRangeIds.Count != 3 ||
+            adoptedExactScanRangeIds[0] != 603UL ||
+            adoptedExactScanRangeIds[1] != 601UL ||
+            adoptedExactScanRangeIds[2] != 602UL ||
+            adoptedExactScanGreaterCriterion.CriteriaKind != LibraDexCriteriaKind.StringPattern ||
+            adoptedExactScanGreaterIds.Count != 1 ||
+            adoptedExactScanGreaterIds[0] != 604UL ||
+            adoptedExactScanInSetCriterion.CriteriaKind != LibraDexCriteriaKind.StringPattern ||
+            adoptedExactScanInSetIds.Count != 2 ||
+            adoptedExactScanInSetIds[0] != 601UL ||
+            adoptedExactScanInSetIds[1] != 602UL ||
+            adoptedExactScanInAliasCondition.Leaves[0].Operator != LibraDexConditionOperatorKind.InSet ||
+            adoptedExactScanInAliasCriterion.CriteriaKind != LibraDexCriteriaKind.StringPattern ||
+            adoptedExactScanInAliasIds.Count != 2 ||
+            adoptedExactScanInAliasIds[0] != 601UL ||
+            adoptedExactScanInAliasIds[1] != 602UL ||
+            adoptedExactScanDeferredInSetCriterion.CriteriaKind != LibraDexCriteriaKind.StringPattern ||
+            adoptedExactScanDeferredInSetIds.Count != 2 ||
+            adoptedExactScanDeferredInSetIds[0] != 601UL ||
+            adoptedExactScanDeferredInSetIds[1] != 602UL ||
+            updatedAdoptedExactScanDeferredInSetCriterion.CriteriaKind != LibraDexCriteriaKind.StringPattern ||
+            updatedAdoptedExactScanDeferredInSetIds.Count != 1 ||
+            updatedAdoptedExactScanDeferredInSetIds[0] != 603UL ||
+            adoptedExactScanNotInSetCriterion.CriteriaKind != LibraDexCriteriaKind.StringPattern ||
+            adoptedExactScanNotInSetIds.Count != 2 ||
+            adoptedExactScanNotInSetIds[0] != 603UL ||
+            adoptedExactScanNotInSetIds[1] != 604UL ||
+            adoptedExactScanNotInAliasCondition.Leaves[0].Operator != LibraDexConditionOperatorKind.NotInSet ||
+            adoptedIndexPolicyInSetCriterion.CriteriaKind != LibraDexCriteriaKind.StringPattern ||
+            adoptedIndexPolicyInSetIds.Count != 1 ||
+            adoptedIndexPolicyInSetIds[0] != 701UL ||
+            adoptedMethodPolicyInSetCriterion.CriteriaKind != LibraDexCriteriaKind.StringPattern ||
+            adoptedMethodPolicyInSetIds.Count != 0)
+        {
+            throw new InvalidDataException("Adopted text projection bridge did not materialize folded-text or sort-key operands correctly.");
+        }
+        IReadOnlyList<LibraDexConditionLeafClassification> missingIndexClassifications = adoptedTextCondition.Classify(
+            new Dictionary<string, IIndex>(StringComparer.Ordinal));
+        LibraDexConditionBridgePlan missingIndexBridgePlan = adoptedTextCondition.PlanBridge(
+            new Dictionary<string, IIndex>(StringComparer.Ordinal));
+        IIndex wrongGroupFirstName = new ClassificationOnlyIndex(firstNameShape, groupOverride: "orders");
+        IReadOnlyList<LibraDexConditionLeafClassification> wrongGroupClassifications = adoptedTextCondition.Classify(
+            new Dictionary<string, IIndex>(StringComparer.Ordinal)
+            {
+                ["firstName"] = wrongGroupFirstName
+            });
+        LibraDexConditionBridgePlan wrongGroupBridgePlan = adoptedTextCondition.PlanBridge(
+            new Dictionary<string, IIndex>(StringComparer.Ordinal)
+            {
+                ["firstName"] = wrongGroupFirstName
+            });
+        LibraDexConditionEndCondition adoptedTextContainsCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("firstName").AsString.Contains("ri")
+            .EndCondition;
+        IReadOnlyList<LibraDexConditionLeafClassification> adoptedTextContainsClassifications = adoptedTextContainsCondition.Classify(
+            new Dictionary<string, IIndex>(StringComparer.Ordinal)
+            {
+                ["firstName"] = firstNameClassificationIndex
+            });
+        LibraDexConditionBridgePlan adoptedTextContainsBridgePlan = adoptedTextContainsCondition.PlanBridge(
+            new Dictionary<string, IIndex>(StringComparer.Ordinal)
+            {
+                ["firstName"] = firstNameClassificationIndex
+            });
+        LibraDexConditionEndCondition adoptedDateCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("created").AsDate.YearEqualTo(2026)
+            .EndCondition;
+        LibraDexConditionEndCondition adoptedDateYearRangeCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("created").AsDate.YearRange(2025, 2026)
+            .EndCondition;
+        LibraDexConditionEndCondition adoptedDateYearMonthCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("created").AsDate.YearMonth(2026, 12)
+            .EndCondition;
+        LibraDexConditionEndCondition adoptedDateYearMonthDayCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("created").AsDate.YearMonthDay(2026, 1, 1)
+            .EndCondition;
+        LibraDexConditionEndCondition adoptedDateYearMonthInCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("created").AsDate.YearMonthIn(new[] { (2026, 1), (2026, 12) })
+            .EndCondition;
+        LibraDexConditionEndCondition adoptedDateYearMonthDayInCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("created").AsDate.YearMonthDayIn(new[] { (2025, 12, 31), (2026, 1, 1) })
+            .EndCondition;
+        LibraDexConditionEndCondition adoptedDateMonthOnlyCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("created").AsDate.MonthEqualTo(12)
+            .EndCondition;
+        LibraDexConditionEndCondition adoptedDateOnlyCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("createdDate").AsDateOnly.YearMonthDay(2026, 5, 20)
+            .EndCondition;
+        LibraDexConditionEndCondition adoptedDateOffsetCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("createdOffset").AsDate.YearRange(2025, 2026)
+            .EndCondition;
+        LibraDexConditionEndCondition adoptedDateOffsetExactCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("createdOffset").AsDateTimeOffset.EqualTo(new DateTimeOffset(2025, 12, 31, 23, 0, 0, TimeSpan.FromHours(-1)))
+            .EndCondition;
+        LibraDexConditionEndCondition adoptedDurationCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("duration").AsTimeSpan.Between(TimeSpan.FromHours(1), TimeSpan.FromHours(2))
+            .EndCondition;
+        LibraDexConditionEndCondition adoptedScoreCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("score").AsUInt32.GreaterOrEqual(100U)
+            .EndCondition;
+        LibraDexConditionEndCondition adoptedScoreAfterMaxCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("score").AsUInt32.GreaterThan(uint.MaxValue)
+            .EndCondition;
+        LibraDexConditionEndCondition adoptedScoreMaskedEqualCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("score").AsUInt32.BitAnd(0x0FU, 0x0DU)
+            .EndCondition;
+        LibraDexConditionEndCondition adoptedScoreAllBitsCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("score").AsUInt32.AllBitsSet(0x03U)
+            .EndCondition;
+        LibraDexConditionEndCondition adoptedScoreAnyBitsCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("score").AsUInt32.AnyBitsSet(0x04U)
+            .EndCondition;
+        LibraDexConditionEndCondition adoptedScoreNoBitsCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("score").AsUInt32.NoBitsSet(0x04U)
+            .EndCondition;
+        uint adoptedDeferredScoreMask = 0x0FU;
+        uint adoptedDeferredScoreCompare = 0x0DU;
+        LibraDexConditionEndCondition adoptedScoreDeferredBitmaskCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("score").AsUInt32.BitAnd(() => adoptedDeferredScoreMask, () => adoptedDeferredScoreCompare)
+            .EndCondition;
+        LibraDexConditionEndCondition adoptedActiveCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("active").AsBoolean.EqualTo(true)
+            .EndCondition;
+        LibraDexConditionEndCondition adoptedActiveAfterTrueCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("active").AsBoolean.GreaterThan(true)
+            .EndCondition;
+        LibraDexConditionEndCondition adoptedTimeMorningCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("createdTime").AsTimeOnly.IsMorning()
+            .EndCondition;
+        LibraDexConditionEndCondition adoptedTimeAfternoonCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("createdTime").AsTimeOnly.IsAfternoon()
+            .EndCondition;
+        LibraDexConditionEndCondition adoptedTimeEveningCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("createdTime").AsTimeOnly.IsEvening()
+            .EndCondition;
+        LibraDexConditionEndCondition adoptedTimeNightCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("createdTime").AsTimeOnly.IsNight()
+            .EndCondition;
+        IReadOnlyList<LibraDexConditionLeafClassification> adoptedDateClassifications = adoptedDateCondition.Classify(
+            new Dictionary<string, IIndex>(StringComparer.Ordinal)
+            {
+                ["created"] = peopleCreated
+            });
+        IReadOnlyList<LibraDexConditionLeafClassification> adoptedDateYearRangeClassifications = adoptedDateYearRangeCondition.Classify(
+            new Dictionary<string, IIndex>(StringComparer.Ordinal)
+            {
+                ["created"] = peopleCreated
+            });
+        IReadOnlyList<LibraDexConditionLeafClassification> adoptedDateYearMonthClassifications = adoptedDateYearMonthCondition.Classify(
+            new Dictionary<string, IIndex>(StringComparer.Ordinal)
+            {
+                ["created"] = peopleCreated
+            });
+        IReadOnlyList<LibraDexConditionLeafClassification> adoptedDateYearMonthDayClassifications = adoptedDateYearMonthDayCondition.Classify(
+            new Dictionary<string, IIndex>(StringComparer.Ordinal)
+            {
+                ["created"] = peopleCreated
+            });
+        IReadOnlyList<LibraDexConditionLeafClassification> adoptedDateYearMonthInClassifications = adoptedDateYearMonthInCondition.Classify(
+            new Dictionary<string, IIndex>(StringComparer.Ordinal)
+            {
+                ["created"] = peopleCreated
+            });
+        IReadOnlyList<LibraDexConditionLeafClassification> adoptedDateYearMonthDayInClassifications = adoptedDateYearMonthDayInCondition.Classify(
+            new Dictionary<string, IIndex>(StringComparer.Ordinal)
+            {
+                ["created"] = peopleCreated
+            });
+        IReadOnlyList<LibraDexConditionLeafClassification> adoptedDateMonthOnlyClassifications = adoptedDateMonthOnlyCondition.Classify(
+            new Dictionary<string, IIndex>(StringComparer.Ordinal)
+            {
+                ["created"] = peopleCreated
+            });
+        IReadOnlyList<LibraDexConditionLeafClassification> adoptedDateOnlyClassifications = adoptedDateOnlyCondition.Classify(
+            new Dictionary<string, IIndex>(StringComparer.Ordinal)
+            {
+                ["createdDate"] = peopleCreatedDate
+            });
+        IReadOnlyList<LibraDexConditionLeafClassification> adoptedDateOffsetClassifications = adoptedDateOffsetCondition.Classify(
+            new Dictionary<string, IIndex>(StringComparer.Ordinal)
+            {
+                ["createdOffset"] = peopleCreatedOffset
+            });
+        IReadOnlyDictionary<string, IIndex> adoptedTimeIndexes = new Dictionary<string, IIndex>(StringComparer.Ordinal)
+        {
+            ["createdTime"] = peopleCreatedTime
+        };
+        IReadOnlyList<LibraDexConditionLeafClassification> adoptedTimeMorningClassifications = adoptedTimeMorningCondition.Classify(adoptedTimeIndexes);
+        IReadOnlyList<LibraDexConditionLeafClassification> adoptedTimeAfternoonClassifications = adoptedTimeAfternoonCondition.Classify(adoptedTimeIndexes);
+        IReadOnlyList<LibraDexConditionLeafClassification> adoptedTimeEveningClassifications = adoptedTimeEveningCondition.Classify(adoptedTimeIndexes);
+        IReadOnlyList<LibraDexConditionLeafClassification> adoptedTimeNightClassifications = adoptedTimeNightCondition.Classify(adoptedTimeIndexes);
+        LibraDexConditionBridgePlan adoptedDateBridgePlan = adoptedDateCondition.PlanBridge(
+            new Dictionary<string, IIndex>(StringComparer.Ordinal)
+            {
+                ["created"] = peopleCreated
+            });
+        LibraDexConditionBridgePlan adoptedDateYearRangeBridgePlan = adoptedDateYearRangeCondition.PlanBridge(
+            new Dictionary<string, IIndex>(StringComparer.Ordinal)
+            {
+                ["created"] = peopleCreated
+            });
+        LibraDexConditionBridgePlan adoptedDateYearMonthBridgePlan = adoptedDateYearMonthCondition.PlanBridge(
+            new Dictionary<string, IIndex>(StringComparer.Ordinal)
+            {
+                ["created"] = peopleCreated
+            });
+        LibraDexConditionBridgePlan adoptedDateYearMonthDayBridgePlan = adoptedDateYearMonthDayCondition.PlanBridge(
+            new Dictionary<string, IIndex>(StringComparer.Ordinal)
+            {
+                ["created"] = peopleCreated
+            });
+        LibraDexConditionBridgePlan adoptedDateYearMonthInBridgePlan = adoptedDateYearMonthInCondition.PlanBridge(
+            new Dictionary<string, IIndex>(StringComparer.Ordinal)
+            {
+                ["created"] = peopleCreated
+            });
+        LibraDexConditionBridgePlan adoptedDateYearMonthDayInBridgePlan = adoptedDateYearMonthDayInCondition.PlanBridge(
+            new Dictionary<string, IIndex>(StringComparer.Ordinal)
+            {
+                ["created"] = peopleCreated
+            });
+        LibraDexConditionBridgePlan adoptedDateMonthOnlyBridgePlan = adoptedDateMonthOnlyCondition.PlanBridge(
+            new Dictionary<string, IIndex>(StringComparer.Ordinal)
+            {
+                ["created"] = peopleCreated
+            });
+        LibraDexConditionBridgePlan adoptedDateOnlyBridgePlan = adoptedDateOnlyCondition.PlanBridge(
+            new Dictionary<string, IIndex>(StringComparer.Ordinal)
+            {
+                ["createdDate"] = peopleCreatedDate
+            });
+        LibraDexConditionBridgePlan adoptedDateOffsetBridgePlan = adoptedDateOffsetCondition.PlanBridge(
+            new Dictionary<string, IIndex>(StringComparer.Ordinal)
+            {
+                ["createdOffset"] = peopleCreatedOffset
+            });
+        LibraDexConditionBridgePlan adoptedDateOffsetExactBridgePlan = adoptedDateOffsetExactCondition.PlanBridge(
+            new Dictionary<string, IIndex>(StringComparer.Ordinal)
+            {
+                ["createdOffset"] = peopleCreatedOffset
+            });
+        LibraDexConditionBridgePlan adoptedDurationBridgePlan = adoptedDurationCondition.PlanBridge(
+            new Dictionary<string, IIndex>(StringComparer.Ordinal)
+            {
+                ["duration"] = peopleDuration
+            });
+        LibraDexConditionBridgePlan adoptedScoreBridgePlan = adoptedScoreCondition.PlanBridge(
+            new Dictionary<string, IIndex>(StringComparer.Ordinal)
+            {
+                ["score"] = peopleScore
+            });
+        LibraDexConditionBridgePlan adoptedScoreAfterMaxBridgePlan = adoptedScoreAfterMaxCondition.PlanBridge(
+            new Dictionary<string, IIndex>(StringComparer.Ordinal)
+            {
+                ["score"] = peopleScore
+            });
+        LibraDexConditionBridgePlan adoptedScoreMaskedEqualBridgePlan = adoptedScoreMaskedEqualCondition.PlanBridge(
+            new Dictionary<string, IIndex>(StringComparer.Ordinal)
+            {
+                ["score"] = peopleScore
+            });
+        LibraDexConditionBridgePlan adoptedActiveBridgePlan = adoptedActiveCondition.PlanBridge(
+            new Dictionary<string, IIndex>(StringComparer.Ordinal)
+            {
+                ["active"] = peopleActive
+            });
+        LibraDexConditionBridgePlan adoptedActiveAfterTrueBridgePlan = adoptedActiveAfterTrueCondition.PlanBridge(
+            new Dictionary<string, IIndex>(StringComparer.Ordinal)
+            {
+                ["active"] = peopleActive
+            });
+        LibraDexConditionBridgePlan adoptedTimeMorningBridgePlan = adoptedTimeMorningCondition.PlanBridge(adoptedTimeIndexes);
+        LibraDexConditionBridgePlan adoptedTimeAfternoonBridgePlan = adoptedTimeAfternoonCondition.PlanBridge(adoptedTimeIndexes);
+        LibraDexConditionBridgePlan adoptedTimeEveningBridgePlan = adoptedTimeEveningCondition.PlanBridge(adoptedTimeIndexes);
+        LibraDexConditionBridgePlan adoptedTimeNightBridgePlan = adoptedTimeNightCondition.PlanBridge(adoptedTimeIndexes);
+        ValidateGenericInsert(peopleCreated.Insert(new DateTime(2025, 12, 31, 23, 59, 59, DateTimeKind.Utc), 2025001L), "created structured date insert 2025");
+        ValidateGenericInsert(peopleCreated.Insert(new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc), 2026001L), "created structured date insert 2026 lower");
+        ValidateGenericInsert(peopleCreated.Insert(new DateTime(2026, 12, 31, 23, 59, 59, DateTimeKind.Utc), 2026002L), "created structured date insert 2026 upper");
+        ValidateGenericInsert(peopleCreatedDate.Insert(new DateOnly(2026, 5, 20), 20260520L), "created DateOnly structured insert 2026-05-20");
+        ValidateGenericInsert(peopleCreatedDate.Insert(new DateOnly(2026, 5, 21), 20260521L), "created DateOnly structured insert 2026-05-21");
+        ValidateGenericInsert(peopleCreatedOffset.Insert(new DateTimeOffset(2025, 12, 31, 23, 0, 0, TimeSpan.FromHours(-1)), 20251231L), "created DateTimeOffset structured insert 2026 UTC");
+        ValidateGenericInsert(peopleCreatedOffset.Insert(new DateTimeOffset(2027, 1, 1, 0, 0, 0, TimeSpan.Zero), 20270101L), "created DateTimeOffset structured insert 2027");
+        ValidateGenericInsert(peopleDuration.Insert(TimeSpan.FromMinutes(90), 90090L), "duration TimeSpan insert 90 minutes");
+        ValidateGenericInsert(peopleScore.Insert(125U, 1250L), "score UInt32 insert 125");
+        ValidateGenericInsert(peopleScore.Insert(3U, 300L), "score UInt32 insert 3");
+        ValidateGenericInsert(peopleScore.Insert(4U, 400L), "score UInt32 insert 4");
+        ValidateGenericInsert(peopleScore.Insert(6U, 600L), "score UInt32 insert 6");
+        ValidateGenericInsert(peopleActive.Insert(true, 10001L), "active Boolean insert true");
+        ValidateGenericInsert(peopleCreatedTime.Insert(new TimeOnly(6, 30), 6030L), "created TimeOnly structured insert morning");
+        ValidateGenericInsert(peopleCreatedTime.Insert(new TimeOnly(13, 0), 1300L), "created TimeOnly structured insert afternoon");
+        ValidateGenericInsert(peopleCreatedTime.Insert(new TimeOnly(18, 0), 1800L), "created TimeOnly structured insert evening");
+        ValidateGenericInsert(peopleCreatedTime.Insert(new TimeOnly(23, 30), 2330L), "created TimeOnly structured insert night late");
+        ValidateGenericInsert(peopleCreatedTime.Insert(new TimeOnly(2, 15), 215L), "created TimeOnly structured insert night early");
+        IIdentityCriterion adoptedDateProjectedCriterion = adoptedDateCondition.Materialize(
+            new Dictionary<string, IIndex>(StringComparer.Ordinal)
+            {
+                ["created"] = peopleCreated
+            });
+        IReadOnlyList<long> adoptedDateProjectedIds = adoptedDateProjectedCriterion.IDs.ToList<long>();
+        IIdentityCriterion adoptedDateYearRangeCriterion = adoptedDateYearRangeCondition.Materialize(
+            new Dictionary<string, IIndex>(StringComparer.Ordinal)
+            {
+                ["created"] = peopleCreated
+            });
+        IReadOnlyList<long> adoptedDateYearRangeIds = adoptedDateYearRangeCriterion.IDs.ToList<long>();
+        IIdentityCriterion adoptedDateYearMonthCriterion = adoptedDateYearMonthCondition.Materialize(
+            new Dictionary<string, IIndex>(StringComparer.Ordinal)
+            {
+                ["created"] = peopleCreated
+            });
+        IReadOnlyList<long> adoptedDateYearMonthIds = adoptedDateYearMonthCriterion.IDs.ToList<long>();
+        IIdentityCriterion adoptedDateYearMonthDayCriterion = adoptedDateYearMonthDayCondition.Materialize(
+            new Dictionary<string, IIndex>(StringComparer.Ordinal)
+            {
+                ["created"] = peopleCreated
+            });
+        IReadOnlyList<long> adoptedDateYearMonthDayIds = adoptedDateYearMonthDayCriterion.IDs.ToList<long>();
+        IIdentityCriterion adoptedDateYearMonthInCriterion = adoptedDateYearMonthInCondition.Materialize(
+            new Dictionary<string, IIndex>(StringComparer.Ordinal)
+            {
+                ["created"] = peopleCreated
+            });
+        IReadOnlyList<long> adoptedDateYearMonthInIds = adoptedDateYearMonthInCriterion.IDs.ToList<long>();
+        IIdentityCriterion adoptedDateYearMonthDayInCriterion = adoptedDateYearMonthDayInCondition.Materialize(
+            new Dictionary<string, IIndex>(StringComparer.Ordinal)
+            {
+                ["created"] = peopleCreated
+            });
+        IReadOnlyList<long> adoptedDateYearMonthDayInIds = adoptedDateYearMonthDayInCriterion.IDs.ToList<long>();
+        IIdentityCriterion adoptedDateMonthOnlyCriterion = adoptedDateMonthOnlyCondition.Materialize(
+            new Dictionary<string, IIndex>(StringComparer.Ordinal)
+            {
+                ["created"] = peopleCreated
+            });
+        IReadOnlyList<long> adoptedDateMonthOnlyIds = adoptedDateMonthOnlyCriterion.IDs.ToList<long>();
+        IIdentityCriterion adoptedDateOnlyCriterion = adoptedDateOnlyCondition.Materialize(
+            new Dictionary<string, IIndex>(StringComparer.Ordinal)
+            {
+                ["createdDate"] = peopleCreatedDate
+            });
+        IReadOnlyList<long> adoptedDateOnlyIds = adoptedDateOnlyCriterion.IDs.ToList<long>();
+        IIdentityCriterion adoptedDateOffsetCriterion = adoptedDateOffsetCondition.Materialize(
+            new Dictionary<string, IIndex>(StringComparer.Ordinal)
+            {
+                ["createdOffset"] = peopleCreatedOffset
+            });
+        IReadOnlyList<long> adoptedDateOffsetIds = adoptedDateOffsetCriterion.IDs.ToList<long>();
+        IIdentityCriterion adoptedDateOffsetExactCriterion = adoptedDateOffsetExactCondition.Materialize(
+            new Dictionary<string, IIndex>(StringComparer.Ordinal)
+            {
+                ["createdOffset"] = peopleCreatedOffset
+            });
+        IReadOnlyList<long> adoptedDateOffsetExactIds = adoptedDateOffsetExactCriterion.IDs.ToList<long>();
+        IIdentityCriterion adoptedDurationCriterion = adoptedDurationCondition.Materialize(
+            new Dictionary<string, IIndex>(StringComparer.Ordinal)
+            {
+                ["duration"] = peopleDuration
+            });
+        IReadOnlyList<long> adoptedDurationIds = adoptedDurationCriterion.IDs.ToList<long>();
+        IIdentityCriterion adoptedScoreCriterion = adoptedScoreCondition.Materialize(
+            new Dictionary<string, IIndex>(StringComparer.Ordinal)
+            {
+                ["score"] = peopleScore
+            });
+        IReadOnlyList<long> adoptedScoreIds = adoptedScoreCriterion.IDs.ToList<long>();
+        IIdentityCriterion adoptedScoreAfterMaxCriterion = adoptedScoreAfterMaxCondition.Materialize(
+            new Dictionary<string, IIndex>(StringComparer.Ordinal)
+            {
+                ["score"] = peopleScore
+            });
+        IReadOnlyList<long> adoptedScoreAfterMaxIds = adoptedScoreAfterMaxCriterion.IDs.ToList<long>();
+        IIdentityCriterion adoptedScoreMaskedEqualCriterion = adoptedScoreMaskedEqualCondition.Materialize(
+            new Dictionary<string, IIndex>(StringComparer.Ordinal)
+            {
+                ["score"] = peopleScore
+            });
+        IReadOnlyList<long> adoptedScoreMaskedEqualIds = adoptedScoreMaskedEqualCriterion.IDs.ToList<long>();
+        IIdentityCriterion adoptedScoreAllBitsCriterion = adoptedScoreAllBitsCondition.Materialize(
+            new Dictionary<string, IIndex>(StringComparer.Ordinal)
+            {
+                ["score"] = peopleScore
+            });
+        IReadOnlyList<long> adoptedScoreAllBitsIds = adoptedScoreAllBitsCriterion.IDs.ToList<long>();
+        IIdentityCriterion adoptedScoreAnyBitsCriterion = adoptedScoreAnyBitsCondition.Materialize(
+            new Dictionary<string, IIndex>(StringComparer.Ordinal)
+            {
+                ["score"] = peopleScore
+            });
+        IReadOnlyList<long> adoptedScoreAnyBitsIds = adoptedScoreAnyBitsCriterion.IDs.ToList<long>();
+        IIdentityCriterion adoptedScoreNoBitsCriterion = adoptedScoreNoBitsCondition.Materialize(
+            new Dictionary<string, IIndex>(StringComparer.Ordinal)
+            {
+                ["score"] = peopleScore
+            });
+        IReadOnlyList<long> adoptedScoreNoBitsIds = adoptedScoreNoBitsCriterion.IDs.ToList<long>();
+        adoptedDeferredScoreMask = 0x0FU;
+        adoptedDeferredScoreCompare = 0x0DU;
+        IIdentityCriterion adoptedScoreDeferredBitmaskCriterion = adoptedScoreDeferredBitmaskCondition.Materialize(
+            new Dictionary<string, IIndex>(StringComparer.Ordinal)
+            {
+                ["score"] = peopleScore
+            });
+        IReadOnlyList<long> adoptedScoreDeferredBitmaskIds = adoptedScoreDeferredBitmaskCriterion.IDs.ToList<long>();
+        IIdentityCriterion adoptedActiveCriterion = adoptedActiveCondition.Materialize(
+            new Dictionary<string, IIndex>(StringComparer.Ordinal)
+            {
+                ["active"] = peopleActive
+            });
+        IReadOnlyList<long> adoptedActiveIds = adoptedActiveCriterion.IDs.ToList<long>();
+        IIdentityCriterion adoptedActiveAfterTrueCriterion = adoptedActiveAfterTrueCondition.Materialize(
+            new Dictionary<string, IIndex>(StringComparer.Ordinal)
+            {
+                ["active"] = peopleActive
+            });
+        IReadOnlyList<long> adoptedActiveAfterTrueIds = adoptedActiveAfterTrueCriterion.IDs.ToList<long>();
+        IIdentityCriterion adoptedTimeMorningCriterion = adoptedTimeMorningCondition.Materialize(adoptedTimeIndexes);
+        IReadOnlyList<long> adoptedTimeMorningIds = adoptedTimeMorningCriterion.IDs.ToList<long>();
+        IIdentityCriterion adoptedTimeAfternoonCriterion = adoptedTimeAfternoonCondition.Materialize(adoptedTimeIndexes);
+        IReadOnlyList<long> adoptedTimeAfternoonIds = adoptedTimeAfternoonCriterion.IDs.ToList<long>();
+        IIdentityCriterion adoptedTimeEveningCriterion = adoptedTimeEveningCondition.Materialize(adoptedTimeIndexes);
+        IReadOnlyList<long> adoptedTimeEveningIds = adoptedTimeEveningCriterion.IDs.ToList<long>();
+        IIdentityCriterion adoptedTimeNightCriterion = adoptedTimeNightCondition.Materialize(adoptedTimeIndexes);
+        IReadOnlyList<long> adoptedTimeNightIds = adoptedTimeNightCriterion.IDs.ToList<long>();
+        LibraDexConditionEndCondition AdoptedDateBranch(Func<LibraDexDateConditionOperator<DateTime>, LibraDexConditionContinueOrEnd> branch)
+        {
+            return branch(LibraDexCondition.ForGroup("people").Index("created").AsDate).EndCondition;
+        }
+
+        List<(string Name, LibraDexConditionEndCondition Condition, LibraDexConditionExecutionClass ExpectedClass, bool ShouldMaterialize)> adoptedDateBranchMatrix = new()
+        {
+            ("GreaterThan", AdoptedDateBranch(static op => op.GreaterThan(new DateTime(2025, 1, 1, 0, 0, 0, DateTimeKind.Utc))), LibraDexConditionExecutionClass.IndexBacked, true),
+            ("LessThan", AdoptedDateBranch(static op => op.LessThan(new DateTime(2027, 1, 1, 0, 0, 0, DateTimeKind.Utc))), LibraDexConditionExecutionClass.IndexBacked, true),
+            ("GreaterOrEqual", AdoptedDateBranch(static op => op.GreaterOrEqual(new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc))), LibraDexConditionExecutionClass.IndexBacked, true),
+            ("LessOrEqual", AdoptedDateBranch(static op => op.LessOrEqual(new DateTime(2026, 12, 31, 23, 59, 59, DateTimeKind.Utc))), LibraDexConditionExecutionClass.IndexBacked, true),
+            ("EqualTo", AdoptedDateBranch(static op => op.EqualTo(new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc))), LibraDexConditionExecutionClass.IndexBacked, true),
+            ("NotEqualTo", AdoptedDateBranch(static op => op.NotEqualTo(new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc))), LibraDexConditionExecutionClass.IndexBacked, true),
+            ("Between", AdoptedDateBranch(static op => op.Between(new DateTime(2025, 1, 1, 0, 0, 0, DateTimeKind.Utc), new DateTime(2026, 12, 31, 23, 59, 59, DateTimeKind.Utc))), LibraDexConditionExecutionClass.IndexBacked, true),
+            ("NotBetween", AdoptedDateBranch(static op => op.NotBetween(new DateTime(2025, 1, 1, 0, 0, 0, DateTimeKind.Utc), new DateTime(2026, 12, 31, 23, 59, 59, DateTimeKind.Utc))), LibraDexConditionExecutionClass.IndexBacked, true),
+            ("IsIn", AdoptedDateBranch(static op => op.IsIn(new[] { new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc), new DateTime(2026, 12, 31, 23, 59, 59, DateTimeKind.Utc) })), LibraDexConditionExecutionClass.IndexBacked, true),
+            ("IsNotIn", AdoptedDateBranch(static op => op.IsNotIn(new[] { new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc) })), LibraDexConditionExecutionClass.IndexBacked, true),
+            ("YearEqual", AdoptedDateBranch(static op => op.YearEqual(2026)), LibraDexConditionExecutionClass.IndexBacked, true),
+            ("YearNotEqual", AdoptedDateBranch(static op => op.YearNotEqual(2026)), LibraDexConditionExecutionClass.IndexBacked, true),
+            ("YearIn", AdoptedDateBranch(static op => op.YearIn(2025, 2026)), LibraDexConditionExecutionClass.IndexBacked, true),
+            ("YearNotIn", AdoptedDateBranch(static op => op.YearNotIn(2027, 2028)), LibraDexConditionExecutionClass.IndexBacked, true),
+            ("YearRange", AdoptedDateBranch(static op => op.YearRange(2025, 2026)), LibraDexConditionExecutionClass.IndexBacked, true),
+            ("YearNotRange", AdoptedDateBranch(static op => op.YearNotRange(2027, 2028)), LibraDexConditionExecutionClass.IndexBacked, true),
+            ("OnOrAfterYear", AdoptedDateBranch(static op => op.OnOrAfterYear(2026)), LibraDexConditionExecutionClass.IndexBacked, true),
+            ("OnOrBeforeYear", AdoptedDateBranch(static op => op.OnOrBeforeYear(2026)), LibraDexConditionExecutionClass.IndexBacked, true),
+            ("MonthEqual", AdoptedDateBranch(static op => op.MonthEqual(12)), LibraDexConditionExecutionClass.IndexBacked, true),
+            ("MonthIn", AdoptedDateBranch(static op => op.MonthIn(1, 12)), LibraDexConditionExecutionClass.IndexBacked, true),
+            ("MonthNotIn", AdoptedDateBranch(static op => op.MonthNotIn(2, 3)), LibraDexConditionExecutionClass.IndexBacked, true),
+            ("MonthRange", AdoptedDateBranch(static op => op.MonthRange(1, 3)), LibraDexConditionExecutionClass.IndexBacked, true),
+            ("MonthNotInRange", AdoptedDateBranch(static op => op.MonthNotInRange(4, 6)), LibraDexConditionExecutionClass.IndexBacked, true),
+            ("DayEqual", AdoptedDateBranch(static op => op.DayEqual(1)), LibraDexConditionExecutionClass.IndexBacked, true),
+            ("DayIn", AdoptedDateBranch(static op => op.DayIn(1, 31)), LibraDexConditionExecutionClass.IndexBacked, true),
+            ("DayRange", AdoptedDateBranch(static op => op.DayRange(1, 15)), LibraDexConditionExecutionClass.IndexBacked, true),
+            ("NotDayRange", AdoptedDateBranch(static op => op.NotDayRange(16, 31)), LibraDexConditionExecutionClass.IndexBacked, true),
+            ("QuarterEqualTo", AdoptedDateBranch(static op => op.QuarterEqualTo(4)), LibraDexConditionExecutionClass.IndexBacked, true),
+            ("YearMonth", AdoptedDateBranch(static op => op.YearMonth(2026, 12)), LibraDexConditionExecutionClass.IndexBacked, true),
+            ("YearMonthIn", AdoptedDateBranch(static op => op.YearMonthIn(new[] { (2026, 1), (2026, 12) })), LibraDexConditionExecutionClass.IndexBacked, true),
+            ("YearMonthDay", AdoptedDateBranch(static op => op.YearMonthDay(2026, 1, 1)), LibraDexConditionExecutionClass.IndexBacked, true),
+            ("YearMonthDayIn", AdoptedDateBranch(static op => op.YearMonthDayIn(new[] { (2025, 12, 31), (2026, 1, 1) })), LibraDexConditionExecutionClass.IndexBacked, true),
+            ("YearInMonths", AdoptedDateBranch(static op => op.YearInMonths(2026, 1, 12)), LibraDexConditionExecutionClass.IndexBacked, true),
+            ("MonthDay", AdoptedDateBranch(static op => op.MonthDay(12, 31)), LibraDexConditionExecutionClass.IndexBacked, true),
+            ("InQuarter", AdoptedDateBranch(static op => op.InQuarter(4)), LibraDexConditionExecutionClass.IndexBacked, true),
+            ("InQuarterRange", AdoptedDateBranch(static op => op.InQuarterRange(1, 2)), LibraDexConditionExecutionClass.IndexBacked, true),
+            ("YearQuarter", AdoptedDateBranch(static op => op.YearQuarter(2026, 4)), LibraDexConditionExecutionClass.IndexBacked, true),
+            ("IsQuarterStart", AdoptedDateBranch(static op => op.IsQuarterStart()), LibraDexConditionExecutionClass.IndexBacked, true),
+            ("IsQuarterEnd", AdoptedDateBranch(static op => op.IsQuarterEnd()), LibraDexConditionExecutionClass.IndexBacked, true),
+            ("IsHalfYearStart", AdoptedDateBranch(static op => op.IsHalfYearStart()), LibraDexConditionExecutionClass.IndexBacked, true),
+            ("IsHalfYearEnd", AdoptedDateBranch(static op => op.IsHalfYearEnd()), LibraDexConditionExecutionClass.IndexBacked, true),
+            ("IsFirstOfMonth", AdoptedDateBranch(static op => op.IsFirstOfMonth()), LibraDexConditionExecutionClass.IndexBacked, true),
+            ("IsLastOfMonth", AdoptedDateBranch(static op => op.IsLastOfMonth()), LibraDexConditionExecutionClass.IndexBacked, true),
+            ("IsToday", AdoptedDateBranch(static op => op.IsToday()), LibraDexConditionExecutionClass.IndexBacked, true),
+            ("IsYesterday", AdoptedDateBranch(static op => op.IsYesterday()), LibraDexConditionExecutionClass.IndexBacked, true),
+            ("IsInLastDays", AdoptedDateBranch(static op => op.IsInLastDays(10)), LibraDexConditionExecutionClass.IndexBacked, true),
+            ("IsInLastHours", AdoptedDateBranch(static op => op.IsInLastHours(24)), LibraDexConditionExecutionClass.IndexBacked, true),
+            ("IsInLastMinutes", AdoptedDateBranch(static op => op.IsInLastMinutes(60)), LibraDexConditionExecutionClass.IndexBacked, true),
+            ("IsWeekend", AdoptedDateBranch(static op => op.IsWeekend()), LibraDexConditionExecutionClass.IndexBacked, true),
+            ("IsWeekday", AdoptedDateBranch(static op => op.IsWeekday()), LibraDexConditionExecutionClass.IndexBacked, true),
+            ("IsMorning", AdoptedDateBranch(static op => op.IsMorning()), LibraDexConditionExecutionClass.IndexBacked, true),
+            ("IsAfternoon", AdoptedDateBranch(static op => op.IsAfternoon()), LibraDexConditionExecutionClass.IndexBacked, true),
+            ("IsEvening", AdoptedDateBranch(static op => op.IsEvening()), LibraDexConditionExecutionClass.IndexBacked, true),
+            ("IsNight", AdoptedDateBranch(static op => op.IsNight()), LibraDexConditionExecutionClass.IndexBacked, true)
+        };
+
+        int adoptedDateBranchExecutableCount = 0;
+        int adoptedDateBranchUnsupportedCount = 0;
+        HashSet<string> adoptedDateComponentBranchNames = new(StringComparer.Ordinal)
+        {
+            "MonthEqual",
+            "MonthIn",
+            "MonthNotIn",
+            "MonthRange",
+            "MonthNotInRange",
+            "DayEqual",
+            "DayIn",
+            "DayRange",
+            "NotDayRange",
+            "QuarterEqualTo",
+            "MonthDay",
+            "InQuarter",
+            "InQuarterRange",
+            "IsQuarterStart",
+            "IsQuarterEnd",
+            "IsHalfYearStart",
+            "IsHalfYearEnd",
+            "IsFirstOfMonth",
+            "IsLastOfMonth",
+            "IsWeekend",
+            "IsWeekday",
+            "IsMorning",
+            "IsAfternoon",
+            "IsEvening",
+            "IsNight"
+        };
+        for (int i = 0; i < adoptedDateBranchMatrix.Count; i++)
+        {
+            (string branchName, LibraDexConditionEndCondition branchCondition, LibraDexConditionExecutionClass expectedClass, bool shouldMaterialize) = adoptedDateBranchMatrix[i];
+            IReadOnlyList<LibraDexConditionLeafClassification> branchClassifications = branchCondition.Classify(
+                new Dictionary<string, IIndex>(StringComparer.Ordinal)
+                {
+                    ["created"] = peopleCreated
+                });
+            LibraDexConditionBridgePlan branchPlan = branchCondition.PlanBridge(
+                new Dictionary<string, IIndex>(StringComparer.Ordinal)
+                {
+                    ["created"] = peopleCreated
+                });
+            if (branchClassifications.Count != 1 ||
+                branchClassifications[0].ExecutionClass != expectedClass ||
+                (shouldMaterialize && branchPlan.Rows[0].Action != LibraDexConditionBridgeAction.ExecuteCurrentPrimitive) ||
+                (!shouldMaterialize && branchPlan.Rows[0].Action != LibraDexConditionBridgeAction.RejectUnsupported))
+            {
+                throw new InvalidDataException($"Adopted date branch '{branchName}' did not classify to the expected execution shape.");
+            }
+
+            if (shouldMaterialize)
+            {
+                IIdentityCriterion branchCriterion = branchCondition.Materialize(
+                    new Dictionary<string, IIndex>(StringComparer.Ordinal)
+                    {
+                        ["created"] = peopleCreated
+                    });
+                if ((branchName == "NotEqualTo" ||
+                    branchName == "NotBetween" ||
+                    branchName == "YearNotEqual" ||
+                    branchName == "YearNotRange") &&
+                    branchCriterion.NodeKind != LibraDexIdentityCriterionNodeKind.Or)
+                {
+                    throw new InvalidDataException($"Adopted date branch '{branchName}' did not bridge to ordered extent union.");
+                }
+
+                if (adoptedDateComponentBranchNames.Contains(branchName) &&
+                    branchCriterion.CriteriaKind != LibraDexCriteriaKind.StructuredComponent)
+                {
+                    throw new InvalidDataException($"Adopted date branch '{branchName}' did not bridge to the structured component primitive.");
+                }
+
+                adoptedDateBranchExecutableCount++;
+            }
+            else
+            {
+                adoptedDateBranchUnsupportedCount++;
+            }
+        }
+
+        Guid adoptedGuidFirst = Guid.Parse("00112233-4455-6677-8899-aabbccddeeff");
+        Guid adoptedGuidSecond = Guid.Parse("00112233-9999-aaaa-bbbb-cccccccccccc");
+        Guid adoptedGuidThird = Guid.Parse("ffeeddcc-4455-6677-8899-aabbccddeeff");
+        ValidateGenericInsert(peopleExternalId.Insert(adoptedGuidFirst, 112233L), "externalId GUID insert first");
+        ValidateGenericInsert(peopleExternalId.Insert(adoptedGuidSecond, 119999L), "externalId GUID insert second");
+        ValidateGenericInsert(peopleExternalId.Insert(adoptedGuidThird, 998877L), "externalId GUID insert third");
+        byte[] adoptedBinaryFirst = Convert.FromHexString("00112233445566778899AABBCCDDEEFF");
+        byte[] adoptedBinarySecond = Convert.FromHexString("00112233AAAA66770000AABB00000000");
+        byte[] adoptedBinaryThird = Convert.FromHexString("FFEEDDCC445566778899AABBCCDDEEFF");
+        byte[] adoptedBinaryTypedFirst = CreateTypedBinaryKey(42, new DateTime(2026, 5, 20, 0, 0, 0, DateTimeKind.Utc), "eric");
+        byte[] adoptedBinaryTypedSecond = CreateTypedBinaryKey(99, new DateTime(2026, 5, 21, 0, 0, 0, DateTimeKind.Utc), "erin");
+        byte[] adoptedBinaryTypedThird = CreateTypedBinaryKey(42, new DateTime(2025, 12, 31, 0, 0, 0, DateTimeKind.Utc), "joel");
+        byte[] adoptedBinaryDecimal = CreateDecimalBinaryKey(123.45m);
+        byte[] adoptedBinaryInt128 = CreateInt128BinaryKey(Int128.Parse("-1234567890123456789", CultureInfo.InvariantCulture));
+        byte[] adoptedBinaryUInt128 = CreateUInt128BinaryKey(UInt128.Parse("12345678901234567890", CultureInfo.InvariantCulture));
+        byte[] adoptedBinaryDateTimeOffset = CreateDateTimeOffsetBinaryKey(new DateTimeOffset(2026, 5, 20, 8, 30, 0, TimeSpan.FromHours(-7)));
+        byte[] adoptedBinaryMixedDateTime = CreateMixedDateTimeBinaryKey(new DateOnly(2026, 5, 20), new TimeOnly(14, 15), "ABCD");
+        byte[] adoptedBinaryText = CreateEncodedTextBinaryKey();
+        byte[] adoptedBinaryFloating = CreateFloatingBinaryKey(3.5f, 9.25d);
+        byte[] adoptedBinaryCustomText = CreateCustomEncodedTextBinaryKey(Encoding.BigEndianUnicode, "ZX");
+        ValidateGenericInsert(peopleFingerprint.Insert(adoptedBinaryFirst, 1001L), "fingerprint binary insert first");
+        ValidateGenericInsert(peopleFingerprint.Insert(adoptedBinarySecond, 1002L), "fingerprint binary insert second");
+        ValidateGenericInsert(peopleFingerprint.Insert(adoptedBinaryThird, 1003L), "fingerprint binary insert third");
+        ValidateGenericInsert(peopleFingerprintReversed.Insert(adoptedBinaryFirst, 1101L), "fingerprint reversed binary insert first");
+        ValidateGenericInsert(peopleFingerprintReversed.Insert(adoptedBinarySecond, 1102L), "fingerprint reversed binary insert second");
+        ValidateGenericInsert(peopleFingerprintReversed.Insert(adoptedBinaryThird, 1103L), "fingerprint reversed binary insert third");
+        ValidateGenericInsert(peopleTypedFingerprint.Insert(adoptedBinaryTypedFirst, 1004L), "typed fingerprint binary insert first");
+        ValidateGenericInsert(peopleTypedFingerprint.Insert(adoptedBinaryTypedSecond, 1005L), "typed fingerprint binary insert second");
+        ValidateGenericInsert(peopleTypedFingerprint.Insert(adoptedBinaryTypedThird, 1006L), "typed fingerprint binary insert third");
+        ValidateGenericInsert(peopleTypedFingerprint.Insert(adoptedBinaryDecimal, 1007L), "typed fingerprint decimal insert");
+        ValidateGenericInsert(peopleTypedFingerprint.Insert(adoptedBinaryInt128, 1008L), "typed fingerprint int128 insert");
+        ValidateGenericInsert(peopleTypedFingerprint.Insert(adoptedBinaryUInt128, 1009L), "typed fingerprint uint128 insert");
+        ValidateGenericInsert(peopleTypedFingerprint.Insert(adoptedBinaryDateTimeOffset, 1010L), "typed fingerprint datetimeoffset insert");
+        ValidateGenericInsert(peopleTypedFingerprint.Insert(adoptedBinaryMixedDateTime, 1011L), "typed fingerprint mixed date time insert");
+        ValidateGenericInsert(peopleTypedFingerprint.Insert(adoptedBinaryText, 1012L), "typed fingerprint text insert");
+        ValidateGenericInsert(peopleTypedFingerprint.Insert(adoptedBinaryFloating, 1013L), "typed fingerprint floating insert");
+        ValidateGenericInsert(peopleTypedFingerprint.Insert(adoptedBinaryCustomText, 1014L), "typed fingerprint custom text insert");
+        IReadOnlyDictionary<string, IIndex> adoptedGuidIndexes = new Dictionary<string, IIndex>(StringComparer.Ordinal)
+        {
+            ["externalId"] = peopleExternalId
+        };
+        IReadOnlyDictionary<string, IIndex> adoptedBinaryIndexes = new Dictionary<string, IIndex>(StringComparer.Ordinal)
+        {
+            ["fingerprint"] = peopleFingerprint
+        };
+        IReadOnlyDictionary<string, IIndex> adoptedBinaryTypedIndexes = new Dictionary<string, IIndex>(StringComparer.Ordinal)
+        {
+            ["typedFingerprint"] = peopleTypedFingerprint
+        };
+        LibraDexConditionEndCondition adoptedGuidCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("externalId").AsGuid.StartsWith("00112233")
+            .EndCondition;
+        byte[] adoptedGuidFirstBytes = new byte[16];
+        adoptedGuidFirst.TryWriteBytes(adoptedGuidFirstBytes);
+        LibraDexConditionEndCondition adoptedGuidBytePrefixCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("externalId").AsGuid.StartsWith(adoptedGuidFirstBytes[..4])
+            .EndCondition;
+        LibraDexConditionEndCondition adoptedGuidEqualCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("externalId").AsGuid.EqualTo(adoptedGuidFirst)
+            .EndCondition;
+        LibraDexConditionEndCondition adoptedGuidEqualTextCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("externalId").AsGuid.EqualTo("00112233-4455-6677-8899-aabbccddeeff")
+            .EndCondition;
+        LibraDexConditionEndCondition adoptedGuidNotEqualCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("externalId").AsGuid.NotEqualTo(adoptedGuidFirst)
+            .EndCondition;
+        LibraDexConditionEndCondition adoptedGuidInSetCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("externalId").AsGuid.InSet(new[] { adoptedGuidFirst, adoptedGuidThird })
+            .EndCondition;
+        LibraDexConditionEndCondition adoptedGuidNotEmptyCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("externalId").AsGuid.NotEqualTo(Guid.Empty)
+            .EndCondition;
+        LibraDexConditionEndCondition adoptedGuidEndsCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("externalId").AsGuid.EndsWith("ccddeeff")
+            .EndCondition;
+        LibraDexConditionEndCondition adoptedGuidByteEndsCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("externalId").AsGuid.EndsWith(adoptedGuidFirstBytes[^4..])
+            .EndCondition;
+        LibraDexConditionEndCondition adoptedGuidContainsCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("externalId").AsGuid.Contains("7788")
+            .EndCondition;
+        LibraDexConditionEndCondition adoptedGuidByteContainsCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("externalId").AsGuid.Contains(adoptedGuidFirstBytes[6..10])
+            .EndCondition;
+        LibraDexConditionEndCondition adoptedGuidPatternCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("externalId").AsGuid.MatchesPattern("00112233xxxxxxxxxxxxxxxxxxxxxxxx")
+            .EndCondition;
+        LibraDexConditionEndCondition adoptedGuidBytePatternCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("externalId").AsGuid.MatchesPattern(adoptedGuidFirstBytes)
+            .EndCondition;
+        LibraDexGroupCondition groupGuidExactCondition = catalog.Indexes["people"].Where
+            .Guid("externalId").EqualTo(adoptedGuidFirst)
+            .Condition;
+        IReadOnlyList<long> groupGuidExactIds = catalog.Indexes["people"].GetIdentities<long>(
+            groupGuidExactCondition,
+            deduplication: IdentityDeduplication.Preserve);
+        LibraDexGroupCondition groupGuidTextExactCondition = catalog.Indexes["people"].Where
+            .Guid("externalId").EqualTo("00112233-4455-6677-8899-aabbccddeeff")
+            .Condition;
+        IReadOnlyList<long> groupGuidTextExactIds = catalog.Indexes["people"].GetIdentities<long>(
+            groupGuidTextExactCondition,
+            deduplication: IdentityDeduplication.Preserve);
+        LibraDexGroupCondition groupGuidWildcardCondition = catalog.Indexes["people"].Where
+            .Guid("externalId").MatchesPattern("00112233-XXXX-XXXX-XXXX-XXXXXXXXXXXX")
+            .Condition;
+        IReadOnlyList<long> groupGuidWildcardIds = catalog.Indexes["people"].GetIdentities<long>(
+            groupGuidWildcardCondition,
+            deduplication: IdentityDeduplication.Preserve);
+        LibraDexGroupCondition groupGuidBytePrefixCondition = catalog.Indexes["people"].Where
+            .Guid("externalId").StartsWith(adoptedGuidFirstBytes[..4])
+            .Condition;
+        IReadOnlyList<long> groupGuidBytePrefixIds = catalog.Indexes["people"].GetIdentities<long>(
+            groupGuidBytePrefixCondition,
+            deduplication: IdentityDeduplication.Preserve);
+        LibraDexConditionEndCondition adoptedBinaryCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("fingerprint").AsBinary.StartsWith(Convert.FromHexString("00112233"))
+            .EndCondition;
+        LibraDexConditionEndCondition adoptedBinaryEqualCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("fingerprint").AsBinary.EqualTo(adoptedBinaryFirst)
+            .EndCondition;
+        LibraDexConditionEndCondition adoptedBinaryEndsCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("fingerprint").AsBinary.EndsWith(Convert.FromHexString("CCDDEEFF"))
+            .EndCondition;
+        LibraDexConditionEndCondition adoptedBinaryContainsCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("fingerprint").AsBinary.Contains(Convert.FromHexString("44556677"))
+            .EndCondition;
+        LibraDexConditionEndCondition adoptedBinarySliceCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("fingerprint").AsBinary.SliceEqual(4, Convert.FromHexString("44556677"))
+            .EndCondition;
+        LibraDexGroupCondition groupBinaryExactCondition = catalog.Indexes["people"].Where
+            .Binary("fingerprint").EqualTo(adoptedBinaryFirst)
+            .Condition;
+        IReadOnlyList<long> groupBinaryExactIds = catalog.Indexes["people"].GetIdentities<long>(
+            groupBinaryExactCondition,
+            deduplication: IdentityDeduplication.Preserve);
+        LibraDexGroupCondition groupBinaryPrefixCondition = catalog.Indexes["people"].Where
+            .Binary("fingerprint").StartsWith(Convert.FromHexString("00112233"))
+            .Condition;
+        IReadOnlyList<long> groupBinaryPrefixIds = catalog.Indexes["people"].GetIdentities<long>(
+            groupBinaryPrefixCondition,
+            deduplication: IdentityDeduplication.Preserve);
+        LibraDexGroupCondition groupBinarySuffixCondition = catalog.Indexes["people"].Where
+            .Binary("fingerprint").EndsWith(Convert.FromHexString("CCDDEEFF"))
+            .Condition;
+        IReadOnlyList<long> groupBinarySuffixIds = catalog.Indexes["people"].GetIdentities<long>(
+            groupBinarySuffixCondition,
+            deduplication: IdentityDeduplication.Preserve);
+        LibraDexGroupCondition groupBinaryContainsCondition = catalog.Indexes["people"].Where
+            .Binary("fingerprint").Contains(Convert.FromHexString("44556677"))
+            .Condition;
+        IReadOnlyList<long> groupBinaryContainsIds = catalog.Indexes["people"].GetIdentities<long>(
+            groupBinaryContainsCondition,
+            deduplication: IdentityDeduplication.Preserve);
+        LibraDexGroupCondition groupBinarySliceCondition = catalog.Indexes["people"].Where
+            .Binary("fingerprint").SliceEqual(4, Convert.FromHexString("44556677"))
+            .Condition;
+        IReadOnlyList<long> groupBinarySliceIds = catalog.Indexes["people"].GetIdentities<long>(
+            groupBinarySliceCondition,
+            deduplication: IdentityDeduplication.Preserve);
+        LibraDexGroupCondition groupBinaryHexPrefixCondition = catalog.Indexes["people"].Where
+            .Binary("fingerprint").StartsWithHex("00-11-22-33")
+            .Condition;
+        IReadOnlyList<long> groupBinaryHexPrefixIds = catalog.Indexes["people"].GetIdentities<long>(
+            groupBinaryHexPrefixCondition,
+            deduplication: IdentityDeduplication.Preserve);
+        LibraDexGroupCondition groupBinaryHexSuffixCondition = catalog.Indexes["people"].Where
+            .Binary("fingerprint").EndsWithHex("CCxxEEFF")
+            .Condition;
+        IReadOnlyList<long> groupBinaryHexSuffixIds = catalog.Indexes["people"].GetIdentities<long>(
+            groupBinaryHexSuffixCondition,
+            deduplication: IdentityDeduplication.Preserve);
+        LibraDexGroupCondition groupBinaryHexContainsCondition = catalog.Indexes["people"].Where
+            .Binary("fingerprint").ContainsHex("44 XX 66 77")
+            .Condition;
+        IReadOnlyList<long> groupBinaryHexContainsIds = catalog.Indexes["people"].GetIdentities<long>(
+            groupBinaryHexContainsCondition,
+            deduplication: IdentityDeduplication.Preserve);
+        LibraDexGroupCondition groupBinaryHexSliceCondition = catalog.Indexes["people"].Where
+            .Binary("fingerprint").SliceMatchesHex(4, "44xx6677")
+            .Condition;
+        IReadOnlyList<long> groupBinaryHexSliceIds = catalog.Indexes["people"].GetIdentities<long>(
+            groupBinaryHexSliceCondition,
+            deduplication: IdentityDeduplication.Preserve);
+        LibraDexGroupCondition groupBinaryHexPatternCondition = catalog.Indexes["people"].Where
+            .Binary("fingerprint").MatchesHexPattern("00112233xxxxxxxx8899AABBCCDDEEFF")
+            .Condition;
+        IReadOnlyList<long> groupBinaryHexPatternIds = catalog.Indexes["people"].GetIdentities<long>(
+            groupBinaryHexPatternCondition,
+            deduplication: IdentityDeduplication.Preserve);
+        LibraDexGroupCondition groupBinaryReversedSuffixCondition = catalog.Indexes["people"].Where
+            .Binary("fingerprintReversed").EndsWith(Convert.FromHexString("CCDDEEFF"))
+            .Condition;
+        IReadOnlyList<long> groupBinaryReversedSuffixIds = catalog.Indexes["people"].GetIdentities<long>(
+            groupBinaryReversedSuffixCondition,
+            deduplication: IdentityDeduplication.Preserve);
+        LibraDexGroupCondition groupBinaryReversedHexSuffixCondition = catalog.Indexes["people"].Where
+            .Binary("fingerprintReversed").EndsWithHex("CCxxEEFF")
+            .Condition;
+        IReadOnlyList<long> groupBinaryReversedHexSuffixIds = catalog.Indexes["people"].GetIdentities<long>(
+            groupBinaryReversedHexSuffixCondition,
+            deduplication: IdentityDeduplication.Preserve);
+        LibraDexConditionEndCondition adoptedBinaryInt32SliceCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("typedFingerprint").AsBinary.SlicedAsInt32(0).EqualTo(42)
+            .EndCondition;
+        LibraDexConditionEndCondition adoptedBinaryGuidSliceCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("fingerprint").AsBinary.SlicedAsGuid(0).EqualTo(new Guid(adoptedBinaryFirst))
+            .EndCondition;
+        LibraDexConditionEndCondition adoptedBinaryDateSliceCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("typedFingerprint").AsBinary.SlicedAsDateTime(4).Between(new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc), new DateTime(2026, 12, 31, 23, 59, 59, DateTimeKind.Utc))
+            .EndCondition;
+        LibraDexConditionEndCondition adoptedBinaryUInt64SliceCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("typedFingerprint").AsBinary.SlicedAsUInt64(4).Between(
+                (ulong)new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc).Ticks,
+                (ulong)new DateTime(2026, 12, 31, 23, 59, 59, DateTimeKind.Utc).Ticks)
+            .EndCondition;
+        LibraDexConditionEndCondition adoptedBinaryStringSliceCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("typedFingerprint").AsBinary.SlicedAsUtf8String(12, 4).StartsWith("er")
+            .EndCondition;
+        LibraDexConditionEndCondition adoptedBinaryUtf16ContainsCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("typedFingerprint").AsBinary.SlicedAsUtf16String(4, 4).Contains("K")
+            .EndCondition;
+        LibraDexConditionEndCondition adoptedBinaryInt32SliceBitmaskCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("typedFingerprint").AsBinary.SlicedAsInt32(0).BitAnd(0x0F, 0x0A)
+            .EndCondition;
+        LibraDexConditionEndCondition adoptedBinaryFullNumericSliceCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("typedFingerprint").AsBinary.SlicedAsSByte(0).EqualTo(42)
+            .AND.Index("typedFingerprint").AsBinary.SlicedAsByte(0).EqualTo(42)
+            .AND.Index("typedFingerprint").AsBinary.SlicedAsInt16(0).EqualTo(42)
+            .AND.Index("typedFingerprint").AsBinary.SlicedAsUInt16(0).EqualTo(42)
+            .AND.Index("typedFingerprint").AsBinary.SlicedAsUInt32(0).EqualTo(42U)
+            .EndCondition;
+        LibraDexConditionEndCondition adoptedBinaryWideNumericSliceCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("typedFingerprint").AsBinary.SlicedAsDecimal(0).EqualTo(123.45m)
+            .OR.Index("typedFingerprint").AsBinary.SlicedAsInt128(0).LessThan(Int128.Zero)
+            .OR.Index("typedFingerprint").AsBinary.SlicedAsUInt128(0).EqualTo(UInt128.Parse("12345678901234567890", CultureInfo.InvariantCulture))
+            .OR.Index("typedFingerprint").AsBinary.SlicedAsBigInteger(0, 16).EqualTo(System.Numerics.BigInteger.Parse("-1234567890123456789", CultureInfo.InvariantCulture))
+            .EndCondition;
+        LibraDexConditionEndCondition adoptedBinaryMoreDateSliceCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("typedFingerprint").AsBinary.SlicedAsDateTimeOffset(0).EqualTo(new DateTime(2026, 5, 20, 15, 30, 0, DateTimeKind.Utc))
+            .OR.Index("typedFingerprint").AsBinary.SlicedAsDateOnly(0).EqualTo(new DateOnly(2026, 5, 20))
+            .OR.Index("typedFingerprint").AsBinary.SlicedAsTimeOnly(4).EqualTo(new TimeOnly(14, 15))
+            .OR.Index("typedFingerprint").AsBinary.SlicedAsTimeSpan(4).EqualTo(new TimeOnly(14, 15).ToTimeSpan())
+            .EndCondition;
+        LibraDexConditionEndCondition adoptedBinaryEncodedTextSliceCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("typedFingerprint").AsBinary.SlicedAsLatin1String(0, 4).EqualTo("cafe")
+            .AND.Index("typedFingerprint").AsBinary.SlicedAsAsciiString(0, 4).EqualTo("cafe")
+            .AND.Index("typedFingerprint").AsBinary.SlicedAsUtf16String(4, 4).EqualTo("OK")
+            .AND.Index("typedFingerprint").AsBinary.SlicedAsUtf32String(8, 4).EqualTo("A")
+            .AND.Index("typedFingerprint").AsBinary.SlicedAsCharUtf16(12).EqualTo("Z")
+            .AND.Index("typedFingerprint").AsBinary.SlicedAsRuneUtf32(8).EqualTo("A")
+            .EndCondition;
+        LibraDexConditionEndCondition adoptedBinaryCustomEncodedTextSliceCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("typedFingerprint").AsBinary.SlicedAsEncodedString(0, 4, Encoding.BigEndianUnicode).EqualTo("ZX")
+            .EndCondition;
+        LibraDexConditionEndCondition adoptedBinaryFloatingSliceCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("typedFingerprint").AsBinary.SlicedAsSingle(0).EqualTo(3.5f)
+            .AND.Index("typedFingerprint").AsBinary.SlicedAsDouble(4).EqualTo(9.25d)
+            .EndCondition;
+        IReadOnlyList<LibraDexConditionLeafClassification> adoptedGuidClassifications = adoptedGuidCondition.Classify(adoptedGuidIndexes);
+        LibraDexConditionBridgePlan adoptedGuidBridgePlan = adoptedGuidCondition.PlanBridge(adoptedGuidIndexes);
+        IIdentityCriterion adoptedGuidCriterion = adoptedGuidCondition.Materialize(adoptedGuidIndexes);
+        IReadOnlyList<long> adoptedGuidIds = adoptedGuidCriterion.IDs.ToList<long>();
+        IIdentityCriterion adoptedGuidBytePrefixCriterion = adoptedGuidBytePrefixCondition.Materialize(adoptedGuidIndexes);
+        IReadOnlyList<long> adoptedGuidBytePrefixIds = adoptedGuidBytePrefixCriterion.IDs.ToList<long>();
+        IIdentityCriterion adoptedGuidEqualCriterion = adoptedGuidEqualCondition.Materialize(adoptedGuidIndexes);
+        IReadOnlyList<long> adoptedGuidEqualIds = adoptedGuidEqualCriterion.IDs.ToList<long>();
+        IIdentityCriterion adoptedGuidEqualTextCriterion = adoptedGuidEqualTextCondition.Materialize(adoptedGuidIndexes);
+        IReadOnlyList<long> adoptedGuidEqualTextIds = adoptedGuidEqualTextCriterion.IDs.ToList<long>();
+        IIdentityCriterion adoptedGuidNotEqualCriterion = adoptedGuidNotEqualCondition.Materialize(adoptedGuidIndexes);
+        IReadOnlyList<long> adoptedGuidNotEqualIds = adoptedGuidNotEqualCriterion.IDs.ToList<long>();
+        IIdentityCriterion adoptedGuidInSetCriterion = adoptedGuidInSetCondition.Materialize(adoptedGuidIndexes);
+        IReadOnlyList<long> adoptedGuidInSetIds = adoptedGuidInSetCriterion.IDs.ToList<long>();
+        IIdentityCriterion adoptedGuidNotEmptyCriterion = adoptedGuidNotEmptyCondition.Materialize(adoptedGuidIndexes);
+        IReadOnlyList<long> adoptedGuidNotEmptyIds = adoptedGuidNotEmptyCriterion.IDs.ToList<long>();
+        IIdentityCriterion adoptedGuidEndsCriterion = adoptedGuidEndsCondition.Materialize(adoptedGuidIndexes);
+        IReadOnlyList<long> adoptedGuidEndsIds = adoptedGuidEndsCriterion.IDs.ToList<long>();
+        IIdentityCriterion adoptedGuidByteEndsCriterion = adoptedGuidByteEndsCondition.Materialize(adoptedGuidIndexes);
+        IReadOnlyList<long> adoptedGuidByteEndsIds = adoptedGuidByteEndsCriterion.IDs.ToList<long>();
+        IIdentityCriterion adoptedGuidContainsCriterion = adoptedGuidContainsCondition.Materialize(adoptedGuidIndexes);
+        IReadOnlyList<long> adoptedGuidContainsIds = adoptedGuidContainsCriterion.IDs.ToList<long>();
+        IIdentityCriterion adoptedGuidByteContainsCriterion = adoptedGuidByteContainsCondition.Materialize(adoptedGuidIndexes);
+        IReadOnlyList<long> adoptedGuidByteContainsIds = adoptedGuidByteContainsCriterion.IDs.ToList<long>();
+        IIdentityCriterion adoptedGuidPatternCriterion = adoptedGuidPatternCondition.Materialize(adoptedGuidIndexes);
+        IReadOnlyList<long> adoptedGuidPatternIds = adoptedGuidPatternCriterion.IDs.ToList<long>();
+        IIdentityCriterion adoptedGuidBytePatternCriterion = adoptedGuidBytePatternCondition.Materialize(adoptedGuidIndexes);
+        IReadOnlyList<long> adoptedGuidBytePatternIds = adoptedGuidBytePatternCriterion.IDs.ToList<long>();
+        if (adoptedGuidInSetCriterion.CriteriaKind != LibraDexCriteriaKind.InSet ||
+            adoptedGuidInSetIds.Count != 2 ||
+            !adoptedGuidInSetIds.Contains(112233L) ||
+            !adoptedGuidInSetIds.Contains(998877L))
+        {
+            throw new InvalidDataException($"Adopted GUID InSet returned [{string.Join(", ", adoptedGuidInSetIds)}] with criterion kind {adoptedGuidInSetCriterion.CriteriaKind}.");
+        }
+
+        if (adoptedGuidNotEmptyCriterion.NodeKind != LibraDexIdentityCriterionNodeKind.Or ||
+            adoptedGuidNotEmptyIds.Count != 3 ||
+            !adoptedGuidNotEmptyIds.Contains(112233L) ||
+            !adoptedGuidNotEmptyIds.Contains(119999L) ||
+            !adoptedGuidNotEmptyIds.Contains(998877L))
+        {
+            throw new InvalidDataException($"Adopted GUID not-empty sentinel returned [{string.Join(", ", adoptedGuidNotEmptyIds)}] with node kind {adoptedGuidNotEmptyCriterion.NodeKind}.");
+        }
+
+        IReadOnlyList<LibraDexConditionLeafClassification> adoptedBinaryClassifications = adoptedBinaryCondition.Classify(adoptedBinaryIndexes);
+        LibraDexConditionBridgePlan adoptedBinaryBridgePlan = adoptedBinaryCondition.PlanBridge(adoptedBinaryIndexes);
+        IReadOnlyList<LibraDexConditionLeafClassification> adoptedBinarySuffixClassifications = adoptedBinaryEndsCondition.Classify(adoptedBinaryIndexes);
+        LibraDexConditionEndCondition adoptedBinaryReversedSuffixCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("fingerprintReversed").AsBinary.EndsWith(Convert.FromHexString("CCDDEEFF"))
+            .EndCondition;
+        IReadOnlyList<LibraDexConditionLeafClassification> adoptedBinaryReversedSuffixClassifications = adoptedBinaryReversedSuffixCondition.Classify(
+            new Dictionary<string, IIndex>(StringComparer.Ordinal)
+            {
+                ["fingerprintReversed"] = peopleFingerprintReversed
+            });
+        IIdentityCriterion adoptedBinaryCriterion = adoptedBinaryCondition.Materialize(adoptedBinaryIndexes);
+        IReadOnlyList<long> adoptedBinaryIds = adoptedBinaryCriterion.IDs.ToList<long>();
+        IIdentityCriterion adoptedBinaryEqualCriterion = adoptedBinaryEqualCondition.Materialize(adoptedBinaryIndexes);
+        IReadOnlyList<long> adoptedBinaryEqualIds = adoptedBinaryEqualCriterion.IDs.ToList<long>();
+        IIdentityCriterion adoptedBinaryEndsCriterion = adoptedBinaryEndsCondition.Materialize(adoptedBinaryIndexes);
+        IReadOnlyList<long> adoptedBinaryEndsIds = adoptedBinaryEndsCriterion.IDs.ToList<long>();
+        IIdentityCriterion adoptedBinaryContainsCriterion = adoptedBinaryContainsCondition.Materialize(adoptedBinaryIndexes);
+        IReadOnlyList<long> adoptedBinaryContainsIds = adoptedBinaryContainsCriterion.IDs.ToList<long>();
+        IIdentityCriterion adoptedBinarySliceCriterion = adoptedBinarySliceCondition.Materialize(adoptedBinaryIndexes);
+        IReadOnlyList<long> adoptedBinarySliceIds = adoptedBinarySliceCriterion.IDs.ToList<long>();
+        IIdentityCriterion adoptedBinaryInt32SliceCriterion = adoptedBinaryInt32SliceCondition.Materialize(adoptedBinaryTypedIndexes);
+        IReadOnlyList<long> adoptedBinaryInt32SliceIds = adoptedBinaryInt32SliceCriterion.IDs.ToList<long>();
+        IIdentityCriterion adoptedBinaryGuidSliceCriterion = adoptedBinaryGuidSliceCondition.Materialize(adoptedBinaryIndexes);
+        IReadOnlyList<long> adoptedBinaryGuidSliceIds = adoptedBinaryGuidSliceCriterion.IDs.ToList<long>();
+        IIdentityCriterion adoptedBinaryDateSliceCriterion = adoptedBinaryDateSliceCondition.Materialize(adoptedBinaryTypedIndexes);
+        IReadOnlyList<long> adoptedBinaryDateSliceIds = adoptedBinaryDateSliceCriterion.IDs.ToList<long>();
+        IReadOnlyList<long> adoptedBinaryUInt64SliceIds = adoptedBinaryUInt64SliceCondition.Materialize(adoptedBinaryTypedIndexes).IDs.ToList<long>();
+        IIdentityCriterion adoptedBinaryStringSliceCriterion = adoptedBinaryStringSliceCondition.Materialize(adoptedBinaryTypedIndexes);
+        IReadOnlyList<long> adoptedBinaryStringSliceIds = adoptedBinaryStringSliceCriterion.IDs.ToList<long>();
+        IReadOnlyList<long> adoptedBinaryUtf16ContainsIds = adoptedBinaryUtf16ContainsCondition.Materialize(adoptedBinaryTypedIndexes).IDs.ToList<long>();
+        IIdentityCriterion adoptedBinaryInt32SliceBitmaskCriterion = adoptedBinaryInt32SliceBitmaskCondition.Materialize(adoptedBinaryTypedIndexes);
+        IReadOnlyList<long> adoptedBinaryInt32SliceBitmaskIds = adoptedBinaryInt32SliceBitmaskCriterion.IDs.ToList<long>();
+        IReadOnlyList<long> adoptedBinaryFullNumericSliceIds = adoptedBinaryFullNumericSliceCondition.Materialize(adoptedBinaryTypedIndexes).IDs.ToList<long>();
+        IReadOnlyList<long> adoptedBinaryWideNumericSliceIds = adoptedBinaryWideNumericSliceCondition.Materialize(adoptedBinaryTypedIndexes).IDs.ToList<long>();
+        IReadOnlyList<long> adoptedBinaryMoreDateSliceIds = adoptedBinaryMoreDateSliceCondition.Materialize(adoptedBinaryTypedIndexes).IDs.ToList<long>();
+        IReadOnlyList<long> adoptedBinaryEncodedTextSliceIds = adoptedBinaryEncodedTextSliceCondition.Materialize(adoptedBinaryTypedIndexes).IDs.ToList<long>();
+        IReadOnlyList<long> adoptedBinaryCustomEncodedTextSliceIds = adoptedBinaryCustomEncodedTextSliceCondition.Materialize(adoptedBinaryTypedIndexes).IDs.ToList<long>();
+        IReadOnlyList<long> adoptedBinaryFloatingSliceIds = adoptedBinaryFloatingSliceCondition.Materialize(adoptedBinaryTypedIndexes).IDs.ToList<long>();
+        IIndex compositeClassificationIndex = new ClassificationOnlyIndex(compositeShape);
+        LibraDexConditionEndCondition adoptedCompositeCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("tenantUser").AsString.EqualTo("tenant-user-placeholder")
+            .EndCondition;
+        IReadOnlyList<LibraDexConditionLeafClassification> adoptedCompositeClassifications = adoptedCompositeCondition.Classify(
+            new Dictionary<string, IIndex>(StringComparer.Ordinal)
+            {
+                ["tenantUser"] = compositeClassificationIndex
+            });
+        LibraDexConditionBridgePlan adoptedCompositeBridgePlan = adoptedCompositeCondition.PlanBridge(
+            new Dictionary<string, IIndex>(StringComparer.Ordinal)
+            {
+                ["tenantUser"] = compositeClassificationIndex
+            });
+        Guid tenantA = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+        Guid tenantB = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+        IIndex routedCompositeIndex = compositeBuilder.Create(C.Unique);
+        ValidateGenericInsert(routedCompositeIndex.Insert(Key.Of(tenantA, "John"), 7101L), "routed composite tenantA/John insert");
+        ValidateGenericInsert(routedCompositeIndex.Insert(Key.Of(tenantA, "Jane"), 7102L), "routed composite tenantA/Jane insert");
+        ValidateGenericInsert(routedCompositeIndex.Insert(Key.Of(tenantA, "Mark"), 7103L), "routed composite tenantA/Mark insert");
+        ValidateGenericInsert(routedCompositeIndex.Insert(Key.Of(tenantB, "John"), 7201L), "routed composite tenantB/John insert");
+        Func<string, IIndex> routedCompositeResolver = indexName => string.Equals(indexName, "tenantUser", StringComparison.Ordinal)
+            ? routedCompositeIndex
+            : throw new KeyNotFoundException(indexName);
+        LibraDexConditionEndCondition routedCompositeTenantCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("tenantUser").AsComposite.Where(
+                LibraDexCompositePart.Scalar<Guid>("tenantId").EqualTo(tenantA))
+            .EndCondition;
+        LibraDexConditionEndCondition routedCompositeTenantUserPrefixCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("tenantUser").AsComposite.Where(
+                LibraDexCompositePart.Scalar<Guid>("tenantId").EqualTo(tenantA),
+                LibraDexCompositePart.String("username").StartsWith("J", ignoreCase: true))
+            .EndCondition;
+        LibraDexConditionEndCondition routedCompositeFullCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("tenantUser").AsComposite.Where(
+                LibraDexCompositePart.Scalar<Guid>("tenantId").EqualTo(tenantA),
+                LibraDexCompositePart.String("username").EqualTo("Mark", ignoreCase: true))
+            .EndCondition;
+        IReadOnlyList<LibraDexConditionLeafClassification> routedCompositeClassifications = routedCompositeTenantUserPrefixCondition.Classify(
+            new Dictionary<string, IIndex>(StringComparer.Ordinal)
+            {
+                ["tenantUser"] = routedCompositeIndex
+            });
+        LibraDexConditionBridgePlan routedCompositeBridgePlan = routedCompositeTenantUserPrefixCondition.PlanBridge(
+            new Dictionary<string, IIndex>(StringComparer.Ordinal)
+            {
+                ["tenantUser"] = routedCompositeIndex
+            });
+        IReadOnlyList<long> routedCompositeTenantIds = routedCompositeTenantCondition.ToList<long>(routedCompositeResolver, deduplication: IdentityDeduplication.Preserve);
+        IReadOnlyList<long> routedCompositePrefixIds = routedCompositeTenantUserPrefixCondition.ToList<long>(routedCompositeResolver, deduplication: IdentityDeduplication.Preserve);
+        IReadOnlyList<long> routedCompositeFullIds = routedCompositeFullCondition.ToList<long>(routedCompositeResolver, deduplication: IdentityDeduplication.Preserve);
+        IIndex routedCompositeFlagsIndex = catalog.Indexes["people"]["tenantFlags"].Composite<long>(
+            C.Guid("tenantId"),
+            C.Scalar<uint>("flags"))
+            .Create(C.NonUnique);
+        ValidateGenericInsert(routedCompositeFlagsIndex.Insert(Key.Of(tenantA, 3U), 7303L), "routed composite tenantA flags 3 insert");
+        ValidateGenericInsert(routedCompositeFlagsIndex.Insert(Key.Of(tenantA, 4U), 7304L), "routed composite tenantA flags 4 insert");
+        ValidateGenericInsert(routedCompositeFlagsIndex.Insert(Key.Of(tenantB, 3U), 7305L), "routed composite tenantB flags 3 insert");
+        Func<string, IIndex> routedCompositeFlagsResolver = indexName => string.Equals(indexName, "tenantFlags", StringComparison.Ordinal)
+            ? routedCompositeFlagsIndex
+            : throw new KeyNotFoundException(indexName);
+        LibraDexConditionEndCondition routedCompositeFlagsBitmaskCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("tenantFlags").AsComposite.Where(
+                LibraDexCompositePart.Scalar<Guid>("tenantId").EqualTo(tenantA),
+                LibraDexCompositePart.Scalar<uint>("flags").AllBitsSet(0x03U))
+            .EndCondition;
+        IReadOnlyList<long> routedCompositeFlagsBitmaskIds = routedCompositeFlagsBitmaskCondition.ToList<long>(routedCompositeFlagsResolver, deduplication: IdentityDeduplication.Preserve);
+        IIndex routedCompositeGuidIndex = catalog.Indexes["people"]["tenantGuidUser"].Composite<long>(
+            C.Guid("tenantId"),
+            C.Guid("userId", GuidKeys.Exact))
+            .Create(C.NonUnique);
+        Guid userPrefix = Guid.Parse("00112233-4455-6677-0000-000000000000");
+        Guid userA = Guid.Parse("00112233-4455-6677-8899-aabbccddeeff");
+        Guid userB = Guid.Parse("00112233-4455-6677-1111-222222222222");
+        Guid userC = Guid.Parse("99112233-4455-6677-8899-aabbccddeeff");
+        ValidateGenericInsert(routedCompositeGuidIndex.Insert(Key.Of(tenantA, userA), 7401L), "routed composite tenantA guid userA insert");
+        ValidateGenericInsert(routedCompositeGuidIndex.Insert(Key.Of(tenantA, userB), 7402L), "routed composite tenantA guid userB insert");
+        ValidateGenericInsert(routedCompositeGuidIndex.Insert(Key.Of(tenantA, userC), 7403L), "routed composite tenantA guid userC insert");
+        ValidateGenericInsert(routedCompositeGuidIndex.Insert(Key.Of(tenantB, userA), 7404L), "routed composite tenantB guid userA insert");
+        Func<string, IIndex> routedCompositeGuidResolver = indexName => string.Equals(indexName, "tenantGuidUser", StringComparison.Ordinal)
+            ? routedCompositeGuidIndex
+            : throw new KeyNotFoundException(indexName);
+        LibraDexConditionEndCondition routedCompositeGuidPrefixCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("tenantGuidUser").AsComposite.Where(
+                LibraDexCompositePart.Guid("tenantId").EqualTo(tenantA),
+                LibraDexCompositePart.Guid("userId").StartsWith(userPrefix, byteCount: 8))
+            .EndCondition;
+        IReadOnlyList<long> routedCompositeGuidPrefixIds = routedCompositeGuidPrefixCondition.ToList<long>(routedCompositeGuidResolver, deduplication: IdentityDeduplication.Preserve);
+        IIndex routedCompositeDateIndex = catalog.Indexes["people"]["tenantCreated"].Composite<long>(
+            C.Guid("tenantId"),
+            C.Date<DateTime>("created", DateKeys.ExactAndStructured))
+            .Create(C.NonUnique);
+        ValidateGenericInsert(routedCompositeDateIndex.Insert(Key.Of(tenantA, new DateTime(2025, 12, 31, 23, 0, 0, DateTimeKind.Utc)), 7501L), "routed composite tenantA created 2025 insert");
+        ValidateGenericInsert(routedCompositeDateIndex.Insert(Key.Of(tenantA, new DateTime(2026, 1, 15, 0, 0, 0, DateTimeKind.Utc)), 7502L), "routed composite tenantA created 2026-01 insert");
+        ValidateGenericInsert(routedCompositeDateIndex.Insert(Key.Of(tenantA, new DateTime(2026, 5, 20, 12, 0, 0, DateTimeKind.Utc)), 7503L), "routed composite tenantA created 2026-05 insert");
+        ValidateGenericInsert(routedCompositeDateIndex.Insert(Key.Of(tenantB, new DateTime(2026, 5, 20, 12, 0, 0, DateTimeKind.Utc)), 7504L), "routed composite tenantB created 2026-05 insert");
+        Func<string, IIndex> routedCompositeDateResolver = indexName => string.Equals(indexName, "tenantCreated", StringComparison.Ordinal)
+            ? routedCompositeDateIndex
+            : throw new KeyNotFoundException(indexName);
+        LibraDexConditionEndCondition routedCompositeDateYearCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("tenantCreated").AsComposite.Where(
+                LibraDexCompositePart.Guid("tenantId").EqualTo(tenantA),
+                LibraDexCompositePart.Date("created").YearEqualTo(2026))
+            .EndCondition;
+        LibraDexConditionEndCondition routedCompositeDateYearMonthDayCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("tenantCreated").AsComposite.Where(
+                LibraDexCompositePart.Guid("tenantId").EqualTo(tenantA),
+                LibraDexCompositePart.Date("created").YearMonthDay(2026, 5, 20))
+            .EndCondition;
+        IReadOnlyList<long> routedCompositeDateYearIds = routedCompositeDateYearCondition.ToList<long>(routedCompositeDateResolver, deduplication: IdentityDeduplication.Preserve);
+        IReadOnlyList<long> routedCompositeDateYearMonthDayIds = routedCompositeDateYearMonthDayCondition.ToList<long>(routedCompositeDateResolver, deduplication: IdentityDeduplication.Preserve);
+        if (peopleAgeSet.KeyType != typeof(long) ||
+            !ReferenceEquals(peopleAgeSet.Source, peopleAgeHashSet) ||
+            peopleAgeSet.Values.Count != 2)
+        {
+            throw new InvalidDataException("Prepared membership set did not preserve caller-supplied managed set source.");
+        }
+
+        if (!ReferenceEquals(adoptedHashSetMembershipCondition.Leaves[0].Operands[0].GetValue(), adoptedAgeMembershipSet))
+        {
+            throw new InvalidDataException("Adopted membership descriptor did not preserve caller-supplied HashSet operand.");
+        }
+
+        if (adoptedInAliasMembershipCondition.Leaves[0].Operator != LibraDexConditionOperatorKind.InSet ||
+            adoptedIsInAliasMembershipCondition.Leaves[0].Operator != LibraDexConditionOperatorKind.InSet ||
+            adoptedNotInAliasMembershipCondition.Leaves[0].Operator != LibraDexConditionOperatorKind.NotInSet ||
+            !ReferenceEquals(adoptedInAliasMembershipCondition.Leaves[0].Operands[0].GetValue(), adoptedAgeInAliasSet) ||
+            adoptedInAliasMembershipCriterion.CriteriaKind != LibraDexCriteriaKind.InSet ||
+            adoptedInAliasMembershipCriterion.Values.Count != 1 ||
+            !ReferenceEquals(adoptedInAliasMembershipCriterion.Values[0], adoptedAgeInAliasSet))
+        {
+            throw new InvalidDataException("Adopted membership aliases did not collapse to the shared membership descriptor.");
+        }
+
+        if (adoptedHashSetMembershipCriterion.CriteriaKind != LibraDexCriteriaKind.InSet ||
+            adoptedHashSetMembershipCriterion.Values.Count != 1 ||
+            !ReferenceEquals(adoptedHashSetMembershipCriterion.Values[0], adoptedAgeMembershipSet))
+        {
+            throw new InvalidDataException("Adopted membership primitive did not materialize expected exact set values.");
+        }
+
+        if (adoptedCondition.Leaves.Count != 2 ||
+            adoptedCondition.Leaves[0].IndexName != "age" ||
+            adoptedCondition.Leaves[0].Operator != LibraDexConditionOperatorKind.GreaterOrEqual ||
+            adoptedCondition.Leaves[1].IndexName != "gender" ||
+            adoptedCriterion.NodeKind != LibraDexIdentityCriterionNodeKind.And ||
+            adoptedCriterion.Left?.CriteriaKind != LibraDexCriteriaKind.AtOrAfter ||
+            adoptedCriterion.Left.Values[0] is not long adoptedAge ||
+            adoptedAge != 18L ||
+            adoptedCriterion.Right?.CriteriaKind != LibraDexCriteriaKind.Find ||
+            adoptedClassifications.Count != 2 ||
+            adoptedClassifications[0].ExecutionClass != LibraDexConditionExecutionClass.IndexBacked ||
+            adoptedClassifications[1].ExecutionClass != LibraDexConditionExecutionClass.IndexBacked ||
+            !adoptedBridgePlan.CanExecuteWithCurrentBridge ||
+            adoptedBridgePlan.Rows[0].Action != LibraDexConditionBridgeAction.ExecuteCurrentPrimitive ||
+            adoptedTextLeaves.Count != 1 ||
+            adoptedTextLeaves[0].IndexName != "firstName" ||
+            adoptedTextLeaves[0].Operator != LibraDexConditionOperatorKind.StartsWith ||
+            adoptedTextLeaves[0].IgnoreCase != true ||
+            adoptedTextLeaves[0].Culture != "en-US" ||
+            adoptedTextClassifications.Count != 1 ||
+            adoptedTextClassifications[0].ExecutionClass != LibraDexConditionExecutionClass.ProjectionBacked ||
+            adoptedTextClassifications[0].ProjectionKind != LibraDexIndexProjectionKind.FoldedText ||
+            adoptedTextBridgePlan.CanExecuteWithCurrentBridge ||
+            !adoptedTextBridgePlan.RequiresProjectionBridge ||
+            adoptedTextBridgePlan.Rows[0].Action != LibraDexConditionBridgeAction.ConnectProjectionPrimitive ||
+            missingIndexClassifications[0].ExecutionClass != LibraDexConditionExecutionClass.ResolutionFailure ||
+            missingIndexBridgePlan.Rows[0].Action != LibraDexConditionBridgeAction.ResolveIndex ||
+            wrongGroupClassifications[0].ExecutionClass != LibraDexConditionExecutionClass.IdentityGroupMismatch ||
+            wrongGroupBridgePlan.Rows[0].Action != LibraDexConditionBridgeAction.FixIdentityGroup ||
+            adoptedTextContainsClassifications[0].ExecutionClass != LibraDexConditionExecutionClass.VisibleScanLike ||
+            adoptedTextContainsBridgePlan.Rows[0].Action != LibraDexConditionBridgeAction.RequireVisibleScanPolicy ||
+            !adoptedTextContainsBridgePlan.RequiresVisibleScanPolicy ||
+            adoptedDateClassifications[0].ExecutionClass != LibraDexConditionExecutionClass.IndexBacked ||
+            adoptedDateClassifications[0].ProjectionKind != LibraDexIndexProjectionKind.StructuredDate ||
+            adoptedDateBridgePlan.Rows[0].Action != LibraDexConditionBridgeAction.ExecuteCurrentPrimitive ||
+            adoptedDateProjectedCriterion.CriteriaKind != LibraDexCriteriaKind.Between ||
+            adoptedDateProjectedCriterion.Index?.Name != "created" ||
+            adoptedDateProjectedCriterion.Values[0] is not DateTime adoptedDateLower ||
+            adoptedDateLower != new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc) ||
+            adoptedDateProjectedCriterion.Values[1] is not DateTime adoptedDateUpper ||
+            adoptedDateUpper != new DateTime(2026, 12, 31, 23, 59, 59, 999, DateTimeKind.Utc).AddTicks(9999) ||
+            adoptedDateProjectedIds.Count != 2 ||
+            adoptedDateProjectedIds[0] != 2026001L ||
+            adoptedDateProjectedIds[1] != 2026002L ||
+            adoptedDateYearRangeClassifications[0].ExecutionClass != LibraDexConditionExecutionClass.IndexBacked ||
+            adoptedDateYearRangeBridgePlan.Rows[0].Action != LibraDexConditionBridgeAction.ExecuteCurrentPrimitive ||
+            adoptedDateYearRangeCriterion.CriteriaKind != LibraDexCriteriaKind.Between ||
+            adoptedDateYearRangeCriterion.Values[0] is not DateTime adoptedDateYearRangeLower ||
+            adoptedDateYearRangeLower != new DateTime(2025, 1, 1, 0, 0, 0, DateTimeKind.Utc) ||
+            adoptedDateYearRangeCriterion.Values[1] is not DateTime adoptedDateYearRangeUpper ||
+            adoptedDateYearRangeUpper != new DateTime(2026, 12, 31, 23, 59, 59, 999, DateTimeKind.Utc).AddTicks(9999) ||
+            adoptedDateYearRangeIds.Count != 3 ||
+            adoptedDateYearRangeIds[0] != 2025001L ||
+            adoptedDateYearRangeIds[1] != 2026001L ||
+            adoptedDateYearRangeIds[2] != 2026002L ||
+            adoptedDateYearMonthClassifications[0].ExecutionClass != LibraDexConditionExecutionClass.IndexBacked ||
+            adoptedDateYearMonthBridgePlan.Rows[0].Action != LibraDexConditionBridgeAction.ExecuteCurrentPrimitive ||
+            adoptedDateYearMonthCriterion.CriteriaKind != LibraDexCriteriaKind.Between ||
+            adoptedDateYearMonthCriterion.Values[0] is not DateTime adoptedDateYearMonthLower ||
+            adoptedDateYearMonthLower != new DateTime(2026, 12, 1, 0, 0, 0, DateTimeKind.Utc) ||
+            adoptedDateYearMonthCriterion.Values[1] is not DateTime adoptedDateYearMonthUpper ||
+            adoptedDateYearMonthUpper != new DateTime(2026, 12, 31, 23, 59, 59, 999, DateTimeKind.Utc).AddTicks(9999) ||
+            adoptedDateYearMonthIds.Count != 1 ||
+            adoptedDateYearMonthIds[0] != 2026002L ||
+            adoptedDateYearMonthDayClassifications[0].ExecutionClass != LibraDexConditionExecutionClass.IndexBacked ||
+            adoptedDateYearMonthDayBridgePlan.Rows[0].Action != LibraDexConditionBridgeAction.ExecuteCurrentPrimitive ||
+            adoptedDateYearMonthDayCriterion.CriteriaKind != LibraDexCriteriaKind.Between ||
+            adoptedDateYearMonthDayCriterion.Values[0] is not DateTime adoptedDateYearMonthDayLower ||
+            adoptedDateYearMonthDayLower != new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc) ||
+            adoptedDateYearMonthDayCriterion.Values[1] is not DateTime adoptedDateYearMonthDayUpper ||
+            adoptedDateYearMonthDayUpper != new DateTime(2026, 1, 1, 23, 59, 59, 999, DateTimeKind.Utc).AddTicks(9999) ||
+            adoptedDateYearMonthDayIds.Count != 1 ||
+            adoptedDateYearMonthDayIds[0] != 2026001L ||
+            adoptedDateYearMonthInClassifications[0].ExecutionClass != LibraDexConditionExecutionClass.IndexBacked ||
+            adoptedDateYearMonthInBridgePlan.Rows[0].Action != LibraDexConditionBridgeAction.ExecuteCurrentPrimitive ||
+            adoptedDateYearMonthInCriterion.CriteriaKind != LibraDexCriteriaKind.MultiRange ||
+            adoptedDateYearMonthInCriterion.Values[0] is not LibraDexIdentityKeyRange[] adoptedDateYearMonthInRanges ||
+            adoptedDateYearMonthInRanges.Length != 2 ||
+            adoptedDateYearMonthInRanges[0].LowerKey is not DateTime adoptedDateYearMonthInFirstLower ||
+            adoptedDateYearMonthInFirstLower != new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc) ||
+            adoptedDateYearMonthInRanges[1].LowerKey is not DateTime adoptedDateYearMonthInSecondLower ||
+            adoptedDateYearMonthInSecondLower != new DateTime(2026, 12, 1, 0, 0, 0, DateTimeKind.Utc) ||
+            adoptedDateYearMonthInIds.Count != 2 ||
+            adoptedDateYearMonthInIds[0] != 2026001L ||
+            adoptedDateYearMonthInIds[1] != 2026002L ||
+            adoptedDateYearMonthDayInClassifications[0].ExecutionClass != LibraDexConditionExecutionClass.IndexBacked ||
+            adoptedDateYearMonthDayInBridgePlan.Rows[0].Action != LibraDexConditionBridgeAction.ExecuteCurrentPrimitive ||
+            adoptedDateYearMonthDayInCriterion.CriteriaKind != LibraDexCriteriaKind.MultiRange ||
+            adoptedDateYearMonthDayInCriterion.Values[0] is not LibraDexIdentityKeyRange[] adoptedDateYearMonthDayInRanges ||
+            adoptedDateYearMonthDayInRanges.Length != 2 ||
+            adoptedDateYearMonthDayInRanges[0].LowerKey is not DateTime adoptedDateYearMonthDayInFirstLower ||
+            adoptedDateYearMonthDayInFirstLower != new DateTime(2025, 12, 31, 0, 0, 0, DateTimeKind.Utc) ||
+            adoptedDateYearMonthDayInRanges[1].LowerKey is not DateTime adoptedDateYearMonthDayInSecondLower ||
+            adoptedDateYearMonthDayInSecondLower != new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc) ||
+            adoptedDateYearMonthDayInIds.Count != 2 ||
+            adoptedDateYearMonthDayInIds[0] != 2025001L ||
+            adoptedDateYearMonthDayInIds[1] != 2026001L ||
+            adoptedDateMonthOnlyClassifications[0].ExecutionClass != LibraDexConditionExecutionClass.IndexBacked ||
+            adoptedDateMonthOnlyBridgePlan.Rows[0].Action != LibraDexConditionBridgeAction.ExecuteCurrentPrimitive ||
+            adoptedDateMonthOnlyCriterion.CriteriaKind != LibraDexCriteriaKind.StructuredComponent ||
+            adoptedDateMonthOnlyIds.Count != 2 ||
+            adoptedDateMonthOnlyIds[0] != 2025001L ||
+            adoptedDateMonthOnlyIds[1] != 2026002L ||
+            adoptedDateOnlyClassifications[0].ExecutionClass != LibraDexConditionExecutionClass.IndexBacked ||
+            adoptedDateOnlyBridgePlan.Rows[0].Action != LibraDexConditionBridgeAction.ExecuteCurrentPrimitive ||
+            adoptedDateOnlyCriterion.CriteriaKind != LibraDexCriteriaKind.Between ||
+            adoptedDateOnlyCriterion.Values[0] is not DateOnly adoptedDateOnlyLower ||
+            adoptedDateOnlyLower != new DateOnly(2026, 5, 20) ||
+            adoptedDateOnlyCriterion.Values[1] is not DateOnly adoptedDateOnlyUpper ||
+            adoptedDateOnlyUpper != new DateOnly(2026, 5, 20) ||
+            adoptedDateOnlyIds.Count != 1 ||
+            adoptedDateOnlyIds[0] != 20260520L ||
+            adoptedDateOffsetClassifications[0].ExecutionClass != LibraDexConditionExecutionClass.IndexBacked ||
+            adoptedDateOffsetBridgePlan.Rows[0].Action != LibraDexConditionBridgeAction.ExecuteCurrentPrimitive ||
+            adoptedDateOffsetCriterion.CriteriaKind != LibraDexCriteriaKind.Between ||
+            adoptedDateOffsetCriterion.Values[0] is not DateTimeOffset adoptedDateOffsetLower ||
+            adoptedDateOffsetLower != new DateTimeOffset(new DateTime(2025, 1, 1, 0, 0, 0, DateTimeKind.Utc), TimeSpan.Zero) ||
+            adoptedDateOffsetCriterion.Values[1] is not DateTimeOffset adoptedDateOffsetUpper ||
+            adoptedDateOffsetUpper != new DateTimeOffset(new DateTime(2026, 12, 31, 23, 59, 59, 999, DateTimeKind.Utc).AddTicks(9999), TimeSpan.Zero) ||
+            adoptedDateOffsetIds.Count != 1 ||
+            adoptedDateOffsetIds[0] != 20251231L ||
+            adoptedDateOffsetExactBridgePlan.Rows[0].Action != LibraDexConditionBridgeAction.ExecuteCurrentPrimitive ||
+            adoptedDateOffsetExactCriterion.CriteriaKind != LibraDexCriteriaKind.Find ||
+            adoptedDateOffsetExactIds.Count != 1 ||
+            adoptedDateOffsetExactIds[0] != 20251231L ||
+            adoptedDurationBridgePlan.Rows[0].Action != LibraDexConditionBridgeAction.ExecuteCurrentPrimitive ||
+            adoptedDurationCriterion.CriteriaKind != LibraDexCriteriaKind.Between ||
+            adoptedDurationIds.Count != 1 ||
+            adoptedDurationIds[0] != 90090L ||
+            adoptedScoreBridgePlan.Rows[0].Action != LibraDexConditionBridgeAction.ExecuteCurrentPrimitive ||
+            adoptedScoreCriterion.CriteriaKind != LibraDexCriteriaKind.AtOrAfter ||
+            adoptedScoreIds.Count != 1 ||
+            adoptedScoreIds[0] != 1250L ||
+            adoptedScoreAfterMaxBridgePlan.Rows[0].Action != LibraDexConditionBridgeAction.ExecuteCurrentPrimitive ||
+            adoptedScoreAfterMaxCriterion.CriteriaKind != LibraDexCriteriaKind.After ||
+            adoptedScoreAfterMaxIds.Count != 0 ||
+            adoptedScoreMaskedEqualBridgePlan.Rows[0].Action != LibraDexConditionBridgeAction.RequireVisibleScanPolicy ||
+            adoptedScoreMaskedEqualCriterion.CriteriaKind != LibraDexCriteriaKind.Bitmask ||
+            adoptedScoreMaskedEqualIds.Count != 1 ||
+            adoptedScoreMaskedEqualIds[0] != 1250L ||
+            adoptedScoreAllBitsCriterion.CriteriaKind != LibraDexCriteriaKind.Bitmask ||
+            adoptedScoreAllBitsIds.Count != 1 ||
+            adoptedScoreAllBitsIds[0] != 300L ||
+            adoptedScoreAnyBitsCriterion.CriteriaKind != LibraDexCriteriaKind.Bitmask ||
+            adoptedScoreAnyBitsIds.Count != 3 ||
+            adoptedScoreAnyBitsIds[0] != 400L ||
+            adoptedScoreAnyBitsIds[1] != 600L ||
+            adoptedScoreAnyBitsIds[2] != 1250L ||
+            adoptedScoreNoBitsCriterion.CriteriaKind != LibraDexCriteriaKind.Bitmask ||
+            adoptedScoreNoBitsIds.Count != 1 ||
+            adoptedScoreNoBitsIds[0] != 300L ||
+            adoptedScoreDeferredBitmaskCriterion.CriteriaKind != LibraDexCriteriaKind.Bitmask ||
+            adoptedScoreDeferredBitmaskIds.Count != 1 ||
+            adoptedScoreDeferredBitmaskIds[0] != 1250L ||
+            adoptedActiveBridgePlan.Rows[0].Action != LibraDexConditionBridgeAction.ExecuteCurrentPrimitive ||
+            adoptedActiveCriterion.CriteriaKind != LibraDexCriteriaKind.Find ||
+            adoptedActiveIds.Count != 1 ||
+            adoptedActiveIds[0] != 10001L ||
+            adoptedActiveAfterTrueBridgePlan.Rows[0].Action != LibraDexConditionBridgeAction.ExecuteCurrentPrimitive ||
+            adoptedActiveAfterTrueCriterion.CriteriaKind != LibraDexCriteriaKind.After ||
+            adoptedActiveAfterTrueIds.Count != 0 ||
+            adoptedTimeMorningClassifications[0].ExecutionClass != LibraDexConditionExecutionClass.IndexBacked ||
+            adoptedTimeMorningClassifications[0].ProjectionKind != LibraDexIndexProjectionKind.StructuredDate ||
+            adoptedTimeMorningBridgePlan.Rows[0].Action != LibraDexConditionBridgeAction.ExecuteCurrentPrimitive ||
+            adoptedTimeMorningCriterion.CriteriaKind != LibraDexCriteriaKind.Between ||
+            adoptedTimeMorningCriterion.Values[0] is not TimeOnly adoptedTimeMorningLower ||
+            adoptedTimeMorningLower != new TimeOnly(5, 0) ||
+            adoptedTimeMorningCriterion.Values[1] is not TimeOnly adoptedTimeMorningUpper ||
+            adoptedTimeMorningUpper != new TimeOnly(12, 0).Add(TimeSpan.FromTicks(-1)) ||
+            adoptedTimeMorningIds.Count != 1 ||
+            adoptedTimeMorningIds[0] != 6030L ||
+            adoptedTimeAfternoonClassifications[0].ExecutionClass != LibraDexConditionExecutionClass.IndexBacked ||
+            adoptedTimeAfternoonBridgePlan.Rows[0].Action != LibraDexConditionBridgeAction.ExecuteCurrentPrimitive ||
+            adoptedTimeAfternoonCriterion.CriteriaKind != LibraDexCriteriaKind.Between ||
+            adoptedTimeAfternoonIds.Count != 1 ||
+            adoptedTimeAfternoonIds[0] != 1300L ||
+            adoptedTimeEveningClassifications[0].ExecutionClass != LibraDexConditionExecutionClass.IndexBacked ||
+            adoptedTimeEveningBridgePlan.Rows[0].Action != LibraDexConditionBridgeAction.ExecuteCurrentPrimitive ||
+            adoptedTimeEveningCriterion.CriteriaKind != LibraDexCriteriaKind.Between ||
+            adoptedTimeEveningIds.Count != 1 ||
+            adoptedTimeEveningIds[0] != 1800L ||
+            adoptedTimeNightClassifications[0].ExecutionClass != LibraDexConditionExecutionClass.IndexBacked ||
+            adoptedTimeNightBridgePlan.Rows[0].Action != LibraDexConditionBridgeAction.ExecuteCurrentPrimitive ||
+            adoptedTimeNightCriterion.CriteriaKind != LibraDexCriteriaKind.MultiRange ||
+            adoptedTimeNightCriterion.Values[0] is not LibraDexIdentityKeyRange[] adoptedTimeNightRanges ||
+            adoptedTimeNightRanges.Length != 2 ||
+            adoptedTimeNightRanges[0].LowerKey is not TimeOnly adoptedTimeNightEarlyLower ||
+            adoptedTimeNightEarlyLower != new TimeOnly(0, 0) ||
+            adoptedTimeNightRanges[1].LowerKey is not TimeOnly adoptedTimeNightLateLower ||
+            adoptedTimeNightLateLower != new TimeOnly(22, 0) ||
+            adoptedTimeNightIds.Count != 2 ||
+            adoptedTimeNightIds[0] != 215L ||
+            adoptedTimeNightIds[1] != 2330L ||
+            adoptedDateBranchExecutableCount != 54 ||
+            adoptedDateBranchUnsupportedCount != 0 ||
+            adoptedGuidClassifications[0].ExecutionClass != LibraDexConditionExecutionClass.IndexBacked ||
+            adoptedGuidClassifications[0].ProjectionKind != LibraDexIndexProjectionKind.GuidSegments ||
+            adoptedGuidBridgePlan.Rows[0].Action != LibraDexConditionBridgeAction.ExecuteCurrentPrimitive ||
+            adoptedGuidCriterion.CriteriaKind != LibraDexCriteriaKind.GuidPattern ||
+            adoptedGuidIds.Count != 2 ||
+            adoptedGuidIds[0] != 112233L ||
+            adoptedGuidIds[1] != 119999L ||
+            adoptedGuidBytePrefixCriterion.CriteriaKind != LibraDexCriteriaKind.GuidPattern ||
+            adoptedGuidBytePrefixIds.Count != 2 ||
+            adoptedGuidBytePrefixIds[0] != 112233L ||
+            adoptedGuidBytePrefixIds[1] != 119999L ||
+            adoptedGuidEqualCriterion.CriteriaKind != LibraDexCriteriaKind.Find ||
+            adoptedGuidEqualIds.Count != 1 ||
+            adoptedGuidEqualIds[0] != 112233L ||
+            adoptedGuidEqualTextIds.Count != 1 ||
+            adoptedGuidEqualTextIds[0] != 112233L ||
+            adoptedGuidNotEqualCriterion.NodeKind != LibraDexIdentityCriterionNodeKind.Or ||
+            adoptedGuidNotEqualIds.Count != 2 ||
+            adoptedGuidNotEqualIds[0] != 119999L ||
+            adoptedGuidNotEqualIds[1] != 998877L ||
+            adoptedGuidEndsCriterion.CriteriaKind != LibraDexCriteriaKind.GuidPattern ||
+            adoptedGuidEndsIds.Count != 2 ||
+            adoptedGuidEndsIds[0] != 112233L ||
+            adoptedGuidEndsIds[1] != 998877L ||
+            adoptedGuidByteEndsCriterion.CriteriaKind != LibraDexCriteriaKind.GuidPattern ||
+            adoptedGuidByteEndsIds.Count != 2 ||
+            adoptedGuidByteEndsIds[0] != 112233L ||
+            adoptedGuidByteEndsIds[1] != 998877L ||
+            adoptedGuidContainsCriterion.CriteriaKind != LibraDexCriteriaKind.GuidPattern ||
+            adoptedGuidContainsIds.Count != 2 ||
+            adoptedGuidContainsIds[0] != 112233L ||
+            adoptedGuidContainsIds[1] != 998877L ||
+            adoptedGuidByteContainsCriterion.CriteriaKind != LibraDexCriteriaKind.GuidPattern ||
+            adoptedGuidByteContainsIds.Count != 2 ||
+            adoptedGuidByteContainsIds[0] != 112233L ||
+            adoptedGuidByteContainsIds[1] != 998877L ||
+            adoptedGuidPatternCriterion.CriteriaKind != LibraDexCriteriaKind.GuidPattern ||
+            adoptedGuidPatternIds.Count != 2 ||
+            adoptedGuidPatternIds[0] != 112233L ||
+            adoptedGuidPatternIds[1] != 119999L ||
+            adoptedGuidBytePatternCriterion.CriteriaKind != LibraDexCriteriaKind.GuidPattern ||
+            adoptedGuidBytePatternIds.Count != 1 ||
+            adoptedGuidBytePatternIds[0] != 112233L ||
+            groupGuidExactIds.Count != 1 ||
+            groupGuidExactIds[0] != 112233L ||
+            groupGuidTextExactIds.Count != 1 ||
+            groupGuidTextExactIds[0] != 112233L ||
+            groupGuidWildcardIds.Count != 2 ||
+            groupGuidWildcardIds[0] != 112233L ||
+            groupGuidWildcardIds[1] != 119999L ||
+            groupGuidBytePrefixIds.Count != 2 ||
+            groupGuidBytePrefixIds[0] != 112233L ||
+            groupGuidBytePrefixIds[1] != 119999L ||
+            adoptedBinaryClassifications[0].ExecutionClass != LibraDexConditionExecutionClass.IndexBacked ||
+            adoptedBinaryBridgePlan.Rows[0].Action != LibraDexConditionBridgeAction.ExecuteCurrentPrimitive ||
+            adoptedBinarySuffixClassifications[0].ExecutionClass != LibraDexConditionExecutionClass.IndexBacked ||
+            adoptedBinaryReversedSuffixClassifications[0].ExecutionClass != LibraDexConditionExecutionClass.ProjectionBacked ||
+            adoptedBinaryCriterion.CriteriaKind != LibraDexCriteriaKind.BinaryPattern ||
+            adoptedBinaryIds.Count != 2 ||
+            adoptedBinaryIds[0] != 1001L ||
+            adoptedBinaryIds[1] != 1002L ||
+            adoptedBinaryEqualCriterion.CriteriaKind != LibraDexCriteriaKind.Find ||
+            adoptedBinaryEqualIds.Count != 1 ||
+            adoptedBinaryEqualIds[0] != 1001L ||
+            adoptedBinaryEndsCriterion.CriteriaKind != LibraDexCriteriaKind.BinaryPattern ||
+            adoptedBinaryEndsIds.Count != 2 ||
+            adoptedBinaryEndsIds[0] != 1001L ||
+            adoptedBinaryEndsIds[1] != 1003L ||
+            adoptedBinaryContainsCriterion.CriteriaKind != LibraDexCriteriaKind.BinaryPattern ||
+            adoptedBinaryContainsIds.Count != 2 ||
+            adoptedBinaryContainsIds[0] != 1001L ||
+            adoptedBinaryContainsIds[1] != 1003L ||
+            adoptedBinarySliceCriterion.CriteriaKind != LibraDexCriteriaKind.BinaryPattern ||
+            adoptedBinarySliceIds.Count != 2 ||
+            adoptedBinarySliceIds[0] != 1001L ||
+            adoptedBinarySliceIds[1] != 1003L ||
+            groupBinaryExactIds.Count != 1 ||
+            groupBinaryExactIds[0] != 1001L ||
+            groupBinaryPrefixIds.Count != 2 ||
+            groupBinaryPrefixIds[0] != 1001L ||
+            groupBinaryPrefixIds[1] != 1002L ||
+            groupBinarySuffixIds.Count != 2 ||
+            groupBinarySuffixIds[0] != 1001L ||
+            groupBinarySuffixIds[1] != 1003L ||
+            groupBinaryContainsIds.Count != 2 ||
+            groupBinaryContainsIds[0] != 1001L ||
+            groupBinaryContainsIds[1] != 1003L ||
+            groupBinarySliceIds.Count != 2 ||
+            groupBinarySliceIds[0] != 1001L ||
+            groupBinarySliceIds[1] != 1003L ||
+            groupBinaryHexPrefixIds.Count != 2 ||
+            groupBinaryHexPrefixIds[0] != 1001L ||
+            groupBinaryHexPrefixIds[1] != 1002L ||
+            groupBinaryHexSuffixIds.Count != 2 ||
+            groupBinaryHexSuffixIds[0] != 1001L ||
+            groupBinaryHexSuffixIds[1] != 1003L ||
+            groupBinaryHexContainsIds.Count != 2 ||
+            groupBinaryHexContainsIds[0] != 1001L ||
+            groupBinaryHexContainsIds[1] != 1003L ||
+            groupBinaryHexSliceIds.Count != 2 ||
+            groupBinaryHexSliceIds[0] != 1001L ||
+            groupBinaryHexSliceIds[1] != 1003L ||
+            groupBinaryHexPatternIds.Count != 1 ||
+            groupBinaryHexPatternIds[0] != 1001L ||
+            groupBinaryReversedSuffixIds.Count != 2 ||
+            groupBinaryReversedSuffixIds[0] != 1101L ||
+            groupBinaryReversedSuffixIds[1] != 1103L ||
+            groupBinaryReversedHexSuffixIds.Count != 2 ||
+            groupBinaryReversedHexSuffixIds[0] != 1101L ||
+            groupBinaryReversedHexSuffixIds[1] != 1103L ||
+            adoptedBinaryInt32SliceCriterion.CriteriaKind != LibraDexCriteriaKind.BinaryTypedSlice ||
+            adoptedBinaryInt32SliceIds.Count != 2 ||
+            !adoptedBinaryInt32SliceIds.Contains(1004L) ||
+            !adoptedBinaryInt32SliceIds.Contains(1006L) ||
+            adoptedBinaryGuidSliceCriterion.CriteriaKind != LibraDexCriteriaKind.BinaryTypedSlice ||
+            adoptedBinaryGuidSliceIds.Count != 1 ||
+            adoptedBinaryGuidSliceIds[0] != 1001L ||
+            adoptedBinaryDateSliceCriterion.CriteriaKind != LibraDexCriteriaKind.BinaryTypedSlice ||
+            adoptedBinaryDateSliceIds.Count != 2 ||
+            !adoptedBinaryDateSliceIds.Contains(1004L) ||
+            !adoptedBinaryDateSliceIds.Contains(1005L) ||
+            adoptedBinaryUInt64SliceIds.Count != 2 ||
+            !adoptedBinaryUInt64SliceIds.Contains(1004L) ||
+            !adoptedBinaryUInt64SliceIds.Contains(1005L) ||
+            adoptedBinaryStringSliceCriterion.CriteriaKind != LibraDexCriteriaKind.BinaryTypedSlice ||
+            adoptedBinaryStringSliceIds.Count != 2 ||
+            !adoptedBinaryStringSliceIds.Contains(1004L) ||
+            !adoptedBinaryStringSliceIds.Contains(1005L) ||
+            adoptedBinaryUtf16ContainsIds.Count != 1 ||
+            adoptedBinaryUtf16ContainsIds[0] != 1012L ||
+            adoptedBinaryInt32SliceBitmaskCriterion.CriteriaKind != LibraDexCriteriaKind.BinaryTypedSlice ||
+            adoptedBinaryInt32SliceBitmaskIds.Count != 2 ||
+            !adoptedBinaryInt32SliceBitmaskIds.Contains(1004L) ||
+            !adoptedBinaryInt32SliceBitmaskIds.Contains(1006L) ||
+            adoptedBinaryFullNumericSliceIds.Count != 2 ||
+            !adoptedBinaryFullNumericSliceIds.Contains(1004L) ||
+            !adoptedBinaryFullNumericSliceIds.Contains(1006L) ||
+            !adoptedBinaryWideNumericSliceIds.Contains(1007L) ||
+            !adoptedBinaryWideNumericSliceIds.Contains(1008L) ||
+            !adoptedBinaryWideNumericSliceIds.Contains(1009L) ||
+            !adoptedBinaryMoreDateSliceIds.Contains(1010L) ||
+            !adoptedBinaryMoreDateSliceIds.Contains(1011L) ||
+            adoptedBinaryEncodedTextSliceIds.Count != 1 ||
+            adoptedBinaryEncodedTextSliceIds[0] != 1012L ||
+            adoptedBinaryCustomEncodedTextSliceIds.Count != 1 ||
+            adoptedBinaryCustomEncodedTextSliceIds[0] != 1014L ||
+            adoptedBinaryFloatingSliceIds.Count != 1 ||
+            adoptedBinaryFloatingSliceIds[0] != 1013L ||
+            adoptedCompositeClassifications[0].ExecutionClass != LibraDexConditionExecutionClass.CompositeBacked ||
+            adoptedCompositeBridgePlan.Rows[0].Action != LibraDexConditionBridgeAction.ConnectCompositePrimitive ||
+            !adoptedCompositeBridgePlan.RequiresCompositeBridge ||
+            routedCompositeClassifications[0].ExecutionClass != LibraDexConditionExecutionClass.IndexBacked ||
+            routedCompositeBridgePlan.Rows[0].Action != LibraDexConditionBridgeAction.ExecuteCurrentPrimitive ||
+            routedCompositeTenantIds.Count != 3 ||
+            routedCompositeTenantIds[0] != 7102L ||
+            routedCompositeTenantIds[1] != 7101L ||
+            routedCompositeTenantIds[2] != 7103L ||
+            routedCompositePrefixIds.Count != 2 ||
+            routedCompositePrefixIds[0] != 7102L ||
+            routedCompositePrefixIds[1] != 7101L ||
+            routedCompositeFullIds.Count != 1 ||
+            routedCompositeFullIds[0] != 7103L ||
+            routedCompositeFlagsBitmaskIds.Count != 1 ||
+            routedCompositeFlagsBitmaskIds[0] != 7303L ||
+            routedCompositeGuidPrefixIds.Count != 2 ||
+            routedCompositeGuidPrefixIds[0] != 7402L ||
+            routedCompositeGuidPrefixIds[1] != 7401L ||
+            routedCompositeDateYearIds.Count != 2 ||
+            routedCompositeDateYearIds[0] != 7502L ||
+            routedCompositeDateYearIds[1] != 7503L ||
+            routedCompositeDateYearMonthDayIds.Count != 1 ||
+            routedCompositeDateYearMonthDayIds[0] != 7503L)
+        {
+            throw new InvalidDataException("Adopted condition builder did not preserve grouping or bridge planning metadata.");
+        }
+
+        using (Catalog scalarSelectorCatalog = Catalog.CreateMemory())
+        {
+            LibraDexIndex<byte, long> byteIndex = scalarSelectorCatalog.Indexes["scalar"]["byte"].Create<byte, long>();
+            LibraDexIndex<sbyte, long> sbyteIndex = scalarSelectorCatalog.Indexes["scalar"]["sbyte"].Create<sbyte, long>();
+            LibraDexIndex<short, long> shortIndex = scalarSelectorCatalog.Indexes["scalar"]["short"].Create<short, long>();
+            LibraDexIndex<ushort, long> ushortIndex = scalarSelectorCatalog.Indexes["scalar"]["ushort"].Create<ushort, long>();
+            LibraDexIndex<char, long> charIndex = scalarSelectorCatalog.Indexes["scalar"]["char"].Create<char, long>();
+            LibraDexIndex<ulong, long> ulongIndex = scalarSelectorCatalog.Indexes["scalar"]["ulong"].Create<ulong, long>();
+            LibraDexIndex<Int128, long> int128Index = scalarSelectorCatalog.Indexes["scalar"]["int128"].Int128Keys<long>().Create();
+            LibraDexIndex<UInt128, long> uint128Index = scalarSelectorCatalog.Indexes["scalar"]["uint128"].UInt128Keys<long>().Create();
+            Int128 int128NegativeHuge = -(Int128.One << 100);
+            Int128 int128PositiveHuge = Int128.One << 100;
+            UInt128 uint128High = UInt128.One << 100;
+            ValidateGenericInsert(byteIndex.Insert(7, 107), "scalar selector byte insert");
+            ValidateGenericInsert(sbyteIndex.Insert(-7, 207), "scalar selector sbyte insert");
+            ValidateGenericInsert(shortIndex.Insert(-300, 307), "scalar selector short insert");
+            ValidateGenericInsert(ushortIndex.Insert(65000, 407), "scalar selector ushort insert");
+            ValidateGenericInsert(charIndex.Insert('K', 507), "scalar selector char insert");
+            ValidateGenericInsert(ulongIndex.Insert(9000000000UL, 607), "scalar selector ulong insert");
+            ValidateGenericInsert(int128Index.Insert(int128NegativeHuge, 707), "scalar selector Int128 negative insert");
+            ValidateGenericInsert(int128Index.Insert(Int128.Zero, 708), "scalar selector Int128 zero insert");
+            ValidateGenericInsert(int128Index.Insert(int128PositiveHuge, 709), "scalar selector Int128 positive insert");
+            ValidateGenericInsert(uint128Index.Insert(UInt128.Zero, 807), "scalar selector UInt128 zero insert");
+            ValidateGenericInsert(uint128Index.Insert((UInt128)ulong.MaxValue, 808), "scalar selector UInt128 ulong-max insert");
+            ValidateGenericInsert(uint128Index.Insert(uint128High, 809), "scalar selector UInt128 high insert");
+            IReadOnlyDictionary<string, IIndex> scalarSelectorIndexes = new Dictionary<string, IIndex>(StringComparer.Ordinal)
+            {
+                ["byte"] = byteIndex,
+                ["sbyte"] = sbyteIndex,
+                ["short"] = shortIndex,
+                ["ushort"] = ushortIndex,
+                ["char"] = charIndex,
+                ["ulong"] = ulongIndex,
+                ["int128"] = int128Index,
+                ["uint128"] = uint128Index
+            };
+            IIndex ScalarSelectorResolver(string indexName) => scalarSelectorIndexes[indexName];
+            IReadOnlyList<long> byteIds = LibraDexCondition.ForGroup("scalar").Index("byte").AsByte.LessOrEqual(byte.MaxValue).EndCondition.ToList<long>(ScalarSelectorResolver);
+            IReadOnlyList<long> byteAfterMaxIds = LibraDexCondition.ForGroup("scalar").Index("byte").AsByte.GreaterThan(byte.MaxValue).EndCondition.ToList<long>(ScalarSelectorResolver);
+            IReadOnlyList<long> sbyteIds = LibraDexCondition.ForGroup("scalar").Index("sbyte").AsSByte.Between(-10, -1).EndCondition.ToList<long>(ScalarSelectorResolver);
+            IReadOnlyList<long> shortIds = LibraDexCondition.ForGroup("scalar").Index("short").AsInt16.LessThan(0).EndCondition.ToList<long>(ScalarSelectorResolver);
+            IReadOnlyList<long> ushortIds = LibraDexCondition.ForGroup("scalar").Index("ushort").AsUInt16.GreaterOrEqual(60000).EndCondition.ToList<long>(ScalarSelectorResolver);
+            IReadOnlyList<long> charIds = LibraDexCondition.ForGroup("scalar").Index("char").AsChar.EqualTo('K').EndCondition.ToList<long>(ScalarSelectorResolver);
+            IReadOnlyList<long> ulongIds = LibraDexCondition.ForGroup("scalar").Index("ulong").AsUInt64.GreaterThan(ulong.MaxValue).EndCondition.ToList<long>(ScalarSelectorResolver);
+            IReadOnlyList<long> int128NegativeIds = LibraDexCondition.ForGroup("scalar").Index("int128").AsInt128.LessThan(Int128.Zero).EndCondition.ToList<long>(ScalarSelectorResolver);
+            IReadOnlyList<long> int128BetweenIds = LibraDexCondition.ForGroup("scalar").Index("int128").AsInt128.Between(-Int128.One, int128PositiveHuge).EndCondition.ToList<long>(ScalarSelectorResolver);
+            IReadOnlyList<long> uint128HighIds = LibraDexCondition.ForGroup("scalar").Index("uint128").AsUInt128.GreaterThan((UInt128)ulong.MaxValue).EndCondition.ToList<long>(ScalarSelectorResolver);
+            IReadOnlyList<long> uint128SetIds = LibraDexCondition.ForGroup("scalar").Index("uint128").AsUInt128.InSet(new[] { UInt128.Zero, uint128High }).EndCondition.ToList<long>(ScalarSelectorResolver);
+            IReadOnlyList<long> uint128AfterMaxIds = LibraDexCondition.ForGroup("scalar").Index("uint128").AsUInt128.GreaterThan(UInt128.MaxValue).EndCondition.ToList<long>(ScalarSelectorResolver);
+            if (byteIds.Count != 1 ||
+                byteIds[0] != 107 ||
+                byteAfterMaxIds.Count != 0 ||
+                sbyteIds.Count != 1 ||
+                sbyteIds[0] != 207 ||
+                shortIds.Count != 1 ||
+                shortIds[0] != 307 ||
+                ushortIds.Count != 1 ||
+                ushortIds[0] != 407 ||
+                charIds.Count != 1 ||
+                charIds[0] != 507 ||
+                ulongIds.Count != 0 ||
+                int128NegativeIds.Count != 1 ||
+                int128NegativeIds[0] != 707 ||
+                int128BetweenIds.Count != 2 ||
+                int128BetweenIds[0] != 708 ||
+                int128BetweenIds[1] != 709 ||
+                uint128HighIds.Count != 1 ||
+                uint128HighIds[0] != 809 ||
+                uint128SetIds.Count != 2 ||
+                uint128SetIds[0] != 807 ||
+                uint128SetIds[1] != 809 ||
+                uint128AfterMaxIds.Count != 0)
+            {
+                throw new InvalidDataException("Scalar selector conditions did not preserve typed key domains or range semantics.");
+            }
+        }
+
+        ValidateGenericInsert(index.Add(10, 1000), "public surface add 10");
+        ValidateGenericInsert(index.Add(11, 1100), "public surface add 11");
+        ValidateGenericInsert(index.Add(12, 1200), "public surface add 12");
+        ValidateGenericInsert(alternateIndex.Add(12, 1212), "public surface alternate add 12");
+
+        Func<string, IIndex> surfaceResolver = indexName => indexName switch
+        {
+            "value" => index,
+            "alternate" => alternateIndex,
+            _ => throw new KeyNotFoundException(indexName)
+        };
+        LibraDexConditionEndCondition rangeCondition = LibraDexCondition
+            .ForGroup("surface")
+            .Index("value").AsInt64.Between(10L, 12L)
+            .EndCondition;
+        LibraDexConditionEndCondition exactCondition = LibraDexCondition
+            .ForGroup("surface")
+            .Index("value").AsInt64.EqualTo(11L)
+            .EndCondition;
+        LibraDexConditionEndCondition boundaryIntersection = LibraDexCondition
+            .ForGroup("surface")
+            .Index("value").AsInt64.LessOrEqual(11L)
+            .AND.Index("value").AsInt64.GreaterOrEqual(11L)
+            .EndCondition;
+        LibraDexPreparedObjectSet preparedSet = ((IIndex)index).PrepareInSet(new object[] { 10L, 12L });
+        LibraDexConditionEndCondition membershipCondition = LibraDexCondition
+            .ForGroup("surface")
+            .Index("value").AsInt64.InSet(new[] { 10L, 12L })
+            .EndCondition;
+        long adoptedDeferredMinimum = 10;
+        LibraDexConditionEndCondition adoptedDeferredGreaterCondition = LibraDexCondition
+            .ForGroup("surface")
+            .Index("value").AsInt64.GreaterThan(() => adoptedDeferredMinimum)
+            .EndCondition;
+        long adoptedDeferredLow = 10;
+        long adoptedDeferredHigh = 11;
+        LibraDexConditionEndCondition adoptedDeferredBetweenCondition = LibraDexCondition
+            .ForGroup("surface")
+            .Index("value").AsInt64.Between(() => adoptedDeferredLow, () => adoptedDeferredHigh)
+            .EndCondition;
+        HashSet<long> adoptedDeferredMembershipSet = new() { 10L, 12L };
+        LibraDexConditionEndCondition adoptedDeferredMembershipCondition = LibraDexCondition
+            .ForGroup("surface")
+            .Index("value").AsInt64.InSet(() => adoptedDeferredMembershipSet)
+            .EndCondition;
+
+        IReadOnlyList<long> rangeIds = rangeCondition.ToList<long>(surfaceResolver, deduplication: IdentityDeduplication.Preserve);
+        IReadOnlyList<long> rangeTakeIds = rangeCondition.ToList<long>(
+            surfaceResolver,
+            deduplication: IdentityDeduplication.Preserve,
+            take: 2);
+        IReadOnlyList<long> rangeDescendingIds = rangeCondition.ToList<long>(
+            surfaceResolver,
+            IdentityResultOrdering.IdentityDescending,
+            IdentityDeduplication.Preserve);
+        IReadOnlyList<long> exactIds = exactCondition.ToList<long>(surfaceResolver, deduplication: IdentityDeduplication.Preserve);
+        IReadOnlyList<long> boundaryIntersectionIds = boundaryIntersection.ToList<long>(surfaceResolver, deduplication: IdentityDeduplication.Preserve);
+        IReadOnlyList<long> membershipIds = membershipCondition.ToList<long>(surfaceResolver, deduplication: IdentityDeduplication.Preserve);
+        IReadOnlyList<long> adoptedDeferredGreaterIds = adoptedDeferredGreaterCondition.ToList<long>(surfaceResolver, deduplication: IdentityDeduplication.Preserve);
+        adoptedDeferredMinimum = 11;
+        IReadOnlyList<long> updatedAdoptedDeferredGreaterIds = adoptedDeferredGreaterCondition.ToList<long>(surfaceResolver, deduplication: IdentityDeduplication.Preserve);
+        IReadOnlyList<long> adoptedDeferredBetweenIds = adoptedDeferredBetweenCondition.ToList<long>(surfaceResolver, deduplication: IdentityDeduplication.Preserve);
+        adoptedDeferredHigh = 12;
+        IReadOnlyList<long> updatedAdoptedDeferredBetweenIds = adoptedDeferredBetweenCondition.ToList<long>(surfaceResolver, deduplication: IdentityDeduplication.Preserve);
+        IReadOnlyList<long> adoptedDeferredMembershipIds = adoptedDeferredMembershipCondition.ToList<long>(surfaceResolver, deduplication: IdentityDeduplication.Preserve);
+        adoptedDeferredMembershipSet = new HashSet<long> { 11L };
+        IReadOnlyList<long> updatedAdoptedDeferredMembershipIds = adoptedDeferredMembershipCondition.ToList<long>(surfaceResolver, deduplication: IdentityDeduplication.Preserve);
+        IReadOnlyList<long> indexWhereIds = index.GetIdentities(index.Where.GreaterOrEqual(10).And.Not.EqualTo(11), deduplication: IdentityDeduplication.Preserve);
+        IReadOnlyList<long> groupWhereIds = catalog.Indexes["surface"].GetIdentities(
+            index.Where.GreaterOrEqual(10).AndAlso(index.Where.LessOrEqual(11)),
+            deduplication: IdentityDeduplication.Preserve);
+        long reusableMinimum = 10;
+        LibraDexConditionExpression<long> deferredMinimum = index.Where.GreaterOrEqual(() => reusableMinimum, "minimum");
+        IReadOnlyList<long> deferredMinimumIds = index.GetIdentities(deferredMinimum, deduplication: IdentityDeduplication.Preserve);
+        reusableMinimum = 12;
+        IReadOnlyList<long> updatedDeferredMinimumIds = index.GetIdentities(deferredMinimum, deduplication: IdentityDeduplication.Preserve);
+        IReadOnlyList<long> replacedMinimumIds = index.GetIdentities(
+            deferredMinimum.WithValue("minimum", 11L),
+            deduplication: IdentityDeduplication.Preserve);
+        LibraDexConditionExpression<long> adoptedNamedMinimum = LibraDexConditionExpression<long>.From(LibraDexCondition
+            .ForGroup("surface")
+            .Index("value").AsInt64.GreaterOrEqual(0L, "minimum")
+            .EndCondition);
+        IReadOnlyList<long> adoptedNamedMinimumIds = adoptedNamedMinimum
+            .WithValue("minimum", 11L)
+            .GetIdentities(
+            surfaceResolver,
+            deduplication: IdentityDeduplication.Preserve);
+        string selectedIndexName = "public-surface";
+        LibraDexConditionExpression<long> deferredIndexCondition = LibraDexConditionExpression<long>.From(LibraDexCondition
+            .ForGroup("surface")
+            .Index(() => selectedIndexName, "selected").AsInt64.EqualTo(12L)
+            .EndCondition);
+        IReadOnlyList<long> deferredIndexValueIds = catalog.Indexes["surface"].GetIdentities(
+            deferredIndexCondition,
+            deduplication: IdentityDeduplication.Preserve);
+        selectedIndexName = "alternate";
+        IReadOnlyList<long> updatedDeferredIndexIds = catalog.Indexes["surface"].GetIdentities(
+            deferredIndexCondition,
+            deduplication: IdentityDeduplication.Preserve);
+        IReadOnlyList<long> replacedIndexIds = catalog.Indexes["surface"].GetIdentities(
+            deferredIndexCondition.WithIndex("selected", "public-surface"),
+            deduplication: IdentityDeduplication.Preserve);
+        LibraDexConditionExpression<long> lowOrHighFragment = LibraDexConditionExpression<long>.Grouped(index.Where.EqualTo(10).Or.EqualTo(12));
+        IReadOnlyList<long> groupedFragmentIds = index.GetIdentities(
+            lowOrHighFragment.AndAlso(() => index.Where.GreaterOrEqual(11)),
+            deduplication: IdentityDeduplication.Preserve);
+        LibraDexConditionExpression<long> widenedReusableFragment = index.Where.GreaterOrEqual(10);
+        IReadOnlyList<long> continuedFragmentIds = index.GetIdentities(
+            index.Where.Continue(widenedReusableFragment).Not.EqualTo(12),
+            deduplication: IdentityDeduplication.Preserve);
+        IReadOnlyList<long> continuedOrFragmentIds = index.GetIdentities(
+            index.Where.ContinueOr(index.Where.EqualTo(10)).EqualTo(12),
+            deduplication: IdentityDeduplication.Preserve);
+        IReadOnlyList<long> originalDeferredAfterReplacementIds = index.GetIdentities(
+            deferredMinimum,
+            deduplication: IdentityDeduplication.Preserve);
+        LibraDexGroupCondition namedMultiKeyCondition = catalog.Indexes["surface"].Where
+            .Int64("public-surface").GreaterOrEqual(10L)
+            .And.Int64("public-surface").LessOrEqual(11L)
+            .Condition;
+        IReadOnlyList<long> namedMultiKeyIds = catalog.Indexes["surface"].GetIdentities<long>(
+            namedMultiKeyCondition,
+            deduplication: IdentityDeduplication.Preserve);
+        LibraDexGroupCondition handleMultiKeyCondition = catalog.Indexes["surface"].Where
+            .Int64((IIndex)index).GreaterOrEqual(10L)
+            .And.Int64((IIndex)index).LessOrEqual(11L)
+            .Condition;
+        IReadOnlyList<long> handleMultiKeyIds = catalog.Indexes["surface"].GetIdentities<long>(
+            handleMultiKeyCondition,
+            deduplication: IdentityDeduplication.Preserve);
+        LibraDexGroupCondition orderedMultiKeyCondition = catalog.Indexes["surface"]
+            .MultiKey((IIndex)index, (IIndex)index)
+            .Where.Int64(0).GreaterOrEqual(10L)
+            .And.Int64(1).LessOrEqual(11L)
+            .Condition;
+        IReadOnlyList<long> orderedMultiKeyIds = catalog.Indexes["surface"].GetIdentities<long>(
+            orderedMultiKeyCondition,
+            deduplication: IdentityDeduplication.Preserve);
+        if (rangeIds.Count != 3 ||
+            rangeIds[0] != 1000 ||
+            rangeIds[2] != 1200 ||
+            rangeTakeIds.Count != 2 ||
+            rangeTakeIds[1] != 1100 ||
+            rangeDescendingIds.Count != 3 ||
+            rangeDescendingIds[0] != 1200 ||
+            exactIds.Count != 1 ||
+            exactIds[0] != 1100 ||
+            boundaryIntersectionIds.Count != 1 ||
+            boundaryIntersectionIds[0] != 1100 ||
+            membershipIds.Count != 2 ||
+            membershipIds[0] != 1000 ||
+            membershipIds[1] != 1200 ||
+            adoptedDeferredGreaterIds.Count != 2 ||
+            adoptedDeferredGreaterIds[0] != 1100 ||
+            adoptedDeferredGreaterIds[1] != 1200 ||
+            updatedAdoptedDeferredGreaterIds.Count != 1 ||
+            updatedAdoptedDeferredGreaterIds[0] != 1200 ||
+            adoptedDeferredBetweenIds.Count != 2 ||
+            adoptedDeferredBetweenIds[0] != 1000 ||
+            adoptedDeferredBetweenIds[1] != 1100 ||
+            updatedAdoptedDeferredBetweenIds.Count != 3 ||
+            updatedAdoptedDeferredBetweenIds[2] != 1200 ||
+            adoptedDeferredMembershipIds.Count != 2 ||
+            adoptedDeferredMembershipIds[0] != 1000 ||
+            adoptedDeferredMembershipIds[1] != 1200 ||
+            updatedAdoptedDeferredMembershipIds.Count != 1 ||
+            updatedAdoptedDeferredMembershipIds[0] != 1100 ||
+            indexWhereIds.Count != 2 ||
+            indexWhereIds[0] != 1000 ||
+            indexWhereIds[1] != 1200 ||
+            groupWhereIds.Count != 2 ||
+            groupWhereIds[0] != 1000 ||
+            groupWhereIds[1] != 1100 ||
+            deferredMinimumIds.Count != 3 ||
+            deferredMinimumIds[0] != 1000 ||
+            updatedDeferredMinimumIds.Count != 1 ||
+            updatedDeferredMinimumIds[0] != 1200 ||
+            replacedMinimumIds.Count != 2 ||
+            replacedMinimumIds[0] != 1100 ||
+            replacedMinimumIds[1] != 1200 ||
+            adoptedNamedMinimumIds.Count != 2 ||
+            adoptedNamedMinimumIds[0] != 1100 ||
+            adoptedNamedMinimumIds[1] != 1200 ||
+            deferredIndexValueIds.Count != 1 ||
+            deferredIndexValueIds[0] != 1200 ||
+            updatedDeferredIndexIds.Count != 1 ||
+            updatedDeferredIndexIds[0] != 1212 ||
+            replacedIndexIds.Count != 1 ||
+            replacedIndexIds[0] != 1200 ||
+            groupedFragmentIds.Count != 1 ||
+            groupedFragmentIds[0] != 1200 ||
+            continuedFragmentIds.Count != 2 ||
+            continuedFragmentIds[0] != 1000 ||
+            continuedFragmentIds[1] != 1100 ||
+            continuedOrFragmentIds.Count != 2 ||
+            continuedOrFragmentIds[0] != 1000 ||
+            continuedOrFragmentIds[1] != 1200 ||
+            originalDeferredAfterReplacementIds.Count != 1 ||
+            originalDeferredAfterReplacementIds[0] != 1200 ||
+            namedMultiKeyIds.Count != 2 ||
+            namedMultiKeyIds[0] != 1000 ||
+            namedMultiKeyIds[1] != 1100 ||
+            handleMultiKeyIds.Count != 2 ||
+            handleMultiKeyIds[0] != 1000 ||
+            handleMultiKeyIds[1] != 1100 ||
+            orderedMultiKeyIds.Count != 2 ||
+            orderedMultiKeyIds[0] != 1000 ||
+            orderedMultiKeyIds[1] != 1100 ||
+            preparedSet.KeyType != typeof(long) ||
+            preparedSet.Values.Count != 2)
+        {
+            throw new InvalidDataException("Condition-builder retrieval did not return expected identity results.");
+        }
+
+        if (rangeCondition.Count(surfaceResolver, IdentityDeduplication.Preserve) != 3 ||
+            !exactCondition.Exists(surfaceResolver, IdentityDeduplication.Preserve) ||
+            LibraDexCondition.ForGroup("surface").Index("value").AsInt64.EqualTo(99L).EndCondition.Exists(surfaceResolver) ||
+            !membershipCondition.Exists(surfaceResolver, IdentityDeduplication.Preserve))
+        {
+            throw new InvalidDataException("Condition terminal count/existence helpers did not return expected values.");
         }
 
         try
         {
-            _ = invalidDeferredCondition.Materialize();
-            throw new InvalidDataException("Identity condition builder accepted a deferred operand with the wrong runtime key type.");
+            _ = rangeCondition.ToList<long>(surfaceResolver, bookmark: new LibraDexBookmark(0, -1));
+            throw new InvalidDataException("Condition retrieval accepted a negative bookmark position.");
         }
-        catch (ArgumentException)
+        catch (ArgumentOutOfRangeException)
         {
         }
 
-        ValidateGenericInsert(index.Insert(10, 1000), "public surface insert 10");
-        ValidateGenericInsert(index.Insert(11, 1100), "public surface insert 11");
-        ValidateGenericInsert(index.Insert(12, 1200), "public surface insert 12");
-
-        LibraDexQuery<long, long> tupleQuery = index.Between(10, 12);
-        LibraDexQuery<long, long> tupleTakeQuery = index.Between(10, 12, take: 2);
-        if (tupleQuery.Diagnostics.ExecutionKind != LibraDexExecutionKind.FastPath)
+        using (LibraDexRangeReader<long, long> primitiveCursor = index.OpenRangeReader(10, 12))
         {
-            throw new InvalidDataException("Tuple query did not capture the expected fast-path diagnostic kind.");
-        }
-
-        if (tupleTakeQuery.TakeCount != 2)
-        {
-            throw new InvalidDataException("Tuple query did not capture the expected take count.");
-        }
-
-        LibraDexQuery<long, long> secondTupleQuery = index.Between(11, 12);
-        LibraDexSetQuery<long, long> union = tupleQuery.Union(secondTupleQuery);
-        LibraDexSetQuery<long, long> intersect = tupleQuery.Intersect(secondTupleQuery);
-        LibraDexSetQuery<long, long> except = tupleQuery.Except(secondTupleQuery);
-        LibraDexJoinQuery<long, long> semiJoin = tupleQuery.Join(secondTupleQuery, LibraDexJoinKind.Semi);
-        if (union.Operation != LibraDexSetOperationKind.Union ||
-            intersect.Operation != LibraDexSetOperationKind.Intersect ||
-            except.Operation != LibraDexSetOperationKind.Except ||
-            semiJoin.Kind != LibraDexJoinKind.Semi)
-        {
-            throw new InvalidDataException("Set or join descriptors did not capture expected intent.");
-        }
-
-        IReadOnlyList<LibraDexTuple<long, long>> unionRows = union.ToList();
-        IReadOnlyList<LibraDexTuple<long, long>> intersectRows = intersect.ToList();
-        IReadOnlyList<LibraDexTuple<long, long>> exceptRows = except.ToList();
-        if (unionRows.Count != 3 ||
-            intersectRows.Count != 2 ||
-            intersectRows[0].Key != 11 ||
-            exceptRows.Count != 1 ||
-            exceptRows[0].Key != 10)
-        {
-            throw new InvalidDataException("Set materialization did not return expected tuple rows.");
-        }
-
-        using (LibraDexRangeReader<long, long> cursor = tupleQuery.OpenCursor())
-        {
-            if (!cursor.TryReadNext(out long firstKey, out long firstIdentity) || firstKey != 10 || firstIdentity != 1000)
+            if (primitiveCursor.Count != 3 ||
+                !primitiveCursor.TryReadNext(out long firstPrimitiveKey, out long firstPrimitiveIdentity) ||
+                firstPrimitiveKey != 10 ||
+                firstPrimitiveIdentity != 1000 ||
+                !primitiveCursor.TryReadNext(out long secondPrimitiveKey, out _) ||
+                secondPrimitiveKey != 11)
             {
-                throw new InvalidDataException("Tuple query cursor did not return the first expected tuple.");
+                throw new InvalidDataException("Internal range-reader primitive did not return expected tuples.");
             }
         }
 
-        using (LibraDexRangeReader<long, long> takeCursor = tupleTakeQuery.OpenCursor())
-        {
-            if (takeCursor.Count != 2 ||
-                !takeCursor.TryReadNext(out long firstTakeKey, out _) ||
-                firstTakeKey != 10 ||
-                !takeCursor.TryReadNext(out long secondTakeKey, out _) ||
-                secondTakeKey != 11 ||
-                takeCursor.TryReadNext(out _, out _))
-            {
-                throw new InvalidDataException("Tuple query cursor did not enforce the expected take limit.");
-            }
-        }
+        ValidateShelfMetadataContract();
 
-        LibraDexProjectedQuery<long, long, long> keyQuery = index.Between(10, 12).Keys;
-        using (LibraDexRangeReader<long, long> keyCursor = keyQuery.OpenTupleCursor())
-        {
-            if (!keyCursor.TryReadNextKey(out long firstKey) || firstKey != 10)
-            {
-                throw new InvalidDataException("Key projection did not return the first expected key.");
-            }
-        }
-
-        LibraDexProjectedQuery<long, long, long> identityQuery = index.Find(11).IDs;
-        using (LibraDexRangeReader<long, long> identityCursor = identityQuery.OpenTupleCursor())
-        {
-            if (!identityCursor.TryReadNextIdentity(out long identity) || identity != 1100)
-            {
-                throw new InvalidDataException("Identity projection did not return the expected identity.");
-            }
-        }
-
-        LibraDexQuery<long, long> tupleShapeQuery = index.Find(11).Tuples;
-        if (tupleShapeQuery.Diagnostics.ExecutionKind != LibraDexExecutionKind.FastPath)
-        {
-            throw new InvalidDataException("Tuple terminal projection did not preserve query diagnostics.");
-        }
-
-        long count = index.Aggregates.Count.Between(10, 12);
-        if (count != 3)
-        {
-            throw new InvalidDataException($"Aggregate count returned {count}, expected 3.");
-        }
-
-        if (index.Aggregates.Count.All() != 3 ||
-            index.Aggregates.Count.Before(11) != 1 ||
-            index.Aggregates.Count.AtOrBefore(11) != 2 ||
-            index.Aggregates.Count.After(11) != 1 ||
-            index.Aggregates.Count.AtOrAfter(11) != 2)
-        {
-            throw new InvalidDataException("Bounds-backed aggregate counts did not return expected values.");
-        }
-
-        LibraDexAggregateQuery<long, long, long> minDescriptor = index.Aggregates.Min.Between(10, 12);
-        LibraDexAggregateQuery<long, long, long> maxDescriptor = index.Aggregates.Max.Between(10, 12);
-        LibraDexAggregateQuery<long, long, long> percentileDescriptor = index.Aggregates.Percentile.Between(10, 12, 50);
-        LibraDexAggregateQuery<long, long, long> sumPrefixDescriptor = index.Aggregates.Sum.Prefix(1);
-        LibraDexAggregateQuery<long, long, long> countInSetDescriptor = index.Aggregates.Count.InSet(new LibraDexPreparedSet<long>(new long[] { 10, 12 }));
-        LibraDexAggregateQuery<long, long, long> countInDescriptor = index.Aggregates.Count.In(new long[] { 10, 12, 99 });
-        if (minDescriptor.AggregateName != "Min" ||
-            minDescriptor.CriteriaKind != LibraDexCriteriaKind.Between ||
-            minDescriptor.Execute() != 10 ||
-            maxDescriptor.Execute() != 12 ||
-            percentileDescriptor.AggregateName != "Percentile" ||
-            sumPrefixDescriptor.CriteriaKind != LibraDexCriteriaKind.Prefix ||
-            countInSetDescriptor.CriteriaKind != LibraDexCriteriaKind.InSet ||
-            countInSetDescriptor.Execute() != 2 ||
-            countInDescriptor.Execute() != 2)
-        {
-            throw new InvalidDataException("Aggregate descriptors did not capture expected intent.");
-        }
-
-        LibraDexPositionalQuery<long, long, LibraDexTuple<long, long>> middle = index.Middle.Between(10, 12, count: 1, bias: MiddleBias.LeftBiased);
-        if (middle.Position != LibraDexPositionKind.Middle || middle.Bias != MiddleBias.LeftBiased)
-        {
-            throw new InvalidDataException("Middle positional descriptor did not capture expected intent.");
-        }
-
-        LibraDexPositionalQuery<long, long, long> keyMiddle = index.Keys.Middle.Between(10, 12, count: 1);
-        LibraDexPositionalQuery<long, long, long> identityLast = index.IDs.Last.Between(10, 12, count: 1);
-        LibraDexPositionalQuery<long, long, LibraDexTuple<long, long>> rank = index.Rank.Between(10, 12, rank: 1);
-        LibraDexPositionalQuery<long, long, long> keyPercentRank = index.Keys.PercentRank.Between(10, 12, percentile: 50);
-        LibraDexPositionalQuery<long, long, long> identityRank = index.IDs.Rank.Between(10, 12, rank: 2);
-        if (keyMiddle.Projection != LibraDexProjectionKind.Keys ||
-            identityLast.Projection != LibraDexProjectionKind.Identities ||
-            rank.Position != LibraDexPositionKind.Rank ||
-            rank.Rank != 1 ||
-            keyPercentRank.Position != LibraDexPositionKind.PercentRank ||
-            keyPercentRank.Percentile != 50 ||
-            identityRank.Projection != LibraDexProjectionKind.Identities)
-        {
-            throw new InvalidDataException("Projected positional descriptors did not capture expected projection intent.");
-        }
-
-        IReadOnlyList<LibraDexTuple<long, long>> firstTuples = index.First.Between(10, 12, count: 2).ToList();
-        IReadOnlyList<LibraDexTuple<long, long>> lastTuples = index.Last.Between(10, 12, count: 2).ToList();
-        IReadOnlyList<long> middleKeys = index.Keys.Middle.Between(10, 12, count: 1).ToList();
-        IReadOnlyList<LibraDexTuple<long, long>> rankTuples = index.Rank.Between(10, 12, rank: 1).ToList();
-        IReadOnlyList<long> percentRankKeys = index.Keys.PercentRank.Between(10, 12, percentile: 50).ToList();
-        IReadOnlyList<long> lastIdentities = index.IDs.Last.Between(10, 12, count: 1).ToList();
-        if (firstTuples.Count != 2 ||
-            firstTuples[0].Key != 10 ||
-            firstTuples[1].Key != 11 ||
-            lastTuples.Count != 2 ||
-            lastTuples[0].Key != 11 ||
-            lastTuples[1].Key != 12 ||
-            middleKeys.Count != 1 ||
-            middleKeys[0] != 11 ||
-            rankTuples.Count != 1 ||
-            rankTuples[0].Key != 11 ||
-            percentRankKeys.Count != 1 ||
-            percentRankKeys[0] != 11 ||
-            lastIdentities.Count != 1 ||
-            lastIdentities[0] != 1200)
-        {
-            throw new InvalidDataException("Positional materialization did not return expected values.");
-        }
-
-        LibraDexGroupedQuery<long, long, long, LibraDexTuple<long, long>> grouped = index.Groups.ByKey.Between(10, 12)
+        LibraDexConditionGroupQuery<long, long> grouped = rangeCondition.Groups(surfaceResolver).By(index)
             .WhereCount(1)
-            .WhereKey("test-key")
-            .OrderBy(QueryDirection.Descending, QueryDirection.Ascending);
-        LibraDexGroupedQuery<long, long, long, long> groupedKeys = index.Keys.Groups.ByKey.Between(10, 12);
-        LibraDexGroupedQuery<long, long, long, long> groupedIdentities = index.IDs.Groups.ByKey.Between(10, 12);
-        if (grouped.GroupKeyDescription != "Key" ||
-            grouped.MinimumCount != 1 ||
-            grouped.GroupKeyFilterDescription != "test-key" ||
-            grouped.GroupDirection != QueryDirection.Descending ||
-            grouped.ItemDirection != QueryDirection.Ascending ||
-            groupedKeys.GroupKeyDescription != "Key" ||
-            groupedIdentities.GroupKeyDescription != "Key")
+            .OrderBy(LibraDexGroupOrder.KeyDescending)
+            .OrderItemsBy(QueryDirection.Ascending);
+        IReadOnlyList<LibraDexGroupMetadata<long, long>> groupedMetadata = grouped.Metadata(
+            IdentityResultOrdering.PlanNatural,
+            IdentityDeduplication.Preserve);
+        using LibraDexGroupReader<long, long> groupedReader = grouped.OpenReader(
+            IdentityResultOrdering.PlanNatural,
+            IdentityDeduplication.Preserve);
+        if (groupedMetadata.Count != 3 ||
+            groupedMetadata[0].Key != 12 ||
+            groupedMetadata[0].FirstIdentity != 1200 ||
+            !groupedReader.MoveNextGroup() ||
+            groupedReader.Current.Key != 12 ||
+            groupedReader.Current.Count != 1 ||
+            groupedReader.Current.Items[0] != 1200)
         {
-            throw new InvalidDataException("Grouped descriptor did not capture key grouping intent.");
-        }
-
-        IReadOnlyDictionary<long, IReadOnlyList<LibraDexTuple<long, long>>> groupedDictionary = index.Groups.ByKey.Between(10, 12).ToDictionary();
-        IReadOnlyDictionary<long, IReadOnlyList<long>> groupedKeyDictionary = groupedKeys.ToDictionary();
-        IReadOnlyDictionary<long, IReadOnlyList<long>> groupedIdentityDictionary = groupedIdentities.ToDictionary();
-        if (groupedDictionary.Count != 3 ||
-            groupedDictionary[10][0].Identity != 1000 ||
-            groupedKeyDictionary[11][0] != 11 ||
-            groupedIdentityDictionary[12][0] != 1200)
-        {
-            throw new InvalidDataException("Grouped dictionary materialization did not return expected values.");
-        }
-
-        LibraDexCriteriaQuery<long, long> all = index.All(take: 2);
-        LibraDexCriteriaQuery<long, long> prefix = index.Prefix(1);
-        LibraDexCriteriaQuery<long, long> suffix = index.Suffix(2);
-        LibraDexCriteriaQuery<long, long> contains = index.Contains(1);
-        LibraDexCriteriaQuery<long, long> matches = index.Matches("1*");
-        LibraDexCriteriaQuery<long, long> inQuery = index.In(new long[] { 10, 99 });
-        LibraDexPreparedSet<long> preparedSet = new(new long[] { 10, 99 });
-        LibraDexPreparedSet<long> preparedViaIndex = index.Prepare.InSet(new long[] { 10, 99 });
-        LibraDexPreparedGrouping<long> preparedGrouping = index.Prepare.GroupByPrefix(1);
-        LibraDexCriteriaQuery<long, long> inSetQuery = index.InSet(preparedSet);
-        LibraDexCriteriaSetQuery<long, long> criteriaIntersect = prefix.Intersect(suffix);
-        LibraDexProjectedCriteriaQuery<long, long, long> projectedPrefix = index.Prefix(1).Keys;
-        LibraDexProjectedCriteriaQuery<long, long, long> projectedIdentityIn = index.In(new long[] { 10, 99 }).IDs;
-        LibraDexCriteriaQuery<long, long> notFind = index.Not.Find(10);
-        LibraDexCriteriaSetQuery<long, long> executableCriteriaIntersect = index.AtOrBefore(11).Intersect(index.AtOrAfter(11));
-        if (all.CriteriaKind != LibraDexCriteriaKind.All ||
-            prefix.CriteriaKind != LibraDexCriteriaKind.Prefix ||
-            suffix.Diagnostics.ExecutionKind != LibraDexExecutionKind.Scan ||
-            contains.CriteriaKind != LibraDexCriteriaKind.Contains ||
-            matches.CriteriaKind != LibraDexCriteriaKind.Matches ||
-            inQuery.CriteriaKind != LibraDexCriteriaKind.In ||
-            preparedViaIndex.Count != 2 ||
-            preparedGrouping.Description != "Prefix(1)" ||
-            inSetQuery.CriteriaKind != LibraDexCriteriaKind.InSet ||
-            criteriaIntersect.Operation != LibraDexSetOperationKind.Intersect ||
-            projectedPrefix.Projection != LibraDexProjectionKind.Keys ||
-            projectedIdentityIn.Projection != LibraDexProjectionKind.Identities ||
-            !notFind.IsNegated)
-        {
-            throw new InvalidDataException("Expanded retrieval criteria descriptors did not capture expected intent.");
-        }
-
-        IReadOnlyList<LibraDexTuple<long, long>> executableCriteriaIntersectRows = executableCriteriaIntersect.ToList();
-        if (executableCriteriaIntersectRows.Count != 1 ||
-            executableCriteriaIntersectRows[0].Key != 11)
-        {
-            throw new InvalidDataException("Criteria set materialization did not return expected tuple rows.");
-        }
-
-        using (LibraDexRangeReader<long, long> allCursor = all.OpenCursor())
-        {
-            if (allCursor.Count != 2 ||
-                !allCursor.TryReadNext(out long allFirstKey, out _) ||
-                allFirstKey != 10 ||
-                !allCursor.TryReadNext(out long allSecondKey, out _) ||
-                allSecondKey != 11 ||
-                allCursor.TryReadNext(out _, out _))
-            {
-                throw new InvalidDataException("All criteria cursor did not enforce expected bounds or take count.");
-            }
-        }
-
-        using (LibraDexRangeReader<long, long> beforeCursor = index.Before(11).OpenCursor())
-        {
-            if (beforeCursor.Count != 1 ||
-                !beforeCursor.TryReadNext(out long beforeKey, out _) ||
-                beforeKey != 10 ||
-                beforeCursor.TryReadNext(out _, out _))
-            {
-                throw new InvalidDataException("Before criteria cursor did not return expected exclusive lower extent.");
-            }
-        }
-
-        using (LibraDexRangeReader<long, long> atOrBeforeCursor = index.AtOrBefore(11).OpenCursor())
-        {
-            if (atOrBeforeCursor.Count != 2 ||
-                !atOrBeforeCursor.TryReadNext(out long firstAtOrBeforeKey, out _) ||
-                firstAtOrBeforeKey != 10 ||
-                !atOrBeforeCursor.TryReadNext(out long secondAtOrBeforeKey, out _) ||
-                secondAtOrBeforeKey != 11 ||
-                atOrBeforeCursor.TryReadNext(out _, out _))
-            {
-                throw new InvalidDataException("AtOrBefore criteria cursor did not return expected inclusive lower extent.");
-            }
-        }
-
-        using (LibraDexRangeReader<long, long> afterCursor = index.After(11).OpenCursor())
-        {
-            if (afterCursor.Count != 1 ||
-                !afterCursor.TryReadNext(out long afterKey, out _) ||
-                afterKey != 12 ||
-                afterCursor.TryReadNext(out _, out _))
-            {
-                throw new InvalidDataException("After criteria cursor did not return expected exclusive upper extent.");
-            }
-        }
-
-        using (LibraDexRangeReader<long, long> atOrAfterCursor = index.AtOrAfter(11).OpenCursor())
-        {
-            if (atOrAfterCursor.Count != 2 ||
-                !atOrAfterCursor.TryReadNext(out long firstAtOrAfterKey, out _) ||
-                firstAtOrAfterKey != 11 ||
-                !atOrAfterCursor.TryReadNext(out long secondAtOrAfterKey, out _) ||
-                secondAtOrAfterKey != 12 ||
-                atOrAfterCursor.TryReadNext(out _, out _))
-            {
-                throw new InvalidDataException("AtOrAfter criteria cursor did not return expected inclusive upper extent.");
-            }
-        }
-
-        using (LibraDexRangeReader<long, long> projectedAllKeyCursor = index.All(take: 1).Keys.OpenTupleCursor())
-        {
-            if (projectedAllKeyCursor.Count != 1 ||
-                !projectedAllKeyCursor.TryReadNextKey(out long projectedAllKey) ||
-                projectedAllKey != 10 ||
-                projectedAllKeyCursor.TryReadNextKey(out _))
-            {
-                throw new InvalidDataException("Projected key All criteria cursor did not return expected key.");
-            }
-        }
-
-        using (LibraDexRangeReader<long, long> projectedAfterIdentityCursor = index.After(11).IDs.OpenTupleCursor())
-        {
-            if (projectedAfterIdentityCursor.Count != 1 ||
-                !projectedAfterIdentityCursor.TryReadNextIdentity(out long projectedAfterIdentity) ||
-                projectedAfterIdentity != 1200 ||
-                projectedAfterIdentityCursor.TryReadNextIdentity(out _))
-            {
-                throw new InvalidDataException("Projected identity After criteria cursor did not return expected identity.");
-            }
-        }
-
-        if (!index.Exists(10) ||
-            index.Exists(99) ||
-            !index.ExistsIn(new long[] { 99, 10 }) ||
-            !index.ExistsInSet(preparedSet) ||
-            !index.Not.Exists(99) ||
-            !index.Not.ExistsInSet(new LibraDexPreparedSet<long>(new long[] { 98, 99 })))
-        {
-            throw new InvalidDataException("Existence shortcuts did not return expected values.");
+            throw new InvalidDataException("Condition grouping did not return expected grouped identities.");
         }
 
         LibraDexStatsDelta catalogDelta = catalog.Stats.Since(catalogMarker);
         LibraDexStatsDelta indexDelta = index.Stats.Since(indexMarker);
         LibraDexLayoutStats layout = index.Stats.GetLayoutSnapshot();
-        if (catalogDelta.Inserts != 3 ||
+        if (catalogDelta.Inserts != 45 ||
             indexDelta.Inserts != 3 ||
             catalogDelta.Commits == 0 ||
             indexDelta.Commits == 0 ||
             index.Stats.Current.Inserts != 3 ||
-            catalog.Stats.Current.Inserts != 3 ||
+            catalog.Stats.Current.Inserts != 45 ||
             index.Stats.LastModifiedUtc is null)
         {
-            throw new InvalidDataException("Stats marker deltas did not track inserts and commits as expected.");
+            throw new InvalidDataException(
+                $"Stats marker deltas did not track inserts and commits as expected. catalogDeltaInserts={catalogDelta.Inserts}; indexDeltaInserts={indexDelta.Inserts}; catalogCurrentInserts={catalog.Stats.Current.Inserts}; indexCurrentInserts={index.Stats.Current.Inserts}; catalogCommits={catalogDelta.Commits}; indexCommits={indexDelta.Commits}.");
         }
 
         LibraDexMaintenanceResult indexOptimize = index.Maintenance.Optimize(new LibraDexMaintenanceOptions
@@ -8665,25 +11799,1923 @@ internal static class RawHarness
         _ = layout;
 
         Console.WriteLine("public surface api sanity");
-        Console.WriteLine("publicTupleBetween ok");
-        Console.WriteLine("publicSetJoinDescriptors ok");
-        Console.WriteLine("publicKeysBetween ok");
-        Console.WriteLine("publicIdentitiesFind ok");
-        Console.WriteLine("publicAggregatesCount ok");
-        Console.WriteLine("publicAggregateDescriptors ok");
-        Console.WriteLine("publicMiddleDescriptor ok");
-        Console.WriteLine("publicGroupedDescriptor ok");
-        Console.WriteLine("publicCriteriaDescriptors ok");
-        Console.WriteLine("publicExistsShortcuts ok");
+        Console.WriteLine("conditionBetween ok");
+        Console.WriteLine("conditionComposition ok");
+        Console.WriteLine("conditionIdentityProjection ok");
+        Console.WriteLine("conditionCount ok");
+        Console.WriteLine("conditionExists ok");
+        Console.WriteLine("publicDxConditionSyntax ok");
+        Console.WriteLine("conditionGrouping ok");
+        Console.WriteLine("primitiveRangeReader ok");
+        Console.WriteLine("shelfMetadataContract ok");
         Console.WriteLine("publicStatsScaffold ok");
         Console.WriteLine("publicCatalogDiscovery ok");
         Console.WriteLine("publicIndexShapeDescriptors ok");
         Console.WriteLine("publicShapeDrivenCatalogCreate ok");
-        Console.WriteLine("publicIdentityConditionBuilder ok");
+        Console.WriteLine("adoptedConditionBuilder ok");
+        Console.WriteLine("adoptedConditionClassification ok");
+        Console.WriteLine("adoptedStructuredDateBridge ok");
+        Console.WriteLine("adoptedStructuredComponentBridge ok");
+        Console.WriteLine("adoptedStructuredTimeBridge ok");
+        Console.WriteLine("adoptedGuidBridge ok");
+        Console.WriteLine("adoptedBinaryBridge ok");
+        Console.WriteLine("adoptedBinaryTypedSliceBridge ok");
+        Console.WriteLine("adoptedRoutedCompositeBridge ok");
         Console.WriteLine("publicMaintenanceScaffold ok");
         Console.WriteLine("publicToolsCompatibilityPrepare ok");
         Console.WriteLine("public-surface-api-sanity ok");
         return 0;
+    }
+
+    /// <summary>
+    /// Validates hidden binary reversed-projection behavior across reopen, direct mutation, rekey, index batching, and identity-group batching.<br/>
+    /// The fixture keeps the projection behind `LibraDexIndex&lt;byte[], long&gt;` while proving suffix conditions honor the maintained projection when present.<br/>
+    /// </summary>
+    private static void ValidateBinaryReversedProjectionHardening()
+    {
+        static byte[] Hex(string value) => Convert.FromHexString(value);
+
+        static IReadOnlyList<long> SuffixIds(Catalog catalog, string group, string indexName, string suffixHex)
+        {
+            return catalog.Indexes[group].GetIdentities<long>(
+                catalog.Indexes[group].Where.Binary(indexName).EndsWith(Hex(suffixHex)).Condition,
+                deduplication: IdentityDeduplication.Preserve);
+        }
+
+        static void AssertSequence(IReadOnlyList<long> actual, long[] expected, string context)
+        {
+            if (!actual.SequenceEqual(expected))
+            {
+                throw new InvalidDataException($"{context} expected [{string.Join(", ", expected)}] but returned [{string.Join(", ", actual)}].");
+            }
+        }
+
+        using (Catalog mutationCatalog = Catalog.CreateMemory())
+        {
+            LibraDexIndex<byte[], long> mutationIndex = mutationCatalog.Indexes["binary"]["fingerprint"].Blob.Scalar<long>(
+                LibraDexScalarWidth.Bytes16,
+                directions: LibraDexProjectionDirectionSet.ForwardAndReversed).Create();
+            byte[] deleteKey = Hex("00112233445566778899AABBCCDDEEFF");
+            byte[] keepKey = Hex("10112233445566778899AABBCCDDEEFF");
+            byte[] oldRekeyKey = Hex("20112233445566778899AABBCCDDEEFF");
+            byte[] newRekeyKey = Hex("30112233445566778899AABBCCDDBEEF");
+            ValidateGenericInsert(mutationIndex.Insert(deleteKey, 9101L), "binary reversed mutation delete candidate insert");
+            ValidateGenericInsert(mutationIndex.Insert(keepKey, 9102L), "binary reversed mutation keep candidate insert");
+            ValidateGenericInsert(mutationIndex.Insert(oldRekeyKey, 9103L), "binary reversed mutation rekey candidate insert");
+            AssertSequence(SuffixIds(mutationCatalog, "binary", "fingerprint", "CCDDEEFF"), new[] { 9101L, 9102L, 9103L }, "binary reversed projection initial suffix");
+            mutationIndex.Delete(deleteKey, 9101L);
+            AssertSequence(SuffixIds(mutationCatalog, "binary", "fingerprint", "CCDDEEFF"), new[] { 9102L, 9103L }, "binary reversed projection after delete");
+            mutationIndex.Rekey(9103L, oldRekeyKey, newRekeyKey);
+            AssertSequence(SuffixIds(mutationCatalog, "binary", "fingerprint", "CCDDEEFF"), new[] { 9102L }, "binary reversed projection after rekey removes old suffix");
+            AssertSequence(SuffixIds(mutationCatalog, "binary", "fingerprint", "CCDDBEEF"), new[] { 9103L }, "binary reversed projection after rekey adds new suffix");
+        }
+
+        using (Catalog batchCatalog = Catalog.CreateMemory())
+        {
+            LibraDexIndex<byte[], long> indexBatchIndex = batchCatalog.Indexes["binary"]["indexBatch"].Blob.Scalar<long>(
+                LibraDexScalarWidth.Bytes16,
+                directions: LibraDexProjectionDirectionSet.ForwardAndReversed).Create();
+            indexBatchIndex.Batch.Enable();
+            ValidateGenericInsert(indexBatchIndex.Insert(Hex("40112233445566778899AABBCCDDEEFF"), 9201L), "binary reversed index batch insert A");
+            ValidateGenericInsert(indexBatchIndex.Insert(Hex("41112233445566778899AABBCCDDEEFF"), 9202L), "binary reversed index batch insert B");
+            _ = indexBatchIndex.Batch.CommitAndDisable();
+            AssertSequence(SuffixIds(batchCatalog, "binary", "indexBatch", "CCDDEEFF"), new[] { 9201L, 9202L }, "binary reversed projection after index batch");
+
+            LibraDexIndex<byte[], long> groupBatchIndex = batchCatalog.Indexes["binary"]["groupBatch"].Blob.Scalar<long>(
+                LibraDexScalarWidth.Bytes16,
+                directions: LibraDexProjectionDirectionSet.ForwardAndReversed).Create();
+            CatalogIdentityGroupBatchManager groupBatch = batchCatalog.Indexes["binary"].Batch;
+            groupBatch.Enable();
+            ValidateGenericInsert(groupBatchIndex.Insert(Hex("50112233445566778899AABBCCDDEEFF"), 9301L), "binary reversed group batch insert A");
+            ValidateGenericInsert(groupBatchIndex.Insert(Hex("51112233445566778899AABBCCDDEEFF"), 9302L), "binary reversed group batch insert B");
+            _ = groupBatch.CommitAndDisable();
+            AssertSequence(SuffixIds(batchCatalog, "binary", "groupBatch", "CCDDEEFF"), new[] { 9301L, 9302L }, "binary reversed projection after group batch");
+        }
+
+        string path = Path.Combine("artifacts", "binary-reversed-projection-reopen-sanity.lbdx");
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
+        File.Delete(path);
+        using (Catalog fileCatalog = Catalog.Create(path))
+        {
+            LibraDexIndex<byte[], long> fileIndex = fileCatalog.Indexes["binary"]["fingerprint"].Blob.Scalar<long>(
+                LibraDexScalarWidth.Bytes16,
+                directions: LibraDexProjectionDirectionSet.ForwardAndReversed).Create();
+            ValidateGenericInsert(fileIndex.Insert(Hex("60112233445566778899AABBCCDDEEFF"), 9401L), "binary reversed file insert A");
+            ValidateGenericInsert(fileIndex.Insert(Hex("61112233445566778899AABBCCDDBEEF"), 9402L), "binary reversed file insert B");
+            AssertSequence(SuffixIds(fileCatalog, "binary", "fingerprint", "CCDDEEFF"), new[] { 9401L }, "binary reversed projection before reopen");
+        }
+
+        using (Catalog reopened = Catalog.Open(path))
+        {
+            if (!reopened.Indexes.TryGetInfo("binary", "fingerprint", out CatalogIndexInfo info) ||
+                info.ExactReversedProjectionSlotIndex < 0 ||
+                info.Directions != LibraDexProjectionDirectionSet.ForwardAndReversed)
+            {
+                throw new InvalidDataException("Binary reversed projection metadata did not survive catalog reopen.");
+            }
+
+            AssertSequence(SuffixIds(reopened, "binary", "fingerprint", "CCDDEEFF"), new[] { 9401L }, "binary reversed projection after reopen");
+            AssertSequence(SuffixIds(reopened, "binary", "fingerprint", "CCDDBEEF"), new[] { 9402L }, "binary reversed projection alternate suffix after reopen");
+            AssertSequence(
+                reopened.Indexes["binary"].GetIdentities<long>(
+                    reopened.Indexes["binary"].Where.Binary("fingerprint").EndsWithHex("CCxxEEFF").Condition,
+                    deduplication: IdentityDeduplication.Preserve),
+                new[] { 9401L },
+                "binary reversed masked hex suffix after reopen");
+        }
+    }
+
+    /// <summary>
+    /// Validates deterministic structured DateTime and TimeOnly component conditions against actual materialized identities.<br/>
+    /// The fixture is isolated from the main public-surface catalog so added date permutations do not perturb broad catalog-stat expectations.<br/>
+    /// </summary>
+    private static void ValidateDeterministicStructuredDateTimeCoverage()
+    {
+        static void AssertSet(IReadOnlyList<long> actual, long[] expected, string context)
+        {
+            long[] actualOrdered = actual.Order().ToArray();
+            long[] expectedOrdered = expected.Order().ToArray();
+            if (!actualOrdered.SequenceEqual(expectedOrdered))
+            {
+                throw new InvalidDataException($"{context} expected set [{string.Join(", ", expectedOrdered)}] but returned [{string.Join(", ", actualOrdered)}].");
+            }
+        }
+
+        using Catalog catalog = Catalog.CreateMemory();
+        LibraDexIndexShapeSpec createdShape = catalog.Indexes["records"]["created"].Shape.Date<DateTime, long>(
+            DateKeys.ExactAndStructured,
+            keys: IndexKeys.NonUnique);
+        LibraDexIndexShapeSpec precisionCreatedShape = catalog.Indexes["records"]["precisionCreated"].Shape.Date<DateTime, long>(
+            DateKeys.ExactAndStructured,
+            DateTimeKeyEncoding.PrecisionSdt,
+            keys: IndexKeys.NonUnique);
+        LibraDexIndexShapeSpec timeShape = catalog.Indexes["events"]["time"].Shape.Date<TimeOnly, long>(
+            DateKeys.ExactAndStructured,
+            keys: IndexKeys.NonUnique);
+        LibraDexIndexShapeSpec durationShape = catalog.Indexes["jobs"]["duration"].Shape.Date<TimeSpan, long>(
+            DateKeys.Exact,
+            keys: IndexKeys.NonUnique);
+        LibraDexIndexShapeSpec birthdayShape = catalog.Indexes["people"]["birthday"].Shape.Date<DateOnly, long>(
+            DateKeys.ExactAndStructured,
+            keys: IndexKeys.NonUnique);
+        LibraDexIndexShapeSpec createdOffsetShape = catalog.Indexes["records"]["createdOffset"].Shape.Date<DateTimeOffset, long>(
+            DateKeys.ExactAndStructured,
+            keys: IndexKeys.NonUnique);
+        LibraDexIndexShapeSpec relativeCreatedShape = catalog.Indexes["records"]["relativeCreated"].Shape.Date<DateTime, long>(
+            DateKeys.ExactAndStructured,
+            keys: IndexKeys.NonUnique);
+        LibraDexIndexShapeSpec relativeUpdatedShape = catalog.Indexes["records"]["relativeUpdated"].Shape.Date<DateTime, long>(
+            DateKeys.ExactAndStructured,
+            keys: IndexKeys.NonUnique);
+        LibraDexIndexShapeSpec occurredShape = catalog.Indexes["events"]["occurred"].Shape.Date<DateTime, long>(
+            DateKeys.ExactAndStructured,
+            keys: IndexKeys.NonUnique);
+        LibraDexIndexShapeSpec deletedDateShape = catalog.Indexes["rows"]["deletedDate"].Shape.Date<DateTime, long>(
+            DateKeys.ExactAndStructured,
+            keys: IndexKeys.NonUnique);
+        IIndex created = catalog.Indexes.Create(createdShape);
+        IIndex precisionCreated = catalog.Indexes.Create(precisionCreatedShape);
+        IIndex time = catalog.Indexes.Create(timeShape);
+        IIndex duration = catalog.Indexes.Create(durationShape);
+        IIndex birthday = catalog.Indexes.Create(birthdayShape);
+        IIndex createdOffset = catalog.Indexes.Create(createdOffsetShape);
+        IIndex relativeCreated = catalog.Indexes.Create(relativeCreatedShape);
+        IIndex relativeUpdated = catalog.Indexes.Create(relativeUpdatedShape);
+        IIndex occurred = catalog.Indexes.Create(occurredShape);
+        IIndex deletedDate = catalog.Indexes.Create(deletedDateShape);
+        IReadOnlyDictionary<string, IIndex> createdIndexes = new Dictionary<string, IIndex>(StringComparer.Ordinal)
+        {
+            ["created"] = created
+        };
+        IReadOnlyDictionary<string, IIndex> precisionCreatedIndexes = new Dictionary<string, IIndex>(StringComparer.Ordinal)
+        {
+            ["precisionCreated"] = precisionCreated
+        };
+        IReadOnlyDictionary<string, IIndex> timeIndexes = new Dictionary<string, IIndex>(StringComparer.Ordinal)
+        {
+            ["time"] = time
+        };
+        IReadOnlyDictionary<string, IIndex> durationIndexes = new Dictionary<string, IIndex>(StringComparer.Ordinal)
+        {
+            ["duration"] = duration
+        };
+        IReadOnlyDictionary<string, IIndex> birthdayIndexes = new Dictionary<string, IIndex>(StringComparer.Ordinal)
+        {
+            ["birthday"] = birthday
+        };
+        IReadOnlyDictionary<string, IIndex> createdOffsetIndexes = new Dictionary<string, IIndex>(StringComparer.Ordinal)
+        {
+            ["createdOffset"] = createdOffset
+        };
+        IReadOnlyDictionary<string, IIndex> relativeCreatedIndexes = new Dictionary<string, IIndex>(StringComparer.Ordinal)
+        {
+            ["relativeCreated"] = relativeCreated
+        };
+        IReadOnlyDictionary<string, IIndex> relativeUpdatedIndexes = new Dictionary<string, IIndex>(StringComparer.Ordinal)
+        {
+            ["relativeUpdated"] = relativeUpdated
+        };
+        IReadOnlyDictionary<string, IIndex> occurredIndexes = new Dictionary<string, IIndex>(StringComparer.Ordinal)
+        {
+            ["occurred"] = occurred
+        };
+        IReadOnlyDictionary<string, IIndex> deletedDateIndexes = new Dictionary<string, IIndex>(StringComparer.Ordinal)
+        {
+            ["deletedDate"] = deletedDate
+        };
+
+        ValidateGenericInsert(created.Insert(new DateTime(2025, 3, 20, 10, 0, 0, DateTimeKind.Utc), 3102L), "deterministic created March weekday insert");
+        ValidateGenericInsert(created.Insert(new DateTime(2026, 3, 14, 8, 0, 0, DateTimeKind.Utc), 3106L), "deterministic created Saturday insert");
+        ValidateGenericInsert(created.Insert(new DateTime(2026, 3, 15, 9, 0, 0, DateTimeKind.Utc), 3101L), "deterministic created March fifteenth insert");
+        ValidateGenericInsert(created.Insert(new DateTime(2026, 3, 16, 8, 0, 0, DateTimeKind.Utc), 3107L), "deterministic created Monday insert");
+        ValidateGenericInsert(created.Insert(new DateTime(2026, 4, 15, 11, 0, 0, DateTimeKind.Utc), 3103L), "deterministic created day fifteenth insert");
+        ValidateGenericInsert(created.Insert(new DateTime(2026, 10, 1, 12, 0, 0, DateTimeKind.Utc), 3104L), "deterministic created first of month insert");
+        ValidateGenericInsert(created.Insert(new DateTime(2026, 12, 31, 13, 0, 0, DateTimeKind.Utc), 3105L), "deterministic created quarter end insert");
+        DateTime precisionBase = new(2026, 3, 14, 8, 0, 0, DateTimeKind.Utc);
+        DateTime precisionTickOne = precisionBase.AddTicks(1);
+        DateTime precisionTickTwo = precisionBase.AddTicks(2);
+        ValidateGenericInsert(precisionCreated.Insert(precisionBase, 8100L), "deterministic PrecisionSDT base insert");
+        ValidateGenericInsert(precisionCreated.Insert(precisionTickOne, 8101L), "deterministic PrecisionSDT tick one insert");
+        ValidateGenericInsert(precisionCreated.Insert(precisionTickTwo, 8102L), "deterministic PrecisionSDT tick two insert");
+        ValidateGenericInsert(precisionCreated.Insert(new DateTime(2026, 3, 16, 8, 0, 0, DateTimeKind.Utc).AddTicks(3), 8103L), "deterministic PrecisionSDT weekday insert");
+        ValidateGenericInsert(time.Insert(new TimeOnly(1, 0), 4105L), "deterministic TimeOnly night early insert");
+        ValidateGenericInsert(time.Insert(new TimeOnly(6, 30), 4101L), "deterministic TimeOnly morning early insert");
+        ValidateGenericInsert(time.Insert(new TimeOnly(10, 0), 4102L), "deterministic TimeOnly morning business insert");
+        ValidateGenericInsert(time.Insert(new TimeOnly(14, 0), 4103L), "deterministic TimeOnly business afternoon insert");
+        ValidateGenericInsert(time.Insert(new TimeOnly(18, 0), 4106L), "deterministic TimeOnly evening insert");
+        ValidateGenericInsert(time.Insert(new TimeOnly(23, 0), 4104L), "deterministic TimeOnly night late insert");
+        ValidateGenericInsert(duration.Insert(TimeSpan.FromMinutes(-1), 5101L), "deterministic TimeSpan negative insert");
+        ValidateGenericInsert(duration.Insert(TimeSpan.FromMinutes(3), 5102L), "deterministic TimeSpan short insert");
+        ValidateGenericInsert(duration.Insert(TimeSpan.FromMinutes(10), 5103L), "deterministic TimeSpan greater than five insert");
+        ValidateGenericInsert(duration.Insert(TimeSpan.FromMinutes(90), 5104L), "deterministic TimeSpan range insert");
+        ValidateGenericInsert(duration.Insert(TimeSpan.FromMinutes(150), 5105L), "deterministic TimeSpan long insert");
+        ValidateGenericInsert(birthday.Insert(new DateOnly(2025, 5, 1), 6101L), "deterministic DateOnly birthday 2025 insert");
+        ValidateGenericInsert(birthday.Insert(new DateOnly(2026, 5, 1), 6102L), "deterministic DateOnly birthday 2026 insert");
+        ValidateGenericInsert(birthday.Insert(new DateOnly(2026, 5, 2), 6103L), "deterministic DateOnly alternate day insert");
+        ValidateGenericInsert(birthday.Insert(new DateOnly(2026, 6, 1), 6104L), "deterministic DateOnly alternate month insert");
+        ValidateGenericInsert(birthday.Insert(new DateOnly(2027, 5, 1), 6105L), "deterministic DateOnly birthday 2027 insert");
+        ValidateGenericInsert(createdOffset.Insert(new DateTimeOffset(2026, 5, 20, 7, 0, 0, TimeSpan.FromHours(-7)), 7101L), "deterministic DateTimeOffset before threshold insert");
+        ValidateGenericInsert(createdOffset.Insert(new DateTimeOffset(2026, 5, 20, 8, 0, 0, TimeSpan.FromHours(-7)), 7102L), "deterministic DateTimeOffset equal threshold insert");
+        ValidateGenericInsert(createdOffset.Insert(new DateTimeOffset(2026, 5, 20, 9, 0, 0, TimeSpan.FromHours(-7)), 7103L), "deterministic DateTimeOffset after threshold insert");
+        ValidateGenericInsert(createdOffset.Insert(new DateTimeOffset(2026, 5, 20, 17, 30, 0, TimeSpan.FromHours(1)), 7104L), "deterministic DateTimeOffset after threshold alternate offset insert");
+        DateTime utcNow = DateTime.UtcNow;
+        DateTime utcToday = utcNow.Date;
+        ValidateGenericInsert(relativeCreated.Insert(utcToday.AddDays(-1).AddHours(12), 9101L), "deterministic relative created yesterday insert");
+        ValidateGenericInsert(relativeCreated.Insert(utcToday.AddDays(-3).AddHours(12), 9103L), "deterministic relative created last seven days insert");
+        ValidateGenericInsert(relativeCreated.Insert(utcToday.AddDays(-8).AddHours(12), 9108L), "deterministic relative created outside last seven days insert");
+        ValidateGenericInsert(relativeUpdated.Insert(utcNow.AddHours(-12), 9201L), "deterministic relative updated last twenty four hours insert");
+        ValidateGenericInsert(relativeUpdated.Insert(utcNow.AddHours(-25), 9202L), "deterministic relative updated outside twenty four hours insert");
+        ValidateGenericInsert(occurred.Insert(utcNow.AddMinutes(-5), 9301L), "deterministic relative occurred last fifteen minutes insert");
+        ValidateGenericInsert(occurred.Insert(utcNow.AddMinutes(-20), 9302L), "deterministic relative occurred outside fifteen minutes insert");
+        ValidateGenericInsert(deletedDate.Insert(DateTime.MaxValue, 9401L), "deterministic deleted date max sentinel insert");
+        ValidateGenericInsert(deletedDate.Insert(new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc), 9402L), "deterministic deleted date ordinary insert");
+
+        AssertSet(
+            LibraDexCondition.ForGroup("records").Index("created").AsDate.GreaterThan(new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)).EndCondition.Materialize(createdIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
+            new[] { 3101L, 3103L, 3104L, 3105L, 3106L, 3107L },
+            "deterministic structured date GreaterThan 2026 start");
+        AssertSet(
+            LibraDexCondition.ForGroup("records").Index("created").AsDate.Between(new DateTime(2026, 3, 15, 0, 0, 0, DateTimeKind.Utc), new DateTime(2026, 12, 31, 23, 59, 59, DateTimeKind.Utc)).EndCondition.Materialize(createdIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
+            new[] { 3101L, 3103L, 3104L, 3105L, 3107L },
+            "deterministic structured date exact Between");
+        DateTime deferredCutoff = new(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc);
+        LibraDexConditionEndCondition deferredDateCondition = LibraDexCondition.ForGroup("records").Index("created").AsDate.LessThan(() => deferredCutoff).EndCondition;
+        AssertSet(
+            deferredDateCondition.Materialize(createdIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
+            new[] { 3101L, 3102L, 3106L, 3107L },
+            "deterministic structured date deferred LessThan first cutoff");
+        deferredCutoff = new DateTime(2026, 3, 15, 0, 0, 0, DateTimeKind.Utc);
+        AssertSet(
+            deferredDateCondition.Materialize(createdIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
+            new[] { 3102L, 3106L },
+            "deterministic structured date deferred LessThan rematerialized cutoff");
+        DateTime deferredStart = new(2026, 3, 15, 0, 0, 0, DateTimeKind.Utc);
+        DateTime deferredEnd = new(2026, 4, 30, 23, 59, 59, DateTimeKind.Utc);
+        LibraDexConditionEndCondition deferredDateBetweenCondition = LibraDexCondition.ForGroup("records").Index("created").AsDate.Between(() => deferredStart, () => deferredEnd).EndCondition;
+        AssertSet(
+            deferredDateBetweenCondition.Materialize(createdIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
+            new[] { 3101L, 3103L, 3107L },
+            "deterministic structured date deferred Between first bounds");
+        deferredStart = new DateTime(2026, 10, 1, 0, 0, 0, DateTimeKind.Utc);
+        deferredEnd = new DateTime(2026, 12, 31, 23, 59, 59, DateTimeKind.Utc);
+        AssertSet(
+            deferredDateBetweenCondition.Materialize(createdIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
+            new[] { 3104L, 3105L },
+            "deterministic structured date deferred Between rematerialized bounds");
+        AssertSet(
+            LibraDexCondition.ForGroup("records").Index("relativeCreated").AsDate.IsYesterday().EndCondition.Materialize(relativeCreatedIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
+            new[] { 9101L },
+            "deterministic structured date IsYesterday");
+        AssertSet(
+            LibraDexCondition.ForGroup("records").Index("relativeCreated").AsDate.IsInLastDays(7).EndCondition.Materialize(relativeCreatedIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
+            new[] { 9101L, 9103L },
+            "deterministic structured date IsInLastDays");
+        AssertSet(
+            LibraDexCondition.ForGroup("records").Index("relativeUpdated").AsDate.IsInLastHours(24).EndCondition.Materialize(relativeUpdatedIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
+            new[] { 9201L },
+            "deterministic structured date IsInLastHours");
+        AssertSet(
+            LibraDexCondition.ForGroup("events").Index("occurred").AsDate.IsInLastMinutes(15).EndCondition.Materialize(occurredIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
+            new[] { 9301L },
+            "deterministic structured date IsInLastMinutes");
+        AssertSet(
+            LibraDexCondition.ForGroup("records").Index("created").AsDate.YearEqual(2026).EndCondition.Materialize(createdIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
+            new[] { 3101L, 3103L, 3104L, 3105L, 3106L, 3107L },
+            "deterministic structured date YearEqual");
+        AssertSet(
+            LibraDexCondition.ForGroup("rows").Index("deletedDate").AsDate.EqualTo(DateTime.MaxValue).EndCondition.Materialize(deletedDateIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
+            new[] { 9401L },
+            "deterministic structured date max sentinel equality");
+        AssertSet(
+            LibraDexCondition.ForGroup("records").Index("created").AsDate.MonthEqual(3).EndCondition.Materialize(createdIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
+            new[] { 3101L, 3102L, 3106L, 3107L },
+            "deterministic structured date MonthEqual");
+        AssertSet(
+            LibraDexCondition.ForGroup("records").Index("created").AsDate.DayEqual(15).EndCondition.Materialize(createdIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
+            new[] { 3101L, 3103L },
+            "deterministic structured date DayEqual");
+        AssertSet(
+            LibraDexCondition.ForGroup("records").Index("created").AsDate.MonthDay(3, 15).EndCondition.Materialize(createdIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
+            new[] { 3101L },
+            "deterministic structured date MonthDay");
+        AssertSet(
+            LibraDexCondition.ForGroup("records").Index("created").AsDate.InQuarter(4).EndCondition.Materialize(createdIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
+            new[] { 3104L, 3105L },
+            "deterministic structured date InQuarter");
+        AssertSet(
+            LibraDexCondition.ForGroup("records").Index("created").AsDate.IsWeekend().EndCondition.Materialize(createdIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
+            new[] { 3101L, 3106L },
+            "deterministic structured date IsWeekend");
+        AssertSet(
+            LibraDexCondition.ForGroup("records").Index("created").AsDate.IsWeekday().EndCondition.Materialize(createdIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
+            new[] { 3102L, 3103L, 3104L, 3105L, 3107L },
+            "deterministic structured date IsWeekday");
+        AssertSet(
+            LibraDexCondition.ForGroup("records").Index("created").AsDate.IsFirstOfMonth().EndCondition.Materialize(createdIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
+            new[] { 3104L },
+            "deterministic structured date IsFirstOfMonth");
+        AssertSet(
+            LibraDexCondition.ForGroup("records").Index("created").AsDate.IsLastOfMonth().EndCondition.Materialize(createdIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
+            new[] { 3105L },
+            "deterministic structured date IsLastOfMonth");
+        AssertSet(
+            LibraDexCondition.ForGroup("records").Index("created").AsDate.IsQuarterEnd().EndCondition.Materialize(createdIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
+            new[] { 3105L },
+            "deterministic structured date IsQuarterEnd");
+        if (precisionCreated.DateTimeKeyEncoding != DateTimeKeyEncoding.PrecisionSdt)
+        {
+            throw new InvalidDataException("PrecisionSDT index did not expose its selected DateTime key encoding.");
+        }
+
+        AssertSet(
+            LibraDexCondition.ForGroup("records").Index("precisionCreated").AsDate.EqualTo(precisionTickOne).EndCondition.Materialize(precisionCreatedIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
+            new[] { 8101L },
+            "deterministic PrecisionSDT exact sub-millisecond equality");
+        AssertSet(
+            LibraDexCondition.ForGroup("records").Index("precisionCreated").AsDate.GreaterThan(precisionTickOne).EndCondition.Materialize(precisionCreatedIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
+            new[] { 8102L, 8103L },
+            "deterministic PrecisionSDT strict greater-than sub-millisecond boundary");
+        AssertSet(
+            LibraDexCondition.ForGroup("records").Index("precisionCreated").AsDate.IsWeekend().EndCondition.Materialize(precisionCreatedIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
+            new[] { 8100L, 8101L, 8102L },
+            "deterministic PrecisionSDT derived weekend");
+        AssertSet(
+            LibraDexCondition.ForGroup("records").Index("precisionCreated").AsDate.IsWeekday().EndCondition.Materialize(precisionCreatedIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
+            new[] { 8103L },
+            "deterministic PrecisionSDT derived weekday");
+        AssertSet(
+            LibraDexCondition.ForGroup("events").Index("time").AsTimeOnly.Between(new TimeOnly(9, 0), new TimeOnly(17, 0)).EndCondition.Materialize(timeIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
+            new[] { 4102L, 4103L },
+            "deterministic TimeOnly Between");
+        AssertSet(
+            LibraDexCondition.ForGroup("events").Index("time").AsTimeOnly.IsNight().EndCondition.Materialize(timeIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
+            new[] { 4104L, 4105L },
+            "deterministic TimeOnly IsNight");
+        AssertSet(
+            LibraDexCondition.ForGroup("events").Index("time").AsTimeOnly.IsMorning().EndCondition.Materialize(timeIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
+            new[] { 4101L, 4102L },
+            "deterministic TimeOnly IsMorning");
+        AssertSet(
+            LibraDexCondition.ForGroup("events").Index("time").AsTimeOnly.LessThan(new TimeOnly(12, 0)).EndCondition.Materialize(timeIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
+            new[] { 4101L, 4102L, 4105L },
+            "deterministic TimeOnly LessThan noon");
+        AssertSet(
+            LibraDexCondition.ForGroup("jobs").Index("duration").AsTimeSpan.GreaterThan(TimeSpan.FromMinutes(5)).EndCondition.Materialize(durationIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
+            new[] { 5103L, 5104L, 5105L },
+            "deterministic TimeSpan GreaterThan");
+        AssertSet(
+            LibraDexCondition.ForGroup("jobs").Index("duration").AsTimeSpan.Between(TimeSpan.FromHours(1), TimeSpan.FromHours(2)).EndCondition.Materialize(durationIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
+            new[] { 5104L },
+            "deterministic TimeSpan Between");
+        AssertSet(
+            LibraDexCondition.ForGroup("jobs").Index("duration").AsTimeSpan.LessThan(TimeSpan.Zero).EndCondition.Materialize(durationIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
+            new[] { 5101L },
+            "deterministic TimeSpan LessThan zero");
+        AssertSet(
+            LibraDexCondition.ForGroup("people").Index("birthday").AsDateOnly.MonthDay(5, 1).EndCondition.Materialize(birthdayIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
+            new[] { 6101L, 6102L, 6105L },
+            "deterministic DateOnly MonthDay");
+        AssertSet(
+            LibraDexCondition.ForGroup("people").Index("birthday").AsDateOnly.YearEqual(2026).EndCondition.Materialize(birthdayIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
+            new[] { 6102L, 6103L, 6104L },
+            "deterministic DateOnly YearEqual");
+        AssertSet(
+            LibraDexCondition.ForGroup("records").Index("createdOffset").AsDateTimeOffset.GreaterThan(new DateTimeOffset(2026, 5, 20, 8, 0, 0, TimeSpan.FromHours(-7))).EndCondition.Materialize(createdOffsetIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
+            new[] { 7103L, 7104L },
+            "deterministic DateTimeOffset GreaterThan");
+
+        string precisionReopenPath = Path.Combine("artifacts", "datetime-precision-sdt-reopen-sanity.lbdx");
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(precisionReopenPath))!);
+        File.Delete(precisionReopenPath);
+        Guid tenantA = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+        LibraDexCompositeKeyPartSpec precisionCompositeTenantPart = C.Guid("tenantId");
+        LibraDexCompositeKeyPartSpec precisionCompositeCreatedPart = C.Date<DateTime>(
+            "created",
+            DateKeys.ExactAndStructured,
+            DateTimeKeyEncoding.PrecisionSdt);
+        LibraDexIndexShapeSpec filePrecisionCreatedShape = new CatalogNamedIndexShapeBuilder("records", "precisionCreated").Date<DateTime, long>(
+            DateKeys.ExactAndStructured,
+            DateTimeKeyEncoding.PrecisionSdt,
+            keys: IndexKeys.NonUnique);
+        LibraDexIndexShapeSpec filePrecisionCompositeShape = new CatalogNamedIndexShapeBuilder("records", "tenantPrecisionCreated").Composite<long>(
+            new[] { precisionCompositeTenantPart, precisionCompositeCreatedPart },
+            C.NonUnique);
+        using (Catalog fileCatalog = Catalog.Create(precisionReopenPath))
+        {
+            IIndex filePrecisionCreated = fileCatalog.Indexes.Create(filePrecisionCreatedShape);
+            IIndex filePrecisionComposite = fileCatalog.Indexes.Create(filePrecisionCompositeShape);
+            ValidateGenericInsert(filePrecisionCreated.Insert(precisionTickOne, 8201L), "file PrecisionSDT tick one insert");
+            ValidateGenericInsert(filePrecisionCreated.Insert(precisionTickTwo, 8202L), "file PrecisionSDT tick two insert");
+            ValidateGenericInsert(filePrecisionComposite.Insert(Key.Of(tenantA, precisionTickOne), 8301L), "file composite PrecisionSDT tick one insert");
+            ValidateGenericInsert(filePrecisionComposite.Insert(Key.Of(tenantA, precisionTickTwo), 8302L), "file composite PrecisionSDT tick two insert");
+        }
+
+        using (Catalog reopened = Catalog.Open(precisionReopenPath))
+        {
+            IIndex reopenedPrecisionCreated = reopened.Indexes.Open(filePrecisionCreatedShape);
+            if (reopenedPrecisionCreated.DateTimeKeyEncoding != DateTimeKeyEncoding.PrecisionSdt ||
+                !reopened.Indexes.TryGetInfo("records", "precisionCreated", out CatalogIndexInfo precisionInfo) ||
+                precisionInfo.DateTimeKeyEncoding != DateTimeKeyEncoding.PrecisionSdt)
+            {
+                throw new InvalidDataException("PrecisionSDT scalar date metadata did not survive catalog reopen.");
+            }
+
+            IIndex reopenedPrecisionComposite = reopened.Indexes.Open(filePrecisionCompositeShape);
+            if (!reopened.Indexes.TryGetInfo("records", "tenantPrecisionCreated", out CatalogIndexInfo compositeInfo) ||
+                compositeInfo.CompositeParts.Count != 2 ||
+                compositeInfo.CompositeParts[1].DateTimeKeyEncoding != DateTimeKeyEncoding.PrecisionSdt)
+            {
+                throw new InvalidDataException("PrecisionSDT composite date part metadata did not survive catalog reopen.");
+            }
+
+            IReadOnlyDictionary<string, IIndex> reopenedPrecisionIndexes = new Dictionary<string, IIndex>(StringComparer.Ordinal)
+            {
+                ["precisionCreated"] = reopenedPrecisionCreated
+            };
+            IReadOnlyDictionary<string, IIndex> reopenedPrecisionCompositeIndexes = new Dictionary<string, IIndex>(StringComparer.Ordinal)
+            {
+                ["tenantPrecisionCreated"] = reopenedPrecisionComposite
+            };
+            AssertSet(
+                LibraDexCondition.ForGroup("records").Index("precisionCreated").AsDate.GreaterThan(precisionTickOne).EndCondition.Materialize(reopenedPrecisionIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
+                new[] { 8202L },
+                "reopened PrecisionSDT strict greater-than sub-millisecond boundary");
+            AssertSet(
+                LibraDexCondition.ForGroup("records").Index("tenantPrecisionCreated").AsComposite.Where(
+                    LibraDexCompositePart.Guid("tenantId").EqualTo(tenantA),
+                    LibraDexCompositePart.Date("created").YearMonthDay(2026, 3, 14))
+                .EndCondition
+                .Materialize(reopenedPrecisionCompositeIndexes)
+                .IDsWith(deduplication: IdentityDeduplication.Preserve)
+                .ToList<long>(),
+                new[] { 8301L, 8302L },
+                "reopened composite PrecisionSDT date part YearMonthDay");
+            AssertSet(
+                LibraDexCondition.ForGroup("records").Index("tenantPrecisionCreated").AsComposite.Where(
+                    LibraDexCompositePart.Joined().Parts("created").Contains(precisionTickOne))
+                .EndCondition
+                .Materialize(reopenedPrecisionCompositeIndexes)
+                .IDsWith(deduplication: IdentityDeduplication.Preserve)
+                .ToList<long>(),
+                new[] { 8301L },
+                "reopened composite PrecisionSDT joined date part contains exact tick");
+        }
+    }
+
+    /// <summary>
+    /// Validates deterministic scalar, enum-as-scalar, and bitmask condition rows against actual materialized identities.<br/>
+    /// The fixture targets proof-checklist rows that were previously only mapped to condition syntax, using compact indexes so each branch has exact expected identities.<br/>
+    /// </summary>
+    private static void ValidateDeterministicScalarConditionCoverage()
+    {
+        static void AssertSet(IReadOnlyList<long> actual, long[] expected, string context)
+        {
+            long[] actualOrdered = actual.Order().ToArray();
+            long[] expectedOrdered = expected.Order().ToArray();
+            if (!actualOrdered.SequenceEqual(expectedOrdered))
+            {
+                throw new InvalidDataException($"{context} expected set [{string.Join(", ", expectedOrdered)}] but returned [{string.Join(", ", actualOrdered)}].");
+            }
+        }
+
+        static IReadOnlyList<long> IDs(LibraDexConditionEndCondition condition, IReadOnlyDictionary<string, IIndex> indexes)
+        {
+            return condition.Materialize(indexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>();
+        }
+
+        static IReadOnlyList<ulong> UIDs(LibraDexConditionEndCondition condition, IReadOnlyDictionary<string, IIndex> indexes)
+        {
+            return condition.Materialize(indexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<ulong>();
+        }
+
+        static void AssertSetU(IReadOnlyList<ulong> actual, ulong[] expected, string context)
+        {
+            ulong[] actualOrdered = actual.Order().ToArray();
+            ulong[] expectedOrdered = expected.Order().ToArray();
+            if (!actualOrdered.SequenceEqual(expectedOrdered))
+            {
+                throw new InvalidDataException($"{context} expected set [{string.Join(", ", expectedOrdered)}] but returned [{string.Join(", ", actualOrdered)}].");
+            }
+        }
+
+        using Catalog catalog = Catalog.CreateMemory();
+        Dictionary<string, IIndex> indexes = new(StringComparer.Ordinal);
+
+        IIndex CreateScalarIndex<TKey>(string name, params (TKey Key, long Identity)[] entries)
+        {
+            LibraDexIndexShapeSpec shape = catalog.Indexes["proof"][name].Shape.Scalar<TKey, long>(IndexKeys.NonUnique);
+            IIndex index = catalog.Indexes.Create(shape);
+            for (int i = 0; i < entries.Length; i++)
+            {
+                ValidateGenericInsert(index.Insert(entries[i].Key!, entries[i].Identity), $"deterministic scalar {name} insert {i}");
+            }
+
+            indexes[name] = index;
+            return index;
+        }
+
+        _ = CreateScalarIndex<int>(
+            "age",
+            (12, 101L),
+            (18, 102L),
+            (21, 103L),
+            (32, 104L),
+            (65, 105L),
+            (70, 106L));
+        _ = CreateScalarIndex<int>(
+            "score",
+            (-5, 201L),
+            (0, 202L),
+            (7, 203L));
+        _ = CreateScalarIndex<int>(
+            "retryCount",
+            (0, 301L),
+            (3, 302L),
+            (4, 303L));
+        _ = CreateScalarIndex<int>(
+            "rank",
+            (1, 401L),
+            (2, 402L),
+            (3, 403L));
+        _ = CreateScalarIndex<long>(
+            "amountCents",
+            (50_000L, 501L),
+            (100_000L, 502L),
+            (150_000L, 503L));
+        _ = CreateScalarIndex<long>(
+            "balanceCents",
+            (-1L, 601L),
+            (0L, 602L),
+            (1L, 603L));
+        _ = CreateScalarIndex<long>(
+            "tickCount",
+            (long.MinValue, 701L),
+            (-1L, 702L),
+            (0L, 703L),
+            (5L, 704L));
+        _ = CreateScalarIndex<short>(
+            "int16Value",
+            (-11, 801L),
+            (-10, 802L),
+            (0, 803L),
+            (10, 804L),
+            (11, 805L));
+        _ = CreateScalarIndex<sbyte>(
+            "sbyteCode",
+            (-2, 901L),
+            (-1, 902L),
+            (0, 903L));
+        _ = CreateScalarIndex<short>(
+            "shortStatus",
+            (1, 1001L),
+            (2, 1002L),
+            (4, 1004L));
+        _ = CreateScalarIndex<byte>(
+            "byteSeverity",
+            (10, 1101L),
+            (199, 1102L),
+            (200, 1103L),
+            (255, 1104L));
+        _ = CreateScalarIndex<ushort>(
+            "port",
+            (80, 1201L),
+            (1024, 1202L),
+            (65535, 1203L));
+        _ = CreateScalarIndex<ushort>(
+            "u16Code",
+            (0, 1301L),
+            (9, 1302L),
+            (10, 1303L));
+        _ = CreateScalarIndex<uint>(
+            "ipv4",
+            (0x7F000001U, 1401L),
+            (0xC0A80001U, 1402L),
+            (0xFFFFFFFFU, 1403L));
+        _ = CreateScalarIndex<uint>(
+            "checksum",
+            (2_999_999_999U, 1501L),
+            (3_000_000_000U, 1502L),
+            (3_500_000_000U, 1503L));
+        _ = CreateScalarIndex<ulong>(
+            "monotonicId",
+            (0UL, 1601L),
+            (ulong.MaxValue / 2, 1602L),
+            (unchecked((ulong)long.MaxValue) + 1UL, 1603L),
+            (ulong.MaxValue, 1604L));
+        _ = CreateScalarIndex<ulong>(
+            "featureValue",
+            (0UL, 1701L),
+            (1UL, 1702L));
+        _ = CreateScalarIndex<ulong>(
+            "u64Key",
+            (1UL, 1801L),
+            (2UL, 1802L),
+            (3UL, 1803L));
+        _ = CreateScalarIndex<char>(
+            "code",
+            ('/', 1901L),
+            ('0', 1902L),
+            ('5', 1903L),
+            ('9', 1904L),
+            ('A', 1905L),
+            ('K', 1906L),
+            ('Z', 1907L),
+            ('_', 1908L));
+        _ = CreateScalarIndex<bool>(
+            "deleted",
+            (false, 2001L),
+            (true, 2002L));
+        _ = CreateScalarIndex<bool>(
+            "flag",
+            (false, 2101L),
+            (true, 2102L));
+        _ = CreateScalarIndex<int>(
+            "status",
+            (1, 2201L),
+            (2, 2202L),
+            (3, 2203L),
+            (4, 2204L));
+        _ = CreateScalarIndex<uint>(
+            "permissions",
+            (0x00U, 2300L),
+            (0x01U, 2301L),
+            (0x02U, 2302L),
+            (0x03U, 2303L),
+            (0x04U, 2304L),
+            (0x08U, 2308L),
+            (0x10U, 2310L),
+            (0x13U, 2313L));
+        _ = CreateScalarIndex<ulong>(
+            "capabilities",
+            (0UL, 2400L),
+            (1UL << 42, 2442L),
+            ((1UL << 42) | 0x10UL, 2452L),
+            (0x20UL, 2432L));
+        _ = CreateScalarIndex<byte>(
+            "flagsByte",
+            (0x00, 2500L),
+            (0x08, 2508L),
+            (0x17, 2517L),
+            (0x1F, 2515L));
+        _ = CreateScalarIndex<int>(
+            "flagsInt",
+            (-2147483648, 2601L),
+            (0, 2602L),
+            (0x40000000, 2603L));
+        _ = CreateScalarIndex<int>(
+            "sentinelValue",
+            (-1, 2701L),
+            (0, 2702L),
+            (5, 2703L));
+        LibraDexIndexShapeSpec flagsShape = catalog.Indexes["proof"]["flags"].Shape.Scalar<uint, ulong>(IndexKeys.NonUnique);
+        IIndex flags = catalog.Indexes.Create(flagsShape);
+        ValidateGenericInsert(flags.Insert(0x00U, 2300UL), "deterministic scalar flags insert 0");
+        ValidateGenericInsert(flags.Insert(0x01U, 2301UL), "deterministic scalar flags insert beta");
+        ValidateGenericInsert(flags.Insert(0x02U, 2302UL), "deterministic scalar flags insert alternate");
+        indexes["flags"] = flags;
+        using LibraDexStringScalar8Index displayName = catalog.Indexes["proof"]["displayName"].String.Create(stringKeys: StringKeys.Exact);
+        ValidateGenericInsert(displayName.Insert("Alpha", 2301UL), "deterministic scalar displayName Alpha insert");
+        ValidateGenericInsert(displayName.Insert("Beta", 2302UL), "deterministic scalar displayName Beta insert");
+        indexes["displayName"] = displayName;
+
+        AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("age").AsInt32.GreaterThan(18).EndCondition, indexes), new[] { 103L, 104L, 105L, 106L }, "proof row 1 Int32 GreaterThan");
+        AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("age").AsInt32.Between(18, 65).EndCondition, indexes), new[] { 102L, 103L, 104L, 105L }, "proof row 2 Int32 Between");
+        AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("age").AsInt32.NotBetween(13, 19).EndCondition, indexes), new[] { 101L, 103L, 104L, 105L, 106L }, "proof row 3 Int32 NotBetween");
+        AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("age").AsInt32.InSet(new[] { 18, 21, 65 }).EndCondition, indexes), new[] { 102L, 103L, 105L }, "proof row 4 Int32 InSet");
+        AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("age").AsInt32.NotEqualTo(32).EndCondition, indexes), new[] { 101L, 102L, 103L, 105L, 106L }, "proof row 5 Int32 NotEqualTo");
+        AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("score").AsInt32.LessThan(0).EndCondition, indexes), new[] { 201L }, "proof row 6 Int32 LessThan zero");
+        AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("score").AsInt32.GreaterOrEqual(0).EndCondition, indexes), new[] { 202L, 203L }, "proof row 7 Int32 GreaterOrEqual zero");
+        AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("retryCount").AsInt32.LessOrEqual(3).EndCondition, indexes), new[] { 301L, 302L }, "proof row 8 Int32 LessOrEqual");
+        HashSet<int> rankSet = new() { 1, 3 };
+        AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("rank").AsInt32.InSet(rankSet).EndCondition, indexes), new[] { 401L, 403L }, "proof row 10 Int32 HashSet InSet");
+        AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("amountCents").AsInt64.GreaterThan(100_000L).EndCondition, indexes), new[] { 503L }, "proof row 11 Int64 GreaterThan");
+        AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("balanceCents").AsInt64.LessThan(0L).EndCondition, indexes), new[] { 601L }, "proof row 13 Int64 LessThan zero");
+        AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("tickCount").AsInt64.NotBetween(long.MinValue, -1L).EndCondition, indexes), new[] { 703L, 704L }, "proof row 15 Int64 NotBetween min negative");
+        AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("int16Value").AsInt16.Between(-10, 10).EndCondition, indexes), new[] { 802L, 803L, 804L }, "proof row 18 Int16 Between mixed-sign");
+        AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("sbyteCode").AsSByte.NotEqualTo(-1).EndCondition, indexes), new[] { 901L, 903L }, "proof row 19 SByte NotEqualTo");
+        AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("shortStatus").AsInt16.InSet(new short[] { 1, 4 }).EndCondition, indexes), new[] { 1001L, 1004L }, "proof row 20 Int16 enum-backed InSet");
+        AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("byteSeverity").AsByte.GreaterOrEqual(200).EndCondition, indexes), new[] { 1103L, 1104L }, "proof row 21 Byte GreaterOrEqual");
+        AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("port").AsUInt16.Between(1024, ushort.MaxValue).EndCondition, indexes), new[] { 1202L, 1203L }, "proof row 23 UInt16 high range");
+        AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("u16Code").AsUInt16.LessThan(10).EndCondition, indexes), new[] { 1301L, 1302L }, "proof row 24 UInt16 low range");
+        AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("ipv4").AsUInt32.Between(0xC0A80000U, 0xC0A8FFFFU).EndCondition, indexes), new[] { 1402L }, "proof row 25 UInt32 subnet range");
+        AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("checksum").AsUInt32.GreaterThan(3_000_000_000U).EndCondition, indexes), new[] { 1503L }, "proof row 26 UInt32 high GreaterThan");
+        AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("monotonicId").AsUInt64.GreaterThan(ulong.MaxValue / 2).EndCondition, indexes), new[] { 1603L, 1604L }, "proof row 27 UInt64 high GreaterThan");
+        AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("featureValue").AsUInt64.EqualTo(0UL).EndCondition, indexes), new[] { 1701L }, "proof row 28 UInt64 zero exact");
+        AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("u64Key").AsUInt64.NotInSet(new[] { 2UL }).EndCondition, indexes), new[] { 1801L, 1803L }, "proof row 29 UInt64 NotInSet");
+        ulong watermark = 3UL;
+        LibraDexConditionEndCondition deferredUInt64 = LibraDexCondition.ForGroup("proof").Index("u64Key").AsUInt64.LessThan(() => watermark).EndCondition;
+        AssertSet(IDs(deferredUInt64, indexes), new[] { 1801L, 1802L }, "proof row 30 UInt64 deferred LessThan first");
+        watermark = 2UL;
+        AssertSet(IDs(deferredUInt64, indexes), new[] { 1801L }, "proof row 30 UInt64 deferred LessThan rematerialized");
+        AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("code").AsChar.Between('A', 'Z').EndCondition, indexes), new[] { 1905L, 1906L, 1907L }, "proof row 32 Char Between");
+        AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("code").AsChar.LessThan('0').OR.Index("code").AsChar.GreaterThan('9').EndCondition, indexes), new[] { 1901L, 1905L, 1906L, 1907L, 1908L }, "proof row 33 Char non-digit OR");
+        AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("code").AsChar.InSet(new[] { '/', '_' }).EndCondition, indexes), new[] { 1901L, 1908L }, "proof row 34 Char InSet");
+        AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("deleted").AsBoolean.EqualTo(false).EndCondition, indexes), new[] { 2001L }, "proof row 36 Bool false exact");
+        AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("flag").AsBoolean.NotEqualTo(true).EndCondition, indexes), new[] { 2101L }, "proof row 37 Bool NotEqualTo true");
+        AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("flag").AsBoolean.GreaterThan(false).EndCondition, indexes), new[] { 2102L }, "proof row 38 Bool GreaterThan false");
+        AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("status").AsInt32.EqualTo(3).EndCondition, indexes), new[] { 2203L }, "proof row 61 enum scalar exact");
+        AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("status").AsInt32.InSet(new[] { 1, 2, 3 }).EndCondition, indexes), new[] { 2201L, 2202L, 2203L }, "proof row 62 enum scalar membership");
+        AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("status").AsInt32.NotEqualTo(4).EndCondition, indexes), new[] { 2201L, 2202L, 2203L }, "proof row 63 enum scalar NotEqualTo");
+        AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("permissions").AsUInt32.AllBitsSet(0x01U).EndCondition, indexes), new[] { 2301L, 2303L, 2313L }, "proof row 66 UInt32 AllBitsSet read");
+        AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("permissions").AsUInt32.EqualTo(0x03U).EndCondition, indexes), new[] { 2303L }, "proof row 70 exact mask equality");
+        AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("capabilities").AsUInt64.AllBitsSet(1UL << 42).EndCondition, indexes), new[] { 2442L, 2452L }, "proof row 74 UInt64 high-bit AllBitsSet");
+        AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("capabilities").AsUInt64.NoBitsSet(0x10UL).EndCondition, indexes), new[] { 2400L, 2442L, 2432L }, "proof row 75 UInt64 NoBitsSet");
+        AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("flagsByte").AsByte.AllBitsSet(0x08).EndCondition, indexes), new[] { 2508L, 2515L }, "proof row 76 Byte AllBitsSet");
+        AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("flagsByte").AsByte.BitAnd(0x0F, 0x07).EndCondition, indexes), new[] { 2517L }, "proof row 77 Byte masked equality");
+        AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("flagsInt").AsInt32.AllBitsSet(int.MinValue).EndCondition, indexes), new[] { 2601L }, "proof row 78 signed Int32 bitmask");
+        AssertSetU(UIDs(LibraDexCondition.ForGroup("proof").Index("flags").AsUInt32.AllBitsSet(0x01U).AND.Index("displayName").AsString.StartsWith("A").EndCondition, indexes), new[] { 2301UL }, "proof row 80 bitmask plus text composition");
+        AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("sentinelValue").AsInt32.NotEqualTo(-1).EndCondition, indexes), new[] { 2702L, 2703L }, "proof row 187 Int32 sentinel exclusion");
+    }
+
+    /// <summary>
+    /// Validates deterministic string condition rows against materialized identities from exact, folded, sort-key, reversed, and scan-backed string facades.<br/>
+    /// The fixture keeps row-shaped names and values so the proof checklist can distinguish exact text, no-case text, prefix/suffix, contains, wildcard pattern, membership, empty-key, and projection-backed retrieval behavior.<br/>
+    /// </summary>
+    private static void ValidateDeterministicStringConditionCoverage()
+    {
+        static void AssertSet(IReadOnlyList<ulong> actual, ulong[] expected, string context)
+        {
+            ulong[] actualOrdered = actual.Order().ToArray();
+            ulong[] expectedOrdered = expected.Order().ToArray();
+            if (!actualOrdered.SequenceEqual(expectedOrdered))
+            {
+                throw new InvalidDataException($"{context} expected set [{string.Join(", ", expectedOrdered)}] but returned [{string.Join(", ", actualOrdered)}].");
+            }
+        }
+
+        static IReadOnlyList<ulong> IDs(LibraDexConditionEndCondition condition, LibraDexStringScalar8Index index)
+        {
+            return condition.MaterializeWithProjectionBridge(index.ResolveIndex, index.ResolveProjection)
+                .IDsWith(deduplication: IdentityDeduplication.Preserve)
+                .ToList<ulong>();
+        }
+
+        using Catalog catalog = Catalog.CreateMemory();
+        using LibraDexStringScalar8Index username = catalog.Indexes["strings"]["username"].String.Create(
+            stringKeys: StringKeys.ExactAndFolded,
+            directions: LibraDexProjectionDirectionSet.Forward);
+        using LibraDexStringScalar8Index lastName = catalog.Indexes["strings"]["lastName"].String.Create(
+            stringKeys: StringKeys.ExactAndFolded,
+            directions: LibraDexProjectionDirectionSet.Forward);
+        using LibraDexStringScalar8Index email = catalog.Indexes["strings"]["email"].String.Create(
+            stringKeys: StringKeys.ExactAndFolded,
+            directions: LibraDexProjectionDirectionSet.ForwardAndReversed);
+        using LibraDexStringScalar8Index description = catalog.Indexes["strings"]["description"].String.Create(
+            stringKeys: StringKeys.Exact);
+        using LibraDexStringScalar8Index country = catalog.Indexes["strings"]["country"].String.Create(
+            stringKeys: StringKeys.Exact);
+        using LibraDexStringScalar8Index tag = catalog.Indexes["strings"]["tag"].String.Create(
+            stringKeys: StringKeys.Exact,
+            stringComparisonPolicy: LibraDexStringComparisonPolicy.OrdinalIgnoreCase);
+        using LibraDexStringScalar8Index code = catalog.Indexes["strings"]["code"].String.Create(
+            stringKeys: StringKeys.Exact);
+        using LibraDexStringScalar8Index foldedText = catalog.Indexes["strings"]["foldedText"].String.Create(
+            stringKeys: StringKeys.ExactAndFolded);
+        using LibraDexStringScalar8Index reversedText = catalog.Indexes["strings"]["reversedText"].String.Create(
+            stringKeys: StringKeys.Exact,
+            directions: LibraDexProjectionDirectionSet.ForwardAndReversed);
+
+        ValidateGenericInsert(username.Insert("bob", 1361UL), "deterministic string username bob insert");
+        ValidateGenericInsert(username.Insert("BOB", 1371UL), "deterministic string username BOB insert");
+        ValidateGenericInsert(username.Insert("adminRoot", 1441UL), "deterministic string username adminRoot insert");
+        ValidateGenericInsert(username.Insert("guest", 1442UL), "deterministic string username guest insert");
+        ValidateGenericInsert(lastName.Insert("Smith", 1381UL), "deterministic string lastName Smith insert");
+        ValidateGenericInsert(lastName.Insert("Smithson", 1382UL), "deterministic string lastName Smithson insert");
+        ValidateGenericInsert(lastName.Insert("sMiThers", 1391UL), "deterministic string lastName sMiThers insert");
+        ValidateGenericInsert(lastName.Insert("Smyth", 1392UL), "deterministic string lastName Smyth insert");
+        ValidateGenericInsert(email.Insert("ops@example.com", 1401UL), "deterministic string email exact suffix insert");
+        ValidateGenericInsert(email.Insert("help@EXAMPLE.COM", 1411UL), "deterministic string email folded suffix insert");
+        ValidateGenericInsert(email.Insert("ops@example.net", 1402UL), "deterministic string email nonmatch insert");
+        ValidateGenericInsert(description.Insert("spare battery pack", 1421UL), "deterministic string description lower contains insert");
+        ValidateGenericInsert(description.Insert("Battery charger", 1431UL), "deterministic string description mixed contains insert");
+        ValidateGenericInsert(description.Insert("power cable", 1422UL), "deterministic string description nonmatch insert");
+        ValidateGenericInsert(country.Insert("US", 1481UL), "deterministic string country US insert");
+        ValidateGenericInsert(country.Insert("CA", 1482UL), "deterministic string country CA insert");
+        ValidateGenericInsert(country.Insert("GB", 1483UL), "deterministic string country GB insert");
+        ValidateGenericInsert(tag.Insert("Beta", 1491UL), "deterministic string tag Beta insert");
+        ValidateGenericInsert(tag.Insert("preview", 1492UL), "deterministic string tag preview insert");
+        ValidateGenericInsert(tag.Insert("stable", 1493UL), "deterministic string tag stable insert");
+        ValidateGenericInsert(code.Insert("A1-2345", 1451UL), "deterministic string code pattern sample insert");
+        ValidateGenericInsert(code.Insert(string.Empty, 1501UL), "deterministic string code empty insert");
+        ValidateGenericInsert(foldedText.Insert("AbC", 1951UL), "deterministic string foldedText AbC insert");
+        ValidateGenericInsert(foldedText.Insert("xyz", 1952UL), "deterministic string foldedText xyz insert");
+        ValidateGenericInsert(reversedText.Insert("www.example.com", 1971UL), "deterministic string reversedText com insert");
+        ValidateGenericInsert(reversedText.Insert("www.example.net", 1972UL), "deterministic string reversedText net insert");
+
+        AssertSet(IDs(LibraDexCondition.ForGroup("strings").Index("username").AsString.EqualTo("bob").EndCondition, username), new[] { 1361UL }, "proof row 136 string exact");
+        AssertSet(IDs(LibraDexCondition.ForGroup("strings").Index("username").AsString.EqualTo("Bob", ignoreCase: true).EndCondition, username), new[] { 1361UL, 1371UL }, "proof row 137 string no-case exact");
+        AssertSet(IDs(LibraDexCondition.ForGroup("strings").Index("lastName").AsString.StartsWith("Smith").EndCondition, lastName), new[] { 1381UL, 1382UL }, "proof row 138 string prefix");
+        AssertSet(IDs(LibraDexCondition.ForGroup("strings").Index("lastName").AsString.StartsWith("smith", ignoreCase: true).EndCondition, lastName), new[] { 1381UL, 1382UL, 1391UL }, "proof row 139 string no-case prefix");
+        AssertSet(IDs(LibraDexCondition.ForGroup("strings").Index("email").AsString.EndsWith("example.com").EndCondition, email), new[] { 1401UL }, "proof row 140 string suffix");
+        AssertSet(IDs(LibraDexCondition.ForGroup("strings").Index("email").AsString.EndsWith("EXAMPLE.COM", ignoreCase: true).EndCondition, email), new[] { 1401UL, 1411UL }, "proof row 141 string no-case suffix");
+        AssertSet(IDs(LibraDexCondition.ForGroup("strings").Index("description").AsString.Contains("battery").EndCondition, description), new[] { 1421UL }, "proof row 142 string contains");
+        AssertSet(IDs(LibraDexCondition.ForGroup("strings").Index("description").AsString.Contains("battery", ignoreCase: true).EndCondition, description), new[] { 1421UL, 1431UL }, "proof row 143 string no-case contains");
+        AssertSet(IDs(LibraDexCondition.ForGroup("strings").Index("username").AsString.MatchesPattern("admin*").EndCondition, username), new[] { 1441UL }, "proof row 144 string wildcard pattern");
+        AssertSet(IDs(LibraDexCondition.ForGroup("strings").Index("country").AsString.InSet(new[] { "US", "CA", "MX" }).EndCondition, country), new[] { 1481UL, 1482UL }, "proof row 148 string membership");
+        HashSet<string> tags = new(StringComparer.OrdinalIgnoreCase) { "BETA", "PREVIEW" };
+        AssertSet(IDs(LibraDexCondition.ForGroup("strings").Index("tag").AsString.InSet(tags).EndCondition, tag), new[] { 1491UL, 1492UL }, "proof row 149 string policy membership");
+        AssertSet(IDs(LibraDexCondition.ForGroup("strings").Index("code").AsString.EqualTo(string.Empty).EndCondition, code), new[] { 1501UL }, "proof row 150 string empty");
+        AssertSet(IDs(LibraDexCondition.ForGroup("strings").Index("foldedText").AsString.EqualTo("abc", ignoreCase: true).EndCondition, foldedText), new[] { 1951UL }, "proof row 195 folded text equality");
+        AssertSet(IDs(LibraDexCondition.ForGroup("strings").Index("reversedText").AsString.EndsWith("com").EndCondition, reversedText), new[] { 1971UL }, "proof row 197 reversed text suffix");
+    }
+
+    /// <summary>
+    /// Validates deterministic composition and terminal rows over adopted conditions.<br/>
+    /// The fixture keeps index sizing out of query semantics and proves that cross-index composition, composite parts, paging/take, existence, count, and grouping terminals materialize expected identities through opened index actors.<br/>
+    /// </summary>
+    private static void ValidateDeterministicCompositionTerminalCoverage()
+    {
+        static void AssertSet<T>(IEnumerable<T> actual, IEnumerable<T> expected, string context)
+        {
+            T[] actualOrdered = actual.OrderBy(static value => value).ToArray();
+            T[] expectedOrdered = expected.OrderBy(static value => value).ToArray();
+            if (!actualOrdered.SequenceEqual(expectedOrdered))
+            {
+                throw new InvalidDataException($"{context} expected set [{string.Join(", ", expectedOrdered)}] but returned [{string.Join(", ", actualOrdered)}].");
+            }
+        }
+
+        static void AssertSequence<T>(IEnumerable<T> actual, IEnumerable<T> expected, string context)
+        {
+            T[] actualArray = actual.ToArray();
+            T[] expectedArray = expected.ToArray();
+            if (!actualArray.SequenceEqual(expectedArray))
+            {
+                throw new InvalidDataException($"{context} expected sequence [{string.Join(", ", expectedArray)}] but returned [{string.Join(", ", actualArray)}].");
+            }
+        }
+
+        static IReadOnlyList<ulong> UIDs(LibraDexConditionEndCondition condition, Func<string, IIndex> resolve)
+        {
+            return condition.ToList<ulong>(resolve, deduplication: IdentityDeduplication.Preserve);
+        }
+
+        using Catalog catalog = Catalog.CreateMemory();
+
+        LibraDexIndex<int, ulong> age = catalog.Indexes["users"]["age"].Int32Keys<ulong>().Create();
+        LibraDexIndex<int, ulong> status = catalog.Indexes["users"]["status"].Int32Keys<ulong>().Create();
+        ValidateGenericInsert(age.Insert(20, 1UL), "composition age 20 insert");
+        ValidateGenericInsert(age.Insert(17, 2UL), "composition age 17 insert");
+        ValidateGenericInsert(age.Insert(30, 3UL), "composition age 30 insert");
+        ValidateGenericInsert(age.Insert(40, 4UL), "composition age 40 insert");
+        ValidateGenericInsert(status.Insert(1, 1UL), "composition status active 1 insert");
+        ValidateGenericInsert(status.Insert(2, 2UL), "composition status pending insert");
+        ValidateGenericInsert(status.Insert(1, 3UL), "composition status active 3 insert");
+        ValidateGenericInsert(status.Insert(0, 4UL), "composition status inactive insert");
+        Func<string, IIndex> userResolver = indexName => indexName switch
+        {
+            "age" => age,
+            "status" => status,
+            _ => throw new KeyNotFoundException(indexName)
+        };
+        AssertSet(
+            UIDs(LibraDexCondition.ForGroup("users").Index("age").AsInt32.GreaterOrEqual(18).AND.Index("status").AsInt32.EqualTo(1).EndCondition, userResolver),
+            new[] { 1UL, 3UL },
+            "proof row 167 cross-index AND");
+        AssertSet(
+            UIDs(LibraDexCondition.ForGroup("users").Index("status").AsInt32.InSet(new[] { 1, 2 }).EndCondition, userResolver),
+            new[] { 1UL, 2UL, 3UL },
+            "proof row 168 same-index OR membership");
+        AssertSequence(
+            LibraDexCondition.ForGroup("users").Index("status").AsInt32.EqualTo(1).EndCondition.ToList<ulong>(userResolver, deduplication: IdentityDeduplication.Preserve, take: 1),
+            new[] { 1UL },
+            "proof row 199 take terminal");
+        using LibraDexStringScalar8Index pagingLastName = catalog.Indexes["paging"]["lastName"].String.Create(stringKeys: StringKeys.Exact);
+        ValidateGenericInsert(pagingLastName.Insert("Smith", 2001UL), "composition paging Smith insert");
+        ValidateGenericInsert(pagingLastName.Insert("Stone", 2002UL), "composition paging Stone insert");
+        ValidateGenericInsert(pagingLastName.Insert("Swan", 2003UL), "composition paging Swan insert");
+        Func<string, IIndex> pagingResolver = indexName => indexName == "lastName" ? pagingLastName : throw new KeyNotFoundException(indexName);
+        LibraDexConditionEndCondition sLastNames = LibraDexCondition.ForGroup("paging").Index("lastName").AsString.StartsWith("S").EndCondition;
+        AssertSequence(
+            sLastNames.ToList<ulong>(pagingResolver, deduplication: IdentityDeduplication.Preserve, take: 1),
+            new[] { 2001UL },
+            "proof row 200 bookmark first page");
+        AssertSequence(
+            sLastNames.ToList<ulong>(pagingResolver, deduplication: IdentityDeduplication.Preserve, take: 2, bookmark: new LibraDexBookmark(0, 1)),
+            new[] { 2002UL, 2003UL },
+            "proof row 200 bookmark next page");
+        if (!LibraDexCondition.ForGroup("users").Index("age").AsInt32.EqualTo(20).EndCondition.Exists(userResolver, IdentityDeduplication.Preserve) ||
+            LibraDexCondition.ForGroup("users").Index("age").AsInt32.EqualTo(99).EndCondition.Exists(userResolver, IdentityDeduplication.Preserve) ||
+            LibraDexCondition.ForGroup("users").Index("status").AsInt32.EqualTo(1).EndCondition.Count(userResolver, IdentityDeduplication.Preserve) != 2)
+        {
+            throw new InvalidDataException("Proof rows 203-204 Exists/Count terminals did not return expected results.");
+        }
+
+        LibraDexIndex<int, ulong> deferredPrimary = catalog.Indexes["deferred"]["primary"].Int32Keys<ulong>().Create();
+        LibraDexIndex<int, ulong> deferredAlternate = catalog.Indexes["deferred"]["alternate"].Int32Keys<ulong>().Create();
+        ValidateGenericInsert(deferredPrimary.Insert(9, 1761UL), "composition deferred primary 9 insert");
+        ValidateGenericInsert(deferredPrimary.Insert(12, 1762UL), "composition deferred primary 12 insert");
+        ValidateGenericInsert(deferredAlternate.Insert(15, 1763UL), "composition deferred alternate 15 insert");
+        Func<string, IIndex> deferredResolver = indexName => indexName switch
+        {
+            "primary" => deferredPrimary,
+            "alternate" => deferredAlternate,
+            _ => throw new KeyNotFoundException(indexName)
+        };
+        string selectedIndexName = "primary";
+        LibraDexConditionEndCondition deferredIndexCondition = LibraDexCondition.ForGroup("deferred").Index(() => selectedIndexName, "selectedIndex").AsInt32.GreaterThan(10).EndCondition;
+        AssertSet(
+            UIDs(deferredIndexCondition, deferredResolver),
+            new[] { 1762UL },
+            "proof row 176 deferred selector primary");
+        selectedIndexName = "alternate";
+        AssertSet(
+            UIDs(deferredIndexCondition, deferredResolver),
+            new[] { 1763UL },
+            "proof row 176 deferred selector alternate");
+        LibraDexConditionExpression<ulong> deferredIndexExpression = LibraDexConditionExpression<ulong>.From(deferredIndexCondition);
+        AssertSet(
+            catalog.Indexes["deferred"].GetIdentities(
+                deferredIndexExpression.WithIndex("selectedIndex", "primary"),
+                deduplication: IdentityDeduplication.Preserve),
+            new[] { 1762UL },
+            "proof row 182 named selector replacement");
+
+        LibraDexIndexShapeSpec selectedCreatedShape = catalog.Indexes["deferredDate"]["created"].Shape.Date<DateTime, ulong>(
+            DateKeys.ExactAndStructured,
+            keys: IndexKeys.NonUnique);
+        LibraDexIndexShapeSpec selectedUpdatedShape = catalog.Indexes["deferredDate"]["updated"].Shape.Date<DateTime, ulong>(
+            DateKeys.ExactAndStructured,
+            keys: IndexKeys.NonUnique);
+        IIndex selectedCreated = catalog.Indexes.Create(selectedCreatedShape);
+        IIndex selectedUpdated = catalog.Indexes.Create(selectedUpdatedShape);
+        ValidateGenericInsert(selectedCreated.Insert(new DateTime(2026, 1, 2, 0, 0, 0, DateTimeKind.Utc), 1771UL), "composition deferred date created 2026 insert");
+        ValidateGenericInsert(selectedCreated.Insert(new DateTime(2025, 1, 2, 0, 0, 0, DateTimeKind.Utc), 1772UL), "composition deferred date created 2025 insert");
+        ValidateGenericInsert(selectedUpdated.Insert(new DateTime(2026, 6, 2, 0, 0, 0, DateTimeKind.Utc), 1773UL), "composition deferred date updated 2026 insert");
+        Func<string, IIndex> deferredDateResolver = indexName => indexName switch
+        {
+            "created" => selectedCreated,
+            "updated" => selectedUpdated,
+            _ => throw new KeyNotFoundException(indexName)
+        };
+        string selectedDateIndex = "created";
+        LibraDexConditionEndCondition deferredDateCondition = LibraDexCondition.ForGroup("deferredDate").Index(() => selectedDateIndex, "selectedDate").AsDate.YearEqual(2026).EndCondition;
+        AssertSet(
+            UIDs(deferredDateCondition, deferredDateResolver),
+            new[] { 1771UL },
+            "proof row 177 deferred date selector created");
+        selectedDateIndex = "updated";
+        AssertSet(
+            UIDs(deferredDateCondition, deferredDateResolver),
+            new[] { 1773UL },
+            "proof row 177 deferred date selector updated");
+
+        using LibraDexStringScalar8Index email = catalog.Indexes["contacts"]["email"].String.Create(stringKeys: StringKeys.Exact);
+        using LibraDexStringScalar8Index phone = catalog.Indexes["contacts"]["phone"].String.Create(stringKeys: StringKeys.Exact);
+        ValidateGenericInsert(email.Insert("support@example.com", 21UL), "composition email support insert");
+        ValidateGenericInsert(email.Insert("info@example.com", 22UL), "composition email info insert");
+        ValidateGenericInsert(phone.Insert("800-555-0100", 23UL), "composition phone 800 insert");
+        ValidateGenericInsert(phone.Insert("602-555-0100", 24UL), "composition phone 602 insert");
+        Func<string, IIndex> contactResolver = indexName => indexName switch
+        {
+            "email" => email,
+            "phone" => phone,
+            _ => throw new KeyNotFoundException(indexName)
+        };
+        AssertSet(
+            UIDs(LibraDexCondition.ForGroup("contacts").Index("email").AsString.StartsWith("support").OR.Index("phone").AsString.StartsWith("800").EndCondition, contactResolver),
+            new[] { 21UL, 23UL },
+            "proof row 169 cross-index OR");
+
+        using LibraDexStringScalar8Index geohash = catalog.Indexes["places"]["geohash"].String.Create(stringKeys: StringKeys.Exact);
+        using LibraDexStringScalar8Index phoneNormalized = catalog.Indexes["people"]["phoneNormalized"].String.Create(stringKeys: StringKeys.Exact);
+        ValidateGenericInsert(geohash.Insert("9tbqzn", 1911UL), "composition geohash Phoenix insert");
+        ValidateGenericInsert(geohash.Insert("9q5ctr", 1912UL), "composition geohash Bay Area insert");
+        static string NormalizePhone(string value)
+        {
+            return new string(value.Where(static ch => ch >= '0' && ch <= '9').ToArray());
+        }
+
+        ValidateGenericInsert(phoneNormalized.Insert(NormalizePhone("(602) 555-0100"), 1921UL), "composition normalized phone insert");
+        Func<string, IIndex> codecResolver = indexName => indexName switch
+        {
+            "geohash" => geohash,
+            "phoneNormalized" => phoneNormalized,
+            _ => throw new KeyNotFoundException(indexName)
+        };
+        AssertSet(
+            UIDs(LibraDexCondition.ForGroup("places").Index("geohash").AsString.StartsWith("9tb").EndCondition, codecResolver),
+            new[] { 1911UL },
+            "proof row 191 geohash prefix custom codec");
+        AssertSet(
+            UIDs(LibraDexCondition.ForGroup("people").Index("phoneNormalized").AsString.EqualTo(NormalizePhone("602.555.0100")).EndCondition, codecResolver),
+            new[] { 1921UL },
+            "proof row 192 normalized phone custom codec");
+
+        using LibraDexStringScalar8Index role = catalog.Indexes["roles"]["role"].String.Create(stringKeys: StringKeys.Exact);
+        LibraDexIndex<int, ulong> roleStatus = catalog.Indexes["roles"]["status"].Int32Keys<ulong>().Create();
+        ValidateGenericInsert(role.Insert("admin", 31UL), "composition role admin insert");
+        ValidateGenericInsert(role.Insert("owner", 32UL), "composition role owner insert");
+        ValidateGenericInsert(role.Insert("user", 33UL), "composition role user insert");
+        ValidateGenericInsert(roleStatus.Insert(1, 31UL), "composition role status admin insert");
+        ValidateGenericInsert(roleStatus.Insert(1, 32UL), "composition role status owner insert");
+        ValidateGenericInsert(roleStatus.Insert(1, 33UL), "composition role status user insert");
+        Func<string, IIndex> roleResolver = indexName => indexName switch
+        {
+            "role" => role,
+            "status" => roleStatus,
+            _ => throw new KeyNotFoundException(indexName)
+        };
+        LibraDexConditionEndCondition roles = LibraDexCondition.ForGroup("roles").Index("role").AsString.InSet(new[] { "admin", "owner" }).EndCondition;
+        AssertSet(
+            UIDs(LibraDexCondition.ForGroup("roles").Index("status").AsInt32.EqualTo(1).AND.Group(roles).EndCondition, roleResolver),
+            new[] { 31UL, 32UL },
+            "proof row 170 grouped role logic");
+
+        IIndex lastFirst = catalog.Indexes["people"]["lastFirst"].Composite<ulong>(C.Text("lastName"), C.Text("firstName")).Create();
+        using LibraDexStringScalar8Index peopleEmail = catalog.Indexes["people"]["email"].String.Create(stringKeys: StringKeys.Exact);
+        ValidateGenericInsert(lastFirst.Insert(Key.Of("Smith", "Jane"), 41UL), "composition composite Smith Jane insert");
+        ValidateGenericInsert(lastFirst.Insert(Key.Of("Smith", "Bob"), 42UL), "composition composite Smith Bob insert");
+        ValidateGenericInsert(lastFirst.Insert(Key.Of("Stone", "Jill"), 43UL), "composition composite Stone Jill insert");
+        ValidateGenericInsert(peopleEmail.Insert("sj@example.com", 44UL), "composition people email sj insert");
+        Func<string, IIndex> peopleResolver = indexName => indexName switch
+        {
+            "lastFirst" => lastFirst,
+            "email" => peopleEmail,
+            _ => throw new KeyNotFoundException(indexName)
+        };
+        LibraDexConditionEndCondition lastAndFirst = LibraDexCondition.ForGroup("people").Index("lastFirst").AsComposite.Where(
+            LibraDexCompositePart.String("lastName").StartsWith("S"),
+            LibraDexCompositePart.String("firstName").StartsWith("J")).EndCondition;
+        AssertSet(
+            UIDs(lastAndFirst, peopleResolver),
+            new[] { 41UL, 43UL },
+            "proof row 158 composite later prefix");
+        AssertSet(
+            UIDs(LibraDexCondition.ForGroup("people").Group(lastAndFirst).OR.Index("email").AsString.StartsWith("sj").EndCondition, peopleResolver),
+            new[] { 41UL, 43UL, 44UL },
+            "proof row 174 grouped composite OR");
+
+        IIndex tenantUser = catalog.Indexes["people"]["tenantUser"].Composite<ulong>(C.Text("tenantId"), C.Text("username")).Create();
+        ValidateGenericInsert(tenantUser.Insert(Key.Of("tenant-a", "admin"), 1611UL), "composition tenant/admin insert");
+        ValidateGenericInsert(tenantUser.Insert(Key.Of("tenant-b", "reader"), 1612UL), "composition tenant/reader insert");
+        ValidateGenericInsert(tenantUser.Insert(Key.Of("tenant-a", "auditor"), 1613UL), "composition tenant/auditor insert");
+        Func<string, IIndex> tenantUserResolver = indexName => indexName == "tenantUser" ? tenantUser : throw new KeyNotFoundException(indexName);
+        AssertSet(
+            UIDs(LibraDexCondition.ForGroup("people").Index("tenantUser").AsComposite.Where(
+                LibraDexCompositePart.Joined("/").MatchesPattern("tenant-a/ad*")).EndCondition, tenantUserResolver),
+            new[] { 1611UL },
+            "proof row 161 composite joined delimiter pattern");
+        AssertSet(
+            UIDs(LibraDexCondition.ForGroup("people").Index("tenantUser").AsComposite.Where(
+                LibraDexCompositePart.Joined("|").Excluding("tenantId").Contains("admin")).EndCondition, tenantUserResolver),
+            new[] { 1611UL },
+            "proof row 163 composite excluding joined contains");
+
+        IIndex accountOrder = catalog.Indexes["orders"]["accountOrder"].Composite<ulong>(C.Int64("accountId"), C.Int32("orderNumber")).Create();
+        ValidateGenericInsert(accountOrder.Insert(Key.Of(10L, 1001), 51UL), "composition account order 1001 insert");
+        ValidateGenericInsert(accountOrder.Insert(Key.Of(10L, 2001), 52UL), "composition account order 2001 insert");
+        ValidateGenericInsert(accountOrder.Insert(Key.Of(11L, 1500), 53UL), "composition account order 1500 insert");
+        Func<string, IIndex> orderResolver = indexName => indexName == "accountOrder" ? accountOrder : throw new KeyNotFoundException(indexName);
+        AssertSet(
+            UIDs(LibraDexCondition.ForGroup("orders").Index("accountOrder").AsComposite.Where(
+                LibraDexCompositePart.Scalar<long>("accountId").EqualTo(10L),
+                LibraDexCompositePart.Scalar<int>("orderNumber").Between(1000, 2000)).EndCondition, orderResolver),
+            new[] { 51UL },
+            "proof row 155 composite scalar range");
+
+        IIndex currencyAmount = catalog.Indexes["prices"]["currencyAmount"].Composite<ulong>(C.Text("currency"), C.Int64("amountMinor")).Create();
+        ValidateGenericInsert(currencyAmount.Insert(Key.Of("USD", 1001L), 1931UL), "composition USD amount over threshold insert");
+        ValidateGenericInsert(currencyAmount.Insert(Key.Of("USD", 999L), 1932UL), "composition USD amount under threshold insert");
+        ValidateGenericInsert(currencyAmount.Insert(Key.Of("EUR", 2000L), 1933UL), "composition EUR amount insert");
+        Func<string, IIndex> priceResolver = indexName => indexName == "currencyAmount" ? currencyAmount : throw new KeyNotFoundException(indexName);
+        AssertSet(
+            UIDs(LibraDexCondition.ForGroup("prices").Index("currencyAmount").AsComposite.Where(
+                LibraDexCompositePart.String("currency").EqualTo("USD"),
+                LibraDexCompositePart.Scalar<long>("amountMinor").GreaterThan(1000L)).EndCondition, priceResolver),
+            new[] { 1931UL },
+            "proof row 193 composite caller-owned currency amount codec");
+
+        IIndex countryStateCity = catalog.Indexes["places"]["countryStateCity"].Composite<ulong>(C.Text("country"), C.Text("state"), C.Text("city")).Create();
+        ValidateGenericInsert(countryStateCity.Insert(Key.Of("US", "WA", "Seattle"), 54UL), "composition place US WA Seattle insert");
+        ValidateGenericInsert(countryStateCity.Insert(Key.Of("US", "OR", "Salem"), 55UL), "composition place US OR Salem insert");
+        ValidateGenericInsert(countryStateCity.Insert(Key.Of("CA", "BC", "Vancouver"), 56UL), "composition place CA BC Vancouver insert");
+        Func<string, IIndex> placeResolver = indexName => indexName == "countryStateCity" ? countryStateCity : throw new KeyNotFoundException(indexName);
+        AssertSet(
+            UIDs(LibraDexCondition.ForGroup("places").Index("countryStateCity").AsComposite.Where(
+                LibraDexCompositePart.String("country").EqualTo("US"),
+                LibraDexCompositePart.String("state").EqualTo("WA"),
+                LibraDexCompositePart.String("city").StartsWith("Sea")).EndCondition, placeResolver),
+            new[] { 54UL },
+            "proof row 156 composite multi-part");
+        AssertSet(
+            UIDs(LibraDexCondition.ForGroup("places").Index("countryStateCity").AsComposite.Where(
+                LibraDexCompositePart.String("city").StartsWith("Sea")).EndCondition, placeResolver),
+            new[] { 54UL },
+            "proof row 157 composite missing lead");
+
+        using LibraDexStringScalar8Index country = catalog.Indexes["demographics"]["country"].String.Create(stringKeys: StringKeys.Exact);
+        LibraDexIndex<int, ulong> demographicAge = catalog.Indexes["demographics"]["age"].Int32Keys<ulong>().Create();
+        ValidateGenericInsert(country.Insert("US", 71UL), "composition demographics country US insert");
+        ValidateGenericInsert(country.Insert("CA", 72UL), "composition demographics country CA insert");
+        ValidateGenericInsert(country.Insert("MX", 73UL), "composition demographics country MX insert");
+        ValidateGenericInsert(demographicAge.Insert(19, 71UL), "composition demographics age 19 insert");
+        ValidateGenericInsert(demographicAge.Insert(21, 72UL), "composition demographics age 21 insert");
+        ValidateGenericInsert(demographicAge.Insert(17, 73UL), "composition demographics age 17 insert");
+        Func<string, IIndex> demographicResolver = indexName => indexName switch
+        {
+            "country" => country,
+            "age" => demographicAge,
+            _ => throw new KeyNotFoundException(indexName)
+        };
+        LibraDexConditionEndCondition countries = LibraDexCondition.ForGroup("demographics").Index("country").AsString.InSet(new[] { "US", "CA" }).EndCondition;
+        AssertSet(
+            UIDs(LibraDexCondition.ForGroup("demographics").Group(countries).AND.Index("age").AsInt32.GreaterOrEqual(18).EndCondition, demographicResolver),
+            new[] { 71UL, 72UL },
+            "proof row 171 grouped country plus age");
+
+        LibraDexIndexShapeSpec rowCreatedShape = catalog.Indexes["rows"]["created"].Shape.Date<DateTime, ulong>(
+            DateKeys.ExactAndStructured,
+            keys: IndexKeys.NonUnique);
+        LibraDexIndexShapeSpec rowUpdatedShape = catalog.Indexes["rows"]["updated"].Shape.Date<DateTime, ulong>(
+            DateKeys.ExactAndStructured,
+            keys: IndexKeys.NonUnique);
+        IIndex rowCreated = catalog.Indexes.Create(rowCreatedShape);
+        IIndex rowUpdated = catalog.Indexes.Create(rowUpdatedShape);
+        LibraDexIndex<bool, ulong> rowDeleted = catalog.Indexes["rows"]["deleted"].Create<bool, ulong>();
+        DateTime today = DateTime.UtcNow.Date;
+        ValidateGenericInsert(rowDeleted.Insert(false, 1721UL), "composition row deleted false 1721 insert");
+        ValidateGenericInsert(rowDeleted.Insert(false, 1722UL), "composition row deleted false 1722 insert");
+        ValidateGenericInsert(rowDeleted.Insert(true, 1723UL), "composition row deleted true 1723 insert");
+        ValidateGenericInsert(rowDeleted.Insert(false, 1724UL), "composition row deleted false 1724 insert");
+        ValidateGenericInsert(rowCreated.Insert(today, 1721UL), "composition row created today 1721 insert");
+        ValidateGenericInsert(rowUpdated.Insert(today, 1722UL), "composition row updated today 1722 insert");
+        ValidateGenericInsert(rowCreated.Insert(today, 1723UL), "composition row created today deleted insert");
+        ValidateGenericInsert(rowCreated.Insert(today.AddDays(-3), 1724UL), "composition row old insert");
+        Func<string, IIndex> rowResolver = indexName => indexName switch
+        {
+            "created" => rowCreated,
+            "updated" => rowUpdated,
+            "deleted" => rowDeleted,
+            _ => throw new KeyNotFoundException(indexName)
+        };
+        LibraDexConditionEndCondition freshRows = LibraDexCondition.ForGroup("rows").Index("created").AsDate.IsToday().OR.Index("updated").AsDate.IsToday().EndCondition;
+        AssertSet(
+            UIDs(LibraDexCondition.ForGroup("rows").Index("deleted").AsBoolean.EqualTo(false).AND.Group(freshRows).EndCondition, rowResolver),
+            new[] { 1721UL, 1722UL },
+            "proof row 172 grouped deleted plus created/updated today");
+
+        using LibraDexStringScalar8Index invoiceType = catalog.Indexes["invoices"]["type"].String.Create(stringKeys: StringKeys.Exact);
+        LibraDexIndex<long, ulong> amountCents = catalog.Indexes["invoices"]["amountCents"].Int64Keys<ulong>().Create();
+        LibraDexIndex<int, ulong> overdue = catalog.Indexes["invoices"]["overdue"].Int32Keys<ulong>().Create();
+        ValidateGenericInsert(invoiceType.Insert("invoice", 81UL), "composition invoice type invoice 81 insert");
+        ValidateGenericInsert(invoiceType.Insert("invoice", 82UL), "composition invoice type invoice 82 insert");
+        ValidateGenericInsert(invoiceType.Insert("receipt", 83UL), "composition invoice type receipt 83 insert");
+        ValidateGenericInsert(amountCents.Insert(200000L, 81UL), "composition invoice amount 81 insert");
+        ValidateGenericInsert(amountCents.Insert(500L, 82UL), "composition invoice amount 82 insert");
+        ValidateGenericInsert(amountCents.Insert(200000L, 83UL), "composition invoice amount 83 insert");
+        ValidateGenericInsert(overdue.Insert(0, 81UL), "composition invoice overdue 81 insert");
+        ValidateGenericInsert(overdue.Insert(1, 82UL), "composition invoice overdue 82 insert");
+        ValidateGenericInsert(overdue.Insert(1, 83UL), "composition invoice overdue 83 insert");
+        Func<string, IIndex> invoiceResolver = indexName => indexName switch
+        {
+            "type" => invoiceType,
+            "amountCents" => amountCents,
+            "overdue" => overdue,
+            _ => throw new KeyNotFoundException(indexName)
+        };
+        LibraDexConditionEndCondition highOrOverdue = LibraDexCondition.ForGroup("invoices").Index("amountCents").AsInt64.GreaterThan(100000L).OR.Index("overdue").AsInt32.EqualTo(1).EndCondition;
+        AssertSet(
+            UIDs(LibraDexCondition.ForGroup("invoices").Index("type").AsString.EqualTo("invoice").AND.Group(highOrOverdue).EndCondition, invoiceResolver),
+            new[] { 81UL, 82UL },
+            "proof row 173 grouped invoice logic");
+
+        using LibraDexStringScalar8Index tenant = catalog.Indexes["security"]["tenant"].String.Create(stringKeys: StringKeys.Exact);
+        LibraDexIndex<int, ulong> failedLoginCount = catalog.Indexes["security"]["failedLoginCount"].Int32Keys<ulong>().Create();
+        LibraDexIndex<int, ulong> locked = catalog.Indexes["security"]["locked"].Int32Keys<ulong>().Create();
+        ValidateGenericInsert(tenant.Insert("T1", 61UL), "composition security tenant 61 insert");
+        ValidateGenericInsert(tenant.Insert("T1", 62UL), "composition security tenant 62 insert");
+        ValidateGenericInsert(tenant.Insert("T2", 63UL), "composition security tenant 63 insert");
+        ValidateGenericInsert(failedLoginCount.Insert(6, 61UL), "composition failed login 61 insert");
+        ValidateGenericInsert(failedLoginCount.Insert(1, 62UL), "composition failed login 62 insert");
+        ValidateGenericInsert(failedLoginCount.Insert(9, 63UL), "composition failed login 63 insert");
+        ValidateGenericInsert(locked.Insert(0, 61UL), "composition locked false 61 insert");
+        ValidateGenericInsert(locked.Insert(1, 62UL), "composition locked true 62 insert");
+        ValidateGenericInsert(locked.Insert(1, 63UL), "composition locked true 63 insert");
+        Func<string, IIndex> securityResolver = indexName => indexName switch
+        {
+            "tenant" => tenant,
+            "failedLoginCount" => failedLoginCount,
+            "locked" => locked,
+            _ => throw new KeyNotFoundException(indexName)
+        };
+        LibraDexConditionEndCondition risky = LibraDexCondition.ForGroup("security").Index("failedLoginCount").AsInt32.GreaterThan(5).OR.Index("locked").AsInt32.EqualTo(1).EndCondition;
+        AssertSet(
+            UIDs(LibraDexCondition.ForGroup("security").Index("tenant").AsString.EqualTo("T1").AND.Group(risky).EndCondition, securityResolver),
+            new[] { 61UL, 62UL },
+            "proof row 175 grouped security logic");
+
+        LibraDexIndex<int, long> groupStatus = catalog.Indexes["grouping"]["status"].Int32Keys<long>().Create();
+        LibraDexIndex<int, long> groupTenant = catalog.Indexes["grouping"]["tenant"].Int32Keys<long>().Create();
+        LibraDexIndex<int, long> groupEmail = catalog.Indexes["grouping"]["email"].Int32Keys<long>().Create();
+        LibraDexIndex<int, long> groupCategory = catalog.Indexes["grouping"]["category"].Int32Keys<long>().Create();
+        for (long id = 1; id <= 6; id++)
+        {
+            ValidateGenericInsert(groupStatus.Insert(1, id), $"composition grouping status {id} insert");
+        }
+
+        ValidateGenericInsert(groupTenant.Insert(100, 1L), "composition grouping tenant 100/1 insert");
+        ValidateGenericInsert(groupTenant.Insert(100, 2L), "composition grouping tenant 100/2 insert");
+        ValidateGenericInsert(groupTenant.Insert(200, 3L), "composition grouping tenant 200/3 insert");
+        ValidateGenericInsert(groupTenant.Insert(300, 4L), "composition grouping tenant 300/4 insert");
+        ValidateGenericInsert(groupEmail.Insert(10, 1L), "composition grouping email 10/1 insert");
+        ValidateGenericInsert(groupEmail.Insert(10, 2L), "composition grouping email 10/2 insert");
+        ValidateGenericInsert(groupEmail.Insert(20, 3L), "composition grouping email 20/3 insert");
+        ValidateGenericInsert(groupEmail.Insert(30, 4L), "composition grouping email 30/4 insert");
+        ValidateGenericInsert(groupCategory.Insert(5, 1L), "composition grouping category 5/1 insert");
+        ValidateGenericInsert(groupCategory.Insert(5, 2L), "composition grouping category 5/2 insert");
+        ValidateGenericInsert(groupCategory.Insert(5, 3L), "composition grouping category 5/3 insert");
+        ValidateGenericInsert(groupCategory.Insert(6, 4L), "composition grouping category 6/4 insert");
+        ValidateGenericInsert(groupCategory.Insert(6, 5L), "composition grouping category 6/5 insert");
+        ValidateGenericInsert(groupCategory.Insert(7, 6L), "composition grouping category 7/6 insert");
+        Func<string, IIndex> groupingResolver = indexName => indexName == "status" ? groupStatus : throw new KeyNotFoundException(indexName);
+        LibraDexConditionEndCondition allGrouping = LibraDexCondition.ForGroup("grouping").Index("status").AsInt32.EqualTo(1).EndCondition;
+        IReadOnlyDictionary<int, long> tenantCounts = allGrouping.Groups(groupingResolver).By(groupTenant).Counts();
+        IReadOnlyList<LibraDexGroup<int, long>> duplicateEmails = allGrouping.Groups(groupingResolver).By(groupEmail).Duplicates().ToList();
+        IReadOnlyList<LibraDexGroup<int, long>> singletonEmails = allGrouping.Groups(groupingResolver).By(groupEmail).Singletons().ToList();
+        IReadOnlyDictionary<int, long> tenantRepresentatives = allGrouping.Groups(groupingResolver).By(groupTenant).Representatives();
+        IReadOnlyList<LibraDexGroup<int, long>> topCategories = allGrouping.Groups(groupingResolver).By(groupCategory).OrderBy(LibraDexGroupOrder.CountDescending).Take(2).ToList();
+        if (tenantCounts[100] != 2 ||
+            tenantCounts[200] != 1 ||
+            duplicateEmails.Count != 1 ||
+            duplicateEmails[0].Key != 10 ||
+            singletonEmails.Count != 2 ||
+            !singletonEmails.Select(static group => group.Key).Order().SequenceEqual(new[] { 20, 30 }) ||
+            tenantRepresentatives[100] != 1L ||
+            tenantRepresentatives[200] != 3L ||
+            !topCategories.Select(static group => group.Key).SequenceEqual(new[] { 5, 6 }))
+        {
+            throw new InvalidDataException("Proof rows 205-208/210 grouping terminals did not return expected groups.");
+        }
+    }
+
+    private static void ValidateShelfMetadataContract()
+    {
+        Scalar8Scalar8Profile ss88Profile = Scalar8Scalar8Profile.Default32KiB;
+        byte[] ss88Bytes = new byte[ss88Profile.ShelfExtentSize];
+        Scalar8Scalar8 ss88 = new(ss88Bytes, ss88Profile);
+        ss88.Initialize();
+        _ = ss88.Insert(1, 11, allowDuplicateKeys: true);
+        Scalar8Scalar8ReadOnly ss88ReadOnly = ss88.AsReadOnly();
+        if (ss88.PhysicalItemCount != 1 ||
+            ss88.LiveItemCount != 1 ||
+            ss88.DeletedItemCount != 0 ||
+            ss88ReadOnly.PhysicalItemCount != 1 ||
+            ss88ReadOnly.LiveItemCount != 1 ||
+            Scalar8Scalar8Layout.DeletedSlotOffset != 0)
+        {
+            throw new InvalidDataException("SS8-8 shelf metadata contract did not expose compact live/physical counts.");
+        }
+
+        _ = ss88.MarkSlotRangeDeleted(0, 1);
+        ss88ReadOnly = ss88.AsReadOnly();
+        if (ss88.PhysicalItemCount != 1 ||
+            ss88.LiveItemCount != 0 ||
+            ss88.DeletedItemCount != 1 ||
+            ss88ReadOnly.PhysicalItemCount != 1 ||
+            ss88ReadOnly.LiveItemCount != 0 ||
+            ss88ReadOnly.DeletedItemCount != 1 ||
+            ss88.NormalizeDeletedSlotsForPublication() != 1 ||
+            ss88.PhysicalItemCount != 0 ||
+            ss88.LiveItemCount != 0 ||
+            ss88.DeletedItemCount != 0)
+        {
+            throw new InvalidDataException("SS8-8 shelf metadata contract did not expose tombstone live/deleted counts.");
+        }
+
+        Scalar16Scalar8Profile ss168Profile = Scalar16Scalar8Profile.Default32KiB;
+        byte[] ss168Bytes = new byte[ss168Profile.ShelfExtentSize];
+        Scalar16Scalar8 ss168 = new(ss168Bytes, ss168Profile);
+        ss168.Initialize();
+        _ = ss168.Insert(1, 2, 11, allowDuplicateKeys: true);
+        if (ss168.PhysicalItemCount != 1 ||
+            ss168.LiveItemCount != 1 ||
+            ss168.DeletedItemCount != 0 ||
+            ss168.AsReadOnly().LiveItemCount != 1 ||
+            Scalar16Scalar8Layout.DeletedSlotOffset != 0)
+        {
+            throw new InvalidDataException("SS16-8 shelf metadata contract did not expose compact live/physical counts.");
+        }
+
+        _ = ss168.MarkSlotRangeDeleted(0, 1);
+        if (ss168.PhysicalItemCount != 1 ||
+            ss168.LiveItemCount != 0 ||
+            ss168.DeletedItemCount != 1 ||
+            ss168.AsReadOnly().DeletedItemCount != 1 ||
+            ss168.NormalizeDeletedSlotsForPublication() != 1 ||
+            ss168.PhysicalItemCount != 0)
+        {
+            throw new InvalidDataException("SS16-8 shelf metadata contract did not expose tombstone live/deleted counts.");
+        }
+
+        Scalar8Scalar16Profile ss816Profile = Scalar8Scalar16Profile.Default32KiB;
+        byte[] ss816Bytes = new byte[ss816Profile.ShelfExtentSize];
+        Scalar8Scalar16 ss816 = new(ss816Bytes, ss816Profile);
+        ss816.Initialize();
+        _ = ss816.Insert(1, 11, 12, allowDuplicateKeys: true);
+        if (ss816.PhysicalItemCount != 1 ||
+            ss816.LiveItemCount != 1 ||
+            ss816.DeletedItemCount != 0 ||
+            ss816.AsReadOnly().LiveItemCount != 1 ||
+            Scalar8Scalar16Layout.DeletedSlotOffset != 0)
+        {
+            throw new InvalidDataException("SS8-16 shelf metadata contract did not expose compact live/physical counts.");
+        }
+
+        _ = ss816.MarkSlotRangeDeleted(0, 1);
+        if (ss816.PhysicalItemCount != 1 ||
+            ss816.LiveItemCount != 0 ||
+            ss816.DeletedItemCount != 1 ||
+            ss816.AsReadOnly().DeletedItemCount != 1 ||
+            ss816.NormalizeDeletedSlotsForPublication() != 1 ||
+            ss816.PhysicalItemCount != 0)
+        {
+            throw new InvalidDataException("SS8-16 shelf metadata contract did not expose tombstone live/deleted counts.");
+        }
+
+        Scalar16Scalar16Profile ss1616Profile = Scalar16Scalar16Profile.Default32KiB;
+        byte[] ss1616Bytes = new byte[ss1616Profile.ShelfExtentSize];
+        Scalar16Scalar16 ss1616 = new(ss1616Bytes, ss1616Profile);
+        ss1616.Initialize();
+        _ = ss1616.Insert(1, 2, 11, 12, allowDuplicateKeys: true);
+        if (ss1616.PhysicalItemCount != 1 ||
+            ss1616.LiveItemCount != 1 ||
+            ss1616.DeletedItemCount != 0 ||
+            ss1616.AsReadOnly().LiveItemCount != 1 ||
+            Scalar16Scalar16Layout.DeletedSlotOffset != 0)
+        {
+            throw new InvalidDataException("SS16-16 shelf metadata contract did not expose compact live/physical counts.");
+        }
+
+        _ = ss1616.MarkSlotRangeDeleted(0, 1);
+        if (ss1616.PhysicalItemCount != 1 ||
+            ss1616.LiveItemCount != 0 ||
+            ss1616.DeletedItemCount != 1 ||
+            ss1616.AsReadOnly().DeletedItemCount != 1 ||
+            ss1616.NormalizeDeletedSlotsForPublication() != 1 ||
+            ss1616.PhysicalItemCount != 0)
+        {
+            throw new InvalidDataException("SS16-16 shelf metadata contract did not expose tombstone live/deleted counts.");
+        }
+
+        Fixed32Scalar8Profile fs328Profile = Fixed32Scalar8Profile.Default32KiB;
+        byte[] fs328Bytes = new byte[fs328Profile.ShelfExtentSize];
+        Fixed32Scalar8 fs328 = new(fs328Bytes, fs328Profile);
+        fs328.Initialize();
+        _ = fs328.Insert(1, 2, 3, 4, 11, allowDuplicateKeys: true);
+        if (fs328.PhysicalItemCount != 1 ||
+            fs328.LiveItemCount != 1 ||
+            fs328.DeletedItemCount != 0 ||
+            fs328.AsReadOnly().LiveItemCount != 1 ||
+            Fixed32Scalar8Layout.DeletedSlotOffset != 0)
+        {
+            throw new InvalidDataException("FS32-8 shelf metadata contract did not expose compact live/physical counts.");
+        }
+
+        _ = fs328.MarkSlotRangeDeleted(0, 1);
+        if (fs328.PhysicalItemCount != 1 ||
+            fs328.LiveItemCount != 0 ||
+            fs328.DeletedItemCount != 1 ||
+            fs328.AsReadOnly().DeletedItemCount != 1 ||
+            fs328.NormalizeDeletedSlotsForPublication() != 1 ||
+            fs328.PhysicalItemCount != 0)
+        {
+            throw new InvalidDataException("FS32-8 shelf metadata contract did not expose tombstone live/deleted counts.");
+        }
+
+        Fixed32Scalar16Profile fs3216Profile = Fixed32Scalar16Profile.Default32KiB;
+        byte[] fs3216Bytes = new byte[fs3216Profile.ShelfExtentSize];
+        Fixed32Scalar16 fs3216 = new(fs3216Bytes, fs3216Profile);
+        fs3216.Initialize();
+        _ = fs3216.Insert(1, 2, 3, 4, 11, 12, allowDuplicateKeys: true);
+        if (fs3216.PhysicalItemCount != 1 ||
+            fs3216.LiveItemCount != 1 ||
+            fs3216.DeletedItemCount != 0 ||
+            fs3216.AsReadOnly().LiveItemCount != 1 ||
+            Fixed32Scalar16Layout.DeletedSlotOffset != 0)
+        {
+            throw new InvalidDataException("FS32-16 shelf metadata contract did not expose compact live/physical counts.");
+        }
+
+        _ = fs3216.MarkSlotRangeDeleted(0, 1);
+        if (fs3216.PhysicalItemCount != 1 ||
+            fs3216.LiveItemCount != 0 ||
+            fs3216.DeletedItemCount != 1 ||
+            fs3216.AsReadOnly().DeletedItemCount != 1 ||
+            fs3216.NormalizeDeletedSlotsForPublication() != 1 ||
+            fs3216.PhysicalItemCount != 0)
+        {
+            throw new InvalidDataException("FS32-16 shelf metadata contract did not expose tombstone live/deleted counts.");
+        }
+
+        byte[] key = Encoding.UTF8.GetBytes("alpha");
+        byte[] identity = Encoding.UTF8.GetBytes("identity");
+
+        byte[] vs8Bytes = new byte[VarKeyScalar8Profile.Default16KiB.ShelfExtentSize];
+        VarKeyScalar8Layout.Initialize(vs8Bytes, VarKeyScalar8Profile.Default16KiB);
+        if (!VarKeyScalar8MutableShelf.TryCreate(vs8Bytes, VarKeyScalar8Profile.Default16KiB, ownsBytes: false, rentSidecars: false, out VarKeyScalar8MutableShelf vs8) ||
+            vs8.InsertWithMutationHint(key, 11, true, 0, 4, out _) != VarKeyScalar8InsertResult.Inserted ||
+            vs8.PhysicalItemCount != 1 ||
+            vs8.LiveItemCount != 1 ||
+            vs8.DeletedItemCount != 0 ||
+            vs8.PayloadBytesUsed <= 0 ||
+            vs8.PayloadBytesLive != vs8.PayloadBytesUsed ||
+            vs8.PayloadBytesDeleted != 0)
+        {
+            throw new InvalidDataException("VS8 shelf metadata contract did not expose compact live/physical/payload counts.");
+        }
+
+        _ = vs8.MarkSlotRangeDeleted(0, 1);
+        if (vs8.PhysicalItemCount != 1 ||
+            vs8.LiveItemCount != 0 ||
+            vs8.DeletedItemCount != 1 ||
+            vs8.PayloadBytesDeleted <= 0 ||
+            vs8.PayloadBytesLive != 0 ||
+            vs8.NormalizeDeletedSlotsForPublication() != 1 ||
+            vs8.PhysicalItemCount != 0 ||
+            vs8.DeletedItemCount != 0 ||
+            vs8.PayloadBytesDeleted <= 0)
+        {
+            throw new InvalidDataException("VS8 shelf metadata contract did not expose slot-deleted and payload-deleted counts.");
+        }
+
+        byte[] vs8RepackBytes = new byte[VarKeyScalar8Profile.Default16KiB.ShelfExtentSize];
+        VarKeyScalar8Layout.Initialize(vs8RepackBytes, VarKeyScalar8Profile.Default16KiB);
+        if (!VarKeyScalar8MutableShelf.TryCreate(vs8RepackBytes, VarKeyScalar8Profile.Default16KiB, ownsBytes: false, rentSidecars: false, out VarKeyScalar8MutableShelf vs8Repack))
+        {
+            throw new InvalidDataException("VS8 repack shelf setup failed.");
+        }
+
+        for (int i = 0; i < 12; i++)
+        {
+            if (vs8Repack.InsertWithMutationHint(CreateVarKeyRepackHarnessKey(i), (ulong)i, true, 0, 4, out _) != VarKeyScalar8InsertResult.Inserted)
+            {
+                throw new InvalidDataException("VS8 repack shelf setup insert failed.");
+            }
+        }
+
+        int vs8PayloadBeforeRepack = vs8Repack.PayloadBytesUsed;
+        _ = vs8Repack.MarkSlotRangeDeleted(0, 8);
+        if (!vs8Repack.RepackPayloadIfWorthwhile(4096, 25) ||
+            vs8Repack.PhysicalItemCount != 4 ||
+            vs8Repack.DeletedItemCount != 0 ||
+            vs8Repack.PayloadBytesDeleted != 0 ||
+            vs8Repack.PayloadBytesUsed >= vs8PayloadBeforeRepack)
+        {
+            throw new InvalidDataException("VS8 payload repack did not compact orphaned record bytes after threshold crossing.");
+        }
+
+        byte[] vs16Bytes = new byte[VarKeyScalar16Profile.Default16KiB.ShelfExtentSize];
+        VarKeyScalar16Layout.Initialize(vs16Bytes, VarKeyScalar16Profile.Default16KiB);
+        if (!VarKeyScalar16MutableShelf.TryCreate(vs16Bytes, VarKeyScalar16Profile.Default16KiB, ownsBytes: false, rentSidecars: false, out VarKeyScalar16MutableShelf vs16) ||
+            vs16.InsertWithMutationHint(key, 11, 12, true, 0, 4, out _) != VarKeyScalar16InsertResult.Inserted ||
+            vs16.PhysicalItemCount != 1 ||
+            vs16.LiveItemCount != 1 ||
+            vs16.DeletedItemCount != 0 ||
+            vs16.PayloadBytesUsed <= 0 ||
+            vs16.PayloadBytesLive != vs16.PayloadBytesUsed ||
+            vs16.PayloadBytesDeleted != 0)
+        {
+            throw new InvalidDataException("VS16 shelf metadata contract did not expose compact live/physical/payload counts.");
+        }
+
+        _ = vs16.MarkSlotRangeDeleted(0, 1);
+        if (vs16.PhysicalItemCount != 1 ||
+            vs16.LiveItemCount != 0 ||
+            vs16.DeletedItemCount != 1 ||
+            vs16.PayloadBytesDeleted <= 0 ||
+            vs16.PayloadBytesLive != 0 ||
+            vs16.NormalizeDeletedSlotsForPublication() != 1 ||
+            vs16.PhysicalItemCount != 0 ||
+            vs16.DeletedItemCount != 0 ||
+            vs16.PayloadBytesDeleted <= 0)
+        {
+            throw new InvalidDataException("VS16 shelf metadata contract did not expose slot-deleted and payload-deleted counts.");
+        }
+
+        byte[] vs16RepackBytes = new byte[VarKeyScalar16Profile.Default16KiB.ShelfExtentSize];
+        VarKeyScalar16Layout.Initialize(vs16RepackBytes, VarKeyScalar16Profile.Default16KiB);
+        if (!VarKeyScalar16MutableShelf.TryCreate(vs16RepackBytes, VarKeyScalar16Profile.Default16KiB, ownsBytes: false, rentSidecars: false, out VarKeyScalar16MutableShelf vs16Repack))
+        {
+            throw new InvalidDataException("VS16 repack shelf setup failed.");
+        }
+
+        for (int i = 0; i < 12; i++)
+        {
+            if (vs16Repack.InsertWithMutationHint(CreateVarKeyRepackHarnessKey(i), (ulong)i, (ulong)(i + 1), true, 0, 4, out _) != VarKeyScalar16InsertResult.Inserted)
+            {
+                throw new InvalidDataException("VS16 repack shelf setup insert failed.");
+            }
+        }
+
+        int vs16PayloadBeforeRepack = vs16Repack.PayloadBytesUsed;
+        _ = vs16Repack.MarkSlotRangeDeleted(0, 8);
+        if (!vs16Repack.RepackPayloadIfWorthwhile(4096, 25) ||
+            vs16Repack.PhysicalItemCount != 4 ||
+            vs16Repack.DeletedItemCount != 0 ||
+            vs16Repack.PayloadBytesDeleted != 0 ||
+            vs16Repack.PayloadBytesUsed >= vs16PayloadBeforeRepack)
+        {
+            throw new InvalidDataException("VS16 payload repack did not compact orphaned record bytes after threshold crossing.");
+        }
+
+        byte[] vvBytes = new byte[VarKeyVarIdentityProfile.Default16KiB.ShelfExtentSize];
+        VarKeyVarIdentityLayout.Initialize(vvBytes, VarKeyVarIdentityProfile.Default16KiB);
+        if (!VarKeyVarIdentityMutableShelf.TryCreate(vvBytes, VarKeyVarIdentityProfile.Default16KiB, ownsBytes: false, rentSidecars: false, out VarKeyVarIdentityMutableShelf vv) ||
+            vv.InsertWithMutationHint(key, identity, true, 0, 4, out _) != VarKeyVarIdentityInsertResult.Inserted ||
+            vv.PhysicalItemCount != 1 ||
+            vv.LiveItemCount != 1 ||
+            vv.DeletedItemCount != 0 ||
+            vv.PayloadBytesUsed <= 0 ||
+            vv.PayloadBytesLive != vv.PayloadBytesUsed ||
+            vv.PayloadBytesDeleted != 0)
+        {
+            throw new InvalidDataException("VV shelf metadata contract did not expose compact live/physical/payload counts.");
+        }
+
+        _ = vv.MarkSlotRangeDeleted(0, 1);
+        if (vv.PhysicalItemCount != 1 ||
+            vv.LiveItemCount != 0 ||
+            vv.DeletedItemCount != 1 ||
+            vv.PayloadBytesDeleted <= 0 ||
+            vv.PayloadBytesLive != 0 ||
+            vv.NormalizeDeletedSlotsForPublication() != 1 ||
+            vv.PhysicalItemCount != 0 ||
+            vv.DeletedItemCount != 0 ||
+            vv.PayloadBytesDeleted <= 0)
+        {
+            throw new InvalidDataException("VV shelf metadata contract did not expose slot-deleted and payload-deleted counts.");
+        }
+
+        byte[] sv8Bytes = new byte[Scalar8VarIdentityProfile.Default16KiB.ShelfExtentSize];
+        Scalar8VarIdentityLayout.Initialize(sv8Bytes, Scalar8VarIdentityProfile.Default16KiB);
+        if (!Scalar8VarIdentityMutableShelfView.TryCreate(sv8Bytes, Scalar8VarIdentityProfile.Default16KiB, out Scalar8VarIdentityMutableShelfView sv8) ||
+            sv8.Insert(1, identity, true) != Scalar8VarIdentityInsertResult.Inserted ||
+            sv8.PhysicalItemCount != 1 ||
+            sv8.LiveItemCount != 1 ||
+            sv8.DeletedItemCount != 0 ||
+            sv8.PayloadBytesUsed <= 0 ||
+            sv8.PayloadBytesLive != sv8.PayloadBytesUsed ||
+            sv8.PayloadBytesDeleted != 0)
+        {
+            throw new InvalidDataException("SV8 shelf metadata contract did not expose compact live/physical/payload counts.");
+        }
+
+        _ = sv8.MarkSlotRangeDeleted(0, 1);
+        if (sv8.PhysicalItemCount != 1 ||
+            sv8.LiveItemCount != 0 ||
+            sv8.DeletedItemCount != 1 ||
+            sv8.PayloadBytesDeleted <= 0 ||
+            sv8.PayloadBytesLive != 0 ||
+            sv8.NormalizeDeletedSlotsForPublication() != 1 ||
+            sv8.PhysicalItemCount != 0 ||
+            sv8.DeletedItemCount != 0 ||
+            sv8.PayloadBytesDeleted <= 0)
+        {
+            throw new InvalidDataException("SV8 shelf metadata contract did not expose slot-deleted and payload-deleted counts.");
+        }
+
+        byte[] sv16Bytes = new byte[Scalar16VarIdentityProfile.Default16KiB.ShelfExtentSize];
+        Scalar16VarIdentityLayout.Initialize(sv16Bytes, Scalar16VarIdentityProfile.Default16KiB);
+        if (!Scalar16VarIdentityMutableShelfView.TryCreate(sv16Bytes, Scalar16VarIdentityProfile.Default16KiB, out Scalar16VarIdentityMutableShelfView sv16) ||
+            sv16.Insert(1, 2, identity, true) != Scalar16VarIdentityInsertResult.Inserted ||
+            sv16.PhysicalItemCount != 1 ||
+            sv16.LiveItemCount != 1 ||
+            sv16.DeletedItemCount != 0 ||
+            sv16.PayloadBytesUsed <= 0 ||
+            sv16.PayloadBytesLive != sv16.PayloadBytesUsed ||
+            sv16.PayloadBytesDeleted != 0)
+        {
+            throw new InvalidDataException("SV16 shelf metadata contract did not expose compact live/physical/payload counts.");
+        }
+
+        _ = sv16.MarkSlotRangeDeleted(0, 1);
+        if (sv16.PhysicalItemCount != 1 ||
+            sv16.LiveItemCount != 0 ||
+            sv16.DeletedItemCount != 1 ||
+            sv16.PayloadBytesDeleted <= 0 ||
+            sv16.PayloadBytesLive != 0 ||
+            sv16.NormalizeDeletedSlotsForPublication() != 1 ||
+            sv16.PhysicalItemCount != 0 ||
+            sv16.DeletedItemCount != 0 ||
+            sv16.PayloadBytesDeleted <= 0)
+        {
+            throw new InvalidDataException("SV16 shelf metadata contract did not expose slot-deleted and payload-deleted counts.");
+        }
+    }
+
+    private static byte[] CreateVarKeyRepackHarnessKey(int ordinal)
+    {
+        byte[] key = new byte[512];
+        key[0] = checked((byte)(0x20 + ordinal));
+        for (int i = 1; i < key.Length; i++)
+        {
+            key[i] = checked((byte)('A' + (ordinal % 26)));
+        }
+
+        return key;
+    }
+
+    /// <summary>
+    /// Runs the reusable whole-solution quality gate over correctness-critical harness scenarios.<br/>
+    /// The gate captures lightweight elapsed-time, allocation-delta, and output-file-size metrics without asserting performance thresholds yet, because this first pass establishes a repeatable baseline before adding fail policy.<br/>
+    /// </summary>
+    /// <param name="args">The command-line arguments; supports `--directory`, `--profile`, and `--keep-files`.</param>
+    /// <returns>Zero when every included quality scenario passes.</returns>
+    private static int RunSolutionQualitySanity(string[] args)
+    {
+        string directory = GetOption(args, "--directory", Path.Combine(@"T:\LibraDex", "solution-quality-sanity"));
+        string profile = GetOption(args, "--profile", "core");
+        bool keepFiles = HasFlag(args, "--keep-files");
+        Directory.CreateDirectory(directory);
+
+        QualityScenario[] scenarios = CreateQualityScenarios(profile);
+        List<QualityScenarioResult> results = new(scenarios.Length);
+        Stopwatch totalWatch = Stopwatch.StartNew();
+        Console.WriteLine($"solution quality sanity profile={profile} scenarios={scenarios.Length} directory={directory}");
+        for (int i = 0; i < scenarios.Length; i++)
+        {
+            QualityScenario scenario = scenarios[i];
+            string? target = scenario.FileName is null ? null : Path.Combine(directory, scenario.FileName);
+            DeleteQualityTarget(target, scenario.TargetOption);
+
+            string[] scenarioArgs = CreateQualityScenarioArgs(scenario, target);
+            Console.WriteLine($"quality start {i + 1}/{scenarios.Length} {scenario.Command}");
+            long allocatedBefore = GC.GetTotalAllocatedBytes(precise: true);
+            Stopwatch watch = Stopwatch.StartNew();
+            int exitCode = Run(scenarioArgs);
+            watch.Stop();
+            long allocatedAfter = GC.GetTotalAllocatedBytes(precise: true);
+            if (exitCode != 0)
+            {
+                throw new InvalidDataException($"Quality scenario '{scenario.Command}' failed with exit code {exitCode}.");
+            }
+
+            long fileBytes = GetQualityTargetBytes(target, scenario.TargetOption);
+            long allocatedBytes = Math.Max(0, allocatedAfter - allocatedBefore);
+            results.Add(new QualityScenarioResult(
+                scenario.Command,
+                watch.Elapsed,
+                allocatedBytes,
+                fileBytes,
+                target));
+            Console.WriteLine(string.Create(
+                CultureInfo.InvariantCulture,
+                $"quality ok {scenario.Command} elapsedMs={watch.Elapsed.TotalMilliseconds:F3} allocatedBytes={allocatedBytes} fileBytes={fileBytes}"));
+
+            if (!keepFiles)
+            {
+                DeleteQualityTarget(target, scenario.TargetOption);
+            }
+        }
+
+        totalWatch.Stop();
+        Console.WriteLine();
+        Console.WriteLine("| Scenario | Elapsed ms | Allocated MiB | File MiB |");
+        Console.WriteLine("|---|---:|---:|---:|");
+        for (int i = 0; i < results.Count; i++)
+        {
+            QualityScenarioResult result = results[i];
+            Console.WriteLine(string.Create(
+                CultureInfo.InvariantCulture,
+                $"| {result.Command} | {result.Elapsed.TotalMilliseconds:F3} | {result.AllocatedBytes / 1048576d:F3} | {result.FileBytes / 1048576d:F3} |"));
+        }
+
+        long totalAllocated = results.Sum(static result => result.AllocatedBytes);
+        long totalFileBytes = results.Sum(static result => result.FileBytes);
+        Console.WriteLine(string.Create(
+            CultureInfo.InvariantCulture,
+            $"solution-quality-sanity ok profile={profile} scenarios={results.Count} elapsedMs={totalWatch.Elapsed.TotalMilliseconds:F3} allocatedMiB={totalAllocated / 1048576d:F3} fileMiB={totalFileBytes / 1048576d:F3}"));
+        return 0;
+    }
+
+    /// <summary>
+    /// Creates the scenario matrix for one quality-gate profile.<br/>
+    /// The `core` profile favors broad correctness plus cheap size/timing telemetry; `extended` adds heavier routed and transform checks without making them the default developer loop.<br/>
+    /// </summary>
+    /// <param name="profile">The requested profile name.</param>
+    /// <returns>The quality scenarios in execution order.</returns>
+    private static QualityScenario[] CreateQualityScenarios(string profile)
+    {
+        QualityScenario[] core =
+        {
+            new("public-surface-api-sanity", "public-surface-api-sanity.lbdx"),
+            new("catalog-api-sanity", "catalog-api-sanity.lbdx"),
+            new("generic-index-api-sanity", "generic-index-api-sanity.lbdx"),
+            new("multi-index-same-identities-sanity", "multi-index-same-identities-sanity.lbdx"),
+            new("write-intent-sanity", "write-intent-sanity.lbdx"),
+            new("ss8-8-index-api-sanity", "ss8-8-index-api-sanity.lbdx"),
+            new("ss16-8-sanity", null),
+            new("ss8-16-sanity", null),
+            new("ss16-16-sanity", null),
+            new("fs32-8-sanity", null),
+            new("fs32-16-sanity", null),
+            new("vs8-index-api-sanity", "vs8-index-api-sanity.lbdx"),
+            new("vs16-index-api-sanity", "vs16-index-api-sanity.lbdx"),
+            new("vv-index-api-sanity", "vv-index-api-sanity.lbdx"),
+            new("sv8-index-api-sanity", "sv8-index-api-sanity.lbdx"),
+            new("sv16-index-api-sanity", "sv16-index-api-sanity.lbdx"),
+            new("varlen-queued-maintenance-sanity", "varlen-queued-maintenance-sanity", "--directory"),
+            new("varlen-optimizer-lifecycle-sanity", "varlen-optimizer-lifecycle-sanity", "--directory")
+        };
+
+        if (string.Equals(profile, "core", StringComparison.OrdinalIgnoreCase))
+        {
+            return core;
+        }
+
+        if (!string.Equals(profile, "extended", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException("Quality profile must be 'core' or 'extended'.", nameof(profile));
+        }
+
+        QualityScenario[] extended =
+        {
+            new("route-sanity", "route-sanity.lbdx"),
+            new("ss8-8-route-sanity", "ss8-8-route-sanity.lbdx"),
+            new("ss16-8-route-sanity", "ss16-8-route-sanity.lbdx"),
+            new("ss8-16-route-sanity", "ss8-16-route-sanity.lbdx"),
+            new("ss16-16-route-sanity", "ss16-16-route-sanity.lbdx"),
+            new("fs32-8-route-sanity", "fs32-8-route-sanity.lbdx"),
+            new("vs8-routed-sanity", "vs8-routed-sanity.lbdx"),
+            new("vs16-routed-sanity", "vs16-routed-sanity", "--directory"),
+            new("vv-routed-sanity", "vv-routed-sanity.lbdx"),
+            new("sv8-routed-sanity", "sv8-routed-sanity.lbdx"),
+            new("sv16-routed-sanity", "sv16-routed-sanity.lbdx"),
+            new("vs8-route-versioned-publish-sanity", "vs8-route-versioned-publish-sanity.lbdx"),
+            new("varlen-promoted-router-view-sanity", "varlen-promoted-router-view-sanity", "--directory")
+        };
+
+        return core.Concat(extended).ToArray();
+    }
+
+    /// <summary>
+    /// Builds the command-line argument array for one quality-gate scenario.<br/>
+    /// Scenarios with an output path receive the gate-controlled `--path` value so elapsed time and file size can be compared across repeatable fixture names.<br/>
+    /// </summary>
+    /// <param name="scenario">The quality scenario descriptor.</param>
+    /// <param name="path">The scenario output path, or null for pathless scenarios.</param>
+    /// <returns>The argument array passed back through the harness dispatcher.</returns>
+    private static string[] CreateQualityScenarioArgs(QualityScenario scenario, string? path)
+    {
+        List<string> args = new() { scenario.Command };
+        if (path is not null)
+        {
+            args.Add(scenario.TargetOption);
+            args.Add(path);
+        }
+
+        args.AddRange(scenario.ExtraArgs);
+        return args.ToArray();
+    }
+
+    /// <summary>
+    /// Deletes a quality-gate target before or after one scenario run.<br/>
+    /// The target option decides whether the target is a single file path or a scenario-owned directory under the gate directory.<br/>
+    /// </summary>
+    /// <param name="target">The target file or directory, or null when the scenario has no persisted target.</param>
+    /// <param name="targetOption">The command-line option used for the target.</param>
+    private static void DeleteQualityTarget(string? target, string targetOption)
+    {
+        if (target is null)
+        {
+            return;
+        }
+
+        if (string.Equals(targetOption, "--directory", StringComparison.OrdinalIgnoreCase))
+        {
+            if (Directory.Exists(target))
+            {
+                Directory.Delete(target, recursive: true);
+            }
+
+            return;
+        }
+
+        File.Delete(target);
+    }
+
+    /// <summary>
+    /// Calculates the persisted byte size for a quality-gate target.<br/>
+    /// File targets report one file length, while directory targets sum all files created below the scenario-owned directory.<br/>
+    /// </summary>
+    /// <param name="target">The target file or directory, or null when the scenario has no persisted target.</param>
+    /// <param name="targetOption">The command-line option used for the target.</param>
+    /// <returns>The total persisted bytes observed after the scenario completes.</returns>
+    private static long GetQualityTargetBytes(string? target, string targetOption)
+    {
+        if (target is null)
+        {
+            return 0;
+        }
+
+        if (string.Equals(targetOption, "--directory", StringComparison.OrdinalIgnoreCase))
+        {
+            return Directory.Exists(target)
+                ? Directory.EnumerateFiles(target, "*", SearchOption.AllDirectories).Sum(static file => new FileInfo(file).Length)
+                : 0;
+        }
+
+        return File.Exists(target) ? new FileInfo(target).Length : 0;
+    }
+
+    /// <summary>
+    /// Tests whether a command-line flag is present.<br/>
+    /// Flags are matched case-insensitively so harness scripts can remain tolerant of PowerShell casing habits.<br/>
+    /// </summary>
+    /// <param name="args">The command-line arguments.</param>
+    /// <param name="name">The flag name to find.</param>
+    /// <returns><see langword="true"/> when the flag is present.</returns>
+    private static bool HasFlag(string[] args, string name)
+    {
+        return args.Any(argument => string.Equals(argument, name, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private readonly record struct QualityScenario(string Command, string? FileName, string TargetOption = "--path", params string[] ExtraArgs);
+
+    private readonly record struct QualityScenarioResult(
+        string Command,
+        TimeSpan Elapsed,
+        long AllocatedBytes,
+        long FileBytes,
+        string? Path);
+
+    private sealed class ClassificationOnlyIndex : IIndex
+    {
+        private readonly LibraDexIndexShapeSpec shape;
+        private readonly string group;
+
+        internal ClassificationOnlyIndex(LibraDexIndexShapeSpec shape, string? groupOverride = null)
+        {
+            this.shape = shape;
+            group = groupOverride ?? shape.Group;
+        }
+
+        public string Name => shape.Name;
+
+        public string Group => group;
+
+        public Type KeyType => shape.KeyType;
+
+        public Type IdentityType => shape.IdentityType;
+
+        public IndexKeys KeyContract => shape.KeyContract;
+
+        public CatalogIndexKeyFamily KeyFamily => shape.KeyFamily;
+
+        public CatalogIndexIdentityFamily IdentityFamily => shape.IdentityFamily;
+
+        public LibraDexIndexShapeSpec? LogicalShape => shape;
+
+        public LibraDexGenericInsertResult Insert(object key, object identity)
+        {
+            throw new NotSupportedException("Classification-only indexes do not insert.");
+        }
+
+        public LibraDexPreparedObjectSet PrepareInSet(IEnumerable<object> keys)
+        {
+            throw new NotSupportedException("Classification-only indexes do not prepare membership sets.");
+        }
     }
 
     /// <summary>
@@ -8768,7 +13800,6 @@ internal static class RawHarness
         ulong[] typedIdentities = new ulong[4];
         using (UnsignedScalar8Scalar8Index typed = Indexes.SS88.Unsigned.Create(
             backingKind: DataKernelBackingKind.Memory,
-            slotIndex: 0,
             name: "write-intent-typed",
             options: options,
             developerMetadata: CreateDesignPerfMetadata(914),
@@ -8793,7 +13824,6 @@ internal static class RawHarness
         long[] genericIdentities = new long[4];
         using (LibraDexIndex<long, long> generic = Indexes.Create<long, long>(
             backingKind: DataKernelBackingKind.Memory,
-            slotIndex: 1,
             name: "write-intent-generic",
             options: options,
             developerMetadata: CreateDesignPerfMetadata(915),
@@ -8889,7 +13919,7 @@ internal static class RawHarness
         File.Delete(path);
         long[] keys = new long[itemCount];
         long[] identities = new long[itemCount];
-        using LibraDexIndex<long, long> index = Indexes.CreateOrOpen<long, long>(path, DataKernelBackingKind.File, slotIndex: 0, name: "ss8-8-reader", options: options, developerMetadata: CreateDesignPerfMetadata(940), telemetryOptions: DataKernelTelemetryOptions.EnabledOptions);
+        using LibraDexIndex<long, long> index = Indexes.CreateOrOpen<long, long>(path, DataKernelBackingKind.File, name: "ss8-8-reader", options: options, developerMetadata: CreateDesignPerfMetadata(940), telemetryOptions: DataKernelTelemetryOptions.EnabledOptions);
         using (LibraDexBatch<long, long> batch = index.BeginBatch())
         {
             for (int i = 0; i < itemCount; i++)
@@ -8909,7 +13939,7 @@ internal static class RawHarness
     {
         File.Delete(path);
         byte[][] keys = CreateFixedReaderByteKeys(itemCount, width: 16);
-        using LibraDexIndex<byte[], long> index = Indexes.CreateOrOpen<byte[], long>(path, DataKernelBackingKind.File, slotIndex: 0, name: "ss16-8-reader", keyWidth: LibraDexScalarWidth.Bytes16, options: options, developerMetadata: CreateDesignPerfMetadata(941), telemetryOptions: DataKernelTelemetryOptions.EnabledOptions);
+        using LibraDexIndex<byte[], long> index = Indexes.CreateOrOpen<byte[], long>(path, DataKernelBackingKind.File, name: "ss16-8-reader", keyWidth: LibraDexScalarWidth.Bytes16, options: options, developerMetadata: CreateDesignPerfMetadata(941), telemetryOptions: DataKernelTelemetryOptions.EnabledOptions);
         using (LibraDexBatch<byte[], long> batch = index.BeginBatch())
         {
             for (int i = 0; i < itemCount; i++)
@@ -8927,7 +13957,7 @@ internal static class RawHarness
     {
         File.Delete(path);
         long[] keys = new long[itemCount];
-        using LibraDexIndex<long, Guid> index = Indexes.CreateOrOpen<long, Guid>(path, DataKernelBackingKind.File, slotIndex: 0, name: "ss8-16-reader", options: options, developerMetadata: CreateDesignPerfMetadata(942), telemetryOptions: DataKernelTelemetryOptions.EnabledOptions);
+        using LibraDexIndex<long, Guid> index = Indexes.CreateOrOpen<long, Guid>(path, DataKernelBackingKind.File, name: "ss8-16-reader", options: options, developerMetadata: CreateDesignPerfMetadata(942), telemetryOptions: DataKernelTelemetryOptions.EnabledOptions);
         using (LibraDexBatch<long, Guid> batch = index.BeginBatch())
         {
             for (int i = 0; i < itemCount; i++)
@@ -8946,7 +13976,7 @@ internal static class RawHarness
     {
         File.Delete(path);
         byte[][] keys = CreateFixedReaderByteKeys(itemCount, width: 16);
-        using LibraDexIndex<byte[], Guid> index = Indexes.CreateOrOpen<byte[], Guid>(path, DataKernelBackingKind.File, slotIndex: 0, name: "ss16-16-reader", keyWidth: LibraDexScalarWidth.Bytes16, options: options, developerMetadata: CreateDesignPerfMetadata(943), telemetryOptions: DataKernelTelemetryOptions.EnabledOptions);
+        using LibraDexIndex<byte[], Guid> index = Indexes.CreateOrOpen<byte[], Guid>(path, DataKernelBackingKind.File, name: "ss16-16-reader", keyWidth: LibraDexScalarWidth.Bytes16, options: options, developerMetadata: CreateDesignPerfMetadata(943), telemetryOptions: DataKernelTelemetryOptions.EnabledOptions);
         using (LibraDexBatch<byte[], Guid> batch = index.BeginBatch())
         {
             for (int i = 0; i < itemCount; i++)
@@ -8964,7 +13994,7 @@ internal static class RawHarness
     {
         File.Delete(path);
         byte[][] keys = CreateFixedReaderByteKeys(itemCount, width: 32);
-        using LibraDexIndex<byte[], long> index = Indexes.CreateOrOpen<byte[], long>(path, DataKernelBackingKind.File, slotIndex: 0, name: "fs32-8-reader", keyWidth: LibraDexScalarWidth.Bytes32, options: options, developerMetadata: CreateDesignPerfMetadata(944), telemetryOptions: DataKernelTelemetryOptions.EnabledOptions);
+        using LibraDexIndex<byte[], long> index = Indexes.CreateOrOpen<byte[], long>(path, DataKernelBackingKind.File, name: "fs32-8-reader", keyWidth: LibraDexScalarWidth.Bytes32, options: options, developerMetadata: CreateDesignPerfMetadata(944), telemetryOptions: DataKernelTelemetryOptions.EnabledOptions);
         using (LibraDexBatch<byte[], long> batch = index.BeginBatch())
         {
             for (int i = 0; i < itemCount; i++)
@@ -8982,7 +14012,7 @@ internal static class RawHarness
     {
         File.Delete(path);
         byte[][] keys = CreateFixedReaderByteKeys(itemCount, width: 32);
-        using LibraDexIndex<byte[], Guid> index = Indexes.CreateOrOpen<byte[], Guid>(path, DataKernelBackingKind.File, slotIndex: 0, name: "fs32-16-reader", keyWidth: LibraDexScalarWidth.Bytes32, options: options, developerMetadata: CreateDesignPerfMetadata(945), telemetryOptions: DataKernelTelemetryOptions.EnabledOptions);
+        using LibraDexIndex<byte[], Guid> index = Indexes.CreateOrOpen<byte[], Guid>(path, DataKernelBackingKind.File, name: "fs32-16-reader", keyWidth: LibraDexScalarWidth.Bytes32, options: options, developerMetadata: CreateDesignPerfMetadata(945), telemetryOptions: DataKernelTelemetryOptions.EnabledOptions);
         using (LibraDexBatch<byte[], Guid> batch = index.BeginBatch())
         {
             for (int i = 0; i < itemCount; i++)
@@ -9326,7 +14356,6 @@ internal static class RawHarness
         File.Delete(path);
         using (Scalar8VarIdentityIndex index = Indexes.SV8.Create(
             path,
-            slotIndex: 0,
             name: "sv8-buffer-perf",
             maxIdentityLength: 1024,
             options: options,
@@ -9365,7 +14394,6 @@ internal static class RawHarness
         File.Delete(path);
         using (Scalar16VarIdentityIndex index = Indexes.SV16.Create(
             path,
-            slotIndex: 0,
             name: "sv16-buffer-perf",
             maxIdentityLength: 1024,
             options: options,
@@ -9405,7 +14433,6 @@ internal static class RawHarness
         File.Delete(path);
         using (VarKeyVarIdentityIndex index = Indexes.VV.Create(
             path,
-            slotIndex: 0,
             name: "vv-buffer-perf",
             maxKeyLength: 1024,
             maxIdentityLength: 1024,
@@ -9629,6 +14656,97 @@ internal static class RawHarness
         {
             throw new InvalidDataException($"Generic API sanity failed to insert during {scenario}.");
         }
+    }
+
+    private static byte[] CreateTypedBinaryKey(int number, DateTime dateTime, string text)
+    {
+        if (Encoding.UTF8.GetByteCount(text) != 4)
+        {
+            throw new ArgumentException("Typed binary harness keys require exactly four UTF-8 bytes.", nameof(text));
+        }
+
+        byte[] key = new byte[16];
+        BinaryPrimitives.WriteInt32LittleEndian(key.AsSpan(0, 4), number);
+        BinaryPrimitives.WriteInt64LittleEndian(key.AsSpan(4, 8), dateTime.Ticks);
+        _ = Encoding.UTF8.GetBytes(text, key.AsSpan(12, 4));
+        return key;
+    }
+
+    private static byte[] CreateDecimalBinaryKey(decimal value)
+    {
+        byte[] key = new byte[16];
+        decimal local = value;
+        System.Runtime.InteropServices.MemoryMarshal.Write(key, in local);
+        return key;
+    }
+
+    private static byte[] CreateInt128BinaryKey(Int128 value)
+    {
+        byte[] key = new byte[16];
+        Int128 local = value;
+        System.Runtime.InteropServices.MemoryMarshal.Write(key, in local);
+        return key;
+    }
+
+    private static byte[] CreateUInt128BinaryKey(UInt128 value)
+    {
+        byte[] key = new byte[16];
+        UInt128 local = value;
+        System.Runtime.InteropServices.MemoryMarshal.Write(key, in local);
+        return key;
+    }
+
+    private static byte[] CreateDateTimeOffsetBinaryKey(DateTimeOffset value)
+    {
+        byte[] key = new byte[16];
+        BinaryPrimitives.WriteInt64LittleEndian(key.AsSpan(0, 8), value.Ticks);
+        BinaryPrimitives.WriteInt64LittleEndian(key.AsSpan(8, 8), value.Offset.Ticks);
+        return key;
+    }
+
+    private static byte[] CreateMixedDateTimeBinaryKey(DateOnly date, TimeOnly time, string ascii)
+    {
+        if (Encoding.ASCII.GetByteCount(ascii) != 4)
+        {
+            throw new ArgumentException("Mixed binary harness keys require exactly four ASCII bytes.", nameof(ascii));
+        }
+
+        byte[] key = new byte[16];
+        BinaryPrimitives.WriteInt32LittleEndian(key.AsSpan(0, 4), date.DayNumber);
+        BinaryPrimitives.WriteInt64LittleEndian(key.AsSpan(4, 8), time.Ticks);
+        _ = Encoding.ASCII.GetBytes(ascii, key.AsSpan(12, 4));
+        return key;
+    }
+
+    private static byte[] CreateEncodedTextBinaryKey()
+    {
+        byte[] key = new byte[16];
+        _ = Encoding.Latin1.GetBytes("cafe", key.AsSpan(0, 4));
+        _ = Encoding.Unicode.GetBytes("OK", key.AsSpan(4, 4));
+        BinaryPrimitives.WriteInt32LittleEndian(key.AsSpan(8, 4), 'A');
+        _ = Encoding.Unicode.GetBytes("Z", key.AsSpan(12, 2));
+        return key;
+    }
+
+    private static byte[] CreateCustomEncodedTextBinaryKey(Encoding encoding, string text)
+    {
+        byte[] key = new byte[16];
+        byte[] encoded = encoding.GetBytes(text);
+        if (encoded.Length > key.Length)
+        {
+            throw new ArgumentException("Custom encoded text fixture must fit in the fixed 16-byte key.", nameof(text));
+        }
+
+        encoded.CopyTo(key.AsSpan());
+        return key;
+    }
+
+    private static byte[] CreateFloatingBinaryKey(float single, double value)
+    {
+        byte[] key = new byte[16];
+        BinaryPrimitives.WriteInt32LittleEndian(key.AsSpan(0, 4), BitConverter.SingleToInt32Bits(single));
+        BinaryPrimitives.WriteInt64LittleEndian(key.AsSpan(4, 8), BitConverter.DoubleToInt64Bits(value));
+        return key;
     }
 
     /// <summary>
@@ -10059,7 +15177,35 @@ internal static class RawHarness
             }
         }
 
-        Console.WriteLine($"sv8-routed-sanity ok items={itemCount} duplicateModulo={duplicateModulo} identityLength={identityLength} grows={growCount} splits={splitCount} duplicateRunOverflows={duplicateRunOverflowCount} rangeCount={identityCount} exactCount={exactCount}");
+        bool deletedExact = reopened.DeleteScalar8VarIdentityExactTuple(rootOffset, identityLength, lower, CreateScalar8VarIdentity(0, identityLength));
+        if (!deletedExact)
+        {
+            throw new InvalidDataException("Routed SV8 exact tuple delete did not delete the expected tuple.");
+        }
+
+        using (Scalar8VarIdentityRangeReader afterExactDeleteReader = reopened.OpenScalar8VarIdentityRangeReader(rootOffset, identityLength, lower, lower))
+        {
+            if (afterExactDeleteReader.Count != exactCount - 1)
+            {
+                throw new InvalidDataException($"Routed SV8 exact tuple delete left {afterExactDeleteReader.Count} rows for the exact key; expected {exactCount - 1}.");
+            }
+        }
+
+        long rangeDeleted = reopened.DeleteScalar8VarIdentityKeyRange(rootOffset, identityLength, lower, upper);
+        if (rangeDeleted != expected - 1)
+        {
+            throw new InvalidDataException($"Routed SV8 range delete removed {rangeDeleted}; expected {expected - 1} after the exact delete.");
+        }
+
+        using (Scalar8VarIdentityRangeReader afterRangeDeleteReader = reopened.OpenScalar8VarIdentityRangeReader(rootOffset, identityLength, lower, upper))
+        {
+            if (afterRangeDeleteReader.Count != 0)
+            {
+                throw new InvalidDataException($"Routed SV8 range delete left {afterRangeDeleteReader.Count} rows in the deleted range.");
+            }
+        }
+
+        Console.WriteLine($"sv8-routed-sanity ok items={itemCount} duplicateModulo={duplicateModulo} identityLength={identityLength} grows={growCount} splits={splitCount} duplicateRunOverflows={duplicateRunOverflowCount} rangeCount={identityCount} exactCount={exactCount} rangeDeleted={rangeDeleted}");
         return 0;
     }
 
@@ -10089,7 +15235,6 @@ internal static class RawHarness
         int expected = CountScalar8VarIdentityKeyRange(itemCount, duplicateModulo, 0, Math.Min(2, duplicateModulo - 1));
         using (Scalar8VarIdentityIndex index = Indexes.SV8.Create(
             path,
-            slotIndex: 0,
             name: "sv8-api",
             maxIdentityLength: 1024,
             options: options,
@@ -10152,7 +15297,6 @@ internal static class RawHarness
         long checksum = 0;
         using (Scalar8VarIdentityIndex reopened = Indexes.SV8.Open(
             path,
-            slotIndex: 0,
             maxIdentityLength: 1024,
             options: options,
             telemetryOptions: DataKernelTelemetryOptions.EnabledOptions))
@@ -10250,11 +15394,27 @@ internal static class RawHarness
             {
                 throw new InvalidDataException("Public SV8 identity buffer did not match streaming reader results.");
             }
+
+            if (!reopened.DeleteExactTuple(lower, CreateScalar8VarIdentity(0, identityLength)))
+            {
+                throw new InvalidDataException("Internal SV8 exact tuple delete did not remove the expected tuple.");
+            }
+
+            long rangeDeleted = reopened.DeleteRange(lower, upper);
+            if (rangeDeleted != expected - 1)
+            {
+                throw new InvalidDataException($"Internal SV8 range delete removed {rangeDeleted}; expected {expected - 1} after exact delete.");
+            }
+
+            using Scalar8VarIdentityRangeReader afterDeleteReader = reopened.OpenRangeReader(lower, upper);
+            if (afterDeleteReader.Count != 0)
+            {
+                throw new InvalidDataException($"Internal SV8 range delete left {afterDeleteReader.Count} rows in the deleted range.");
+            }
         }
 
         using (Scalar8VarIdentityIndex openedAgain = Indexes.SV8.CreateOrOpen(
             path,
-            slotIndex: 0,
             maxIdentityLength: 1024,
             options: options,
             telemetryOptions: DataKernelTelemetryOptions.EnabledOptions))
@@ -10892,7 +16052,36 @@ internal static class RawHarness
             throw new InvalidDataException($"Routed SV16 range read returned {identityCount}; expected {expected}.");
         }
 
-        Console.WriteLine($"sv16-routed-sanity ok items={itemCount} duplicateModulo={duplicateModulo} identityLength={identityLength} grows={growCount} splits={splitCount} duplicateRunOverflows={duplicateRunOverflowCount} rangeCount={identityCount}");
+        bool deletedExact = reopened.DeleteScalar16VarIdentityExactTuple(rootOffset, identityLength, lowerHigh, lowerLow, CreateScalar8VarIdentity(0, identityLength));
+        if (!deletedExact)
+        {
+            throw new InvalidDataException("Routed SV16 exact tuple delete did not delete the expected tuple.");
+        }
+
+        using (Scalar16VarIdentityRangeReader afterExactDeleteReader = reopened.OpenScalar16VarIdentityRangeReader(rootOffset, identityLength, lowerHigh, lowerLow, lowerHigh, lowerLow))
+        {
+            int exactExpected = CountScalar8VarIdentityKeyRange(itemCount, duplicateModulo, 0, 0) - 1;
+            if (afterExactDeleteReader.Count != exactExpected)
+            {
+                throw new InvalidDataException($"Routed SV16 exact tuple delete left {afterExactDeleteReader.Count} rows for the exact key; expected {exactExpected}.");
+            }
+        }
+
+        long rangeDeleted = reopened.DeleteScalar16VarIdentityKeyRange(rootOffset, identityLength, lowerHigh, lowerLow, upperHigh, upperLow);
+        if (rangeDeleted != expected - 1)
+        {
+            throw new InvalidDataException($"Routed SV16 range delete removed {rangeDeleted}; expected {expected - 1} after the exact delete.");
+        }
+
+        using (Scalar16VarIdentityRangeReader afterRangeDeleteReader = reopened.OpenScalar16VarIdentityRangeReader(rootOffset, identityLength, lowerHigh, lowerLow, upperHigh, upperLow))
+        {
+            if (afterRangeDeleteReader.Count != 0)
+            {
+                throw new InvalidDataException($"Routed SV16 range delete left {afterRangeDeleteReader.Count} rows in the deleted range.");
+            }
+        }
+
+        Console.WriteLine($"sv16-routed-sanity ok items={itemCount} duplicateModulo={duplicateModulo} identityLength={identityLength} grows={growCount} splits={splitCount} duplicateRunOverflows={duplicateRunOverflowCount} rangeCount={identityCount} rangeDeleted={rangeDeleted}");
         return 0;
     }
 
@@ -10922,7 +16111,6 @@ internal static class RawHarness
         int expected = CountScalar8VarIdentityKeyRange(itemCount, duplicateModulo, 0, Math.Min(2, duplicateModulo - 1));
         using (Scalar16VarIdentityIndex index = Indexes.SV16.Create(
             path,
-            slotIndex: 0,
             name: "sv16-api",
             maxIdentityLength: 1024,
             options: options,
@@ -10985,7 +16173,6 @@ internal static class RawHarness
         long checksum = 0;
         using (Scalar16VarIdentityIndex reopened = Indexes.SV16.Open(
             path,
-            slotIndex: 0,
             maxIdentityLength: 1024,
             options: options,
             telemetryOptions: DataKernelTelemetryOptions.EnabledOptions))
@@ -11083,11 +16270,27 @@ internal static class RawHarness
             {
                 throw new InvalidDataException("Public SV16 identity buffer did not match streaming reader results.");
             }
+
+            if (!reopened.DeleteExactTuple(lowerHigh, lowerLow, CreateScalar8VarIdentity(0, identityLength)))
+            {
+                throw new InvalidDataException("Internal SV16 exact tuple delete did not remove the expected tuple.");
+            }
+
+            long rangeDeleted = reopened.DeleteRange(lowerHigh, lowerLow, upperHigh, upperLow);
+            if (rangeDeleted != expected - 1)
+            {
+                throw new InvalidDataException($"Internal SV16 range delete removed {rangeDeleted}; expected {expected - 1} after exact delete.");
+            }
+
+            using Scalar16VarIdentityRangeReader afterDeleteReader = reopened.OpenRangeReader(lowerHigh, lowerLow, upperHigh, upperLow);
+            if (afterDeleteReader.Count != 0)
+            {
+                throw new InvalidDataException($"Internal SV16 range delete left {afterDeleteReader.Count} rows in the deleted range.");
+            }
         }
 
         using (Scalar16VarIdentityIndex openedAgain = Indexes.SV16.CreateOrOpen(
             path,
-            slotIndex: 0,
             maxIdentityLength: 1024,
             options: options,
             telemetryOptions: DataKernelTelemetryOptions.EnabledOptions))
@@ -11485,7 +16688,7 @@ internal static class RawHarness
     /// <returns>Zero when the shelf primitive validates.</returns>
     private static int RunVarKeyVarIdentityShelfSanity(string[] args)
     {
-        int itemCount = GetIntOption(args, "--items", 1000);
+        int itemCount = GetIntOption(args, "--items", 1500);
         int keyLength = GetIntOption(args, "--key-length", 48);
         int identityLength = GetIntOption(args, "--identity-length", 48);
         int prefixCount = GetIntOption(args, "--prefix-count", 8);
@@ -11713,7 +16916,36 @@ internal static class RawHarness
                 checksum += ChecksumBytes(reader.CurrentIdentity);
             }
 
-            Console.WriteLine($"vv-routed-sanity ok path={path} items={itemCount} keyLength={keyLength} identityLength={identityLength} prefixCount={prefixCount} precreatePrefixCount={precreatePrefixCount} initialShelfKiB={initialShelfKiB} writeIntent={DescribeWriteIntent(writeIntent)} lazyRootPrefixes={lazyRootPrefixes} lazyCreates={lazyCreateCount} growths={growCount} transforms={transformCount} rangeCount={identityCount} checksum={checksum}");
+            byte[] exactKey = CreateVarKeyScalar8Key(0, keyLength, prefixCount);
+            bool deletedExact = reopened.DeleteVarKeyVarIdentityExactTuple(rootOffset, maxKeyLength: 1024, maxIdentityLength: 1024, exactKey, CreateScalar8VarIdentity(0, identityLength));
+            if (!deletedExact)
+            {
+                throw new InvalidDataException("Routed VV exact tuple delete did not delete the expected tuple.");
+            }
+
+            using (VarKeyVarIdentityRangeReader afterExactDeleteReader = reopened.OpenVarKeyVarIdentityRangeReader(rootOffset, 1024, 1024, exactKey, exactKey))
+            {
+                if (afterExactDeleteReader.Count != 0)
+                {
+                    throw new InvalidDataException($"Routed VV exact tuple delete left {afterExactDeleteReader.Count} rows for the exact key.");
+                }
+            }
+
+            long rangeDeleted = reopened.DeleteVarKeyVarIdentityKeyRange(rootOffset, maxKeyLength: 1024, maxIdentityLength: 1024, lower, upper);
+            if (rangeDeleted != expected - 1)
+            {
+                throw new InvalidDataException($"Routed VV range delete removed {rangeDeleted}; expected {expected - 1} after the exact delete.");
+            }
+
+            using (VarKeyVarIdentityRangeReader afterRangeDeleteReader = reopened.OpenVarKeyVarIdentityRangeReader(rootOffset, 1024, 1024, lower, upper))
+            {
+                if (afterRangeDeleteReader.Count != 0)
+                {
+                    throw new InvalidDataException($"Routed VV range delete left {afterRangeDeleteReader.Count} rows in the deleted range.");
+                }
+            }
+
+            Console.WriteLine($"vv-routed-sanity ok path={path} items={itemCount} keyLength={keyLength} identityLength={identityLength} prefixCount={prefixCount} precreatePrefixCount={precreatePrefixCount} initialShelfKiB={initialShelfKiB} writeIntent={DescribeWriteIntent(writeIntent)} lazyRootPrefixes={lazyRootPrefixes} lazyCreates={lazyCreateCount} growths={growCount} transforms={transformCount} rangeCount={identityCount} rangeDeleted={rangeDeleted} checksum={checksum}");
         }
 
         return 0;
@@ -11830,7 +17062,6 @@ internal static class RawHarness
         long deferredCommitRequests;
         using (VarKeyVarIdentityIndex index = Indexes.VV.Create(
             path,
-            slotIndex: 0,
             name: "vv-api",
             maxKeyLength: 1024,
             maxIdentityLength: 1024,
@@ -11895,7 +17126,6 @@ internal static class RawHarness
 
         using (VarKeyVarIdentityIndex reopened = Indexes.VV.Open(
             path,
-            slotIndex: 0,
             maxKeyLength: 1024,
             maxIdentityLength: 1024,
             options: options,
@@ -12109,12 +17339,29 @@ internal static class RawHarness
                 throw new InvalidDataException("Public VV tuple buffer did not match streaming reader checksums.");
             }
 
+            byte[] exactDeleteKey = CreateVarKeyScalar8Key(0, keyLength, prefixCount);
+            if (!reopened.DeleteExactTuple(exactDeleteKey, CreateScalar8VarIdentity(0, identityLength)))
+            {
+                throw new InvalidDataException("Internal VV exact tuple delete did not remove the expected tuple.");
+            }
+
+            long rangeDeleted = reopened.DeleteRange(lower, upper);
+            if (rangeDeleted != expected - 1)
+            {
+                throw new InvalidDataException($"Internal VV range delete removed {rangeDeleted}; expected {expected - 1} after exact delete.");
+            }
+
+            using VarKeyVarIdentityRangeReader afterDeleteReader = reopened.OpenRangeReader(lower, upper);
+            if (afterDeleteReader.Count != 0)
+            {
+                throw new InvalidDataException($"Internal VV range delete left {afterDeleteReader.Count} rows in the deleted range.");
+            }
+
             Console.WriteLine($"vv-index-api-sanity ok path={path} root={rootOffset} items={itemCount} keyLength={keyLength} identityLength={identityLength} prefixCount={prefixCount} lazyCreates={lazyRouteCreates} deferredCommits={deferredCommitRequests} rangeCount={reader.Count} checksum={checksum}");
         }
 
         using (VarKeyVarIdentityIndex openedAgain = Indexes.VV.CreateOrOpen(
             path,
-            slotIndex: 0,
             maxKeyLength: 1024,
             maxIdentityLength: 1024,
             options: options,
@@ -12373,7 +17620,6 @@ internal static class RawHarness
         int expected = CountVarKeyScalar8PrefixRange(itemCount, prefixCount, 0, Math.Min(2, prefixCount - 1));
         using (VarKeyScalar8Index index = Indexes.VS8.Create(
             path,
-            slotIndex: 0,
             name: "vs8-api",
             maxKeyLength: 1024,
             options: options,
@@ -12442,7 +17688,6 @@ internal static class RawHarness
         long checksum = 0;
         using (VarKeyScalar8Index reopened = Indexes.VS8.Open(
             path,
-            slotIndex: 0,
             maxKeyLength: 1024,
             options: options,
             telemetryOptions: DataKernelTelemetryOptions.EnabledOptions))
@@ -12570,11 +17815,28 @@ internal static class RawHarness
             {
                 throw new InvalidDataException($"Public VS8 reader skip returned skipped={skipped} remaining={remaining}; expected skipped={expected / 2} remaining={expected - skipped}.");
             }
+
+            byte[] exactDeleteKey = CreateVarKeyScalar8Key(0, keyLength, prefixCount);
+            if (!reopened.DeleteExactTuple(exactDeleteKey, CreateVarKeyScalar8Identity(0)))
+            {
+                throw new InvalidDataException("Internal VS8 exact tuple delete did not remove the expected tuple.");
+            }
+
+            long rangeDeleted = reopened.DeleteRange(lower, upper);
+            if (rangeDeleted != expected - 1)
+            {
+                throw new InvalidDataException($"Internal VS8 range delete removed {rangeDeleted}; expected {expected - 1} after exact delete.");
+            }
+
+            using VarKeyScalar8RangeReader afterDeleteReader = reopened.OpenRangeReader(lower, upper);
+            if (afterDeleteReader.Count != 0)
+            {
+                throw new InvalidDataException($"Internal VS8 range delete left {afterDeleteReader.Count} rows in the deleted range.");
+            }
         }
 
         using (VarKeyScalar8Index openedAgain = Indexes.VS8.CreateOrOpen(
             path,
-            slotIndex: 0,
             maxKeyLength: 1024,
             options: options,
             telemetryOptions: DataKernelTelemetryOptions.EnabledOptions))
@@ -12615,7 +17877,6 @@ internal static class RawHarness
         int expected = CountVarKeyScalar8PrefixRange(itemCount, prefixCount, 0, Math.Min(2, prefixCount - 1));
         using (VarKeyScalar16Index index = Indexes.VS16.Create(
             path,
-            slotIndex: 0,
             name: "vs16-api",
             maxKeyLength: 1024,
             options: options,
@@ -12687,7 +17948,6 @@ internal static class RawHarness
         long checksum = 0;
         using (VarKeyScalar16Index reopened = Indexes.VS16.Open(
             path,
-            slotIndex: 0,
             maxKeyLength: 1024,
             options: options,
             telemetryOptions: DataKernelTelemetryOptions.EnabledOptions))
@@ -12819,11 +18079,29 @@ internal static class RawHarness
             {
                 throw new InvalidDataException($"Public VS16 reader skip returned skipped={skipped} remaining={remaining}; expected skipped={expected / 2} remaining={expected - skipped}.");
             }
+
+            byte[] exactDeleteKey = CreateVarKeyScalar8Key(0, keyLength, prefixCount);
+            CreateVarKeyScalar16Identity(0, out ulong exactDeleteHigh, out ulong exactDeleteLow);
+            if (!reopened.DeleteExactTuple(exactDeleteKey, exactDeleteHigh, exactDeleteLow))
+            {
+                throw new InvalidDataException("Internal VS16 exact tuple delete did not remove the expected tuple.");
+            }
+
+            long rangeDeleted = reopened.DeleteRange(lower, upper);
+            if (rangeDeleted != expected - 1)
+            {
+                throw new InvalidDataException($"Internal VS16 range delete removed {rangeDeleted}; expected {expected - 1} after exact delete.");
+            }
+
+            using VarKeyScalar16RangeReader afterDeleteReader = reopened.OpenRangeReader(lower, upper);
+            if (afterDeleteReader.Count != 0)
+            {
+                throw new InvalidDataException($"Internal VS16 range delete left {afterDeleteReader.Count} rows in the deleted range.");
+            }
         }
 
         using (VarKeyScalar16Index openedAgain = Indexes.VS16.CreateOrOpen(
             path,
-            slotIndex: 0,
             maxKeyLength: 1024,
             options: options,
             telemetryOptions: DataKernelTelemetryOptions.EnabledOptions))
@@ -20356,7 +25634,6 @@ internal static class RawHarness
         using (Scalar8Scalar8Index index = Indexes.SS88.Create(
             path,
             DataKernelBackingKind.File,
-            slotIndex: 0,
             name: "batch",
             options: options,
             developerMetadata: CreateDesignPerfMetadata(81),
@@ -20426,7 +25703,6 @@ internal static class RawHarness
         Array.Clear(committedIdentities);
         using (Scalar8Scalar8Index committedReopen = Indexes.SS88.Open(
             path,
-            slotIndex: 0,
             options: options,
             telemetryOptions: DataKernelTelemetryOptions.EnabledOptions))
         {
@@ -20444,7 +25720,6 @@ internal static class RawHarness
 
         using (Scalar8Scalar8Index reopened = Indexes.SS88.Open(
             path,
-            slotIndex: 0,
             options: options,
             telemetryOptions: DataKernelTelemetryOptions.EnabledOptions))
         {
@@ -20471,7 +25746,6 @@ internal static class RawHarness
 
         using (Scalar8Scalar8Index abortReopen = Indexes.SS88.Open(
             path,
-            slotIndex: 0,
             options: options,
             telemetryOptions: DataKernelTelemetryOptions.EnabledOptions))
         {
@@ -20488,7 +25762,6 @@ internal static class RawHarness
 
         using (Scalar8Scalar8Index memory = Indexes.SS88.CreateOrOpen(
             backingKind: DataKernelBackingKind.Memory,
-            slotIndex: 0,
             name: "memory-batch",
             options: options,
             developerMetadata: CreateDesignPerfMetadata(82),
@@ -21588,7 +26861,6 @@ internal static class RawHarness
         using (Scalar8Scalar8Index created = Indexes.SS88.Create(
             path,
             DataKernelBackingKind.File,
-            slotIndex: 0,
             name: "public-bulk-read",
             options: options,
             developerMetadata: CreateDesignPerfMetadata(93),
@@ -21606,7 +26878,6 @@ internal static class RawHarness
         Scalar8Scalar8PublicBulkReadResult[] results = new Scalar8Scalar8PublicBulkReadResult[5];
         using (Scalar8Scalar8Index opened = Indexes.SS88.Open(
             path,
-            slotIndex: 0,
             options: options,
             telemetryOptions: DataKernelTelemetryOptions.EnabledOptions))
         {
@@ -21715,7 +26986,6 @@ internal static class RawHarness
         using (UnsignedScalar8Scalar8Index created = Indexes.SS88.Unsigned.Create(
             path,
             DataKernelBackingKind.File,
-            slotIndex: 0,
             name: "typed-public-bulk-read",
             options: options,
             developerMetadata: CreateDesignPerfMetadata(97),
@@ -21732,7 +27002,6 @@ internal static class RawHarness
         Scalar8Scalar8PublicBulkReadResult[] results = new Scalar8Scalar8PublicBulkReadResult[5];
         using (UnsignedScalar8Scalar8Index opened = Indexes.SS88.Unsigned.Open(
             path,
-            slotIndex: 0,
             options: options,
             telemetryOptions: DataKernelTelemetryOptions.EnabledOptions))
         {
@@ -23038,7 +28307,6 @@ internal static class RawHarness
         using (Scalar8Scalar8Index created = Indexes.SS88.Create(
             path,
             DataKernelBackingKind.File,
-            slotIndex: 0,
             name: "public-read-targets",
             options: options,
             developerMetadata: CreateDesignPerfMetadata(94),
@@ -34827,7 +40095,6 @@ internal static class RawHarness
         using Scalar8Scalar8Index index = Indexes.SS88.Create(
             path,
             DataKernelBackingKind.File,
-            slotIndex: 0,
             name: "routed-bulk",
             options: options,
             developerMetadata: CreateDesignPerfMetadata(91),
@@ -35232,7 +40499,6 @@ internal static class RawHarness
         using Scalar8Scalar8Index index = Indexes.SS88.Create(
             path,
             DataKernelBackingKind.File,
-            slotIndex: 0,
             name: "routed-write-attribution",
             options: options,
             developerMetadata: CreateDesignPerfMetadata(101),
@@ -35312,7 +40578,6 @@ internal static class RawHarness
         using UnsignedScalar8Scalar8Index index = Indexes.SS88.Unsigned.Create(
             path,
             DataKernelBackingKind.File,
-            slotIndex: 0,
             name: "typed-routed-bulk",
             options: options,
             developerMetadata: CreateDesignPerfMetadata(98),
@@ -35749,7 +41014,6 @@ internal static class RawHarness
             using (Scalar8Scalar8Index created = Indexes.SS88.Create(
                 samplePath,
                 DataKernelBackingKind.File,
-                slotIndex: 0,
                 name: "public-growth",
                 options: options,
                 developerMetadata: CreateDesignPerfMetadata(96),
@@ -43257,6 +48521,649 @@ internal static class RawHarness
             : "fills DataKernel reserved spans directly";
     }
 
+    private static int RunBigIntApiSanity(string[] args)
+    {
+        string path = GetOption(args, "--path", Path.Combine(@"T:\LibraDex", "bigint-api-sanity.lbdx"));
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        if (File.Exists(path))
+        {
+            File.Delete(path);
+        }
+
+        BigInteger huge = BigInteger.One << 200;
+        using (Catalog catalog = Catalog.CreateOrOpen(path))
+        {
+            bool rejectedOversize = false;
+            LibraDexBigIntScalar8Index<long> fixedIndex = catalog.Indexes["people"]["score"].BigIntKeys<long>(maxBytes: 32).Create();
+            if (!fixedIndex.IsFixedWidth)
+            {
+                throw new InvalidDataException("BigIntKeys should create a fixed-width BigInt index.");
+            }
+
+            ValidateGenericInsert(fixedIndex.Add(new BigInteger(-100), 21L), "fixed BigInt -100 insert");
+            ValidateGenericInsert(fixedIndex.Add(new BigInteger(-2), 22L), "fixed BigInt -2 insert");
+            ValidateGenericInsert(fixedIndex.Add(BigInteger.Zero, 23L), "fixed BigInt zero insert");
+            ValidateGenericInsert(fixedIndex.Add(new BigInteger(2), 24L), "fixed BigInt 2 insert");
+            ValidateGenericInsert(fixedIndex.Add(new BigInteger(100), 25L), "fixed BigInt 100 insert");
+            ValidateGenericInsert(fixedIndex.Add(huge, 26L), "fixed BigInt huge insert");
+
+            long[] fixedMiddle = fixedIndex.GetIdentities(new BigInteger(-10), new BigInteger(10)).Order().ToArray();
+            if (!fixedMiddle.SequenceEqual(new[] { 22L, 23L, 24L }))
+            {
+                throw new InvalidDataException("Fixed BigInt range did not return the expected middle identities.");
+            }
+
+            long[] fixedHuge = fixedIndex.GetIdentities(huge).ToArray();
+            if (!fixedHuge.SequenceEqual(new[] { 26L }))
+            {
+                throw new InvalidDataException("Fixed BigInt exact lookup did not return the huge-key identity.");
+            }
+
+            Guid guidLow = Guid.Parse("00000000-0000-0000-0000-000000000101");
+            Guid guidMiddle = Guid.Parse("00000000-0000-0000-0000-000000000102");
+            Guid guidHigh = Guid.Parse("00000000-0000-0000-0000-000000000103");
+            LibraDexBigIntScalar8Index<Guid> fixedGuidIndex = catalog.Indexes["people"]["scoreGuid"].BigIntKeys<Guid>(maxBytes: 32).Create();
+            ValidateGenericInsert(fixedGuidIndex.Add(new BigInteger(-1), guidLow), "fixed BigInt Guid -1 insert");
+            ValidateGenericInsert(fixedGuidIndex.Add(BigInteger.Zero, guidMiddle), "fixed BigInt Guid zero insert");
+            ValidateGenericInsert(fixedGuidIndex.Add(BigInteger.One, guidHigh), "fixed BigInt Guid 1 insert");
+            Guid[] fixedGuidRange = fixedGuidIndex.GetIdentities(new BigInteger(-1), BigInteger.One).Order().ToArray();
+            if (!fixedGuidRange.SequenceEqual(new[] { guidLow, guidMiddle, guidHigh }.Order()))
+            {
+                throw new InvalidDataException("Fixed BigInt FSN-16 range did not return the expected Guid identities.");
+            }
+
+            const int fixedGuidRoutedCount = 1500;
+            LibraDexBigIntScalar8Index<Guid> fixedGuidRouted = catalog.Indexes["people"]["scoreGuidRouted"].BigIntKeys<Guid>(maxBytes: 32).Create();
+            for (int i = 0; i < fixedGuidRoutedCount; i++)
+            {
+                ValidateGenericInsert(fixedGuidRouted.Add(new BigInteger(i), CreateStableGuid(i)), $"fixed routed BigInt Guid insert {i}");
+            }
+
+            Guid[] fixedGuidRoutedRange = fixedGuidRouted.GetIdentities(BigInteger.Zero, new BigInteger(fixedGuidRoutedCount - 1)).ToArray();
+            if (fixedGuidRoutedRange.Length != fixedGuidRoutedCount ||
+                !fixedGuidRoutedRange.Contains(CreateStableGuid(0)) ||
+                !fixedGuidRoutedRange.Contains(CreateStableGuid(fixedGuidRoutedCount - 1)))
+            {
+                throw new InvalidDataException($"Fixed routed BigInt FSN-16 range did not return the expected Guid identities. Count={fixedGuidRoutedRange.Length}.");
+            }
+
+            LibraDexBigIntScalar8Index<long> fixedRouted = catalog.Indexes["people"]["scoreRouted"].BigIntKeys<long>(maxBytes: 32).Create();
+            const int fixedRoutedCount = 3000;
+            for (int i = 0; i < fixedRoutedCount; i++)
+            {
+                ValidateGenericInsert(fixedRouted.Add(new BigInteger(i), 100_000L + i), $"fixed routed BigInt insert {i}");
+            }
+
+            long[] fixedRoutedRange = fixedRouted.GetIdentities(BigInteger.Zero, new BigInteger(fixedRoutedCount - 1)).Order().ToArray();
+            if (fixedRoutedRange.Length != fixedRoutedCount ||
+                fixedRoutedRange[0] != 100_000L ||
+                fixedRoutedRange[^1] != 100_000L + fixedRoutedCount - 1)
+            {
+                throw new InvalidDataException($"Fixed routed BigInt range did not return the expected split-shelf identities. Count={fixedRoutedRange.Length}, First={(fixedRoutedRange.Length > 0 ? fixedRoutedRange[0] : -1)}, Last={(fixedRoutedRange.Length > 0 ? fixedRoutedRange[^1] : -1)}.");
+            }
+
+            const int varIdentityCount = 1500;
+            LibraDexBigIntVarIdentityIndex varIdentityIndex = catalog.Indexes["people"]["scoreVarIdentity"].BigIntVarIdentityKeys(maxBytes: 32, maxIdentityBytes: 64).Create();
+            for (int i = 0; i < varIdentityCount; i++)
+            {
+                ValidateGenericInsert(varIdentityIndex.Add(new BigInteger(i), CreateBigIntVarIdentityBytes(i)), $"fixed BigInt variable identity insert {i}");
+            }
+
+            IReadOnlyList<byte[]> varIdentityRange = varIdentityIndex.GetIdentities(BigInteger.Zero, new BigInteger(varIdentityCount - 1));
+            if (varIdentityRange.Count != varIdentityCount ||
+                Encoding.UTF8.GetString(varIdentityRange[0]) != "varid-000000" ||
+                Encoding.UTF8.GetString(varIdentityRange[^1]) != "varid-001499")
+            {
+                throw new InvalidDataException($"Fixed BigInt variable-identity range did not return the expected identities. Count={varIdentityRange.Count}.");
+            }
+
+            LibraDexBigIntScalar8Index<long> varIndex = catalog.Indexes["people"]["scoreVar"].BigIntVarLenKeys<long>(maxBytes: 32).Create();
+            ValidateGenericInsert(varIndex.Add(new BigInteger(-100), 11L), "varlen BigInt -100 insert");
+            ValidateGenericInsert(varIndex.Add(new BigInteger(-2), 12L), "varlen BigInt -2 insert");
+            ValidateGenericInsert(varIndex.Add(BigInteger.Zero, 13L), "varlen BigInt zero insert");
+            ValidateGenericInsert(varIndex.Add(new BigInteger(2), 14L), "varlen BigInt 2 insert");
+            ValidateGenericInsert(varIndex.Add(new BigInteger(100), 15L), "varlen BigInt 100 insert");
+            ValidateGenericInsert(varIndex.Add(huge, 16L), "varlen BigInt huge insert");
+
+            long[] varMiddle = varIndex.GetIdentities(new BigInteger(-10), new BigInteger(10)).Order().ToArray();
+            if (!varMiddle.SequenceEqual(new[] { 12L, 13L, 14L }))
+            {
+                throw new InvalidDataException("Variable BigInt range did not return the expected middle identities.");
+            }
+
+            long[] varHuge = varIndex.GetIdentities(huge).ToArray();
+            if (!varHuge.SequenceEqual(new[] { 16L }))
+            {
+                throw new InvalidDataException("Variable BigInt exact lookup did not return the huge-key identity.");
+            }
+
+            Func<string, IIndex> bigIntResolver = indexName => indexName switch
+            {
+                "score" => fixedIndex,
+                "scoreRouted" => fixedRouted,
+                "scoreVarIdentity" => varIdentityIndex,
+                "scoreVar" => varIndex,
+                _ => throw new KeyNotFoundException(indexName)
+            };
+            LibraDexConditionEndCondition fixedCondition = LibraDexCondition
+                .ForGroup("people")
+                .Index("score").AsBigInteger.Between(new BigInteger(-10), new BigInteger(10))
+                .EndCondition;
+            LibraDexConditionEndCondition fixedMembershipCondition = LibraDexCondition
+                .ForGroup("people")
+                .Index("score").AsBigInteger.InSet(new[] { BigInteger.Zero, huge })
+                .EndCondition;
+            LibraDexConditionEndCondition fixedRoutedCondition = LibraDexCondition
+                .ForGroup("people")
+                .Index("scoreRouted").AsBigInteger.GreaterOrEqual(new BigInteger(2997))
+                .EndCondition;
+            LibraDexConditionEndCondition varCondition = LibraDexCondition
+                .ForGroup("people")
+                .Index("scoreVar").AsBigInteger.GreaterThan(new BigInteger(-10))
+                .AND.Index("scoreVar").AsBigInteger.LessThan(new BigInteger(10))
+                .EndCondition;
+            LibraDexConditionEndCondition varIdentityCondition = LibraDexCondition
+                .ForGroup("people")
+                .Index("scoreVarIdentity").AsBigInteger.Between(new BigInteger(1498), new BigInteger(1499))
+                .EndCondition;
+
+            long[] fixedConditionIds = fixedCondition.ToList<long>(bigIntResolver, deduplication: IdentityDeduplication.Preserve).Order().ToArray();
+            long[] fixedMembershipIds = fixedMembershipCondition.ToList<long>(bigIntResolver, deduplication: IdentityDeduplication.Preserve).Order().ToArray();
+            long[] fixedRoutedConditionIds = fixedRoutedCondition.ToList<long>(bigIntResolver, deduplication: IdentityDeduplication.Preserve).Order().ToArray();
+            long[] varConditionIds = varCondition.ToList<long>(bigIntResolver, deduplication: IdentityDeduplication.Preserve).Order().ToArray();
+            IReadOnlyList<byte[]> varIdentityConditionIds = varIdentityCondition.ToList<byte[]>(bigIntResolver, deduplication: IdentityDeduplication.Preserve);
+            LibraDexConditionBridgePlan fixedBridgePlan = fixedCondition.PlanBridge(bigIntResolver);
+            if (!fixedConditionIds.SequenceEqual(new[] { 22L, 23L, 24L }) ||
+                !fixedMembershipIds.SequenceEqual(new[] { 23L, 26L }) ||
+                fixedRoutedConditionIds.Length != 3 ||
+                fixedRoutedConditionIds[0] != 102_997L ||
+                fixedRoutedConditionIds[^1] != 102_999L ||
+                !varConditionIds.SequenceEqual(new[] { 12L, 13L, 14L }) ||
+                varIdentityConditionIds.Count != 2 ||
+                Encoding.UTF8.GetString(varIdentityConditionIds[0]) != "varid-001498" ||
+                Encoding.UTF8.GetString(varIdentityConditionIds[1]) != "varid-001499" ||
+                fixedBridgePlan.Rows.Count != 1 ||
+                fixedBridgePlan.Rows[0].Action != LibraDexConditionBridgeAction.ExecuteCurrentPrimitive ||
+                fixedCondition.Count(bigIntResolver, IdentityDeduplication.Preserve) != 3 ||
+                !fixedMembershipCondition.Exists(bigIntResolver, IdentityDeduplication.Preserve))
+            {
+                throw new InvalidDataException("BigInt condition-builder retrieval did not return expected identity results.");
+            }
+
+            try
+            {
+                _ = varIndex.Add(BigInteger.One << (8 * 33), 17L);
+            }
+            catch (ArgumentOutOfRangeException)
+            {
+                rejectedOversize = true;
+            }
+
+            if (!rejectedOversize)
+            {
+                throw new InvalidDataException("Variable BigInt index did not reject a value beyond maxBytes.");
+            }
+        }
+
+        using (Catalog reopened = Catalog.CreateOrOpen(path))
+        {
+            LibraDexBigIntScalar8Index<long> fixedIndex = reopened.Indexes["people"]["score"].BigIntKeys<long>(maxBytes: 32).Open();
+            long[] reopenedFixed = fixedIndex.GetIdentities(new BigInteger(-10), new BigInteger(10)).Order().ToArray();
+            if (!reopenedFixed.SequenceEqual(new[] { 22L, 23L, 24L }))
+            {
+                throw new InvalidDataException("Reopened fixed BigInt range did not return the expected identities.");
+            }
+
+            Guid guidLow = Guid.Parse("00000000-0000-0000-0000-000000000101");
+            Guid guidMiddle = Guid.Parse("00000000-0000-0000-0000-000000000102");
+            Guid guidHigh = Guid.Parse("00000000-0000-0000-0000-000000000103");
+            LibraDexBigIntScalar8Index<Guid> fixedGuidIndex = reopened.Indexes["people"]["scoreGuid"].BigIntKeys<Guid>(maxBytes: 32).Open();
+            Guid[] reopenedFixedGuid = fixedGuidIndex.GetIdentities(new BigInteger(-1), BigInteger.One).Order().ToArray();
+            if (!reopenedFixedGuid.SequenceEqual(new[] { guidLow, guidMiddle, guidHigh }.Order()))
+            {
+                throw new InvalidDataException("Reopened fixed BigInt FSN-16 range did not return the expected Guid identities.");
+            }
+
+            LibraDexBigIntScalar8Index<Guid> fixedGuidRouted = reopened.Indexes["people"]["scoreGuidRouted"].BigIntKeys<Guid>(maxBytes: 32).Open();
+            Guid[] reopenedFixedGuidRouted = fixedGuidRouted.GetIdentities(BigInteger.Zero, new BigInteger(1499)).ToArray();
+            if (reopenedFixedGuidRouted.Length != 1500 ||
+                !reopenedFixedGuidRouted.Contains(CreateStableGuid(0)) ||
+                !reopenedFixedGuidRouted.Contains(CreateStableGuid(1499)))
+            {
+                throw new InvalidDataException("Reopened fixed routed BigInt FSN-16 range did not return the expected Guid identities.");
+            }
+
+            LibraDexBigIntScalar8Index<long> fixedRouted = reopened.Indexes["people"]["scoreRouted"].BigIntKeys<long>(maxBytes: 32).Open();
+            long[] reopenedFixedRouted = fixedRouted.GetIdentities(BigInteger.Zero, new BigInteger(2999)).Order().ToArray();
+            if (reopenedFixedRouted.Length != 3000 ||
+                reopenedFixedRouted[0] != 100_000L ||
+                reopenedFixedRouted[^1] != 102_999L)
+            {
+                throw new InvalidDataException("Reopened fixed routed BigInt range did not return the expected identities.");
+            }
+
+            LibraDexBigIntVarIdentityIndex varIdentityIndex = reopened.Indexes["people"]["scoreVarIdentity"].BigIntVarIdentityKeys(maxBytes: 32, maxIdentityBytes: 64).Open();
+            IReadOnlyList<byte[]> reopenedVarIdentityRange = varIdentityIndex.GetIdentities(BigInteger.Zero, new BigInteger(1499));
+            if (reopenedVarIdentityRange.Count != 1500 ||
+                Encoding.UTF8.GetString(reopenedVarIdentityRange[0]) != "varid-000000" ||
+                Encoding.UTF8.GetString(reopenedVarIdentityRange[^1]) != "varid-001499")
+            {
+                throw new InvalidDataException("Reopened fixed BigInt variable-identity range did not return the expected identities.");
+            }
+
+            CatalogIndexInfo varIdentityInfo = reopened.Indexes.List().Single(info =>
+                info.Group == "people" &&
+                info.Name == "scoreVarIdentity");
+            IIndex nonGenericVarIdentityIndex = reopened.OpenIndex(varIdentityInfo);
+            ValidateGenericInsert(nonGenericVarIdentityIndex.Insert(new BigInteger(1500), CreateBigIntVarIdentityBytes(1500)), "metadata-opened fixed BigInt variable identity insert");
+            IReadOnlyList<byte[]> afterMetadataOpenInsert = varIdentityIndex.GetIdentities(new BigInteger(1500));
+            if (afterMetadataOpenInsert.Count != 1 ||
+                Encoding.UTF8.GetString(afterMetadataOpenInsert[0]) != "varid-001500")
+            {
+                throw new InvalidDataException("Metadata-opened fixed BigInt variable-identity insert was not visible through the typed facade.");
+            }
+
+            (nonGenericVarIdentityIndex as IDisposable)?.Dispose();
+
+            LibraDexBigIntScalar8Index<long> varIndex = reopened.Indexes["people"]["scoreVar"].BigIntVarLenKeys<long>(maxBytes: 32).Open();
+            long[] reopenedVar = varIndex.GetIdentities(new BigInteger(-10), new BigInteger(10)).Order().ToArray();
+            if (!reopenedVar.SequenceEqual(new[] { 12L, 13L, 14L }))
+            {
+                throw new InvalidDataException("Reopened variable BigInt range did not return the expected identities.");
+            }
+
+            Func<string, IIndex> reopenedBigIntResolver = indexName => indexName switch
+            {
+                "score" => fixedIndex,
+                "scoreRouted" => fixedRouted,
+                "scoreVarIdentity" => varIdentityIndex,
+                "scoreVar" => varIndex,
+                _ => throw new KeyNotFoundException(indexName)
+            };
+            long[] reopenedConditionIds = LibraDexCondition
+                .ForGroup("people")
+                .Index("score").AsBigInteger.Between(new BigInteger(-10), new BigInteger(10))
+                .EndCondition
+                .ToList<long>(reopenedBigIntResolver, deduplication: IdentityDeduplication.Preserve)
+                .Order()
+                .ToArray();
+            IReadOnlyList<byte[]> reopenedVarIdentityConditionIds = LibraDexCondition
+                .ForGroup("people")
+                .Index("scoreVarIdentity").AsBigInteger.EqualTo(new BigInteger(1500))
+                .EndCondition
+                .ToList<byte[]>(reopenedBigIntResolver, deduplication: IdentityDeduplication.Preserve);
+            if (!reopenedConditionIds.SequenceEqual(new[] { 22L, 23L, 24L }) ||
+                reopenedVarIdentityConditionIds.Count != 1 ||
+                Encoding.UTF8.GetString(reopenedVarIdentityConditionIds[0]) != "varid-001500")
+            {
+                throw new InvalidDataException("Reopened BigInt condition-builder retrieval did not return expected identity results.");
+            }
+        }
+
+        Console.WriteLine("BigInt API sanity passed.");
+        return 0;
+    }
+
+    private static int RunFixedNShelfSanity(string[] args)
+    {
+        int keySize = GetIntOption(args, "--key-size", LibraDexBigIntCodec.GetFixedEncodedLength(32));
+        FixedNScalar8Profile fs8Profile = FixedNScalar8Profile.Default64KiB(keySize);
+        byte[] fs8Bytes = new byte[fs8Profile.ShelfExtentSize];
+        FixedNScalar8 fs8 = new(fs8Bytes, fs8Profile);
+        fs8.Initialize();
+
+        byte[] key10 = CreateFixedNTestKey(keySize, 10);
+        byte[] key20 = CreateFixedNTestKey(keySize, 20);
+        byte[] key30 = CreateFixedNTestKey(keySize, 30);
+        if (fs8.Insert(key20, 200, allowDuplicateKeys: true) != FixedNScalarInsertResult.Inserted ||
+            fs8.Insert(key10, 100, allowDuplicateKeys: true) != FixedNScalarInsertResult.Inserted ||
+            fs8.Insert(key30, 300, allowDuplicateKeys: true) != FixedNScalarInsertResult.Inserted)
+        {
+            throw new InvalidDataException("FSN-8 did not insert the sanity keys.");
+        }
+
+        if (fs8.Insert(key20, 200, allowDuplicateKeys: true) != FixedNScalarInsertResult.AlreadyPresent)
+        {
+            throw new InvalidDataException("FSN-8 did not detect an existing tuple.");
+        }
+
+        if (fs8.Insert(key20, 201, allowDuplicateKeys: false) != FixedNScalarInsertResult.KeyConflict)
+        {
+            throw new InvalidDataException("FSN-8 did not detect a unique-key conflict.");
+        }
+
+        FixedNScalar8ReadOnly fs8ReadOnly = new(fs8Bytes, fs8Profile);
+        if (!fs8ReadOnly.IsValid)
+        {
+            throw new InvalidDataException("FSN-8 sanity shelf did not validate.");
+        }
+
+        Span<ulong> fs8Identities = stackalloc ulong[4];
+        int fs8Count = fs8ReadOnly.CopyIdentitiesInKeyRange(key10, key20, fs8Identities);
+        if (fs8Count != 2 || fs8Identities[0] != 100 || fs8Identities[1] != 200)
+        {
+            throw new InvalidDataException("FSN-8 range copy did not preserve sorted identity order.");
+        }
+
+        FixedNScalar16Profile fs16Profile = FixedNScalar16Profile.Default64KiB(keySize);
+        byte[] fs16Bytes = new byte[fs16Profile.ShelfExtentSize];
+        FixedNScalar16 fs16 = new(fs16Bytes, fs16Profile);
+        fs16.Initialize();
+        byte[] id10 = CreateFixedNIdentity16(10);
+        byte[] id20 = CreateFixedNIdentity16(20);
+        byte[] id30 = CreateFixedNIdentity16(30);
+        if (fs16.Insert(key20, id20, allowDuplicateKeys: true) != FixedNScalarInsertResult.Inserted ||
+            fs16.Insert(key10, id10, allowDuplicateKeys: true) != FixedNScalarInsertResult.Inserted ||
+            fs16.Insert(key30, id30, allowDuplicateKeys: true) != FixedNScalarInsertResult.Inserted)
+        {
+            throw new InvalidDataException("FSN-16 did not insert the sanity keys.");
+        }
+
+        if (fs16.Insert(key20, id20, allowDuplicateKeys: true) != FixedNScalarInsertResult.AlreadyPresent)
+        {
+            throw new InvalidDataException("FSN-16 did not detect an existing tuple.");
+        }
+
+        FixedNScalar16ReadOnly fs16ReadOnly = new(fs16Bytes, fs16Profile);
+        if (!fs16ReadOnly.IsValid)
+        {
+            throw new InvalidDataException("FSN-16 sanity shelf did not validate.");
+        }
+
+        Span<byte> fs16Identities = stackalloc byte[FixedNScalar16Layout.IdentitySize * 4];
+        int fs16Count = fs16ReadOnly.CopyIdentitiesInKeyRange(key10, key20, fs16Identities);
+        if (fs16Count != 2 ||
+            BinaryPrimitives.ReadUInt64BigEndian(fs16Identities.Slice(8, 8)) != 10 ||
+            BinaryPrimitives.ReadUInt64BigEndian(fs16Identities.Slice(24, 8)) != 20)
+        {
+            throw new InvalidDataException("FSN-16 range copy did not preserve sorted identity order.");
+        }
+
+        FixedNVarIdentityProfile fvProfile = FixedNVarIdentityProfile.Default64KiB(keySize, maxIdentityLength: 64);
+        byte[] fvBytes = FixedNVarIdentity.CreateEmpty(fvProfile);
+        byte[] fvId10 = Encoding.UTF8.GetBytes("id-10");
+        byte[] fvId20 = Encoding.UTF8.GetBytes("id-20");
+        byte[] fvId30 = Encoding.UTF8.GetBytes("id-30");
+        if (FixedNVarIdentity.Insert(fvBytes, fvProfile, key20, fvId20, allowDuplicateKeys: true, out fvBytes) != FixedNVarIdentityInsertResult.Inserted ||
+            FixedNVarIdentity.Insert(fvBytes, fvProfile, key10, fvId10, allowDuplicateKeys: true, out fvBytes) != FixedNVarIdentityInsertResult.Inserted ||
+            FixedNVarIdentity.Insert(fvBytes, fvProfile, key30, fvId30, allowDuplicateKeys: true, out fvBytes) != FixedNVarIdentityInsertResult.Inserted)
+        {
+            throw new InvalidDataException("FV did not insert the sanity keys.");
+        }
+
+        if (FixedNVarIdentity.Insert(fvBytes, fvProfile, key20, fvId20, allowDuplicateKeys: true, out _) != FixedNVarIdentityInsertResult.AlreadyPresent)
+        {
+            throw new InvalidDataException("FV did not detect an existing tuple.");
+        }
+
+        if (FixedNVarIdentity.Insert(fvBytes, fvProfile, key20, Encoding.UTF8.GetBytes("id-21"), allowDuplicateKeys: false, out _) != FixedNVarIdentityInsertResult.KeyConflict)
+        {
+            throw new InvalidDataException("FV did not detect a unique-key conflict.");
+        }
+
+        FixedNVarIdentityReadOnly fvReadOnly = new(fvBytes, fvProfile);
+        if (!fvReadOnly.IsValid)
+        {
+            throw new InvalidDataException("FV sanity shelf did not validate.");
+        }
+
+        List<byte[]> fvIdentities = [];
+        fvReadOnly.CopyIdentitiesInKeyRange(key10, key20, fvIdentities);
+        if (fvIdentities.Count != 2 ||
+            !fvIdentities[0].AsSpan().SequenceEqual(fvId10) ||
+            !fvIdentities[1].AsSpan().SequenceEqual(fvId20))
+        {
+            throw new InvalidDataException("FV range copy did not preserve sorted identity order.");
+        }
+
+        Console.WriteLine("FixedN shelf sanity passed.");
+        Console.WriteLine($"keySize {keySize:N0}");
+        Console.WriteLine($"fsn-8 maxItems {fs8Profile.MaxItemCount:N0} itemSize {fs8Profile.ItemSize:N0}");
+        Console.WriteLine($"fsn-16 maxItems {fs16Profile.MaxItemCount:N0} itemSize {fs16Profile.ItemSize:N0}");
+        Console.WriteLine($"fv maxItems {fvProfile.MaxItemCount:N0} maxIdentityLength {fvProfile.MaxIdentityLength:N0}");
+        return 0;
+    }
+
+    private static int RunFixedNShelfPerf(string[] args)
+    {
+        int keySize = GetIntOption(args, "--key-size", LibraDexBigIntCodec.GetFixedEncodedLength(32));
+        int requestedItems = GetIntOption(args, "--items", 1500);
+        int iterations = GetIntOption(args, "--iterations", 1000);
+        if (requestedItems <= 0 || iterations <= 0)
+        {
+            Console.Error.WriteLine("fixedn-shelf-perf requires positive --items and --iterations values.");
+            return 1;
+        }
+
+        FixedNScalar8Profile fs8Profile = FixedNScalar8Profile.Default64KiB(keySize);
+        FixedNScalar16Profile fs16Profile = FixedNScalar16Profile.Default64KiB(keySize);
+        FixedNVarIdentityProfile fvProfile = FixedNVarIdentityProfile.Default64KiB(keySize, maxIdentityLength: 64);
+        int itemCount = Math.Min(requestedItems, Math.Min(fvProfile.MaxItemCount, Math.Min(fs8Profile.MaxItemCount, fs16Profile.MaxItemCount)));
+        byte[][] keys = new byte[itemCount][];
+        for (int i = 0; i < keys.Length; i++)
+        {
+            keys[i] = CreateFixedNTestKey(keySize, i);
+        }
+
+        byte[] fs8Bytes = new byte[fs8Profile.ShelfExtentSize];
+        FixedNScalar8 fs8 = new(fs8Bytes, fs8Profile);
+        fs8.Initialize();
+        Stopwatch sw = Stopwatch.StartNew();
+        for (int i = itemCount - 1; i >= 0; i--)
+        {
+            if (fs8.Insert(keys[i], (ulong)i, allowDuplicateKeys: true) != FixedNScalarInsertResult.Inserted)
+            {
+                throw new InvalidDataException("FSN-8 perf setup insert failed.");
+            }
+        }
+
+        sw.Stop();
+        double fs8InsertPerSecond = itemCount / sw.Elapsed.TotalSeconds;
+        FixedNScalar8ReadOnly fs8ReadOnly = new(fs8Bytes, fs8Profile);
+        ulong fs8Checksum = 0;
+        Span<ulong> fs8Output = new ulong[itemCount];
+        sw.Restart();
+        for (int i = 0; i < iterations; i++)
+        {
+            int copied = fs8ReadOnly.CopyIdentitiesInKeyRange(keys[itemCount / 4], keys[(itemCount * 3) / 4], fs8Output);
+            fs8Checksum += fs8Output[copied - 1];
+        }
+
+        sw.Stop();
+        double fs8RangePerSecond = iterations / sw.Elapsed.TotalSeconds;
+
+        byte[] fs16Bytes = new byte[fs16Profile.ShelfExtentSize];
+        FixedNScalar16 fs16 = new(fs16Bytes, fs16Profile);
+        fs16.Initialize();
+        byte[][] identities16 = new byte[itemCount][];
+        for (int i = 0; i < identities16.Length; i++)
+        {
+            identities16[i] = CreateFixedNIdentity16(i);
+        }
+
+        sw.Restart();
+        for (int i = itemCount - 1; i >= 0; i--)
+        {
+            if (fs16.Insert(keys[i], identities16[i], allowDuplicateKeys: true) != FixedNScalarInsertResult.Inserted)
+            {
+                throw new InvalidDataException("FSN-16 perf setup insert failed.");
+            }
+        }
+
+        sw.Stop();
+        double fs16InsertPerSecond = itemCount / sw.Elapsed.TotalSeconds;
+        FixedNScalar16ReadOnly fs16ReadOnly = new(fs16Bytes, fs16Profile);
+        ulong fs16Checksum = 0;
+        byte[] fs16Output = new byte[itemCount * FixedNScalar16Layout.IdentitySize];
+        sw.Restart();
+        for (int i = 0; i < iterations; i++)
+        {
+            int copied = fs16ReadOnly.CopyIdentitiesInKeyRange(keys[itemCount / 4], keys[(itemCount * 3) / 4], fs16Output);
+            fs16Checksum += BinaryPrimitives.ReadUInt64BigEndian(fs16Output.AsSpan(((copied - 1) * FixedNScalar16Layout.IdentitySize) + 8, 8));
+        }
+
+        sw.Stop();
+        double fs16RangePerSecond = iterations / sw.Elapsed.TotalSeconds;
+
+        byte[] fvBytes = FixedNVarIdentity.CreateEmpty(fvProfile);
+        byte[][] identitiesVar = new byte[itemCount][];
+        for (int i = 0; i < identitiesVar.Length; i++)
+        {
+            identitiesVar[i] = Encoding.UTF8.GetBytes(FormattableString.Invariant($"identity-{i:D6}"));
+        }
+
+        sw.Restart();
+        for (int i = itemCount - 1; i >= 0; i--)
+        {
+            if (FixedNVarIdentity.InsertInPlace(fvBytes, fvProfile, keys[i], identitiesVar[i], allowDuplicateKeys: true, out fvBytes) != FixedNVarIdentityInsertResult.Inserted)
+            {
+                throw new InvalidDataException("FV perf setup insert failed.");
+            }
+        }
+
+        sw.Stop();
+        double fvInsertPerSecond = itemCount / sw.Elapsed.TotalSeconds;
+        FixedNVarIdentityReadOnly fvReadOnly = new(fvBytes, fvProfile);
+        ulong fvChecksum = 0;
+        List<byte[]> fvOutput = new(itemCount);
+        sw.Restart();
+        for (int i = 0; i < iterations; i++)
+        {
+            fvOutput.Clear();
+            fvReadOnly.CopyIdentitiesInKeyRange(keys[itemCount / 4], keys[(itemCount * 3) / 4], fvOutput);
+            fvChecksum += (ulong)fvOutput[^1][^1];
+        }
+
+        sw.Stop();
+        double fvRangePerSecond = iterations / sw.Elapsed.TotalSeconds;
+
+        Console.WriteLine("fixedn shelf perf");
+        Console.WriteLine($"keySize {keySize:N0} items {itemCount:N0} iterations {iterations:N0}");
+        Console.WriteLine("shape\tmaxItems\titemSize\tinsertItemsPerSec\trangeOpsPerSec\tchecksum");
+        Console.WriteLine($"FSN-8\t{fs8Profile.MaxItemCount:N0}\t{fs8Profile.ItemSize:N0}\t{fs8InsertPerSecond:N2}\t{fs8RangePerSecond:N2}\t{fs8Checksum}");
+        Console.WriteLine($"FSN-16\t{fs16Profile.MaxItemCount:N0}\t{fs16Profile.ItemSize:N0}\t{fs16InsertPerSecond:N2}\t{fs16RangePerSecond:N2}\t{fs16Checksum}");
+        Console.WriteLine($"FV\t{fvProfile.MaxItemCount:N0}\tvar\t{fvInsertPerSecond:N2}\t{fvRangePerSecond:N2}\t{fvChecksum}");
+        return 0;
+    }
+
+    private static int RunFixedNVarIdentityRoutedSanity(string[] args)
+    {
+        string path = GetOption(args, "--path", Path.Combine("artifacts", "fixedn-varidentity-routed-sanity.lbdx"));
+        int keySize = GetIntOption(args, "--key-size", LibraDexBigIntCodec.GetFixedEncodedLength(32));
+        int itemCount = GetIntOption(args, "--items", 1000);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.Delete(path);
+
+        FixedNVarIdentityProfile profile = FixedNVarIdentityProfile.Default64KiB(keySize, maxIdentityLength: 64);
+        if (itemCount <= 0)
+        {
+            Console.Error.WriteLine("fixedn-varidentity-routed-sanity item count must be positive.");
+            return 1;
+        }
+
+        DataKernelOptions options = new(
+            AppendBufferSize: DefaultAppendBufferSize,
+            ReservedPrefixBytes: 0,
+            FlushToDiskOnCommit: false,
+            MaxCommitGapCoalesceBytes: 512);
+
+        SuperblockDeveloperMetadata metadata = new(
+            DevIdentity: "LibraDexFixedNVarIdentityRoutedSanity",
+            DevCustomText: "FV routed shelf",
+            DevGuid: Guid.Parse("170749ab-4b84-460c-9d2c-ff097f5525c3"),
+            DevDate1UtcTicks: 1,
+            DevDate2UtcTicks: 2,
+            DevNumber: 3);
+
+        using (LibraDexFileSession session = LibraDexFileSession.Initialize(path, options, metadata, DataKernelTelemetryOptions.EnabledOptions))
+        {
+            (RouterSnapshot root, _) = session.CreateRootRouterIndex(CreateHarnessSlot(0, "fvrouted", 0));
+            FixedNVarIdentityIndexHandle handle = new(root.Offset, profile, IsRouted: true);
+            using FixedNVarIdentityIndex index = new(session, handle, slotIndex: 0);
+            InsertFixedNVarIdentityRoutedItems(index, keySize, itemCount);
+            ValidateFixedNVarIdentityRoutedRange(index, keySize, itemCount);
+        }
+
+        using (LibraDexFileSession reopened = LibraDexFileSession.Open(path, options, DataKernelTelemetryOptions.EnabledOptions))
+        {
+            ReadOnlySpan<IndexDirectorySlotSnapshot> slots = reopened.IndexDirectory.ActiveSlots;
+            if (slots.Length != 1)
+            {
+                throw new InvalidDataException("Reopened FV routed sanity file did not preserve one active index slot.");
+            }
+
+            FixedNVarIdentityIndexHandle handle = new(slots[0].RootRouterOffset, profile, IsRouted: true);
+            using FixedNVarIdentityIndex index = new(reopened, handle, slotIndex: 0);
+            ValidateFixedNVarIdentityRoutedRange(index, keySize, itemCount);
+        }
+
+        Console.WriteLine("FixedN var-identity routed sanity passed.");
+        Console.WriteLine($"path {path}");
+        Console.WriteLine($"keySize {keySize:N0} items {itemCount:N0} maxItems {profile.MaxItemCount:N0}");
+        return 0;
+    }
+
+    private static void InsertFixedNVarIdentityRoutedItems(FixedNVarIdentityIndex index, int keySize, int itemCount)
+    {
+        for (int i = itemCount - 1; i >= 0; i--)
+        {
+            byte[] key = CreateFixedNTestKey(keySize, i);
+            byte[] identity = Encoding.UTF8.GetBytes(FormattableString.Invariant($"identity-{i:D6}"));
+            (FixedNVarIdentityInsertResult result, _) = index.Insert(key, identity, allowDuplicateKeys: true);
+            if (result != FixedNVarIdentityInsertResult.Inserted)
+            {
+                throw new InvalidDataException($"FV routed insert {i} failed with {result}.");
+            }
+        }
+    }
+
+    private static void ValidateFixedNVarIdentityRoutedRange(FixedNVarIdentityIndex index, int keySize, int itemCount)
+    {
+        int lower = itemCount / 4;
+        int upper = (itemCount * 3) / 4;
+        IReadOnlyList<byte[]> identities = index.ReadIdentityRange(CreateFixedNTestKey(keySize, lower), CreateFixedNTestKey(keySize, upper));
+        int expectedCount = upper - lower + 1;
+        if (identities.Count != expectedCount)
+        {
+            throw new InvalidDataException($"FV routed range expected {expectedCount} identities, got {identities.Count}.");
+        }
+
+        for (int i = 0; i < identities.Count; i++)
+        {
+            string expected = FormattableString.Invariant($"identity-{lower + i:D6}");
+            if (Encoding.UTF8.GetString(identities[i]) != expected)
+            {
+                throw new InvalidDataException($"FV routed range identity {i} was not sorted as expected.");
+            }
+        }
+    }
+
+    private static byte[] CreateFixedNTestKey(int keySize, int value)
+    {
+        byte[] key = new byte[keySize];
+        BinaryPrimitives.WriteInt32BigEndian(key.AsSpan(keySize - sizeof(int), sizeof(int)), value);
+        return key;
+    }
+
+    private static Guid CreateStableGuid(int value)
+    {
+        Span<byte> bytes = stackalloc byte[16];
+        BinaryPrimitives.WriteInt32BigEndian(bytes.Slice(12, sizeof(int)), value);
+        return new Guid(bytes);
+    }
+
+    private static byte[] CreateBigIntVarIdentityBytes(int value)
+    {
+        return Encoding.UTF8.GetBytes(FormattableString.Invariant($"varid-{value:D6}"));
+    }
+
+    private static byte[] CreateFixedNIdentity16(int value)
+    {
+        byte[] identity = new byte[FixedNScalar16Layout.IdentitySize];
+        BinaryPrimitives.WriteUInt64BigEndian(identity.AsSpan(8, 8), (ulong)value);
+        return identity;
+    }
+
     private static AppendMode GetAppendModeOption(string[] args)
     {
         string value = GetOption(args, "--append-mode", "append");
@@ -45826,7 +51733,7 @@ internal static class RawHarness
     {
         string libraPath = Path.Combine(directory, "read-sweep-ss8-8.lbdx");
         File.Delete(libraPath);
-        using (Scalar8Scalar8Index created = Indexes.SS88.Create(libraPath, DataKernelBackingKind.File, slotIndex: 0, name: "read-sweep-ss8-8", options: options, developerMetadata: CreateDesignPerfMetadata(8801), telemetryOptions: DataKernelTelemetryOptions.EnabledOptions, shelfExtentSize: Scalar8Scalar8Profile.Default32KiB.ShelfExtentSize))
+        using (Scalar8Scalar8Index created = Indexes.SS88.Create(libraPath, DataKernelBackingKind.File, name: "read-sweep-ss8-8", options: options, developerMetadata: CreateDesignPerfMetadata(8801), telemetryOptions: DataKernelTelemetryOptions.EnabledOptions, shelfExtentSize: Scalar8Scalar8Profile.Default32KiB.ShelfExtentSize))
         {
             _ = RunScalar8Scalar8RoutedBulkWriteLoop(created, batches, itemsPerBatch, prefixCount, sortedOrder, batchOffset: 0);
         }
@@ -45839,7 +51746,7 @@ internal static class RawHarness
             RunSqliteScalar8Scalar8WriteLoop(connection, batches, itemsPerBatch, prefixCount, sortedOrder, batchOffset: 0);
         }
 
-        using Scalar8Scalar8Index opened = Indexes.SS88.Open(libraPath, slotIndex: 0, options: options, telemetryOptions: DataKernelTelemetryOptions.EnabledOptions);
+        using Scalar8Scalar8Index opened = Indexes.SS88.Open(libraPath, options: options, telemetryOptions: DataKernelTelemetryOptions.EnabledOptions);
         using SqliteConnection sqlite = OpenSqliteScalar8Scalar8Connection(sqlitePath, sqliteOptions);
         for (int i = 0; i < ranges.Length; i++)
         {
@@ -46430,10 +52337,4 @@ internal static class RawHarness
         double LibraDexLogicalMiBs,
         double SqliteLogicalMiBs,
         double RawReadBaselinePercent);
-
-
 }
-
-
-
-

@@ -25,6 +25,12 @@ internal sealed class Scalar8VarIdentityReadOnly
 
     public int ItemCount => IsValid ? recordOffsets.Length : 0;
 
+    public int PhysicalItemCount => ItemCount;
+
+    public int LiveItemCount => ItemCount;
+
+    public int DeletedItemCount => 0;
+
     public int LowerBoundKey(ulong encodedKey)
     {
         uint prefix = Scalar8VarIdentityLayout.CreateKeyPrefix(encodedKey);

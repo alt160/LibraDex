@@ -33,6 +33,7 @@ public sealed class Scalar8Scalar8RangeReader : IDisposable
     private int currentSlotIndex = -1;
     private int ordinal = -1;
     private bool traversalComplete = true;
+    private bool currentRowInvalidated;
     private bool disposed;
 
     internal Scalar8Scalar8RangeReader()
@@ -50,6 +51,7 @@ public sealed class Scalar8Scalar8RangeReader : IDisposable
     internal Scalar8Scalar8RangeReader(Scalar8Scalar8RangePlan plan)
     {
         this.plan = plan;
+        session = plan.Session;
         profile = plan.Profile;
         shelves = plan.Shelves;
         startSlots = plan.StartSlots;
@@ -159,6 +161,7 @@ public sealed class Scalar8Scalar8RangeReader : IDisposable
             ordinal = rowCount;
             currentShelfIndex = shelfCount;
             currentSlotIndex = -1;
+            currentRowInvalidated = false;
             return false;
         }
 
@@ -181,6 +184,7 @@ public sealed class Scalar8Scalar8RangeReader : IDisposable
         }
 
         ordinal++;
+        currentRowInvalidated = false;
         return true;
     }
 
@@ -241,6 +245,7 @@ public sealed class Scalar8Scalar8RangeReader : IDisposable
             ordinal = -1;
             currentShelfIndex = 0;
             currentSlotIndex = -1;
+            currentRowInvalidated = false;
             return;
         }
 
@@ -277,6 +282,7 @@ public sealed class Scalar8Scalar8RangeReader : IDisposable
         ordinal = -1;
         currentShelfIndex = 0;
         currentSlotIndex = -1;
+        currentRowInvalidated = false;
     }
 
     private void ReturnShelfBuffers()
@@ -297,13 +303,66 @@ public sealed class Scalar8Scalar8RangeReader : IDisposable
         get
         {
             ThrowIfDisposed();
-            if ((uint)ordinal >= (uint)rowCount || (uint)currentShelfIndex >= (uint)shelfCount)
+            if (currentRowInvalidated || (uint)ordinal >= (uint)rowCount || (uint)currentShelfIndex >= (uint)shelfCount)
             {
                 throw new InvalidOperationException("The SS8-8 range reader is not positioned on a row.");
             }
 
             return new Scalar8Scalar8ReadOnly(shelves[currentShelfIndex], profile);
         }
+    }
+
+    /// <summary>
+    /// Deletes the current cursor row and repositions the reader before the next surviving row.<br/>
+    /// The method mutates only the retained shelf that owns the current slot, stages that shelf rewrite through the owning session, and updates the reader's slot interval so a following <see cref="MoveNext"/> continues without skipping the tuple that shifted into the deleted slot.<br/>
+    /// Current key and identity accessors are invalid until the next successful move.<br/>
+    /// </summary>
+    /// <returns><see langword="true"/> when the positioned row was deleted.</returns>
+    internal bool DeleteCurrent()
+    {
+        ThrowIfDisposed();
+        if (currentRowInvalidated || (uint)ordinal >= (uint)rowCount || (uint)currentShelfIndex >= (uint)shelfCount)
+        {
+            throw new InvalidOperationException("The SS8-8 range reader is not positioned on a row.");
+        }
+
+        LibraDexFileSession localSession = session ?? throw new ObjectDisposedException(nameof(Scalar8Scalar8RangeReader));
+        Scalar8Scalar8 shelf = new(shelves[currentShelfIndex], profile);
+        int removed = shelf.RemoveSlotRange(currentSlotIndex, 1);
+        if (removed != 1)
+        {
+            return false;
+        }
+
+        long shelfOffset = plan is not null ? plan.ShelfOffsets[currentShelfIndex] : 0;
+        if (shelfOffset <= 0)
+        {
+            throw new InvalidOperationException("The SS8-8 range reader does not have a durable shelf offset for cursor-local delete.");
+        }
+
+        _ = localSession.StageScalar8Scalar8ShelfRewriteForBatch(shelfOffset, profile, shelves[currentShelfIndex]);
+        endSlots[currentShelfIndex]--;
+        rowCount--;
+        ordinal--;
+        currentSlotIndex--;
+        currentRowInvalidated = true;
+        return true;
+    }
+
+    /// <summary>
+    /// Invalidates the current row after the owning index performs an exact external mutation for that row.<br/>
+    /// The retained range remains a traversal snapshot; leaving the slot and ordinal unchanged makes the next <see cref="MoveNext"/> skip the stale current row and continue with the next original row.<br/>
+    /// Current key and identity accessors remain invalid until the next successful move.<br/>
+    /// </summary>
+    internal void InvalidateCurrentAfterExternalMutation()
+    {
+        ThrowIfDisposed();
+        if (currentRowInvalidated || (uint)ordinal >= (uint)rowCount || (uint)currentShelfIndex >= (uint)shelfCount)
+        {
+            throw new InvalidOperationException("The SS8-8 range reader is not positioned on a row.");
+        }
+
+        currentRowInvalidated = true;
     }
 
     private void AddShelfRange(byte[] shelfBytes)

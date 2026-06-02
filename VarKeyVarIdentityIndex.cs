@@ -109,6 +109,40 @@ public sealed class VarKeyVarIdentityIndex : IDisposable
     }
 
     /// <summary>
+    /// Deletes all tuples whose raw-byte key is inside an inclusive `VV` range.<br/>
+    /// The method opens a short durability batch so shelf-local deletes use the same tombstone sidecar and commit-time normalization path as bulk delete workloads.<br/>
+    /// This remains internal until a typed logical facade maps adopted conditions onto the raw var-key/var-identity storage shape.<br/>
+    /// </summary>
+    /// <param name="lowerKey">The inclusive lower raw key.</param>
+    /// <param name="upperKey">The inclusive upper raw key.</param>
+    /// <returns>The number of live tuples deleted.</returns>
+    internal long DeleteRange(ReadOnlySpan<byte> lowerKey, ReadOnlySpan<byte> upperKey)
+    {
+        ThrowIfDisposed();
+        using VarKeyVarIdentityBatch batch = BeginBatch();
+        long deleted = batch.DeleteRange(lowerKey, upperKey);
+        _ = batch.Commit();
+        return deleted;
+    }
+
+    /// <summary>
+    /// Deletes one exact raw-key and raw-identity tuple from this routed `VV` index.<br/>
+    /// The physical delete targets only the matching tuple and leaves other identities for the same key intact.<br/>
+    /// This remains internal until a typed logical facade maps adopted conditions onto the raw var-key/var-identity storage shape.<br/>
+    /// </summary>
+    /// <param name="key">The exact raw key bytes.</param>
+    /// <param name="identity">The exact raw identity bytes.</param>
+    /// <returns><see langword="true"/> when a live tuple was deleted.</returns>
+    internal bool DeleteExactTuple(ReadOnlySpan<byte> key, ReadOnlySpan<byte> identity)
+    {
+        ThrowIfDisposed();
+        using VarKeyVarIdentityBatch batch = BeginBatch();
+        bool deleted = batch.DeleteExactTuple(key, identity);
+        _ = batch.Commit();
+        return deleted;
+    }
+
+    /// <summary>
     /// Opens a forward-only reader for an inclusive raw-key range.<br/>
     /// The returned reader exposes each raw key and raw identity as temporary <see cref="ReadOnlySpan{T}"/> values while positioned on that row, avoiding `byte[][]` materialization by default.<br/>
     /// Callers own the reader and should dispose it when finished; keys or identities that must outlive the current row can be copied through the reader's copy/materialization methods.<br/>
@@ -325,6 +359,45 @@ public sealed class VarKeyVarIdentityBatch : IDisposable
     }
 
     /// <summary>
+    /// Deletes all tuples whose raw-byte key is inside an inclusive `VV` range without forcing a durable commit per range.<br/>
+    /// The owning session marks shelf-local tombstones during the batch and normalizes touched slot streams when the batch commits.<br/>
+    /// </summary>
+    /// <param name="lowerKey">The inclusive lower raw key.</param>
+    /// <param name="upperKey">The inclusive upper raw key.</param>
+    /// <returns>The number of live tuples deleted.</returns>
+    internal long DeleteRange(ReadOnlySpan<byte> lowerKey, ReadOnlySpan<byte> upperKey)
+    {
+        ThrowIfCompleted();
+        ValidateKeyLength(lowerKey);
+        ValidateKeyLength(upperKey);
+        return index.Session.DeleteVarKeyVarIdentityKeyRange(
+            index.RootRouterOffset,
+            index.MaxKeyLength,
+            index.MaxIdentityLength,
+            lowerKey,
+            upperKey);
+    }
+
+    /// <summary>
+    /// Deletes one exact raw-key and raw-identity tuple without forcing a durable commit per tuple.<br/>
+    /// The physical delete removes only the exact tuple and leaves other identities for the same key intact.<br/>
+    /// </summary>
+    /// <param name="key">The exact raw key bytes.</param>
+    /// <param name="identity">The exact raw identity bytes.</param>
+    /// <returns><see langword="true"/> when a live tuple was deleted.</returns>
+    internal bool DeleteExactTuple(ReadOnlySpan<byte> key, ReadOnlySpan<byte> identity)
+    {
+        ThrowIfCompleted();
+        ValidateTupleLengths(key, identity);
+        return index.Session.DeleteVarKeyVarIdentityExactTuple(
+            index.RootRouterOffset,
+            index.MaxKeyLength,
+            index.MaxIdentityLength,
+            key,
+            identity);
+    }
+
+    /// <summary>
     /// Publishes all staged writes accumulated by the batch through one DataKernel commit boundary.<br/>
     /// Commit controls durability scope and reports folded write shape; it does not promise all-or-nothing item semantics beyond the staged writes that reach this publish point.<br/>
     /// </summary>
@@ -373,14 +446,19 @@ public sealed class VarKeyVarIdentityBatch : IDisposable
 
     private void ValidateTupleLengths(ReadOnlySpan<byte> key, ReadOnlySpan<byte> identity)
     {
-        if (key.Length <= 0 || key.Length > index.MaxKeyLength)
-        {
-            throw new ArgumentOutOfRangeException(nameof(key), key.Length, $"VV key length must be from 1 to {index.MaxKeyLength} bytes.");
-        }
+        ValidateKeyLength(key);
 
         if (identity.Length <= 0 || identity.Length > index.MaxIdentityLength)
         {
             throw new ArgumentOutOfRangeException(nameof(identity), identity.Length, $"VV identity length must be from 1 to {index.MaxIdentityLength} bytes.");
+        }
+    }
+
+    private void ValidateKeyLength(ReadOnlySpan<byte> key)
+    {
+        if (key.Length <= 0 || key.Length > index.MaxKeyLength)
+        {
+            throw new ArgumentOutOfRangeException(nameof(key), key.Length, $"VV key length must be from 1 to {index.MaxKeyLength} bytes.");
         }
     }
 

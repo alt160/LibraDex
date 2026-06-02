@@ -553,6 +553,190 @@ public sealed partial class LibraDexFileSession
         return new Scalar8VarIdentityRangeReader(this, rootRouterOffset, maxIdentityLength, lowerEncodedKey, upperEncodedKey);
     }
 
+    /// <summary>
+    /// Deletes live `SV8` tuples whose encoded key falls inside the inclusive scalar-key range.<br/>
+    /// The traversal prunes by routed key prefixes and also walks duplicate-key overflow shelves linked from each matched route-owned shelf.<br/>
+    /// </summary>
+    /// <param name="rootRouterOffset">The root router offset for the index.</param>
+    /// <param name="maxIdentityLength">The maximum raw identity length accepted by the profile family.</param>
+    /// <param name="lowerEncodedKey">The inclusive lower encoded key.</param>
+    /// <param name="upperEncodedKey">The inclusive upper encoded key.</param>
+    /// <param name="maxRouterHops">The maximum number of router pages to follow.</param>
+    /// <returns>The number of live tuples deleted.</returns>
+    internal long DeleteScalar8VarIdentityKeyRange(
+        long rootRouterOffset,
+        int maxIdentityLength,
+        ulong lowerEncodedKey,
+        ulong upperEncodedKey,
+        int maxRouterHops = DefaultScalar8VarIdentityMaxRouterHops)
+    {
+        if (lowerEncodedKey > upperEncodedKey)
+        {
+            return 0;
+        }
+
+        long deleted = 0;
+        using RouteVisitedOffsetSet visitedShelves = RouteVisitedOffsetSet.Rent();
+        using RouteVisitedOffsetSet visitedRouters = RouteVisitedOffsetSet.Rent();
+        byte lowerPrefix = GetScalar8VarIdentityPrefix(lowerEncodedKey, 0);
+        byte upperPrefix = GetScalar8VarIdentityPrefix(upperEncodedKey, 0);
+        for (int prefix = lowerPrefix; prefix <= upperPrefix; prefix++)
+        {
+            long targetOffset = FindRouterTarget(rootRouterOffset, (byte)prefix);
+            if (targetOffset == 0)
+            {
+                continue;
+            }
+
+            deleted += DeleteScalar8VarIdentityRangeFromTarget(
+                targetOffset,
+                maxIdentityLength,
+                lowerEncodedKey,
+                upperEncodedKey,
+                visitedShelves,
+                visitedRouters,
+                maxRouterHops);
+        }
+
+        return deleted;
+    }
+
+    /// <summary>
+    /// Deletes one exact `SV8` encoded-key/raw-identity tuple from the routed tree or a duplicate-key overflow chain.<br/>
+    /// The route walk targets the key's owning shelf and then follows same-key overflow shelves until the tuple is found or the chain ends.<br/>
+    /// </summary>
+    /// <param name="rootRouterOffset">The root router offset for the index.</param>
+    /// <param name="maxIdentityLength">The maximum raw identity length accepted by the profile family.</param>
+    /// <param name="encodedKey">The exact encoded scalar key.</param>
+    /// <param name="identity">The exact raw identity bytes.</param>
+    /// <param name="maxRouterHops">The maximum number of router pages to follow.</param>
+    /// <returns><see langword="true"/> when a live tuple was deleted.</returns>
+    internal bool DeleteScalar8VarIdentityExactTuple(
+        long rootRouterOffset,
+        int maxIdentityLength,
+        ulong encodedKey,
+        ReadOnlySpan<byte> identity,
+        int maxRouterHops = DefaultScalar8VarIdentityMaxRouterHops)
+    {
+        Scalar8VarIdentityRoutePathTarget pathTarget = WalkScalar8VarIdentityRoutePathTarget(rootRouterOffset, encodedKey, maxRouterHops);
+        if (pathTarget.Target.Kind != Scalar8VarIdentityRouteTargetKind.Shelf)
+        {
+            throw new InvalidDataException("The classified route walker did not terminate at an SV8 shelf for exact tuple delete.");
+        }
+
+        using RouteVisitedOffsetSet visitedShelves = RouteVisitedOffsetSet.Rent();
+        long shelfOffset = pathTarget.Target.Offset;
+        while (shelfOffset != 0 && visitedShelves.Add(shelfOffset))
+        {
+            Scalar8VarIdentityMutableShelfView shelf = ReadScalar8VarIdentityMutableShelf(shelfOffset, maxIdentityLength);
+            long nextShelfOffset = Scalar8VarIdentityLayout.ReadNextShelfOffset(shelf.Bytes);
+            if (shelf.MarkTupleDeleted(encodedKey, identity))
+            {
+                if (!durabilityBatchActive)
+                {
+                    _ = shelf.NormalizeDeletedSlotsForPublication();
+                }
+
+                shelf.EnsureSlotBytesCurrent();
+                _ = StageScalar8VarIdentityShelfRewrite(shelfOffset, shelf, shelf.Bytes);
+                return true;
+            }
+
+            shelfOffset = nextShelfOffset;
+        }
+
+        return false;
+    }
+
+    private long DeleteScalar8VarIdentityRangeFromTarget(
+        long targetOffset,
+        int maxIdentityLength,
+        ulong lowerEncodedKey,
+        ulong upperEncodedKey,
+        RouteVisitedOffsetSet visitedShelves,
+        RouteVisitedOffsetSet visitedRouters,
+        int remainingRouterHops)
+    {
+        Scalar8VarIdentityRouteTargetKind kind = ClassifyScalar8VarIdentityRouteTarget(targetOffset);
+        if (kind == Scalar8VarIdentityRouteTargetKind.Shelf)
+        {
+            long currentShelfOffset = targetOffset;
+            long deletedFromChain = 0;
+            while (currentShelfOffset != 0)
+            {
+                if (!visitedShelves.Add(currentShelfOffset))
+                {
+                    break;
+                }
+
+                Scalar8VarIdentityMutableShelfView shelf = ReadScalar8VarIdentityMutableShelf(currentShelfOffset, maxIdentityLength);
+                long nextShelfOffset = Scalar8VarIdentityLayout.ReadNextShelfOffset(shelf.Bytes);
+                int deleted = shelf.MarkKeyRangeDeleted(lowerEncodedKey, upperEncodedKey);
+                if (deleted != 0)
+                {
+                    if (!durabilityBatchActive)
+                    {
+                        _ = shelf.NormalizeDeletedSlotsForPublication();
+                    }
+
+                    shelf.EnsureSlotBytesCurrent();
+                    _ = StageScalar8VarIdentityShelfRewrite(currentShelfOffset, shelf, shelf.Bytes);
+                    deletedFromChain += deleted;
+                }
+
+                currentShelfOffset = nextShelfOffset;
+            }
+
+            return deletedFromChain;
+        }
+
+        if (kind != Scalar8VarIdentityRouteTargetKind.Router)
+        {
+            throw new InvalidDataException("The routed SV8 delete target is not a shelf or router.");
+        }
+
+        if (!visitedRouters.Add(targetOffset))
+        {
+            return 0;
+        }
+
+        if (remainingRouterHops <= 0)
+        {
+            throw new InvalidDataException("The routed SV8 range delete exceeded the configured router hop count.");
+        }
+
+        long deletedFromChildren = 0;
+        Span<byte> routerBytes = stackalloc byte[RouterLayout.Size];
+        ReadRouterPageUsingArenaCache(targetOffset, routerBytes);
+        RouterReader reader = new(routerBytes);
+        if (!reader.IsValid)
+        {
+            throw new InvalidDataException("The routed SV8 range delete router is invalid.");
+        }
+
+        byte lowerPrefix = GetScalar8VarIdentityPrefix(lowerEncodedKey, reader.KeyDepth);
+        byte upperPrefix = GetScalar8VarIdentityPrefix(upperEncodedKey, reader.KeyDepth);
+        for (int prefix = lowerPrefix; prefix <= upperPrefix; prefix++)
+        {
+            long childTargetOffset = reader.FindTarget((byte)prefix);
+            if (childTargetOffset == 0)
+            {
+                continue;
+            }
+
+            deletedFromChildren += DeleteScalar8VarIdentityRangeFromTarget(
+                childTargetOffset,
+                maxIdentityLength,
+                lowerEncodedKey,
+                upperEncodedKey,
+                visitedShelves,
+                visitedRouters,
+                remainingRouterHops - 1);
+        }
+
+        return deletedFromChildren;
+    }
+
     internal byte[] ReadScalar8VarIdentityShelfBytes(long shelfOffset, int maxIdentityLength, out Scalar8VarIdentityProfile profile)
     {
         byte[] header = new byte[Scalar8VarIdentityLayout.HeaderSize];

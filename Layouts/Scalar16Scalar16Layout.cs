@@ -13,6 +13,7 @@ internal static class Scalar16Scalar16Layout
     public const ushort FormatVersion = 1;
     public const ushort HeaderSize = 32;
     public const int SlotSize = sizeof(ushort);
+    public const ushort DeletedSlotOffset = 0;
     public const int KeySize = sizeof(ulong) * 2;
     public const int IdentitySize = sizeof(ulong) * 2;
     public const int ItemSize = KeySize + IdentitySize;

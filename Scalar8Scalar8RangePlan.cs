@@ -14,17 +14,26 @@ internal sealed class Scalar8Scalar8RangePlan : IDisposable
     private const int DefaultCapacity = 8;
 
     internal byte[][] Shelves;
+    internal long[] ShelfOffsets;
     internal int[] StartSlots;
     internal int[] EndSlots;
     private bool disposed;
 
-    internal Scalar8Scalar8RangePlan(Scalar8Scalar8Profile profile)
+    internal Scalar8Scalar8RangePlan(LibraDexFileSession session, Scalar8Scalar8Profile profile)
     {
+        Session = session;
         Profile = profile;
         Shelves = ArrayPool<byte[]>.Shared.Rent(DefaultCapacity);
+        ShelfOffsets = ArrayPool<long>.Shared.Rent(DefaultCapacity);
         StartSlots = ArrayPool<int>.Shared.Rent(DefaultCapacity);
         EndSlots = ArrayPool<int>.Shared.Rent(DefaultCapacity);
     }
+
+    /// <summary>
+    /// Gets the owning file session used to stage shelf-local mutations against this retained plan.<br/>
+    /// Cursor-local mutation needs the same durable shelf offsets used by the plan so it can publish one compacted shelf rewrite without rewalking the route.<br/>
+    /// </summary>
+    internal LibraDexFileSession Session { get; }
 
     /// <summary>
     /// Gets the fixed shelf profile used to interpret every retained shelf image.<br/>
@@ -48,11 +57,12 @@ internal sealed class Scalar8Scalar8RangePlan : IDisposable
     /// Adds a retained shelf image when it contains at least one key in the inclusive encoded range.<br/>
     /// Empty shelf intervals return the provided buffer to the shared pool immediately because no consumer will reference it.<br/>
     /// </summary>
+    /// <param name="shelfOffset">The durable offset of the retained shelf image.</param>
     /// <param name="shelfBytes">The retained shelf image, rented from the shared byte array pool.</param>
     /// <param name="lowerEncodedKey">The inclusive lower encoded sortable key.</param>
     /// <param name="upperEncodedKey">The inclusive upper encoded sortable key.</param>
     /// <exception cref="InvalidDataException">Thrown when the supplied shelf image is not a valid `SS8-8` shelf.</exception>
-    internal void AddShelfRange(byte[] shelfBytes, ulong lowerEncodedKey, ulong upperEncodedKey)
+    internal void AddShelfRange(long shelfOffset, byte[] shelfBytes, ulong lowerEncodedKey, ulong upperEncodedKey)
     {
         ThrowIfDisposed();
 
@@ -82,6 +92,7 @@ internal sealed class Scalar8Scalar8RangePlan : IDisposable
         }
 
         Shelves[ShelfCount] = shelfBytes;
+        ShelfOffsets[ShelfCount] = shelfOffset;
         StartSlots[ShelfCount] = startSlot;
         EndSlots[ShelfCount] = endSlot;
         ShelfCount++;
@@ -140,9 +151,11 @@ internal sealed class Scalar8Scalar8RangePlan : IDisposable
         }
 
         ArrayPool<byte[]>.Shared.Return(Shelves, clearArray: true);
+        ArrayPool<long>.Shared.Return(ShelfOffsets, clearArray: false);
         ArrayPool<int>.Shared.Return(StartSlots, clearArray: false);
         ArrayPool<int>.Shared.Return(EndSlots, clearArray: false);
         Shelves = Array.Empty<byte[]>();
+        ShelfOffsets = Array.Empty<long>();
         StartSlots = Array.Empty<int>();
         EndSlots = Array.Empty<int>();
         ShelfCount = 0;
@@ -153,15 +166,19 @@ internal sealed class Scalar8Scalar8RangePlan : IDisposable
     {
         int newLength = checked(Shelves.Length * 2);
         byte[][] newShelves = ArrayPool<byte[]>.Shared.Rent(newLength);
+        long[] newShelfOffsets = ArrayPool<long>.Shared.Rent(newLength);
         int[] newStartSlots = ArrayPool<int>.Shared.Rent(newLength);
         int[] newEndSlots = ArrayPool<int>.Shared.Rent(newLength);
         Array.Copy(Shelves, newShelves, ShelfCount);
+        ShelfOffsets.AsSpan(0, ShelfCount).CopyTo(newShelfOffsets);
         StartSlots.AsSpan(0, ShelfCount).CopyTo(newStartSlots);
         EndSlots.AsSpan(0, ShelfCount).CopyTo(newEndSlots);
         ArrayPool<byte[]>.Shared.Return(Shelves, clearArray: true);
+        ArrayPool<long>.Shared.Return(ShelfOffsets, clearArray: false);
         ArrayPool<int>.Shared.Return(StartSlots, clearArray: false);
         ArrayPool<int>.Shared.Return(EndSlots, clearArray: false);
         Shelves = newShelves;
+        ShelfOffsets = newShelfOffsets;
         StartSlots = newStartSlots;
         EndSlots = newEndSlots;
     }

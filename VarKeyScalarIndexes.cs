@@ -94,6 +94,58 @@ public sealed class VarKeyScalar8Index : IDisposable
     }
 
     /// <summary>
+    /// Deletes all tuples whose raw-byte key is inside an inclusive `VS8` range.<br/>
+    /// The method opens a short durability batch so shelf-local deletes use the same tombstone sidecar and commit-time normalization path as bulk delete workloads.<br/>
+    /// This is internal to keep public data selection anchored on the condition builder while still letting maintained facades remove physical tuples efficiently.<br/>
+    /// </summary>
+    /// <param name="lowerKey">The inclusive lower raw key.</param>
+    /// <param name="upperKey">The inclusive upper raw key.</param>
+    /// <returns>The number of live tuples deleted.</returns>
+    internal long DeleteRange(ReadOnlySpan<byte> lowerKey, ReadOnlySpan<byte> upperKey)
+    {
+        ThrowIfDisposed();
+        using VarKeyScalar8Batch batch = BeginBatch();
+        long deleted = batch.DeleteRange(lowerKey, upperKey);
+        _ = batch.Commit();
+        return deleted;
+    }
+
+    /// <summary>
+    /// Deletes one exact raw-key and encoded-identity tuple from this routed `VS8` index.<br/>
+    /// The method opens a short durability batch so the physical delete uses the same tombstone sidecar path as condition-driven bulk deletes.<br/>
+    /// This is internal because public selection and mutation should flow through the condition builder or higher-level maintained facades.<br/>
+    /// </summary>
+    /// <param name="key">The exact raw key bytes.</param>
+    /// <param name="encodedIdentity">The exact encoded identity.</param>
+    /// <returns><see langword="true"/> when a live tuple was deleted.</returns>
+    internal bool DeleteExactTuple(ReadOnlySpan<byte> key, ulong encodedIdentity)
+    {
+        ThrowIfDisposed();
+        using VarKeyScalar8Batch batch = BeginBatch();
+        bool deleted = batch.DeleteExactTuple(key, encodedIdentity);
+        _ = batch.Commit();
+        return deleted;
+    }
+
+    /// <summary>
+    /// Deletes one exact raw-key and encoded-identity tuple using the caller's currently active durability scope.<br/>
+    /// Maintained facades use this to delete exact and projection tuples inside one shared batch without nesting batch lifetimes.<br/>
+    /// </summary>
+    /// <param name="key">The exact raw key bytes.</param>
+    /// <param name="encodedIdentity">The exact encoded identity.</param>
+    /// <returns><see langword="true"/> when a live tuple was deleted.</returns>
+    internal bool DeleteExactTupleInCurrentScope(ReadOnlySpan<byte> key, ulong encodedIdentity)
+    {
+        ThrowIfDisposed();
+        ValidateKeyLength(key, MaxKeyLength);
+        return session.DeleteVarKeyScalar8ExactTuple(
+            handle.RootRouterOffset,
+            handle.MaxKeyLength,
+            key,
+            encodedIdentity);
+    }
+
+    /// <summary>
     /// Reads encoded 8-byte identities for an inclusive raw-byte key range into caller-owned storage.<br/>
     /// The span-based shape keeps the fixed-identity public API allocation-light while higher-level enumerable or projection APIs remain future layers.<br/>
     /// </summary>
@@ -195,6 +247,14 @@ public sealed class VarKeyScalar8Index : IDisposable
             throw new ObjectDisposedException(nameof(VarKeyScalar8Index));
         }
     }
+
+    private static void ValidateKeyLength(ReadOnlySpan<byte> key, int maxKeyLength)
+    {
+        if (key.Length <= 0 || key.Length > maxKeyLength)
+        {
+            throw new ArgumentOutOfRangeException(nameof(key), key.Length, $"VS8 key length must be from 1 to {maxKeyLength} bytes.");
+        }
+    }
 }
 
 /// <summary>
@@ -290,6 +350,61 @@ public sealed class VarKeyScalar16Index : IDisposable
         VarKeyScalar16InsertOutcome result = batch.Insert(key, encodedIdentityHigh, encodedIdentityLow, allowDuplicateKeys);
         VarKeyScalarBatchCommitResult commit = batch.Commit();
         return result with { Commit = commit.Commit, DeferredCommitRequests = commit.DeferredCommitRequests };
+    }
+
+    /// <summary>
+    /// Deletes all tuples whose raw-byte key is inside an inclusive `VS16` range.<br/>
+    /// The method opens a short durability batch so shelf-local deletes use the same tombstone sidecar and commit-time normalization path as bulk delete workloads.<br/>
+    /// This is internal to keep public data selection anchored on the condition builder while still letting maintained facades remove physical tuples efficiently.<br/>
+    /// </summary>
+    /// <param name="lowerKey">The inclusive lower raw key.</param>
+    /// <param name="upperKey">The inclusive upper raw key.</param>
+    /// <returns>The number of live tuples deleted.</returns>
+    internal long DeleteRange(ReadOnlySpan<byte> lowerKey, ReadOnlySpan<byte> upperKey)
+    {
+        ThrowIfDisposed();
+        using VarKeyScalar16Batch batch = BeginBatch();
+        long deleted = batch.DeleteRange(lowerKey, upperKey);
+        _ = batch.Commit();
+        return deleted;
+    }
+
+    /// <summary>
+    /// Deletes one exact raw-key and encoded 16-byte identity tuple from this routed `VS16` index.<br/>
+    /// The method opens a short durability batch so the physical delete uses the same tombstone sidecar path as condition-driven bulk deletes.<br/>
+    /// This is internal because public selection and mutation should flow through the condition builder or higher-level maintained facades.<br/>
+    /// </summary>
+    /// <param name="key">The exact raw key bytes.</param>
+    /// <param name="encodedIdentityHigh">The high 8 bytes of the exact encoded identity.</param>
+    /// <param name="encodedIdentityLow">The low 8 bytes of the exact encoded identity.</param>
+    /// <returns><see langword="true"/> when a live tuple was deleted.</returns>
+    internal bool DeleteExactTuple(ReadOnlySpan<byte> key, ulong encodedIdentityHigh, ulong encodedIdentityLow)
+    {
+        ThrowIfDisposed();
+        using VarKeyScalar16Batch batch = BeginBatch();
+        bool deleted = batch.DeleteExactTuple(key, encodedIdentityHigh, encodedIdentityLow);
+        _ = batch.Commit();
+        return deleted;
+    }
+
+    /// <summary>
+    /// Deletes one exact raw-key and encoded 16-byte identity tuple using the caller's currently active durability scope.<br/>
+    /// Maintained facades use this to delete exact and projection tuples inside one shared batch without nesting batch lifetimes.<br/>
+    /// </summary>
+    /// <param name="key">The exact raw key bytes.</param>
+    /// <param name="encodedIdentityHigh">The high 8 bytes of the exact encoded identity.</param>
+    /// <param name="encodedIdentityLow">The low 8 bytes of the exact encoded identity.</param>
+    /// <returns><see langword="true"/> when a live tuple was deleted.</returns>
+    internal bool DeleteExactTupleInCurrentScope(ReadOnlySpan<byte> key, ulong encodedIdentityHigh, ulong encodedIdentityLow)
+    {
+        ThrowIfDisposed();
+        ValidateKeyLength(key, MaxKeyLength);
+        return session.DeleteVarKeyScalar16ExactTuple(
+            handle.RootRouterOffset,
+            handle.MaxKeyLength,
+            key,
+            encodedIdentityHigh,
+            encodedIdentityLow);
     }
 
     /// <summary>
@@ -397,6 +512,14 @@ public sealed class VarKeyScalar16Index : IDisposable
             throw new ObjectDisposedException(nameof(VarKeyScalar16Index));
         }
     }
+
+    private static void ValidateKeyLength(ReadOnlySpan<byte> key, int maxKeyLength)
+    {
+        if (key.Length <= 0 || key.Length > maxKeyLength)
+        {
+            throw new ArgumentOutOfRangeException(nameof(key), key.Length, $"VS16 key length must be from 1 to {maxKeyLength} bytes.");
+        }
+    }
 }
 
 /// <summary>
@@ -444,6 +567,43 @@ public sealed class VarKeyScalar8Batch : IDisposable
         VarKeyScalar8InsertOutcome publicResult = VarKeyScalar8InsertOutcome.FromStorage(result, createdInitialShelfRoute);
         Count(publicResult);
         return publicResult;
+    }
+
+    /// <summary>
+    /// Deletes all tuples whose raw-byte key is inside an inclusive `VS8` range without forcing a durable commit per range.<br/>
+    /// The owning session marks shelf-local tombstones during the batch and normalizes touched slot streams when the batch commits.<br/>
+    /// This keeps bulk condition deletes on the same routed shelf path as range reads while avoiding per-row exact tuple materialization.<br/>
+    /// </summary>
+    /// <param name="lowerKey">The inclusive lower raw key.</param>
+    /// <param name="upperKey">The inclusive upper raw key.</param>
+    /// <returns>The number of live tuples deleted.</returns>
+    internal long DeleteRange(ReadOnlySpan<byte> lowerKey, ReadOnlySpan<byte> upperKey)
+    {
+        ThrowIfCompleted();
+        ValidateKeyRange(lowerKey, upperKey, index.MaxKeyLength);
+        return index.Session.DeleteVarKeyScalar8KeyRange(
+            index.Handle.RootRouterOffset,
+            index.Handle.MaxKeyLength,
+            lowerKey,
+            upperKey);
+    }
+
+    /// <summary>
+    /// Deletes one exact raw-key and encoded-identity tuple without forcing a durable commit per tuple.<br/>
+    /// Projection-maintenance paths use this to remove exact projection rows without deleting other identities that share the same projected key.<br/>
+    /// </summary>
+    /// <param name="key">The exact raw key bytes.</param>
+    /// <param name="encodedIdentity">The exact encoded identity.</param>
+    /// <returns><see langword="true"/> when a live tuple was deleted.</returns>
+    internal bool DeleteExactTuple(ReadOnlySpan<byte> key, ulong encodedIdentity)
+    {
+        ThrowIfCompleted();
+        ValidateKeyLength(key, index.MaxKeyLength);
+        return index.Session.DeleteVarKeyScalar8ExactTuple(
+            index.Handle.RootRouterOffset,
+            index.Handle.MaxKeyLength,
+            key,
+            encodedIdentity);
     }
 
     /// <summary>
@@ -539,6 +699,12 @@ public sealed class VarKeyScalar8Batch : IDisposable
             throw new ArgumentOutOfRangeException(nameof(key), key.Length, $"VS8 key length must be from 1 to {maxKeyLength} bytes.");
         }
     }
+
+    private static void ValidateKeyRange(ReadOnlySpan<byte> lowerKey, ReadOnlySpan<byte> upperKey, int maxKeyLength)
+    {
+        ValidateKeyLength(lowerKey, maxKeyLength);
+        ValidateKeyLength(upperKey, maxKeyLength);
+    }
 }
 
 /// <summary>
@@ -592,6 +758,45 @@ public sealed class VarKeyScalar16Batch : IDisposable
         VarKeyScalar16InsertOutcome publicResult = VarKeyScalar16InsertOutcome.FromStorage(result, createdInitialShelfRoute);
         Count(publicResult);
         return publicResult;
+    }
+
+    /// <summary>
+    /// Deletes all tuples whose raw-byte key is inside an inclusive `VS16` range without forcing a durable commit per range.<br/>
+    /// The owning session marks shelf-local tombstones during the batch and normalizes touched slot streams when the batch commits.<br/>
+    /// This keeps bulk condition deletes on the same routed shelf path as range reads while avoiding per-row exact tuple materialization.<br/>
+    /// </summary>
+    /// <param name="lowerKey">The inclusive lower raw key.</param>
+    /// <param name="upperKey">The inclusive upper raw key.</param>
+    /// <returns>The number of live tuples deleted.</returns>
+    internal long DeleteRange(ReadOnlySpan<byte> lowerKey, ReadOnlySpan<byte> upperKey)
+    {
+        ThrowIfCompleted();
+        ValidateKeyRange(lowerKey, upperKey, index.MaxKeyLength);
+        return index.Session.DeleteVarKeyScalar16KeyRange(
+            index.Handle.RootRouterOffset,
+            index.Handle.MaxKeyLength,
+            lowerKey,
+            upperKey);
+    }
+
+    /// <summary>
+    /// Deletes one exact raw-key and encoded 16-byte identity tuple without forcing a durable commit per tuple.<br/>
+    /// Projection-maintenance paths use this to remove exact projection rows without deleting other identities that share the same projected key.<br/>
+    /// </summary>
+    /// <param name="key">The exact raw key bytes.</param>
+    /// <param name="encodedIdentityHigh">The high 8 bytes of the exact encoded identity.</param>
+    /// <param name="encodedIdentityLow">The low 8 bytes of the exact encoded identity.</param>
+    /// <returns><see langword="true"/> when a live tuple was deleted.</returns>
+    internal bool DeleteExactTuple(ReadOnlySpan<byte> key, ulong encodedIdentityHigh, ulong encodedIdentityLow)
+    {
+        ThrowIfCompleted();
+        ValidateKeyLength(key, index.MaxKeyLength);
+        return index.Session.DeleteVarKeyScalar16ExactTuple(
+            index.Handle.RootRouterOffset,
+            index.Handle.MaxKeyLength,
+            key,
+            encodedIdentityHigh,
+            encodedIdentityLow);
     }
 
     /// <summary>
@@ -686,6 +891,12 @@ public sealed class VarKeyScalar16Batch : IDisposable
         {
             throw new ArgumentOutOfRangeException(nameof(key), key.Length, $"VS16 key length must be from 1 to {maxKeyLength} bytes.");
         }
+    }
+
+    private static void ValidateKeyRange(ReadOnlySpan<byte> lowerKey, ReadOnlySpan<byte> upperKey, int maxKeyLength)
+    {
+        ValidateKeyLength(lowerKey, maxKeyLength);
+        ValidateKeyLength(upperKey, maxKeyLength);
     }
 }
 
