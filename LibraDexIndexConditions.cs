@@ -239,16 +239,36 @@ public class LibraDexConditionExpression<TIdentity>
 /// </summary>
 /// <typeparam name="TKey">The index key type.</typeparam>
 /// <typeparam name="TIdentity">The index identity type.</typeparam>
-public sealed class LibraDexIndexCondition<TKey, TIdentity> : LibraDexConditionExpression<TIdentity>
+public sealed class LibraDexIndexCondition<TKey, TIdentity>
 {
     private readonly LibraDexIndex<TKey, TIdentity> index;
 
     internal LibraDexIndexCondition(LibraDexIndex<TKey, TIdentity> index, LibraDexConditionEndCondition condition)
-        : base(condition)
     {
         ArgumentNullException.ThrowIfNull(index);
+        ArgumentNullException.ThrowIfNull(condition);
         this.index = index;
+        Condition = condition;
     }
+
+    /// <summary>
+    /// Gets the identity group shared by every index referenced by this fluent condition state.<br/>
+    /// </summary>
+    public string Group => Condition.Group;
+
+    internal LibraDexConditionEndCondition Condition { get; }
+
+    /// <summary>
+    /// Ends opened-index fluent construction and returns the reusable expression accepted by terminal APIs.<br/>
+    /// Until this boundary is reached the condition remains a continuation-capable grammar state, preserving Abraxas-style variablization and later `.And` / `.Or` continuation.<br/>
+    /// </summary>
+    public LibraDexConditionExpression<TIdentity> EndCondition => LibraDexConditionExpression<TIdentity>.From(Condition);
+
+    /// <summary>
+    /// Ends opened-index fluent construction and returns the reusable expression accepted by terminal APIs.<br/>
+    /// This compact alias mirrors the adopted condition builder's `ec` alias for callers that prefer terse handwritten filters.<br/>
+    /// </summary>
+    public LibraDexConditionExpression<TIdentity> ec => EndCondition;
 
     /// <summary>
     /// Continues this expression with another predicate over the same opened index using identity-set intersection.<br/>
@@ -318,6 +338,18 @@ public sealed class LibraDexIndexWhere<TKey, TIdentity>
     }
 
     /// <summary>
+    /// Resumes same-index condition grammar from an existing opened-index fluent state.<br/>
+    /// This overload lets callers store a continuable partial state and later continue it without closing and reopening the expression by hand.<br/>
+    /// </summary>
+    /// <param name="condition">The existing fluent condition state to continue.</param>
+    /// <returns>A same-index continuation rooted at the supplied fluent state.</returns>
+    public LibraDexIndexConditionContinuation<TKey, TIdentity> Continue(LibraDexIndexCondition<TKey, TIdentity> condition)
+    {
+        ArgumentNullException.ThrowIfNull(condition);
+        return Continue(condition.EndCondition);
+    }
+
+    /// <summary>
     /// Resumes same-index condition grammar from an existing reusable expression using union for the next predicate.<br/>
     /// This keeps staged same-index `.Or` continuation available even after a fragment has been widened to the common expression type.<br/>
     /// </summary>
@@ -336,6 +368,18 @@ public sealed class LibraDexIndexWhere<TKey, TIdentity>
             index,
             useOr: true,
             negateNext: false);
+    }
+
+    /// <summary>
+    /// Resumes same-index condition grammar from an existing opened-index fluent state using union for the next predicate.<br/>
+    /// This overload keeps variablized partial states continuable while still allowing explicit `.EndCondition` when passing to terminal APIs.<br/>
+    /// </summary>
+    /// <param name="condition">The existing fluent condition state to continue.</param>
+    /// <returns>A same-index union continuation rooted at the supplied fluent state.</returns>
+    public LibraDexIndexConditionContinuation<TKey, TIdentity> ContinueOr(LibraDexIndexCondition<TKey, TIdentity> condition)
+    {
+        ArgumentNullException.ThrowIfNull(condition);
+        return ContinueOr(condition.EndCondition);
     }
 
     /// <summary>

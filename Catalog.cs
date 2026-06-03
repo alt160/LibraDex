@@ -55,6 +55,14 @@ public sealed class Catalog : IDisposable
     public CatalogIndexFactories Indexes { get; }
 
     /// <summary>
+    /// Gets the grouped index factory surface for the supplied identity group.<br/>
+    /// This is the compact counterpart to `catalog.Indexes[group]`, keeping catalog-first code short without adding another index resolution path.<br/>
+    /// </summary>
+    /// <param name="group">The identity group name.</param>
+    /// <returns>The grouped index factory surface for the supplied identity group.</returns>
+    public CatalogIdentityGroupIndexes this[string group] => Indexes[group];
+
+    /// <summary>
     /// Gets passive catalog-level stats and marker/delta helpers.<br/>
     /// Catalog stats answer file/group-level questions without forcing callers into benchmark-only APIs or hidden expensive layout scans.<br/>
     /// </summary>

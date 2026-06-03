@@ -21,7 +21,8 @@ public sealed partial class LibraDexFileSession
         int maxKeyLength,
         ReadOnlySpan<byte> lowerKey,
         ReadOnlySpan<byte> upperKey,
-        int maxRouterHops = DefaultVarKeyScalar8MaxRouterHops)
+        int maxRouterHops = DefaultVarKeyScalar8MaxRouterHops,
+        bool decodeLogicalKeys = false)
     {
         if (lowerKey.SequenceCompareTo(upperKey) > 0)
         {
@@ -33,7 +34,7 @@ public sealed partial class LibraDexFileSession
             throw new ArgumentOutOfRangeException(nameof(maxRouterHops), maxRouterHops, "The VS8 range reader maximum router hop count must be positive.");
         }
 
-        return new VarKeyScalar8RangeReader(this, rootRouterOffset, maxKeyLength, lowerKey, upperKey, maxRouterHops);
+        return new VarKeyScalar8RangeReader(this, rootRouterOffset, maxKeyLength, lowerKey, upperKey, maxRouterHops, decodeLogicalKeys);
     }
 
     /// <summary>
@@ -53,7 +54,8 @@ public sealed partial class LibraDexFileSession
         int maxKeyLength,
         ReadOnlySpan<byte> lowerKey,
         ReadOnlySpan<byte> upperKey,
-        int maxRouterHops = DefaultVarKeyScalar16MaxRouterHops)
+        int maxRouterHops = DefaultVarKeyScalar16MaxRouterHops,
+        bool decodeLogicalKeys = false)
     {
         if (lowerKey.SequenceCompareTo(upperKey) > 0)
         {
@@ -65,7 +67,7 @@ public sealed partial class LibraDexFileSession
             throw new ArgumentOutOfRangeException(nameof(maxRouterHops), maxRouterHops, "The VS16 range reader maximum router hop count must be positive.");
         }
 
-        return new VarKeyScalar16RangeReader(this, rootRouterOffset, maxKeyLength, lowerKey, upperKey, maxRouterHops);
+        return new VarKeyScalar16RangeReader(this, rootRouterOffset, maxKeyLength, lowerKey, upperKey, maxRouterHops, decodeLogicalKeys);
     }
 
     /// <summary>

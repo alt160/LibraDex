@@ -444,7 +444,8 @@ public sealed partial class LibraDexFileSession
         int maxIdentityLength,
         ReadOnlySpan<byte> lowerKey,
         ReadOnlySpan<byte> upperKey,
-        int maxRouterHops = DefaultVarKeyVarIdentityMaxRouterHops)
+        int maxRouterHops = DefaultVarKeyVarIdentityMaxRouterHops,
+        bool decodeLogicalKeys = false)
     {
         if (lowerKey.SequenceCompareTo(upperKey) > 0)
         {
@@ -463,7 +464,8 @@ public sealed partial class LibraDexFileSession
             maxIdentityLength,
             lowerKey,
             upperKey,
-            maxRouterHops);
+            maxRouterHops,
+            decodeLogicalKeys);
     }
 
     /// <summary>

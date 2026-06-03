@@ -95,16 +95,17 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
 
     /// <summary>
     /// Inserts one exact string key and scalar identity, also maintaining the folded-text and sort-key projections when present.<br/>
+    /// A null key is encoded as the ordered string null sentinel, which sorts before empty and non-empty string values.<br/>
     /// The exact and projection keys are written in the same call so condition projection retrieval does not require callers to manually populate companion indexes.<br/>
     /// </summary>
-    /// <param name="key">The developer-facing string key.</param>
+    /// <param name="key">The developer-facing string key, or null for the null-key sentinel.</param>
     /// <param name="identity">The scalar identity to associate with the key.</param>
     /// <returns>The exact-index insert outcome projected to the generic insert result shape.</returns>
-    public LibraDexGenericInsertResult Insert(string key, ulong identity)
+    public LibraDexGenericInsertResult Insert(string? key, ulong identity)
     {
         ThrowIfDisposed();
         byte[] exactKey = Encode(key);
-        VarKeyScalar8InsertOutcome exactResult = exact.Insert(exactKey, identity);
+        VarKeyScalar8InsertOutcome exactResult = exact.InsertEncoded(exactKey, identity);
         if (folded is not null)
         {
             _ = folded.InsertProjected(key, identity);
@@ -133,13 +134,13 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
     }
 
     /// <summary>
-    /// Adds one exact string key and scalar identity, maintaining any owned projections the same way as <see cref="Insert(string, ulong)"/>.<br/>
+    /// Adds one exact string key and scalar identity, maintaining any owned projections the same way as <see cref="Insert(string?, ulong)"/>.<br/>
     /// This is the preferred public spelling for ordinary logical string index population.<br/>
     /// </summary>
-    /// <param name="key">The developer-facing string key.</param>
+    /// <param name="key">The developer-facing string key, or null for the null-key sentinel.</param>
     /// <param name="identity">The scalar identity to associate with the key.</param>
     /// <returns>The exact-index insert outcome projected to the generic insert result shape.</returns>
-    public LibraDexGenericInsertResult Add(string key, ulong identity)
+    public LibraDexGenericInsertResult Add(string? key, ulong identity)
     {
         return Insert(key, identity);
     }
@@ -151,7 +152,7 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
     /// <param name="key">The runtime key, which must be a string.</param>
     /// <param name="identity">The runtime identity, which must be a UInt64.</param>
     /// <returns>The insert result.</returns>
-    public LibraDexGenericInsertResult Insert(object key, object identity)
+    public LibraDexGenericInsertResult Insert(object? key, object identity)
     {
         return Insert(
             RequireStringKey(key, nameof(key)),
@@ -165,7 +166,7 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
     /// <param name="key">The runtime string key to delete.</param>
     /// <param name="identity">The runtime UInt64 identity to delete.</param>
     /// <returns><see langword="true"/> when the exact tuple was removed.</returns>
-    public bool Delete(object key, object identity)
+    public bool Delete(object? key, object identity)
     {
         return DeleteExactTuple(RequireStringKey(key, nameof(key)), RequireScalar8Identity(identity, nameof(identity)));
     }
@@ -178,11 +179,11 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
     /// <param name="oldKey">The current runtime string key.</param>
     /// <param name="newKey">The replacement runtime string key.</param>
     /// <returns><see langword="true"/> when the old tuple existed and was removed after the replacement was available.</returns>
-    public bool Rekey(object identity, object oldKey, object newKey)
+    public bool Rekey(object identity, object? oldKey, object? newKey)
     {
         ulong typedIdentity = RequireScalar8Identity(identity, nameof(identity));
-        string typedOldKey = RequireStringKey(oldKey, nameof(oldKey));
-        string typedNewKey = RequireStringKey(newKey, nameof(newKey));
+        string? typedOldKey = RequireStringKey(oldKey, nameof(oldKey));
+        string? typedNewKey = RequireStringKey(newKey, nameof(newKey));
         if (string.Equals(typedOldKey, typedNewKey, StringComparison.Ordinal))
         {
             return false;
@@ -212,11 +213,11 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
     /// <param name="identity">The runtime UInt64 identity to move.</param>
     /// <param name="newKey">The replacement runtime string key.</param>
     /// <returns>The number of old tuples removed after replacement tuples were available.</returns>
-    public long Rekey(object identity, object newKey)
+    public long Rekey(object identity, object? newKey)
     {
         ulong typedIdentity = RequireScalar8Identity(identity, nameof(identity));
-        string typedNewKey = RequireStringKey(newKey, nameof(newKey));
-        List<string> oldKeys = new();
+        string? typedNewKey = RequireStringKey(newKey, nameof(newKey));
+        List<string?> oldKeys = new();
         List<StringScalar8Tuple> tuples = MaterializeExactTuples(
             new LibraDexIdentityPrimitiveRequest(LibraDexCriteriaKind.All, Array.Empty<object?>()));
         for (int i = 0; i < tuples.Count; i++)
@@ -249,16 +250,27 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         ArgumentNullException.ThrowIfNull(keys);
         if (keys is ISet<object> objectSet)
         {
-            foreach (object key in objectSet)
+            foreach (object? key in objectSet)
             {
-                _ = key as string ?? throw new ArgumentException("String indexes require string membership keys.", nameof(keys));
+                if (key is not null && key is not string)
+                {
+                    throw new ArgumentException("String indexes require string membership keys.", nameof(keys));
+                }
             }
 
             IEqualityComparer<object>? comparer = objectSet is HashSet<object> hashSet ? hashSet.Comparer : null;
             return new LibraDexPreparedObjectSet(typeof(string), values: null, objectSet, comparer);
         }
 
-        return new LibraDexPreparedObjectSet(typeof(string), keys.Select(key => key as string ?? throw new ArgumentException("String indexes require string membership keys.", nameof(keys))).Cast<object>().ToArray());
+        return new LibraDexPreparedObjectSet(typeof(string), keys.Select(key =>
+        {
+            if (key is null)
+            {
+                return null;
+            }
+
+            return key as string ?? throw new ArgumentException("String indexes require string membership keys.", nameof(keys));
+        }).Cast<object>().ToArray());
     }
 
     /// <summary>
@@ -320,12 +332,12 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         return ExecuteTuplePrimitive(request);
     }
 
-    bool IIdentityExactTupleMutator.ContainsExactTuple(object key, object identity)
+    bool IIdentityExactTupleMutator.ContainsExactTuple(object? key, object identity)
     {
         return ContainsExactTuple(RequireStringKey(key, nameof(key)), RequireScalar8Identity(identity, nameof(identity)));
     }
 
-    bool IIdentityExactTupleMutator.DeleteExactTuple(object key, object identity)
+    bool IIdentityExactTupleMutator.DeleteExactTuple(object? key, object identity)
     {
         return DeleteExactTuple(RequireStringKey(key, nameof(key)), RequireScalar8Identity(identity, nameof(identity)));
     }
@@ -427,11 +439,11 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
     /// <param name="key">The exact string key to test.</param>
     /// <param name="identity">The scalar identity to test.</param>
     /// <returns><see langword="true"/> when the exact tuple exists.</returns>
-    private bool ContainsExactTuple(string key, ulong identity)
+    private bool ContainsExactTuple(string? key, ulong identity)
     {
         ThrowIfDisposed();
         byte[] encodedKey = Encode(key);
-        using VarKeyScalar8RangeReader reader = exact.OpenRangeReader(encodedKey, encodedKey);
+        using VarKeyScalar8RangeReader reader = exact.OpenEncodedRangeReader(encodedKey, encodedKey);
         while (reader.MoveNext())
         {
             if (reader.CurrentEncodedIdentity == identity)
@@ -447,10 +459,10 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
     /// Deletes one exact string key and scalar identity tuple while maintaining every owned projection tuple.<br/>
     /// The exact and projection rows are removed inside one `VS8` durability batch so condition `SetKey` cannot leave stale folded, sort-key, or reversed rows for the old key.<br/>
     /// </summary>
-    /// <param name="key">The exact string key to delete.</param>
+    /// <param name="key">The exact string key to delete, or null for the null-key sentinel.</param>
     /// <param name="identity">The scalar identity to delete.</param>
     /// <returns><see langword="true"/> when the exact tuple was removed.</returns>
-    private bool DeleteExactTuple(string key, ulong identity)
+    private bool DeleteExactTuple(string? key, ulong identity)
     {
         ThrowIfDisposed();
         using VarKeyScalar8Batch batch = exact.BeginBatch();
@@ -468,9 +480,9 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
     /// Deletes maintained projection tuples for one exact string key inside the caller's active durability scope.<br/>
     /// Projection deletes are exact tuple deletes so folded-text and sort-key collisions preserve neighboring logical rows that share the projected key bytes.<br/>
     /// </summary>
-    /// <param name="key">The original exact string key.</param>
+    /// <param name="key">The original exact string key, or null for the null-key sentinel.</param>
     /// <param name="identity">The scalar identity paired with the key.</param>
-    private void DeleteProjectionTuplesInCurrentScope(string key, ulong identity)
+    private void DeleteProjectionTuplesInCurrentScope(string? key, ulong identity)
     {
         exactReversed?.DeleteProjectedExactTuple(Reverse(key), identity);
         folded?.DeleteProjectedExactTuple(key, identity);
@@ -530,7 +542,7 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         int? takeLimit)
     {
         List<StringScalar8Tuple> tuples = new();
-        using VarKeyScalar8RangeReader reader = exact.OpenRangeReader(lower, upper);
+        using VarKeyScalar8RangeReader reader = exact.OpenEncodedRangeReader(lower, upper);
         while (reader.MoveNext())
         {
             byte[] keyBytes = reader.MaterializeCurrentKey();
@@ -539,8 +551,8 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
                 continue;
             }
 
-            string key = Decode(keyBytes);
-            if (textFilter is not null && !textFilter(key))
+            string? key = Decode(keyBytes);
+            if (textFilter is not null && (key is null || !textFilter(key)))
             {
                 continue;
             }
@@ -608,9 +620,14 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
                 throw new InvalidOperationException("String membership primitive requires an object enumerable operand.");
             }
 
-            foreach (object item in objects)
+            foreach (object? item in objects)
             {
-                string key = item as string ?? throw new InvalidOperationException("String membership primitive requires string values.");
+                string? key = item as string;
+                if (item is not null && key is null)
+                {
+                    throw new InvalidOperationException("String membership primitive requires string values.");
+                }
+
                 tuples.AddRange(MaterializeExactTuplesInRange(Encode(key), Encode(key), keyFilter: null, textFilter: null, RemainingTake(takeLimit, tuples.Count)));
                 if (takeLimit is int limit && tuples.Count >= limit)
                 {
@@ -714,14 +731,14 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
     private static IEnumerable<object> IterateIdentityPrimitiveCore(
         LibraDexIdentityPrimitiveRequest request,
         VarKeyScalar8Index index,
-        Func<string, string> transform)
+        Func<string?, string?> transform)
     {
         switch (request.CriteriaKind)
         {
             case LibraDexCriteriaKind.All:
                 return IterateAll(index);
             case LibraDexCriteriaKind.Find:
-                string key = transform(RequireString(request.Values, 0));
+                string? key = transform(RequireString(request.Values, 0));
                 return IterateRange(index, key, key, null);
             case LibraDexCriteriaKind.Between:
                 return IterateRange(index, transform(RequireString(request.Values, 0)), transform(RequireString(request.Values, 1)), request.TakeLimit);
@@ -747,7 +764,7 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         return IterateRange(index, FullLowerBound(), FullUpperBound(), null);
     }
 
-    private static IEnumerable<object> IterateRange(VarKeyScalar8Index index, string lower, string upper, int? takeLimit)
+    private static IEnumerable<object> IterateRange(VarKeyScalar8Index index, string? lower, string? upper, int? takeLimit)
     {
         return IterateRange(index, Encode(lower), Encode(upper), takeLimit);
     }
@@ -769,7 +786,7 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
     /// <returns>The matching scalar identities as runtime objects.</returns>
     private static IEnumerable<object> IterateRange(VarKeyScalar8Index index, byte[] lower, byte[] upper, int? takeLimit, Func<byte[], bool>? keyFilter)
     {
-        using VarKeyScalar8RangeReader reader = index.OpenRangeReader(lower, upper);
+        using VarKeyScalar8RangeReader reader = index.OpenEncodedRangeReader(lower, upper);
         int yielded = 0;
         while (reader.MoveNext())
         {
@@ -828,7 +845,7 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
     private static IEnumerable<object> IterateMembership(
         VarKeyScalar8Index index,
         IReadOnlyList<object?> values,
-        Func<string, string> transform,
+        Func<string?, string?> transform,
         int? takeLimit)
     {
         int yielded = 0;
@@ -839,9 +856,15 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
                 throw new InvalidOperationException("String membership primitive requires an object enumerable operand.");
             }
 
-            foreach (object item in objects)
+            foreach (object? item in objects)
             {
-                string key = transform(item as string ?? throw new InvalidOperationException("String membership primitive requires string values."));
+                string? key = item as string;
+                if (item is not null && key is null)
+                {
+                    throw new InvalidOperationException("String membership primitive requires string values.");
+                }
+
+                key = transform(key);
                 foreach (object identity in IterateRange(index, key, key, null))
                 {
                     yield return identity;
@@ -913,12 +936,12 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         LibraDexStringPatternPredicate predicate,
         int? takeLimit)
     {
-        using VarKeyScalar8RangeReader reader = index.OpenRangeReader(lower, upper);
+        using VarKeyScalar8RangeReader reader = index.OpenEncodedRangeReader(lower, upper);
         int yielded = 0;
         while (reader.MoveNext())
         {
-            string candidate = Decode(reader.CurrentKey);
-            if (!predicate.Matches(candidate))
+            string? candidate = Decode(reader.CurrentKey);
+            if (candidate is null || !predicate.Matches(candidate))
             {
                 continue;
             }
@@ -932,10 +955,16 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         }
     }
 
-    private static string RequireString(IReadOnlyList<object?> values, int ordinal)
+    private static string? RequireString(IReadOnlyList<object?> values, int ordinal)
     {
-        return values.Count > ordinal && values[ordinal] is string text
-            ? text
+        if (values.Count <= ordinal)
+        {
+            throw new InvalidOperationException("String primitive requests require string operands.");
+        }
+
+        object? value = values[ordinal];
+        return value is null || value is string
+            ? (string?)value
             : throw new InvalidOperationException("String primitive requests require string operands.");
     }
 
@@ -946,9 +975,11 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
             : throw new InvalidOperationException("String pattern primitive requests require a string predicate operand.");
     }
 
-    private static string RequireStringKey(object value, string paramName)
+    private static string? RequireStringKey(object? value, string paramName)
     {
-        return value as string ?? throw new ArgumentException("String indexes require string keys.", paramName);
+        return value is null || value is string
+            ? (string?)value
+            : throw new ArgumentException("String indexes require string keys.", paramName);
     }
 
     private static ulong RequireScalar8Identity(object value, string paramName)
@@ -964,11 +995,14 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
     /// Encodes one developer-facing string into LibraDex's ordered string-key byte contract.<br/>
     /// A sentinel byte keeps null, empty, and non-empty text distinct while preserving byte-ordered routing for normal UTF-8 string payloads.<br/>
     /// </summary>
-    /// <param name="value">The non-null string value to encode.</param>
+    /// <param name="value">The string value to encode, or null for the null-key sentinel.</param>
     /// <returns>The encoded string key bytes.</returns>
-    private static byte[] Encode(string value)
+    private static byte[] Encode(string? value)
     {
-        ArgumentNullException.ThrowIfNull(value);
+        if (value is null)
+        {
+            return new[] { StringNullMarker };
+        }
 
         if (value.Length == 0)
         {
@@ -984,11 +1018,11 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
 
     /// <summary>
     /// Decodes one LibraDex ordered string-key value back into the developer-facing string value.<br/>
-    /// The null marker is reserved for a future explicit null-key policy and is intentionally rejected by the current non-null string facade.<br/>
+    /// The null marker returns null so null-key tuples remain queryable and mutable through the logical string facade.<br/>
     /// </summary>
     /// <param name="encoded">The encoded string key bytes.</param>
-    /// <returns>The decoded non-null string value.</returns>
-    private static string Decode(ReadOnlySpan<byte> encoded)
+    /// <returns>The decoded string value, or null for the null-key sentinel.</returns>
+    private static string? Decode(ReadOnlySpan<byte> encoded)
     {
         if (encoded.Length == 1 && encoded[0] == StringEmptyMarker)
         {
@@ -1002,7 +1036,7 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
 
         if (encoded.Length > 0 && encoded[0] == StringNullMarker)
         {
-            throw new InvalidOperationException("String null-key marker is reserved but not enabled for this string index.");
+            return null;
         }
 
         throw new InvalidDataException("String index key did not use a recognized LibraDex string sentinel marker.");
@@ -1032,11 +1066,16 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
     /// Folds one string using the projection culture chosen when the string index was created.<br/>
     /// This mirrors the condition bridge's invariant-or-named culture behavior so projection lookup operands and maintained keys stay byte-compatible.<br/>
     /// </summary>
-    /// <param name="value">The original developer-facing string value.</param>
+    /// <param name="value">The original developer-facing string value, or null for the null-key sentinel.</param>
     /// <param name="culture">The projection culture.</param>
-    /// <returns>The culture-folded string value.</returns>
-    private static string Fold(string value, CultureInfo culture)
+    /// <returns>The culture-folded string value, or null for the null-key sentinel.</returns>
+    private static string? Fold(string? value, CultureInfo culture)
     {
+        if (value is null)
+        {
+            return null;
+        }
+
         return value.ToLower(culture);
     }
 
@@ -1044,11 +1083,15 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
     /// Reverses a folded string by UTF-16 code unit positions for maintained suffix projection keys.<br/>
     /// LibraDex stores the reversed folded value at insert time so suffix conditions can become ordinary prefix-like ordered extents over the reversed projection.<br/>
     /// </summary>
-    /// <param name="value">The folded string value to reverse.</param>
-    /// <returns>The reversed folded string.</returns>
-    private static string Reverse(string value)
+    /// <param name="value">The folded string value to reverse, or null for the null-key sentinel.</param>
+    /// <returns>The reversed folded string, or null for the null-key sentinel.</returns>
+    private static string? Reverse(string? value)
     {
-        ArgumentNullException.ThrowIfNull(value);
+        if (value is null)
+        {
+            return null;
+        }
+
         return string.Create(value.Length, value, static (destination, source) =>
         {
             for (int i = 0; i < source.Length; i++)
@@ -1062,11 +1105,16 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
     /// Creates a culture-sensitive sort-key projection value for one string.<br/>
     /// The returned bytes are stored directly in the maintained sort-key `VS8` projection and later compared through ordinary byte-range primitives.<br/>
     /// </summary>
-    /// <param name="value">The original developer-facing string value.</param>
+    /// <param name="value">The original developer-facing string value, or null for the null-key sentinel.</param>
     /// <param name="culture">The projection culture.</param>
     /// <returns>The sort-key bytes for ignore-case comparison in the supplied culture.</returns>
-    private static byte[] CreateSortKey(string value, CultureInfo culture)
+    private static byte[] CreateSortKey(string? value, CultureInfo culture)
     {
+        if (value is null)
+        {
+            return new[] { StringNullMarker };
+        }
+
         return culture.CompareInfo.GetSortKey(value, CompareOptions.IgnoreCase).KeyData;
     }
 
@@ -1103,14 +1151,14 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         }
     }
 
-    private readonly record struct StringScalar8Tuple(string Key, ulong Identity);
+    private readonly record struct StringScalar8Tuple(string? Key, ulong Identity);
 
     private sealed class LibraDexStringScalar8ProjectionIndex : IIndex, IIdentityPrimitiveExecutor, IDisposable
     {
         private readonly VarKeyScalar8Index index;
-        private readonly Func<string, string> transform;
+        private readonly Func<string?, string?> transform;
 
-        internal LibraDexStringScalar8ProjectionIndex(string group, string name, VarKeyScalar8Index index, Func<string, string> transform)
+        internal LibraDexStringScalar8ProjectionIndex(string group, string name, VarKeyScalar8Index index, Func<string?, string?> transform)
         {
             Group = group;
             Name = name;
@@ -1137,13 +1185,13 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         public LibraDexGenericInsertResult Insert(object key, object identity)
         {
             return InsertProjected(
-                key as string ?? throw new ArgumentException("String projection indexes require string keys.", nameof(key)),
+                RequireStringKey(key, nameof(key)),
                 identity is ulong typed ? typed : throw new ArgumentException("String projection indexes require UInt64 identities.", nameof(identity)));
         }
 
-        public LibraDexGenericInsertResult InsertProjected(string key, ulong identity)
+        public LibraDexGenericInsertResult InsertProjected(string? key, ulong identity)
         {
-            VarKeyScalar8InsertOutcome result = index.Insert(Encode(transform(key)), identity);
+            VarKeyScalar8InsertOutcome result = index.InsertEncoded(Encode(transform(key)), identity);
             return new LibraDexGenericInsertResult(result.Inserted, result.CreatedInitialShelfRoute, default, result.Commit);
         }
 
@@ -1155,7 +1203,7 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         /// <param name="key">The projection source key value expected by this projection wrapper.</param>
         /// <param name="identity">The encoded scalar identity to delete.</param>
         /// <returns><see langword="true"/> when a live projection tuple was deleted.</returns>
-        internal bool DeleteProjectedExactTuple(string key, ulong identity)
+        internal bool DeleteProjectedExactTuple(string? key, ulong identity)
         {
             return index.DeleteExactTupleInCurrentScope(Encode(transform(key)), identity);
         }
@@ -1163,7 +1211,16 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         public LibraDexPreparedObjectSet PrepareInSet(IEnumerable<object> keys)
         {
             ArgumentNullException.ThrowIfNull(keys);
-            return new LibraDexPreparedObjectSet(typeof(string), keys.Select(key => key as string ?? throw new ArgumentException("String projection indexes require string keys.", nameof(keys))).Cast<object>().ToArray());
+            return new LibraDexPreparedObjectSet(typeof(string), keys.Select(key =>
+            {
+                string? text = key as string;
+                if (key is not null && text is null)
+                {
+                    throw new ArgumentException("String projection indexes require string keys.", nameof(keys));
+                }
+
+                return text!;
+            }).ToArray());
         }
 
         public void Dispose()
@@ -1247,7 +1304,7 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         /// <returns><see langword="true"/> when a live projection tuple was deleted.</returns>
         internal bool DeleteProjectedExactTuple(byte[] key, ulong identity)
         {
-            return index.DeleteExactTupleInCurrentScope(key, identity);
+            return index.DeleteExactTupleInCurrentScope(LibraDexVarLenKeyCodec.Encode(key, index.Handle.MaxKeyLength, nameof(key)), identity);
         }
 
         public LibraDexPreparedObjectSet PrepareInSet(IEnumerable<object> keys)
@@ -1298,20 +1355,20 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
             switch (request.CriteriaKind)
             {
                 case LibraDexCriteriaKind.All:
-                    return IterateAll(index);
+                    return IterateLogicalByteRange(index, Array.Empty<byte>(), new byte[] { 0xFF }, null);
                 case LibraDexCriteriaKind.Find:
                     byte[] key = RequireBytes(request.Values, 0);
-                    return IterateRange(index, key, key, null);
+                    return IterateLogicalByteRange(index, key, key, null);
                 case LibraDexCriteriaKind.Between:
-                    return IterateRange(index, RequireBytes(request.Values, 0), RequireBytes(request.Values, 1), request.TakeLimit);
+                    return IterateLogicalByteRange(index, RequireBytes(request.Values, 0), RequireBytes(request.Values, 1), request.TakeLimit);
                 case LibraDexCriteriaKind.Before:
-                    return IterateBefore(index, RequireBytes(request.Values, 0), inclusive: false, request.TakeLimit);
+                    return IterateLogicalByteBefore(index, RequireBytes(request.Values, 0), inclusive: false, request.TakeLimit);
                 case LibraDexCriteriaKind.AtOrBefore:
-                    return IterateBefore(index, RequireBytes(request.Values, 0), inclusive: true, request.TakeLimit);
+                    return IterateLogicalByteBefore(index, RequireBytes(request.Values, 0), inclusive: true, request.TakeLimit);
                 case LibraDexCriteriaKind.After:
-                    return IterateAfter(index, RequireBytes(request.Values, 0), inclusive: false, request.TakeLimit);
+                    return IterateLogicalByteAfter(index, RequireBytes(request.Values, 0), inclusive: false, request.TakeLimit);
                 case LibraDexCriteriaKind.AtOrAfter:
-                    return IterateAfter(index, RequireBytes(request.Values, 0), inclusive: true, request.TakeLimit);
+                    return IterateLogicalByteAfter(index, RequireBytes(request.Values, 0), inclusive: true, request.TakeLimit);
                 case LibraDexCriteriaKind.InSet:
                     return IterateByteMembership(index, request.Values, request.TakeLimit);
                 default:
@@ -1340,7 +1397,7 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
                 foreach (object item in objects)
                 {
                     byte[] key = item as byte[] ?? throw new InvalidOperationException("Sort-key membership primitive requires byte[] values.");
-                    foreach (object identity in IterateRange(index, key, key, null))
+                    foreach (object identity in IterateLogicalByteRange(index, key, key, null))
                     {
                         yield return identity;
                         yielded++;
@@ -1351,6 +1408,52 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
                     }
                 }
             }
+        }
+
+        private static IEnumerable<object> IterateLogicalByteRange(VarKeyScalar8Index index, byte[] lower, byte[] upper, int? takeLimit)
+        {
+            return IterateLogicalByteRange(index, lower, upper, takeLimit, keyFilter: null);
+        }
+
+        private static IEnumerable<object> IterateLogicalByteRange(VarKeyScalar8Index index, byte[] lower, byte[] upper, int? takeLimit, Func<byte[], bool>? keyFilter)
+        {
+            using VarKeyScalar8RangeReader reader = index.OpenRangeReader(lower, upper);
+            int yielded = 0;
+            while (reader.MoveNext())
+            {
+                byte[] key = reader.MaterializeCurrentKey();
+                if (keyFilter is not null && !keyFilter(key))
+                {
+                    continue;
+                }
+
+                yield return reader.CurrentEncodedIdentity;
+                yielded++;
+                if (takeLimit is int limit && yielded >= limit)
+                {
+                    yield break;
+                }
+            }
+        }
+
+        private static IEnumerable<object> IterateLogicalByteBefore(VarKeyScalar8Index index, byte[] boundary, bool inclusive, int? takeLimit)
+        {
+            return IterateLogicalByteRange(
+                index,
+                Array.Empty<byte>(),
+                boundary,
+                takeLimit,
+                inclusive ? null : key => key.AsSpan().SequenceCompareTo(boundary) < 0);
+        }
+
+        private static IEnumerable<object> IterateLogicalByteAfter(VarKeyScalar8Index index, byte[] boundary, bool inclusive, int? takeLimit)
+        {
+            return IterateLogicalByteRange(
+                index,
+                boundary,
+                new byte[] { 0xFF },
+                takeLimit,
+                inclusive ? null : key => key.AsSpan().SequenceCompareTo(boundary) > 0);
         }
 
         /// <summary>

@@ -44,10 +44,10 @@ public sealed class VarKeyScalar8Index : IDisposable
     public long RootRouterOffset => handle.RootRouterOffset;
 
     /// <summary>
-    /// Gets the maximum raw key length accepted by this wrapper.<br/>
-    /// The value is an API-level guard over the current routed `VS8` profile family, not a text or path codec decision.<br/>
+    /// Gets the maximum developer-facing key payload length accepted by this wrapper.<br/>
+    /// The routed `VS8` storage shape reserves one internal sentinel byte so null, empty, and non-empty variable-length keys remain distinct and sortable.<br/>
     /// </summary>
-    public int MaxKeyLength => handle.MaxKeyLength;
+    public int MaxKeyLength => LibraDexVarLenKeyCodec.GetMaxLogicalLength(handle.MaxKeyLength);
 
     /// <summary>
     /// Gets the DataKernel backing kind used by the owning session.<br/>
@@ -73,11 +73,12 @@ public sealed class VarKeyScalar8Index : IDisposable
     }
 
     /// <summary>
-    /// Inserts one raw-byte key and encoded 8-byte identity into this routed `VS8` index.<br/>
+    /// Inserts one developer-facing key payload and encoded 8-byte identity into this routed `VS8` index.<br/>
+    /// Null keys are available through the nullable byte-array overload; an empty span represents the distinct empty-key sentinel.<br/>
     /// The method opens a short durability batch, applies one routed insert, and commits it so low-friction callers do not need an explicit batch for single writes.<br/>
     /// Hot multi-write callers should prefer `BeginBatch` to control commit cadence.<br/>
     /// </summary>
-    /// <param name="key">The raw sortable key bytes.</param>
+    /// <param name="key">The developer-facing key payload bytes.</param>
     /// <param name="encodedIdentity">The already encoded sortable 8-byte identity.</param>
     /// <param name="allowDuplicateKeys">Whether multiple identities may share the same key.</param>
     /// <returns>The operation-facing insert outcome plus batch commit telemetry.</returns>
@@ -94,6 +95,39 @@ public sealed class VarKeyScalar8Index : IDisposable
     }
 
     /// <summary>
+    /// Inserts one nullable developer-facing key payload and encoded 8-byte identity into this routed `VS8` index.<br/>
+    /// A null key sorts before an empty key, and both sort before non-empty payload keys by means of LibraDex's reserved first-byte sentinel.<br/>
+    /// </summary>
+    /// <param name="key">The developer-facing key payload bytes, or null for the null-key sentinel.</param>
+    /// <param name="encodedIdentity">The already encoded sortable 8-byte identity.</param>
+    /// <param name="allowDuplicateKeys">Whether multiple identities may share the same key.</param>
+    /// <returns>The operation-facing insert outcome plus batch commit telemetry.</returns>
+    public VarKeyScalar8InsertOutcome Insert(
+        byte[]? key,
+        ulong encodedIdentity,
+        bool allowDuplicateKeys = true)
+    {
+        ThrowIfDisposed();
+        byte[] encodedKey = LibraDexVarLenKeyCodec.Encode(key, handle.MaxKeyLength, nameof(key));
+        using VarKeyScalar8Batch batch = BeginBatch();
+        VarKeyScalar8InsertOutcome result = batch.InsertEncoded(encodedKey, encodedIdentity, allowDuplicateKeys);
+        VarKeyScalarBatchCommitResult commit = batch.Commit();
+        return result with { Commit = commit.Commit, DeferredCommitRequests = commit.DeferredCommitRequests };
+    }
+
+    internal VarKeyScalar8InsertOutcome InsertEncoded(
+        ReadOnlySpan<byte> encodedKey,
+        ulong encodedIdentity,
+        bool allowDuplicateKeys = true)
+    {
+        ThrowIfDisposed();
+        using VarKeyScalar8Batch batch = BeginBatch();
+        VarKeyScalar8InsertOutcome result = batch.InsertEncoded(encodedKey, encodedIdentity, allowDuplicateKeys);
+        VarKeyScalarBatchCommitResult commit = batch.Commit();
+        return result with { Commit = commit.Commit, DeferredCommitRequests = commit.DeferredCommitRequests };
+    }
+
+    /// <summary>
     /// Deletes all tuples whose raw-byte key is inside an inclusive `VS8` range.<br/>
     /// The method opens a short durability batch so shelf-local deletes use the same tombstone sidecar and commit-time normalization path as bulk delete workloads.<br/>
     /// This is internal to keep public data selection anchored on the condition builder while still letting maintained facades remove physical tuples efficiently.<br/>
@@ -104,8 +138,10 @@ public sealed class VarKeyScalar8Index : IDisposable
     internal long DeleteRange(ReadOnlySpan<byte> lowerKey, ReadOnlySpan<byte> upperKey)
     {
         ThrowIfDisposed();
+        byte[] encodedLowerKey = LibraDexVarLenKeyCodec.Encode(lowerKey, handle.MaxKeyLength, nameof(lowerKey));
+        byte[] encodedUpperKey = LibraDexVarLenKeyCodec.Encode(upperKey, handle.MaxKeyLength, nameof(upperKey));
         using VarKeyScalar8Batch batch = BeginBatch();
-        long deleted = batch.DeleteRange(lowerKey, upperKey);
+        long deleted = batch.DeleteRange(encodedLowerKey, encodedUpperKey);
         _ = batch.Commit();
         return deleted;
     }
@@ -121,8 +157,9 @@ public sealed class VarKeyScalar8Index : IDisposable
     internal bool DeleteExactTuple(ReadOnlySpan<byte> key, ulong encodedIdentity)
     {
         ThrowIfDisposed();
+        byte[] encodedKey = LibraDexVarLenKeyCodec.Encode(key, handle.MaxKeyLength, nameof(key));
         using VarKeyScalar8Batch batch = BeginBatch();
-        bool deleted = batch.DeleteExactTuple(key, encodedIdentity);
+        bool deleted = batch.DeleteExactTuple(encodedKey, encodedIdentity);
         _ = batch.Commit();
         return deleted;
     }
@@ -137,7 +174,7 @@ public sealed class VarKeyScalar8Index : IDisposable
     internal bool DeleteExactTupleInCurrentScope(ReadOnlySpan<byte> key, ulong encodedIdentity)
     {
         ThrowIfDisposed();
-        ValidateKeyLength(key, MaxKeyLength);
+        ValidateKeyLength(key, handle.MaxKeyLength);
         return session.DeleteVarKeyScalar8ExactTuple(
             handle.RootRouterOffset,
             handle.MaxKeyLength,
@@ -146,11 +183,11 @@ public sealed class VarKeyScalar8Index : IDisposable
     }
 
     /// <summary>
-    /// Reads encoded 8-byte identities for an inclusive raw-byte key range into caller-owned storage.<br/>
+    /// Reads encoded 8-byte identities for an inclusive developer-facing key range into caller-owned storage.<br/>
     /// The span-based shape keeps the fixed-identity public API allocation-light while higher-level enumerable or projection APIs remain future layers.<br/>
     /// </summary>
-    /// <param name="lowerKey">The inclusive lower raw key.</param>
-    /// <param name="upperKey">The inclusive upper raw key.</param>
+    /// <param name="lowerKey">The inclusive lower key payload.</param>
+    /// <param name="upperKey">The inclusive upper key payload.</param>
     /// <param name="encodedIdentities">The caller-owned destination span for matching encoded identities.</param>
     /// <returns>The number of identities copied.</returns>
     public int ReadRange(
@@ -159,30 +196,90 @@ public sealed class VarKeyScalar8Index : IDisposable
         Span<ulong> encodedIdentities)
     {
         ThrowIfDisposed();
+        byte[] encodedLowerKey = LibraDexVarLenKeyCodec.Encode(lowerKey, handle.MaxKeyLength, nameof(lowerKey));
+        byte[] encodedUpperKey = LibraDexVarLenKeyCodec.Encode(upperKey, handle.MaxKeyLength, nameof(upperKey));
         return session.ReadVarKeyScalar8IdentityRange(
             handle.RootRouterOffset,
             handle.MaxKeyLength,
-            lowerKey,
-            upperKey,
+            encodedLowerKey,
+            encodedUpperKey,
             encodedIdentities);
     }
 
     /// <summary>
-    /// Opens a forward-only reader for an inclusive raw-key range.<br/>
-    /// The returned reader exposes each raw key as a temporary <see cref="ReadOnlySpan{T}"/> and each encoded identity as a scalar value while positioned on that row.<br/>
+    /// Reads encoded 8-byte identities for an inclusive nullable developer-facing key range into caller-owned storage.<br/>
+    /// Use this overload when either bound must target the null-key sentinel.<br/>
+    /// </summary>
+    /// <param name="lowerKey">The inclusive lower key payload, or null for the null-key sentinel.</param>
+    /// <param name="upperKey">The inclusive upper key payload, or null for the null-key sentinel.</param>
+    /// <param name="encodedIdentities">The caller-owned destination span for matching encoded identities.</param>
+    /// <returns>The number of identities copied.</returns>
+    public int ReadRange(
+        byte[]? lowerKey,
+        byte[]? upperKey,
+        Span<ulong> encodedIdentities)
+    {
+        ThrowIfDisposed();
+        byte[] encodedLowerKey = LibraDexVarLenKeyCodec.Encode(lowerKey, handle.MaxKeyLength, nameof(lowerKey));
+        byte[] encodedUpperKey = LibraDexVarLenKeyCodec.Encode(upperKey, handle.MaxKeyLength, nameof(upperKey));
+        return session.ReadVarKeyScalar8IdentityRange(
+            handle.RootRouterOffset,
+            handle.MaxKeyLength,
+            encodedLowerKey,
+            encodedUpperKey,
+            encodedIdentities);
+    }
+
+    /// <summary>
+    /// Opens a forward-only reader for an inclusive developer-facing key range.<br/>
+    /// The returned reader exposes each logical key payload as a temporary <see cref="ReadOnlySpan{T}"/> and exposes null keys through its current-key null flag.<br/>
     /// This complements <see cref="ReadRange(ReadOnlySpan{byte}, ReadOnlySpan{byte}, Span{ulong})"/> for callers that need key iteration, tuple iteration, skip behavior, or explicit materialization control.<br/>
     /// </summary>
-    /// <param name="lowerKey">The inclusive lower raw key.</param>
-    /// <param name="upperKey">The inclusive upper raw key.</param>
-    /// <returns>A forward-only reader over matching raw key and encoded identity rows.</returns>
+    /// <param name="lowerKey">The inclusive lower key payload.</param>
+    /// <param name="upperKey">The inclusive upper key payload.</param>
+    /// <returns>A forward-only reader over matching logical key and encoded identity rows.</returns>
     public VarKeyScalar8RangeReader OpenRangeReader(ReadOnlySpan<byte> lowerKey, ReadOnlySpan<byte> upperKey)
+    {
+        ThrowIfDisposed();
+        byte[] encodedLowerKey = LibraDexVarLenKeyCodec.Encode(lowerKey, handle.MaxKeyLength, nameof(lowerKey));
+        byte[] encodedUpperKey = LibraDexVarLenKeyCodec.Encode(upperKey, handle.MaxKeyLength, nameof(upperKey));
+        return session.OpenVarKeyScalar8RangeReader(
+            handle.RootRouterOffset,
+            handle.MaxKeyLength,
+            encodedLowerKey,
+            encodedUpperKey,
+            decodeLogicalKeys: true);
+    }
+
+    /// <summary>
+    /// Opens a forward-only reader for an inclusive nullable developer-facing key range.<br/>
+    /// Use this overload when either range bound must target the null-key sentinel.<br/>
+    /// </summary>
+    /// <param name="lowerKey">The inclusive lower key payload, or null for the null-key sentinel.</param>
+    /// <param name="upperKey">The inclusive upper key payload, or null for the null-key sentinel.</param>
+    /// <returns>A forward-only reader over matching logical key and encoded identity rows.</returns>
+    public VarKeyScalar8RangeReader OpenRangeReader(byte[]? lowerKey, byte[]? upperKey)
+    {
+        ThrowIfDisposed();
+        byte[] encodedLowerKey = LibraDexVarLenKeyCodec.Encode(lowerKey, handle.MaxKeyLength, nameof(lowerKey));
+        byte[] encodedUpperKey = LibraDexVarLenKeyCodec.Encode(upperKey, handle.MaxKeyLength, nameof(upperKey));
+        return session.OpenVarKeyScalar8RangeReader(
+            handle.RootRouterOffset,
+            handle.MaxKeyLength,
+            encodedLowerKey,
+            encodedUpperKey,
+            decodeLogicalKeys: true);
+    }
+
+    internal VarKeyScalar8RangeReader OpenEncodedRangeReader(ReadOnlySpan<byte> lowerKey, ReadOnlySpan<byte> upperKey)
     {
         ThrowIfDisposed();
         return session.OpenVarKeyScalar8RangeReader(
             handle.RootRouterOffset,
             handle.MaxKeyLength,
             lowerKey,
-            upperKey);
+            upperKey,
+            decodeLogicalKeys: false);
     }
 
     /// <summary>
@@ -301,10 +398,10 @@ public sealed class VarKeyScalar16Index : IDisposable
     public long RootRouterOffset => handle.RootRouterOffset;
 
     /// <summary>
-    /// Gets the maximum raw key length accepted by this wrapper.<br/>
-    /// The value is an API-level guard over the current routed `VS16` profile family, not a text or path codec decision.<br/>
+    /// Gets the maximum developer-facing key payload length accepted by this wrapper.<br/>
+    /// The routed `VS16` storage shape reserves one internal sentinel byte so null, empty, and non-empty variable-length keys remain distinct and sortable.<br/>
     /// </summary>
-    public int MaxKeyLength => handle.MaxKeyLength;
+    public int MaxKeyLength => LibraDexVarLenKeyCodec.GetMaxLogicalLength(handle.MaxKeyLength);
 
     /// <summary>
     /// Gets the DataKernel backing kind used by the owning session.<br/>
@@ -330,11 +427,11 @@ public sealed class VarKeyScalar16Index : IDisposable
     }
 
     /// <summary>
-    /// Inserts one raw-byte key and encoded 16-byte identity into this routed `VS16` index.<br/>
+    /// Inserts one developer-facing key payload and encoded 16-byte identity into this routed `VS16` index.<br/>
     /// The high and low identity halves are compared in byte-ordinal scalar order by the underlying fixed-identity shelf.<br/>
     /// Hot multi-write callers should prefer `BeginBatch` to control commit cadence.<br/>
     /// </summary>
-    /// <param name="key">The raw sortable key bytes.</param>
+    /// <param name="key">The developer-facing key payload bytes.</param>
     /// <param name="encodedIdentityHigh">The high 8 bytes of the encoded sortable 16-byte identity.</param>
     /// <param name="encodedIdentityLow">The low 8 bytes of the encoded sortable 16-byte identity.</param>
     /// <param name="allowDuplicateKeys">Whether multiple identities may share the same key.</param>
@@ -353,6 +450,42 @@ public sealed class VarKeyScalar16Index : IDisposable
     }
 
     /// <summary>
+    /// Inserts one nullable developer-facing key payload and encoded 16-byte identity into this routed `VS16` index.<br/>
+    /// A null key sorts before an empty key, and both sort before non-empty payload keys by means of LibraDex's reserved first-byte sentinel.<br/>
+    /// </summary>
+    /// <param name="key">The developer-facing key payload bytes, or null for the null-key sentinel.</param>
+    /// <param name="encodedIdentityHigh">The high 8 bytes of the encoded sortable 16-byte identity.</param>
+    /// <param name="encodedIdentityLow">The low 8 bytes of the encoded sortable 16-byte identity.</param>
+    /// <param name="allowDuplicateKeys">Whether multiple identities may share the same key.</param>
+    /// <returns>The operation-facing insert outcome plus batch commit telemetry.</returns>
+    public VarKeyScalar16InsertOutcome Insert(
+        byte[]? key,
+        ulong encodedIdentityHigh,
+        ulong encodedIdentityLow,
+        bool allowDuplicateKeys = true)
+    {
+        ThrowIfDisposed();
+        byte[] encodedKey = LibraDexVarLenKeyCodec.Encode(key, handle.MaxKeyLength, nameof(key));
+        using VarKeyScalar16Batch batch = BeginBatch();
+        VarKeyScalar16InsertOutcome result = batch.InsertEncoded(encodedKey, encodedIdentityHigh, encodedIdentityLow, allowDuplicateKeys);
+        VarKeyScalarBatchCommitResult commit = batch.Commit();
+        return result with { Commit = commit.Commit, DeferredCommitRequests = commit.DeferredCommitRequests };
+    }
+
+    internal VarKeyScalar16InsertOutcome InsertEncoded(
+        ReadOnlySpan<byte> encodedKey,
+        ulong encodedIdentityHigh,
+        ulong encodedIdentityLow,
+        bool allowDuplicateKeys = true)
+    {
+        ThrowIfDisposed();
+        using VarKeyScalar16Batch batch = BeginBatch();
+        VarKeyScalar16InsertOutcome result = batch.InsertEncoded(encodedKey, encodedIdentityHigh, encodedIdentityLow, allowDuplicateKeys);
+        VarKeyScalarBatchCommitResult commit = batch.Commit();
+        return result with { Commit = commit.Commit, DeferredCommitRequests = commit.DeferredCommitRequests };
+    }
+
+    /// <summary>
     /// Deletes all tuples whose raw-byte key is inside an inclusive `VS16` range.<br/>
     /// The method opens a short durability batch so shelf-local deletes use the same tombstone sidecar and commit-time normalization path as bulk delete workloads.<br/>
     /// This is internal to keep public data selection anchored on the condition builder while still letting maintained facades remove physical tuples efficiently.<br/>
@@ -363,8 +496,10 @@ public sealed class VarKeyScalar16Index : IDisposable
     internal long DeleteRange(ReadOnlySpan<byte> lowerKey, ReadOnlySpan<byte> upperKey)
     {
         ThrowIfDisposed();
+        byte[] encodedLowerKey = LibraDexVarLenKeyCodec.Encode(lowerKey, handle.MaxKeyLength, nameof(lowerKey));
+        byte[] encodedUpperKey = LibraDexVarLenKeyCodec.Encode(upperKey, handle.MaxKeyLength, nameof(upperKey));
         using VarKeyScalar16Batch batch = BeginBatch();
-        long deleted = batch.DeleteRange(lowerKey, upperKey);
+        long deleted = batch.DeleteRange(encodedLowerKey, encodedUpperKey);
         _ = batch.Commit();
         return deleted;
     }
@@ -381,8 +516,9 @@ public sealed class VarKeyScalar16Index : IDisposable
     internal bool DeleteExactTuple(ReadOnlySpan<byte> key, ulong encodedIdentityHigh, ulong encodedIdentityLow)
     {
         ThrowIfDisposed();
+        byte[] encodedKey = LibraDexVarLenKeyCodec.Encode(key, handle.MaxKeyLength, nameof(key));
         using VarKeyScalar16Batch batch = BeginBatch();
-        bool deleted = batch.DeleteExactTuple(key, encodedIdentityHigh, encodedIdentityLow);
+        bool deleted = batch.DeleteExactTuple(encodedKey, encodedIdentityHigh, encodedIdentityLow);
         _ = batch.Commit();
         return deleted;
     }
@@ -398,7 +534,7 @@ public sealed class VarKeyScalar16Index : IDisposable
     internal bool DeleteExactTupleInCurrentScope(ReadOnlySpan<byte> key, ulong encodedIdentityHigh, ulong encodedIdentityLow)
     {
         ThrowIfDisposed();
-        ValidateKeyLength(key, MaxKeyLength);
+        ValidateKeyLength(key, handle.MaxKeyLength);
         return session.DeleteVarKeyScalar16ExactTuple(
             handle.RootRouterOffset,
             handle.MaxKeyLength,
@@ -423,11 +559,40 @@ public sealed class VarKeyScalar16Index : IDisposable
         Span<ulong> encodedIdentityLows)
     {
         ThrowIfDisposed();
+        byte[] encodedLowerKey = LibraDexVarLenKeyCodec.Encode(lowerKey, handle.MaxKeyLength, nameof(lowerKey));
+        byte[] encodedUpperKey = LibraDexVarLenKeyCodec.Encode(upperKey, handle.MaxKeyLength, nameof(upperKey));
         return session.ReadVarKeyScalar16IdentityRange(
             handle.RootRouterOffset,
             handle.MaxKeyLength,
-            lowerKey,
-            upperKey,
+            encodedLowerKey,
+            encodedUpperKey,
+            encodedIdentityHighs,
+            encodedIdentityLows);
+    }
+
+    /// <summary>
+    /// Reads encoded 16-byte identities for an inclusive nullable developer-facing key range into caller-owned storage.<br/>
+    /// Use this overload when either bound must target the null-key sentinel.<br/>
+    /// </summary>
+    /// <param name="lowerKey">The inclusive lower key payload, or null for the null-key sentinel.</param>
+    /// <param name="upperKey">The inclusive upper key payload, or null for the null-key sentinel.</param>
+    /// <param name="encodedIdentityHighs">The caller-owned destination span for high identity halves.</param>
+    /// <param name="encodedIdentityLows">The caller-owned destination span for low identity halves.</param>
+    /// <returns>The number of identities copied.</returns>
+    public int ReadRange(
+        byte[]? lowerKey,
+        byte[]? upperKey,
+        Span<ulong> encodedIdentityHighs,
+        Span<ulong> encodedIdentityLows)
+    {
+        ThrowIfDisposed();
+        byte[] encodedLowerKey = LibraDexVarLenKeyCodec.Encode(lowerKey, handle.MaxKeyLength, nameof(lowerKey));
+        byte[] encodedUpperKey = LibraDexVarLenKeyCodec.Encode(upperKey, handle.MaxKeyLength, nameof(upperKey));
+        return session.ReadVarKeyScalar16IdentityRange(
+            handle.RootRouterOffset,
+            handle.MaxKeyLength,
+            encodedLowerKey,
+            encodedUpperKey,
             encodedIdentityHighs,
             encodedIdentityLows);
     }
@@ -443,11 +608,45 @@ public sealed class VarKeyScalar16Index : IDisposable
     public VarKeyScalar16RangeReader OpenRangeReader(ReadOnlySpan<byte> lowerKey, ReadOnlySpan<byte> upperKey)
     {
         ThrowIfDisposed();
+        byte[] encodedLowerKey = LibraDexVarLenKeyCodec.Encode(lowerKey, handle.MaxKeyLength, nameof(lowerKey));
+        byte[] encodedUpperKey = LibraDexVarLenKeyCodec.Encode(upperKey, handle.MaxKeyLength, nameof(upperKey));
+        return session.OpenVarKeyScalar16RangeReader(
+            handle.RootRouterOffset,
+            handle.MaxKeyLength,
+            encodedLowerKey,
+            encodedUpperKey,
+            decodeLogicalKeys: true);
+    }
+
+    /// <summary>
+    /// Opens a forward-only reader for an inclusive nullable developer-facing key range.<br/>
+    /// Use this overload when either range bound must target the null-key sentinel.<br/>
+    /// </summary>
+    /// <param name="lowerKey">The inclusive lower key payload, or null for the null-key sentinel.</param>
+    /// <param name="upperKey">The inclusive upper key payload, or null for the null-key sentinel.</param>
+    /// <returns>A forward-only reader over matching logical key and encoded identity rows.</returns>
+    public VarKeyScalar16RangeReader OpenRangeReader(byte[]? lowerKey, byte[]? upperKey)
+    {
+        ThrowIfDisposed();
+        byte[] encodedLowerKey = LibraDexVarLenKeyCodec.Encode(lowerKey, handle.MaxKeyLength, nameof(lowerKey));
+        byte[] encodedUpperKey = LibraDexVarLenKeyCodec.Encode(upperKey, handle.MaxKeyLength, nameof(upperKey));
+        return session.OpenVarKeyScalar16RangeReader(
+            handle.RootRouterOffset,
+            handle.MaxKeyLength,
+            encodedLowerKey,
+            encodedUpperKey,
+            decodeLogicalKeys: true);
+    }
+
+    internal VarKeyScalar16RangeReader OpenEncodedRangeReader(ReadOnlySpan<byte> lowerKey, ReadOnlySpan<byte> upperKey)
+    {
+        ThrowIfDisposed();
         return session.OpenVarKeyScalar16RangeReader(
             handle.RootRouterOffset,
             handle.MaxKeyLength,
             lowerKey,
-            upperKey);
+            upperKey,
+            decodeLogicalKeys: false);
     }
 
     /// <summary>
@@ -544,22 +743,29 @@ public sealed class VarKeyScalar8Batch : IDisposable
     }
 
     /// <summary>
-    /// Inserts one raw-byte key and encoded 8-byte identity into the owning `VS8` index without forcing a durable commit per item.<br/>
+    /// Inserts one developer-facing key payload and encoded 8-byte identity into the owning `VS8` index without forcing a durable commit per item.<br/>
     /// The first insert for an unset root-prefix route creates the prefix shelf inside this batch before using the normal routed insert path.<br/>
     /// </summary>
-    /// <param name="key">The raw sortable key bytes.</param>
+    /// <param name="key">The developer-facing key payload bytes.</param>
     /// <param name="encodedIdentity">The already encoded sortable 8-byte identity.</param>
     /// <param name="allowDuplicateKeys">Whether multiple identities may share the same key.</param>
     /// <returns>The per-item raw-byte insert result.</returns>
     public VarKeyScalar8InsertOutcome Insert(ReadOnlySpan<byte> key, ulong encodedIdentity, bool allowDuplicateKeys = true)
     {
         ThrowIfCompleted();
-        ValidateKeyLength(key, index.MaxKeyLength);
-        bool createdInitialShelfRoute = EnsureInitialShelfRoute(key[0]);
+        byte[] encodedKey = LibraDexVarLenKeyCodec.Encode(key, index.Handle.MaxKeyLength, nameof(key));
+        return InsertEncoded(encodedKey, encodedIdentity, allowDuplicateKeys);
+    }
+
+    internal VarKeyScalar8InsertOutcome InsertEncoded(ReadOnlySpan<byte> encodedKey, ulong encodedIdentity, bool allowDuplicateKeys = true)
+    {
+        ThrowIfCompleted();
+        ValidateKeyLength(encodedKey, index.Handle.MaxKeyLength);
+        bool createdInitialShelfRoute = EnsureInitialShelfRoute(encodedKey[0]);
         VarKeyScalar8RoutedInsertResult result = index.Session.InsertWalkedRoutedVarKeyScalar8(
             index.Handle.RootRouterOffset,
             index.Handle.MaxKeyLength,
-            key,
+            encodedKey,
             encodedIdentity,
             allowDuplicateKeys,
             maxRouterHops: 8);
@@ -580,7 +786,7 @@ public sealed class VarKeyScalar8Batch : IDisposable
     internal long DeleteRange(ReadOnlySpan<byte> lowerKey, ReadOnlySpan<byte> upperKey)
     {
         ThrowIfCompleted();
-        ValidateKeyRange(lowerKey, upperKey, index.MaxKeyLength);
+        ValidateKeyRange(lowerKey, upperKey, index.Handle.MaxKeyLength);
         return index.Session.DeleteVarKeyScalar8KeyRange(
             index.Handle.RootRouterOffset,
             index.Handle.MaxKeyLength,
@@ -598,7 +804,7 @@ public sealed class VarKeyScalar8Batch : IDisposable
     internal bool DeleteExactTuple(ReadOnlySpan<byte> key, ulong encodedIdentity)
     {
         ThrowIfCompleted();
-        ValidateKeyLength(key, index.MaxKeyLength);
+        ValidateKeyLength(key, index.Handle.MaxKeyLength);
         return index.Session.DeleteVarKeyScalar8ExactTuple(
             index.Handle.RootRouterOffset,
             index.Handle.MaxKeyLength,
@@ -744,12 +950,23 @@ public sealed class VarKeyScalar16Batch : IDisposable
         bool allowDuplicateKeys = true)
     {
         ThrowIfCompleted();
-        ValidateKeyLength(key, index.MaxKeyLength);
-        bool createdInitialShelfRoute = EnsureInitialShelfRoute(key[0]);
+        byte[] encodedKey = LibraDexVarLenKeyCodec.Encode(key, index.Handle.MaxKeyLength, nameof(key));
+        return InsertEncoded(encodedKey, encodedIdentityHigh, encodedIdentityLow, allowDuplicateKeys);
+    }
+
+    internal VarKeyScalar16InsertOutcome InsertEncoded(
+        ReadOnlySpan<byte> encodedKey,
+        ulong encodedIdentityHigh,
+        ulong encodedIdentityLow,
+        bool allowDuplicateKeys = true)
+    {
+        ThrowIfCompleted();
+        ValidateKeyLength(encodedKey, index.Handle.MaxKeyLength);
+        bool createdInitialShelfRoute = EnsureInitialShelfRoute(encodedKey[0]);
         VarKeyScalar16RoutedInsertResult result = index.Session.InsertWalkedRoutedVarKeyScalar16(
             index.Handle.RootRouterOffset,
             index.Handle.MaxKeyLength,
-            key,
+            encodedKey,
             encodedIdentityHigh,
             encodedIdentityLow,
             allowDuplicateKeys,
@@ -771,7 +988,7 @@ public sealed class VarKeyScalar16Batch : IDisposable
     internal long DeleteRange(ReadOnlySpan<byte> lowerKey, ReadOnlySpan<byte> upperKey)
     {
         ThrowIfCompleted();
-        ValidateKeyRange(lowerKey, upperKey, index.MaxKeyLength);
+        ValidateKeyRange(lowerKey, upperKey, index.Handle.MaxKeyLength);
         return index.Session.DeleteVarKeyScalar16KeyRange(
             index.Handle.RootRouterOffset,
             index.Handle.MaxKeyLength,
@@ -790,7 +1007,7 @@ public sealed class VarKeyScalar16Batch : IDisposable
     internal bool DeleteExactTuple(ReadOnlySpan<byte> key, ulong encodedIdentityHigh, ulong encodedIdentityLow)
     {
         ThrowIfCompleted();
-        ValidateKeyLength(key, index.MaxKeyLength);
+        ValidateKeyLength(key, index.Handle.MaxKeyLength);
         return index.Session.DeleteVarKeyScalar16ExactTuple(
             index.Handle.RootRouterOffset,
             index.Handle.MaxKeyLength,

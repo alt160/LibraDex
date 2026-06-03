@@ -1907,7 +1907,7 @@ public enum LibraDexIdentityCriterionNodeKind
 /// <typeparam name="TIdentity">The public identity type.</typeparam>
 internal readonly record struct LibraDexTuple<TKey, TIdentity>(TKey Key, TIdentity Identity);
 
-internal readonly record struct LibraDexObjectTuple(object Key, object Identity)
+internal readonly record struct LibraDexObjectTuple(object? Key, object Identity)
 {
     /// <summary>
     /// Compares two runtime values using structural byte-array equality when needed and default equality otherwise.<br/>
@@ -1916,8 +1916,13 @@ internal readonly record struct LibraDexObjectTuple(object Key, object Identity)
     /// <param name="left">The first runtime value.</param>
     /// <param name="right">The second runtime value.</param>
     /// <returns><see langword="true"/> when the values represent the same logical tuple component.</returns>
-    internal static bool ValueEquals(object left, object right)
+    internal static bool ValueEquals(object? left, object? right)
     {
+        if (left is null || right is null)
+        {
+            return left is null && right is null;
+        }
+
         if (left is byte[] leftBytes && right is byte[] rightBytes)
         {
             return leftBytes.AsSpan().SequenceEqual(rightBytes);
@@ -2766,7 +2771,7 @@ internal static class LibraDexIdentityExecutionPlanner
             }
 
             matchedTuples++;
-            if (exactMutator.DeleteExactTuple(tuple.Key, tuple.Identity))
+            if (exactMutator.DeleteExactTuple(tuple.Key!, tuple.Identity))
             {
                 changed++;
             }
@@ -2831,10 +2836,10 @@ internal static class LibraDexIdentityExecutionPlanner
                 continue;
             }
 
-            if (!exactMutator.ContainsExactTuple(replacement.Key, replacement.Identity))
+            if (!exactMutator.ContainsExactTuple(replacement.Key!, replacement.Identity))
             {
-                LibraDexGenericInsertResult insert = targetIndex.Insert(replacement.Key, replacement.Identity);
-                if (!insert.Inserted && !exactMutator.ContainsExactTuple(replacement.Key, replacement.Identity))
+                LibraDexGenericInsertResult insert = targetIndex.Insert(replacement.Key!, replacement.Identity);
+                if (!insert.Inserted && !exactMutator.ContainsExactTuple(replacement.Key!, replacement.Identity))
                 {
                     throw new InvalidOperationException("Targeted SetKey could not create a replacement tuple; original tuples were left unchanged.");
                 }
@@ -2851,7 +2856,7 @@ internal static class LibraDexIdentityExecutionPlanner
                 continue;
             }
 
-            if (exactMutator.DeleteExactTuple(oldTuple.Key, oldTuple.Identity))
+            if (exactMutator.DeleteExactTuple(oldTuple.Key!, oldTuple.Identity))
             {
                 changed++;
             }
@@ -2924,7 +2929,7 @@ internal static class LibraDexIdentityExecutionPlanner
                 continue;
             }
 
-            if (exactMutator.DeleteExactTuple(oldTuple.Key, oldTuple.Identity))
+            if (exactMutator.DeleteExactTuple(oldTuple.Key!, oldTuple.Identity))
             {
                 changed++;
             }

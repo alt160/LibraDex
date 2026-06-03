@@ -24,7 +24,7 @@ public sealed class VarKeyVarIdentityIndex : IDisposable
         SlotIndex = slotIndex;
         Name = name;
         RootRouterOffset = rootRouterOffset;
-        MaxKeyLength = maxKeyLength;
+        MaxPhysicalKeyLength = maxKeyLength;
         MaxIdentityLength = maxIdentityLength;
     }
 
@@ -47,10 +47,12 @@ public sealed class VarKeyVarIdentityIndex : IDisposable
     public long RootRouterOffset { get; }
 
     /// <summary>
-    /// Gets the maximum raw key length accepted by this wrapper.<br/>
-    /// The value is an API-level guard over the current routed `VV` profile family, not a text or blob codec decision.<br/>
+    /// Gets the maximum developer-facing key payload length accepted by this wrapper.<br/>
+    /// The routed `VV` storage shape reserves one internal sentinel byte so null, empty, and non-empty variable-length keys remain distinct and sortable.<br/>
     /// </summary>
-    public int MaxKeyLength { get; }
+    public int MaxKeyLength => LibraDexVarLenKeyCodec.GetMaxLogicalLength(MaxPhysicalKeyLength);
+
+    internal int MaxPhysicalKeyLength { get; }
 
     /// <summary>
     /// Gets the maximum raw identity length accepted by this wrapper.<br/>
@@ -86,11 +88,11 @@ public sealed class VarKeyVarIdentityIndex : IDisposable
     }
 
     /// <summary>
-    /// Inserts one raw-byte key and raw-byte identity into this routed `VV` index.<br/>
+    /// Inserts one developer-facing key payload and raw-byte identity into this routed `VV` index.<br/>
     /// The method opens a short durability batch, applies one routed insert, and commits it so low-friction callers do not need an explicit batch for single writes.<br/>
     /// Hot multi-write callers should prefer `BeginBatch` to control commit cadence.<br/>
     /// </summary>
-    /// <param name="key">The raw sortable key bytes.</param>
+    /// <param name="key">The developer-facing key payload bytes.</param>
     /// <param name="identity">The raw identity bytes associated with the key.</param>
     /// <param name="allowDuplicateKeys">Whether multiple identities may share the same key.</param>
     /// <returns>The operation-facing insert outcome plus batch commit telemetry.</returns>
@@ -109,6 +111,27 @@ public sealed class VarKeyVarIdentityIndex : IDisposable
     }
 
     /// <summary>
+    /// Inserts one nullable developer-facing key payload and raw-byte identity into this routed `VV` index.<br/>
+    /// A null key sorts before an empty key, and both sort before non-empty payload keys by means of LibraDex's reserved first-byte sentinel.<br/>
+    /// </summary>
+    /// <param name="key">The developer-facing key payload bytes, or null for the null-key sentinel.</param>
+    /// <param name="identity">The raw identity bytes associated with the key.</param>
+    /// <param name="allowDuplicateKeys">Whether multiple identities may share the same key.</param>
+    /// <returns>The operation-facing insert outcome plus batch commit telemetry.</returns>
+    public VarKeyVarIdentityIndexInsertResult Insert(
+        byte[]? key,
+        ReadOnlySpan<byte> identity,
+        bool allowDuplicateKeys = true)
+    {
+        ThrowIfDisposed();
+        byte[] encodedKey = LibraDexVarLenKeyCodec.Encode(key, MaxPhysicalKeyLength, nameof(key));
+        using VarKeyVarIdentityBatch batch = BeginBatch();
+        VarKeyVarIdentityIndexInsertResult result = batch.InsertEncoded(encodedKey, identity, allowDuplicateKeys);
+        VarKeyVarIdentityBatchCommitResult commit = batch.Commit();
+        return result with { Commit = commit.Commit, DeferredCommitRequests = commit.DeferredCommitRequests };
+    }
+
+    /// <summary>
     /// Deletes all tuples whose raw-byte key is inside an inclusive `VV` range.<br/>
     /// The method opens a short durability batch so shelf-local deletes use the same tombstone sidecar and commit-time normalization path as bulk delete workloads.<br/>
     /// This remains internal until a typed logical facade maps adopted conditions onto the raw var-key/var-identity storage shape.<br/>
@@ -119,8 +142,10 @@ public sealed class VarKeyVarIdentityIndex : IDisposable
     internal long DeleteRange(ReadOnlySpan<byte> lowerKey, ReadOnlySpan<byte> upperKey)
     {
         ThrowIfDisposed();
+        byte[] encodedLowerKey = LibraDexVarLenKeyCodec.Encode(lowerKey, MaxPhysicalKeyLength, nameof(lowerKey));
+        byte[] encodedUpperKey = LibraDexVarLenKeyCodec.Encode(upperKey, MaxPhysicalKeyLength, nameof(upperKey));
         using VarKeyVarIdentityBatch batch = BeginBatch();
-        long deleted = batch.DeleteRange(lowerKey, upperKey);
+        long deleted = batch.DeleteRange(encodedLowerKey, encodedUpperKey);
         _ = batch.Commit();
         return deleted;
     }
@@ -136,8 +161,9 @@ public sealed class VarKeyVarIdentityIndex : IDisposable
     internal bool DeleteExactTuple(ReadOnlySpan<byte> key, ReadOnlySpan<byte> identity)
     {
         ThrowIfDisposed();
+        byte[] encodedKey = LibraDexVarLenKeyCodec.Encode(key, MaxPhysicalKeyLength, nameof(key));
         using VarKeyVarIdentityBatch batch = BeginBatch();
-        bool deleted = batch.DeleteExactTuple(key, identity);
+        bool deleted = batch.DeleteExactTuple(encodedKey, identity);
         _ = batch.Commit();
         return deleted;
     }
@@ -157,10 +183,42 @@ public sealed class VarKeyVarIdentityIndex : IDisposable
         ThrowIfDisposed();
         return session.OpenVarKeyVarIdentityRangeReader(
             RootRouterOffset,
-            MaxKeyLength,
+            MaxPhysicalKeyLength,
+            MaxIdentityLength,
+            LibraDexVarLenKeyCodec.Encode(lowerKey, MaxPhysicalKeyLength, nameof(lowerKey)),
+            LibraDexVarLenKeyCodec.Encode(upperKey, MaxPhysicalKeyLength, nameof(upperKey)),
+            decodeLogicalKeys: true);
+    }
+
+    /// <summary>
+    /// Opens a forward-only reader for an inclusive nullable developer-facing key range.<br/>
+    /// Use this overload when either range bound must target the null-key sentinel.<br/>
+    /// </summary>
+    /// <param name="lowerKey">The inclusive lower key payload, or null for the null-key sentinel.</param>
+    /// <param name="upperKey">The inclusive upper key payload, or null for the null-key sentinel.</param>
+    /// <returns>A forward-only reader over matching logical key and raw identity rows.</returns>
+    public VarKeyVarIdentityRangeReader OpenRangeReader(byte[]? lowerKey, byte[]? upperKey)
+    {
+        ThrowIfDisposed();
+        return session.OpenVarKeyVarIdentityRangeReader(
+            RootRouterOffset,
+            MaxPhysicalKeyLength,
+            MaxIdentityLength,
+            LibraDexVarLenKeyCodec.Encode(lowerKey, MaxPhysicalKeyLength, nameof(lowerKey)),
+            LibraDexVarLenKeyCodec.Encode(upperKey, MaxPhysicalKeyLength, nameof(upperKey)),
+            decodeLogicalKeys: true);
+    }
+
+    internal VarKeyVarIdentityRangeReader OpenEncodedRangeReader(ReadOnlySpan<byte> lowerKey, ReadOnlySpan<byte> upperKey)
+    {
+        ThrowIfDisposed();
+        return session.OpenVarKeyVarIdentityRangeReader(
+            RootRouterOffset,
+            MaxPhysicalKeyLength,
             MaxIdentityLength,
             lowerKey,
-            upperKey);
+            upperKey,
+            decodeLogicalKeys: false);
     }
 
     /// <summary>
@@ -325,12 +383,22 @@ public sealed class VarKeyVarIdentityBatch : IDisposable
         bool allowDuplicateKeys = true)
     {
         ThrowIfCompleted();
-        ValidateTupleLengths(key, identity);
+        byte[] encodedKey = LibraDexVarLenKeyCodec.Encode(key, index.MaxPhysicalKeyLength, nameof(key));
+        return InsertEncoded(encodedKey, identity, allowDuplicateKeys);
+    }
+
+    internal VarKeyVarIdentityIndexInsertResult InsertEncoded(
+        ReadOnlySpan<byte> encodedKey,
+        ReadOnlySpan<byte> identity,
+        bool allowDuplicateKeys = true)
+    {
+        ThrowIfCompleted();
+        ValidateEncodedTupleLengths(encodedKey, identity);
         VarKeyVarIdentityRoutedInsertResult result = index.Session.InsertWalkedRoutedVarKeyVarIdentity(
             index.RootRouterOffset,
-            index.MaxKeyLength,
+            index.MaxPhysicalKeyLength,
             index.MaxIdentityLength,
-            key,
+            encodedKey,
             identity,
             allowDuplicateKeys,
             maxRouterHops: 8);
@@ -368,11 +436,11 @@ public sealed class VarKeyVarIdentityBatch : IDisposable
     internal long DeleteRange(ReadOnlySpan<byte> lowerKey, ReadOnlySpan<byte> upperKey)
     {
         ThrowIfCompleted();
-        ValidateKeyLength(lowerKey);
-        ValidateKeyLength(upperKey);
+        ValidateEncodedKeyLength(lowerKey);
+        ValidateEncodedKeyLength(upperKey);
         return index.Session.DeleteVarKeyVarIdentityKeyRange(
             index.RootRouterOffset,
-            index.MaxKeyLength,
+            index.MaxPhysicalKeyLength,
             index.MaxIdentityLength,
             lowerKey,
             upperKey);
@@ -388,10 +456,10 @@ public sealed class VarKeyVarIdentityBatch : IDisposable
     internal bool DeleteExactTuple(ReadOnlySpan<byte> key, ReadOnlySpan<byte> identity)
     {
         ThrowIfCompleted();
-        ValidateTupleLengths(key, identity);
+        ValidateEncodedTupleLengths(key, identity);
         return index.Session.DeleteVarKeyVarIdentityExactTuple(
             index.RootRouterOffset,
-            index.MaxKeyLength,
+            index.MaxPhysicalKeyLength,
             index.MaxIdentityLength,
             key,
             identity);
@@ -446,7 +514,10 @@ public sealed class VarKeyVarIdentityBatch : IDisposable
 
     private void ValidateTupleLengths(ReadOnlySpan<byte> key, ReadOnlySpan<byte> identity)
     {
-        ValidateKeyLength(key);
+        if (key.Length > index.MaxKeyLength)
+        {
+            throw new ArgumentOutOfRangeException(nameof(key), key.Length, $"VV key payload length must be from 0 to {index.MaxKeyLength} bytes.");
+        }
 
         if (identity.Length <= 0 || identity.Length > index.MaxIdentityLength)
         {
@@ -454,11 +525,21 @@ public sealed class VarKeyVarIdentityBatch : IDisposable
         }
     }
 
-    private void ValidateKeyLength(ReadOnlySpan<byte> key)
+    private void ValidateEncodedTupleLengths(ReadOnlySpan<byte> key, ReadOnlySpan<byte> identity)
     {
-        if (key.Length <= 0 || key.Length > index.MaxKeyLength)
+        ValidateEncodedKeyLength(key);
+
+        if (identity.Length <= 0 || identity.Length > index.MaxIdentityLength)
         {
-            throw new ArgumentOutOfRangeException(nameof(key), key.Length, $"VV key length must be from 1 to {index.MaxKeyLength} bytes.");
+            throw new ArgumentOutOfRangeException(nameof(identity), identity.Length, $"VV identity length must be from 1 to {index.MaxIdentityLength} bytes.");
+        }
+    }
+
+    private void ValidateEncodedKeyLength(ReadOnlySpan<byte> key)
+    {
+        if (key.Length <= 0 || key.Length > index.MaxPhysicalKeyLength)
+        {
+            throw new ArgumentOutOfRangeException(nameof(key), key.Length, $"VV encoded key length must be from 1 to {index.MaxPhysicalKeyLength} bytes.");
         }
     }
 

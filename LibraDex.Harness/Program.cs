@@ -11562,12 +11562,15 @@ internal static class RawHarness
         IReadOnlyList<long> adoptedDeferredMembershipIds = adoptedDeferredMembershipCondition.ToList<long>(surfaceResolver, deduplication: IdentityDeduplication.Preserve);
         adoptedDeferredMembershipSet = new HashSet<long> { 11L };
         IReadOnlyList<long> updatedAdoptedDeferredMembershipIds = adoptedDeferredMembershipCondition.ToList<long>(surfaceResolver, deduplication: IdentityDeduplication.Preserve);
-        IReadOnlyList<long> indexWhereIds = index.GetIdentities(index.Where.GreaterOrEqual(10).And.Not.EqualTo(11), deduplication: IdentityDeduplication.Preserve);
+        IReadOnlyList<long> indexWhereIds = index.GetIdentities(index.Where.GreaterOrEqual(10).And.Not.EqualTo(11).EndCondition, deduplication: IdentityDeduplication.Preserve);
+        IReadOnlyList<long> catalogIndexerIds = catalog["surface"].GetIdentities(
+            index.Where.GreaterOrEqual(10).EndCondition.AndAlso(index.Where.LessOrEqual(11).EndCondition),
+            deduplication: IdentityDeduplication.Preserve);
         IReadOnlyList<long> groupWhereIds = catalog.Indexes["surface"].GetIdentities(
-            index.Where.GreaterOrEqual(10).AndAlso(index.Where.LessOrEqual(11)),
+            index.Where.GreaterOrEqual(10).EndCondition.AndAlso(index.Where.LessOrEqual(11).EndCondition),
             deduplication: IdentityDeduplication.Preserve);
         long reusableMinimum = 10;
-        LibraDexConditionExpression<long> deferredMinimum = index.Where.GreaterOrEqual(() => reusableMinimum, "minimum");
+        LibraDexConditionExpression<long> deferredMinimum = index.Where.GreaterOrEqual(() => reusableMinimum, "minimum").EndCondition;
         IReadOnlyList<long> deferredMinimumIds = index.GetIdentities(deferredMinimum, deduplication: IdentityDeduplication.Preserve);
         reusableMinimum = 12;
         IReadOnlyList<long> updatedDeferredMinimumIds = index.GetIdentities(deferredMinimum, deduplication: IdentityDeduplication.Preserve);
@@ -11598,16 +11601,16 @@ internal static class RawHarness
         IReadOnlyList<long> replacedIndexIds = catalog.Indexes["surface"].GetIdentities(
             deferredIndexCondition.WithIndex("selected", "public-surface"),
             deduplication: IdentityDeduplication.Preserve);
-        LibraDexConditionExpression<long> lowOrHighFragment = LibraDexConditionExpression<long>.Grouped(index.Where.EqualTo(10).Or.EqualTo(12));
+        LibraDexConditionExpression<long> lowOrHighFragment = LibraDexConditionExpression<long>.Grouped(index.Where.EqualTo(10).Or.EqualTo(12).EndCondition);
         IReadOnlyList<long> groupedFragmentIds = index.GetIdentities(
-            lowOrHighFragment.AndAlso(() => index.Where.GreaterOrEqual(11)),
+            lowOrHighFragment.AndAlso(() => index.Where.GreaterOrEqual(11).EndCondition),
             deduplication: IdentityDeduplication.Preserve);
-        LibraDexConditionExpression<long> widenedReusableFragment = index.Where.GreaterOrEqual(10);
+        LibraDexIndexCondition<long, long> widenedReusableFragment = index.Where.GreaterOrEqual(10);
         IReadOnlyList<long> continuedFragmentIds = index.GetIdentities(
-            index.Where.Continue(widenedReusableFragment).Not.EqualTo(12),
+            index.Where.Continue(widenedReusableFragment).Not.EqualTo(12).EndCondition,
             deduplication: IdentityDeduplication.Preserve);
         IReadOnlyList<long> continuedOrFragmentIds = index.GetIdentities(
-            index.Where.ContinueOr(index.Where.EqualTo(10)).EqualTo(12),
+            index.Where.ContinueOr(index.Where.EqualTo(10)).EqualTo(12).EndCondition,
             deduplication: IdentityDeduplication.Preserve);
         IReadOnlyList<long> originalDeferredAfterReplacementIds = index.GetIdentities(
             deferredMinimum,
@@ -11669,6 +11672,9 @@ internal static class RawHarness
             groupWhereIds.Count != 2 ||
             groupWhereIds[0] != 1000 ||
             groupWhereIds[1] != 1100 ||
+            catalogIndexerIds.Count != 2 ||
+            catalogIndexerIds[0] != 1000 ||
+            catalogIndexerIds[1] != 1100 ||
             deferredMinimumIds.Count != 3 ||
             deferredMinimumIds[0] != 1000 ||
             updatedDeferredMinimumIds.Count != 1 ||
@@ -12635,6 +12641,7 @@ internal static class RawHarness
         ValidateGenericInsert(tag.Insert("preview", 1492UL), "deterministic string tag preview insert");
         ValidateGenericInsert(tag.Insert("stable", 1493UL), "deterministic string tag stable insert");
         ValidateGenericInsert(code.Insert("A1-2345", 1451UL), "deterministic string code pattern sample insert");
+        ValidateGenericInsert(code.Insert(null, 1500UL), "deterministic string code null insert");
         ValidateGenericInsert(code.Insert(string.Empty, 1501UL), "deterministic string code empty insert");
         ValidateGenericInsert(foldedText.Insert("AbC", 1951UL), "deterministic string foldedText AbC insert");
         ValidateGenericInsert(foldedText.Insert("xyz", 1952UL), "deterministic string foldedText xyz insert");
@@ -12653,7 +12660,9 @@ internal static class RawHarness
         AssertSet(IDs(LibraDexCondition.ForGroup("strings").Index("country").AsString.InSet(new[] { "US", "CA", "MX" }).EndCondition, country), new[] { 1481UL, 1482UL }, "proof row 148 string membership");
         HashSet<string> tags = new(StringComparer.OrdinalIgnoreCase) { "BETA", "PREVIEW" };
         AssertSet(IDs(LibraDexCondition.ForGroup("strings").Index("tag").AsString.InSet(tags).EndCondition, tag), new[] { 1491UL, 1492UL }, "proof row 149 string policy membership");
+        AssertSet(IDs(LibraDexCondition.ForGroup("strings").Index("code").AsString.EqualTo((string?)null).EndCondition, code), new[] { 1500UL }, "proof row 150 string null");
         AssertSet(IDs(LibraDexCondition.ForGroup("strings").Index("code").AsString.EqualTo(string.Empty).EndCondition, code), new[] { 1501UL }, "proof row 150 string empty");
+        AssertSet(IDs(LibraDexCondition.ForGroup("strings").Index("code").AsString.LessOrEqual(string.Empty).EndCondition, code), new[] { 1500UL, 1501UL }, "proof row 150 string null empty ordering");
         AssertSet(IDs(LibraDexCondition.ForGroup("strings").Index("foldedText").AsString.EqualTo("abc", ignoreCase: true).EndCondition, foldedText), new[] { 1951UL }, "proof row 195 folded text equality");
         AssertSet(IDs(LibraDexCondition.ForGroup("strings").Index("reversedText").AsString.EndsWith("com").EndCondition, reversedText), new[] { 1971UL }, "proof row 197 reversed text suffix");
     }
@@ -17113,6 +17122,10 @@ internal static class RawHarness
                 }
             }
 
+            _ = index.Insert((byte[]?)null, new byte[] { 0x91, 0x01 });
+            _ = index.Insert(Array.Empty<byte>(), new byte[] { 0x91, 0x02 });
+            _ = index.Insert(new byte[] { 0x00 }, new byte[] { 0x91, 0x03 });
+
             byte[] lower = CreateVarKeyScalar8PrefixLower(0, keyLength);
             byte[] upper = CreateVarKeyScalar8PrefixUpper(Math.Min(2, prefixCount - 1), keyLength);
             using VarKeyVarIdentityRangeReader reader = index.OpenRangeReader(lower, upper);
@@ -17133,6 +17146,29 @@ internal static class RawHarness
             if (reopened.RootRouterOffset != rootOffset || reopened.Name != "vv-api")
             {
                 throw new InvalidDataException("Reopened public VV index did not preserve root offset and name.");
+            }
+
+            using (VarKeyVarIdentityRangeReader sentinelReader = reopened.OpenRangeReader((byte[]?)null, new byte[] { 0x00 }))
+            {
+                if (sentinelReader.Count != 3)
+                {
+                    throw new InvalidDataException($"Public VV sentinel range returned {sentinelReader.Count}; expected 3.");
+                }
+
+                if (!sentinelReader.MoveNext() || !sentinelReader.CurrentKeyIsNull || sentinelReader.CurrentKeyLength != 0 || !sentinelReader.CurrentIdentity.SequenceEqual(new byte[] { 0x91, 0x01 }))
+                {
+                    throw new InvalidDataException("Public VV sentinel reader did not expose the null key first.");
+                }
+
+                if (!sentinelReader.MoveNext() || sentinelReader.CurrentKeyIsNull || sentinelReader.CurrentKeyLength != 0 || !sentinelReader.CurrentIdentity.SequenceEqual(new byte[] { 0x91, 0x02 }))
+                {
+                    throw new InvalidDataException("Public VV sentinel reader did not distinguish empty key from null key.");
+                }
+
+                if (!sentinelReader.MoveNext() || sentinelReader.CurrentKeyIsNull || sentinelReader.CurrentKeyLength != 1 || sentinelReader.CurrentKey[0] != 0x00 || !sentinelReader.CurrentIdentity.SequenceEqual(new byte[] { 0x91, 0x03 }))
+                {
+                    throw new InvalidDataException("Public VV sentinel reader did not expose the non-empty key after null and empty.");
+                }
             }
 
             byte[] lower = CreateVarKeyScalar8PrefixLower(0, keyLength);
@@ -17668,6 +17704,10 @@ internal static class RawHarness
                 }
             }
 
+            _ = index.Insert((byte[]?)null, 9_000_001UL);
+            _ = index.Insert(Array.Empty<byte>(), 9_000_002UL);
+            _ = index.Insert(new byte[] { 0x00 }, 9_000_003UL);
+
             byte[] lower = CreateVarKeyScalar8PrefixLower(0, keyLength);
             byte[] upper = CreateVarKeyScalar8PrefixUpper(Math.Min(2, prefixCount - 1), keyLength);
             ulong[] identities = new ulong[itemCount];
@@ -17694,6 +17734,29 @@ internal static class RawHarness
             if (reopened.RootRouterOffset != rootOffset || reopened.Name != "vs8-api")
             {
                 throw new InvalidDataException("Reopened public VS8 index did not preserve root offset and name.");
+            }
+
+            using (VarKeyScalar8RangeReader sentinelReader = reopened.OpenRangeReader((byte[]?)null, new byte[] { 0x00 }))
+            {
+                if (sentinelReader.Count != 3)
+                {
+                    throw new InvalidDataException($"Public VS8 sentinel range returned {sentinelReader.Count}; expected 3.");
+                }
+
+                if (!sentinelReader.MoveNext() || !sentinelReader.CurrentKeyIsNull || sentinelReader.CurrentKeyLength != 0 || sentinelReader.CurrentEncodedIdentity != 9_000_001UL)
+                {
+                    throw new InvalidDataException("Public VS8 sentinel reader did not expose the null key first.");
+                }
+
+                if (!sentinelReader.MoveNext() || sentinelReader.CurrentKeyIsNull || sentinelReader.CurrentKeyLength != 0 || sentinelReader.CurrentEncodedIdentity != 9_000_002UL)
+                {
+                    throw new InvalidDataException("Public VS8 sentinel reader did not distinguish empty key from null key.");
+                }
+
+                if (!sentinelReader.MoveNext() || sentinelReader.CurrentKeyIsNull || sentinelReader.CurrentKeyLength != 1 || sentinelReader.CurrentKey[0] != 0x00 || sentinelReader.CurrentEncodedIdentity != 9_000_003UL)
+                {
+                    throw new InvalidDataException("Public VS8 sentinel reader did not expose the non-empty key after null and empty.");
+                }
             }
 
             byte[] lower = CreateVarKeyScalar8PrefixLower(0, keyLength);
@@ -17927,6 +17990,10 @@ internal static class RawHarness
                 }
             }
 
+            _ = index.Insert((byte[]?)null, 9_100_001UL, 9_100_101UL);
+            _ = index.Insert(Array.Empty<byte>(), 9_100_002UL, 9_100_102UL);
+            _ = index.Insert(new byte[] { 0x00 }, 9_100_003UL, 9_100_103UL);
+
             byte[] lower = CreateVarKeyScalar8PrefixLower(0, keyLength);
             byte[] upper = CreateVarKeyScalar8PrefixUpper(Math.Min(2, prefixCount - 1), keyLength);
             ulong[] identityHighs = new ulong[itemCount];
@@ -17954,6 +18021,47 @@ internal static class RawHarness
             if (reopened.RootRouterOffset != rootOffset || reopened.Name != "vs16-api")
             {
                 throw new InvalidDataException("Reopened public VS16 index did not preserve root offset and name.");
+            }
+
+            using (VarKeyScalar16RangeReader sentinelReader = reopened.OpenRangeReader((byte[]?)null, new byte[] { 0x00 }))
+            {
+                if (sentinelReader.Count != 3)
+                {
+                    throw new InvalidDataException($"Public VS16 sentinel range returned {sentinelReader.Count}; expected 3.");
+                }
+
+                if (!sentinelReader.MoveNext() || !sentinelReader.CurrentKeyIsNull || sentinelReader.CurrentKeyLength != 0)
+                {
+                    throw new InvalidDataException("Public VS16 sentinel reader did not expose the null key first.");
+                }
+
+                sentinelReader.ReadCurrentIdentity(out ulong nullHigh, out ulong nullLow);
+                if (nullHigh != 9_100_001UL || nullLow != 9_100_101UL)
+                {
+                    throw new InvalidDataException("Public VS16 sentinel reader returned an unexpected null-key identity.");
+                }
+
+                if (!sentinelReader.MoveNext() || sentinelReader.CurrentKeyIsNull || sentinelReader.CurrentKeyLength != 0)
+                {
+                    throw new InvalidDataException("Public VS16 sentinel reader did not distinguish empty key from null key.");
+                }
+
+                sentinelReader.ReadCurrentIdentity(out ulong emptyHigh, out ulong emptyLow);
+                if (emptyHigh != 9_100_002UL || emptyLow != 9_100_102UL)
+                {
+                    throw new InvalidDataException("Public VS16 sentinel reader returned an unexpected empty-key identity.");
+                }
+
+                if (!sentinelReader.MoveNext() || sentinelReader.CurrentKeyIsNull || sentinelReader.CurrentKeyLength != 1 || sentinelReader.CurrentKey[0] != 0x00)
+                {
+                    throw new InvalidDataException("Public VS16 sentinel reader did not expose the non-empty key after null and empty.");
+                }
+
+                sentinelReader.ReadCurrentIdentity(out ulong valueHigh, out ulong valueLow);
+                if (valueHigh != 9_100_003UL || valueLow != 9_100_103UL)
+                {
+                    throw new InvalidDataException("Public VS16 sentinel reader returned an unexpected non-empty-key identity.");
+                }
             }
 
             byte[] lower = CreateVarKeyScalar8PrefixLower(0, keyLength);

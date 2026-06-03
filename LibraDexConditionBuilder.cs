@@ -4981,7 +4981,7 @@ public sealed class LibraDexStringConditionOperator : LibraDexConditionOperator<
     /// <param name="ignoreCase">Whether case-insensitive text behavior was requested.</param>
     /// <param name="culture">The culture name for case or sort behavior, when supplied.</param>
     /// <returns>A continuation for adding more clauses or ending the condition.</returns>
-    public LibraDexConditionContinueOrEnd EqualTo(string value, bool ignoreCase = false, string? culture = null)
+    public LibraDexConditionContinueOrEnd EqualTo(string? value, bool ignoreCase = false, string? culture = null)
     {
         return AddText(LibraDexConditionOperatorKind.EqualTo, value, ignoreCase, culture);
     }
@@ -4994,7 +4994,7 @@ public sealed class LibraDexStringConditionOperator : LibraDexConditionOperator<
     /// <param name="ignoreCase">Whether case-insensitive text behavior was requested.</param>
     /// <param name="culture">The culture name for case or sort behavior, when supplied.</param>
     /// <returns>A continuation for adding more clauses or ending the condition.</returns>
-    public LibraDexConditionContinueOrEnd NotEqualTo(string value, bool ignoreCase = false, string? culture = null)
+    public LibraDexConditionContinueOrEnd NotEqualTo(string? value, bool ignoreCase = false, string? culture = null)
     {
         return AddText(LibraDexConditionOperatorKind.NotEqualTo, value, ignoreCase, culture);
     }
@@ -5007,7 +5007,7 @@ public sealed class LibraDexStringConditionOperator : LibraDexConditionOperator<
     /// <param name="ignoreCase">Whether case-insensitive text behavior was requested.</param>
     /// <param name="culture">The culture name for case or sort behavior, when supplied.</param>
     /// <returns>A continuation for adding more clauses or ending the condition.</returns>
-    public LibraDexConditionContinueOrEnd GreaterThan(string value, bool ignoreCase = false, string? culture = null)
+    public LibraDexConditionContinueOrEnd GreaterThan(string? value, bool ignoreCase = false, string? culture = null)
     {
         return AddText(LibraDexConditionOperatorKind.GreaterThan, value, ignoreCase, culture);
     }
@@ -5020,7 +5020,7 @@ public sealed class LibraDexStringConditionOperator : LibraDexConditionOperator<
     /// <param name="ignoreCase">Whether case-insensitive text behavior was requested.</param>
     /// <param name="culture">The culture name for case or sort behavior, when supplied.</param>
     /// <returns>A continuation for adding more clauses or ending the condition.</returns>
-    public LibraDexConditionContinueOrEnd GreaterOrEqual(string value, bool ignoreCase = false, string? culture = null)
+    public LibraDexConditionContinueOrEnd GreaterOrEqual(string? value, bool ignoreCase = false, string? culture = null)
     {
         return AddText(LibraDexConditionOperatorKind.GreaterOrEqual, value, ignoreCase, culture);
     }
@@ -5033,7 +5033,7 @@ public sealed class LibraDexStringConditionOperator : LibraDexConditionOperator<
     /// <param name="ignoreCase">Whether case-insensitive text behavior was requested.</param>
     /// <param name="culture">The culture name for case or sort behavior, when supplied.</param>
     /// <returns>A continuation for adding more clauses or ending the condition.</returns>
-    public LibraDexConditionContinueOrEnd LessThan(string value, bool ignoreCase = false, string? culture = null)
+    public LibraDexConditionContinueOrEnd LessThan(string? value, bool ignoreCase = false, string? culture = null)
     {
         return AddText(LibraDexConditionOperatorKind.LessThan, value, ignoreCase, culture);
     }
@@ -5046,7 +5046,7 @@ public sealed class LibraDexStringConditionOperator : LibraDexConditionOperator<
     /// <param name="ignoreCase">Whether case-insensitive text behavior was requested.</param>
     /// <param name="culture">The culture name for case or sort behavior, when supplied.</param>
     /// <returns>A continuation for adding more clauses or ending the condition.</returns>
-    public LibraDexConditionContinueOrEnd LessOrEqual(string value, bool ignoreCase = false, string? culture = null)
+    public LibraDexConditionContinueOrEnd LessOrEqual(string? value, bool ignoreCase = false, string? culture = null)
     {
         return AddText(LibraDexConditionOperatorKind.LessOrEqual, value, ignoreCase, culture);
     }
@@ -5060,7 +5060,7 @@ public sealed class LibraDexStringConditionOperator : LibraDexConditionOperator<
     /// <param name="ignoreCase">Whether case-insensitive text behavior was requested.</param>
     /// <param name="culture">The culture name for case or sort behavior, when supplied.</param>
     /// <returns>A continuation for adding more clauses or ending the condition.</returns>
-    public LibraDexConditionContinueOrEnd Between(string startValue, string endValue, bool ignoreCase = false, string? culture = null)
+    public LibraDexConditionContinueOrEnd Between(string? startValue, string? endValue, bool ignoreCase = false, string? culture = null)
     {
         return AddText(LibraDexConditionOperatorKind.Between, new[] { LibraDexConditionOperand.Value(startValue), LibraDexConditionOperand.Value(endValue) }, ignoreCase, culture);
     }
@@ -5074,7 +5074,7 @@ public sealed class LibraDexStringConditionOperator : LibraDexConditionOperator<
     /// <param name="ignoreCase">Whether case-insensitive text behavior was requested.</param>
     /// <param name="culture">The culture name for case or sort behavior, when supplied.</param>
     /// <returns>A continuation for adding more clauses or ending the condition.</returns>
-    public LibraDexConditionContinueOrEnd NotBetween(string startValue, string endValue, bool ignoreCase = false, string? culture = null)
+    public LibraDexConditionContinueOrEnd NotBetween(string? startValue, string? endValue, bool ignoreCase = false, string? culture = null)
     {
         return AddText(LibraDexConditionOperatorKind.NotBetween, new[] { LibraDexConditionOperand.Value(startValue), LibraDexConditionOperand.Value(endValue) }, ignoreCase, culture);
     }
@@ -5395,7 +5395,7 @@ public sealed class LibraDexStringConditionOperator : LibraDexConditionOperator<
 
     private LibraDexConditionContinueOrEnd AddText(
         LibraDexConditionOperatorKind operatorKind,
-        string value,
+        string? value,
         bool ignoreCase,
         string? culture,
         LibraDexStringComparisonPolicy? stringComparisonPolicy = null)
@@ -7253,6 +7253,14 @@ internal sealed class LibraDexConditionNode
         criterion = descriptor.Operator switch
         {
             LibraDexConditionOperatorKind.All => CreateConditionLeaf(index, LibraDexCriteriaKind.All),
+            LibraDexConditionOperatorKind.EqualTo when descriptor.ValueKind == LibraDexConditionValueKind.String => CreateConditionLeaf(index, LibraDexCriteriaKind.Find, RequireString(values, 0, descriptor)),
+            LibraDexConditionOperatorKind.NotEqualTo when descriptor.ValueKind == LibraDexConditionValueKind.String => CreateOrderedPointExclusionLeaf(index, RequireString(values, 0, descriptor)),
+            LibraDexConditionOperatorKind.GreaterThan when descriptor.ValueKind == LibraDexConditionValueKind.String => CreateConditionLeaf(index, LibraDexCriteriaKind.After, RequireString(values, 0, descriptor)),
+            LibraDexConditionOperatorKind.GreaterOrEqual when descriptor.ValueKind == LibraDexConditionValueKind.String => CreateConditionLeaf(index, LibraDexCriteriaKind.AtOrAfter, RequireString(values, 0, descriptor)),
+            LibraDexConditionOperatorKind.LessThan when descriptor.ValueKind == LibraDexConditionValueKind.String => CreateConditionLeaf(index, LibraDexCriteriaKind.Before, RequireString(values, 0, descriptor)),
+            LibraDexConditionOperatorKind.LessOrEqual when descriptor.ValueKind == LibraDexConditionValueKind.String => CreateConditionLeaf(index, LibraDexCriteriaKind.AtOrBefore, RequireString(values, 0, descriptor)),
+            LibraDexConditionOperatorKind.Between when descriptor.ValueKind == LibraDexConditionValueKind.String => CreateConditionLeaf(index, LibraDexCriteriaKind.Between, RequireString(values, 0, descriptor), RequireString(values, 1, descriptor)),
+            LibraDexConditionOperatorKind.NotBetween when descriptor.ValueKind == LibraDexConditionValueKind.String => CreateOrderedRangeExclusionLeaf(index, RequireString(values, 0, descriptor), RequireString(values, 1, descriptor)),
             LibraDexConditionOperatorKind.EqualTo => CreateConditionLeaf(index, LibraDexCriteriaKind.Find, RequireValue(values, 0, descriptor)),
             LibraDexConditionOperatorKind.NotEqualTo => CreateOrderedPointExclusionLeaf(index, RequireValue(values, 0, descriptor)),
             LibraDexConditionOperatorKind.GreaterThan => CreateConditionLeaf(index, LibraDexCriteriaKind.After, RequireValue(values, 0, descriptor)),
@@ -7529,7 +7537,7 @@ internal sealed class LibraDexConditionNode
     /// <param name="index">The resolved logical index that owns the leaf.</param>
     /// <param name="value">The exact key value to exclude.</param>
     /// <returns>An identity criterion union over the lower and upper key extents.</returns>
-    private static IIdentityCriterion CreateOrderedPointExclusionLeaf(IIndex index, object value)
+    private static IIdentityCriterion CreateOrderedPointExclusionLeaf(IIndex index, object? value)
     {
         return CreateConditionLeaf(index, LibraDexCriteriaKind.Before, value)
             .Or(CreateConditionLeaf(index, LibraDexCriteriaKind.After, value));
@@ -7544,7 +7552,7 @@ internal sealed class LibraDexConditionNode
     /// <param name="lower">The inclusive lower key boundary to exclude.</param>
     /// <param name="upper">The inclusive upper key boundary to exclude.</param>
     /// <returns>An identity criterion union over the lower and upper key extents.</returns>
-    private static IIdentityCriterion CreateOrderedRangeExclusionLeaf(IIndex index, object lower, object upper)
+    private static IIdentityCriterion CreateOrderedRangeExclusionLeaf(IIndex index, object? lower, object? upper)
     {
         return CreateConditionLeaf(index, LibraDexCriteriaKind.Before, lower)
             .Or(CreateConditionLeaf(index, LibraDexCriteriaKind.After, upper));
@@ -7607,7 +7615,10 @@ internal sealed class LibraDexConditionNode
 
         foreach (object? item in enumerable)
         {
-            _ = ValidateConditionLeafValue(index, LibraDexCriteriaKind.Find, RequireNonNullMembershipValue(item, descriptor));
+            object? membershipValue = descriptor.ValueKind == LibraDexConditionValueKind.String
+                ? item
+                : RequireNonNullMembershipValue(item, descriptor);
+            _ = ValidateConditionLeafValue(index, LibraDexCriteriaKind.Find, membershipValue);
         }
 
         return LibraDexIdentityCriterion.Leaf(index, LibraDexCriteriaKind.InSet, CreateConditionDiagnostics(LibraDexCriteriaKind.InSet), source);
@@ -7901,7 +7912,7 @@ internal sealed class LibraDexConditionNode
         return CreateConditionLeaf(
             index,
             LibraDexCriteriaKind.StringPattern,
-                LibraDexStringPatternPredicate.Create(mode, RequireString(values, 0, descriptor), ResolveStringComparisonPolicy(descriptor, index)));
+                LibraDexStringPatternPredicate.Create(mode, RequireNonNullString(values, 0, descriptor), ResolveStringComparisonPolicy(descriptor, index)));
     }
 
     /// <summary>
@@ -7922,7 +7933,7 @@ internal sealed class LibraDexConditionNode
             throw new NotSupportedException($"Condition operator {descriptor.Operator} cannot materialize as an exact string prefix range against index key type {index.KeyType.FullName}.");
         }
 
-        string value = RequireString(values, 0, descriptor);
+        string value = RequireNonNullString(values, 0, descriptor);
         return CreateConditionLeaf(index, LibraDexCriteriaKind.Between, value, value + '\uffff');
     }
 
@@ -7997,12 +8008,12 @@ internal sealed class LibraDexConditionNode
             LibraDexConditionOperatorKind.NotBetween => LibraDexStringPatternMode.NotBetween,
             _ => throw new NotSupportedException($"Condition operator {descriptor.Operator} is not a string comparison operator.")
         };
-        string lower = RequireString(values, 0, descriptor);
+        string lower = RequireNonNullString(values, 0, descriptor);
         return descriptor.Operator is LibraDexConditionOperatorKind.Between or LibraDexConditionOperatorKind.NotBetween
             ? CreateConditionLeaf(
                 index,
                 LibraDexCriteriaKind.StringPattern,
-                LibraDexStringPatternPredicate.Create(mode, lower, RequireString(values, 1, descriptor), ResolveStringComparisonPolicy(descriptor, index)))
+                LibraDexStringPatternPredicate.Create(mode, lower, RequireNonNullString(values, 1, descriptor), ResolveStringComparisonPolicy(descriptor, index)))
             : CreateConditionLeaf(
                 index,
                 LibraDexCriteriaKind.StringPattern,
@@ -8036,7 +8047,7 @@ internal sealed class LibraDexConditionNode
         return CreateConditionLeaf(
             index,
             LibraDexCriteriaKind.StringPattern,
-            LibraDexStringPatternPredicate.CreateSet(mode, RequireStringEnumerable(values, 0, descriptor), ResolveStringComparisonPolicy(descriptor, index)));
+            LibraDexStringPatternPredicate.CreateSet(mode, RequireNonNullStringEnumerable(values, 0, descriptor), ResolveStringComparisonPolicy(descriptor, index)));
     }
 
     /// <summary>
@@ -9129,8 +9140,8 @@ internal sealed class LibraDexConditionNode
             LibraDexConditionOperatorKind.EndsWith => CreateConditionLeaf(
                 projectionIndex,
                 LibraDexCriteriaKind.Between,
-                CreateReversedExactTextProjectionValue(RequireString(values, 0, descriptor)),
-                CreateReversedExactTextPrefixUpperBound(RequireString(values, 0, descriptor))),
+                CreateReversedExactTextProjectionValue(RequireNonNullString(values, 0, descriptor)),
+                CreateReversedExactTextPrefixUpperBound(RequireNonNullString(values, 0, descriptor))),
             _ => throw new NotSupportedException($"Exact-text projection bridge for condition operator {descriptor.Operator} is not connected yet.")
         };
     }
@@ -9227,27 +9238,27 @@ internal sealed class LibraDexConditionNode
 
         return descriptor.Operator switch
         {
-            LibraDexConditionOperatorKind.EqualTo => CreateConditionLeaf(projectionIndex, LibraDexCriteriaKind.Find, CreateSortKeyProjectionValue(RequireString(values, 0, descriptor), descriptor)),
-            LibraDexConditionOperatorKind.NotEqualTo => CreateOrderedPointExclusionLeaf(projectionIndex, CreateSortKeyProjectionValue(RequireString(values, 0, descriptor), descriptor)),
-            LibraDexConditionOperatorKind.GreaterThan => CreateConditionLeaf(projectionIndex, LibraDexCriteriaKind.After, CreateSortKeyProjectionValue(RequireString(values, 0, descriptor), descriptor)),
-            LibraDexConditionOperatorKind.GreaterOrEqual => CreateConditionLeaf(projectionIndex, LibraDexCriteriaKind.AtOrAfter, CreateSortKeyProjectionValue(RequireString(values, 0, descriptor), descriptor)),
-            LibraDexConditionOperatorKind.LessThan => CreateConditionLeaf(projectionIndex, LibraDexCriteriaKind.Before, CreateSortKeyProjectionValue(RequireString(values, 0, descriptor), descriptor)),
-            LibraDexConditionOperatorKind.LessOrEqual => CreateConditionLeaf(projectionIndex, LibraDexCriteriaKind.AtOrBefore, CreateSortKeyProjectionValue(RequireString(values, 0, descriptor), descriptor)),
+            LibraDexConditionOperatorKind.EqualTo => CreateConditionLeaf(projectionIndex, LibraDexCriteriaKind.Find, CreateSortKeyProjectionValue(RequireNonNullString(values, 0, descriptor), descriptor)),
+            LibraDexConditionOperatorKind.NotEqualTo => CreateOrderedPointExclusionLeaf(projectionIndex, CreateSortKeyProjectionValue(RequireNonNullString(values, 0, descriptor), descriptor)),
+            LibraDexConditionOperatorKind.GreaterThan => CreateConditionLeaf(projectionIndex, LibraDexCriteriaKind.After, CreateSortKeyProjectionValue(RequireNonNullString(values, 0, descriptor), descriptor)),
+            LibraDexConditionOperatorKind.GreaterOrEqual => CreateConditionLeaf(projectionIndex, LibraDexCriteriaKind.AtOrAfter, CreateSortKeyProjectionValue(RequireNonNullString(values, 0, descriptor), descriptor)),
+            LibraDexConditionOperatorKind.LessThan => CreateConditionLeaf(projectionIndex, LibraDexCriteriaKind.Before, CreateSortKeyProjectionValue(RequireNonNullString(values, 0, descriptor), descriptor)),
+            LibraDexConditionOperatorKind.LessOrEqual => CreateConditionLeaf(projectionIndex, LibraDexCriteriaKind.AtOrBefore, CreateSortKeyProjectionValue(RequireNonNullString(values, 0, descriptor), descriptor)),
             LibraDexConditionOperatorKind.Between => CreateConditionLeaf(
                 projectionIndex,
                 LibraDexCriteriaKind.Between,
-                CreateSortKeyProjectionValue(RequireString(values, 0, descriptor), descriptor),
-                CreateSortKeyProjectionValue(RequireString(values, 1, descriptor), descriptor)),
+                CreateSortKeyProjectionValue(RequireNonNullString(values, 0, descriptor), descriptor),
+                CreateSortKeyProjectionValue(RequireNonNullString(values, 1, descriptor), descriptor)),
             LibraDexConditionOperatorKind.NotBetween => CreateOrderedRangeExclusionLeaf(
                 projectionIndex,
-                CreateSortKeyProjectionValue(RequireString(values, 0, descriptor), descriptor),
-                CreateSortKeyProjectionValue(RequireString(values, 1, descriptor), descriptor)),
+                CreateSortKeyProjectionValue(RequireNonNullString(values, 0, descriptor), descriptor),
+                CreateSortKeyProjectionValue(RequireNonNullString(values, 1, descriptor), descriptor)),
             LibraDexConditionOperatorKind.InSet => CreateProjectionMembershipLeaf(
                 projectionIndex,
-                (object)RequireStringSet(values, 0, descriptor).Select(value => CreateSortKeyProjectionValue(value, descriptor)).ToArray()),
+                (object)RequireNonNullStringEnumerable(values, 0, descriptor).Select(value => CreateSortKeyProjectionValue(value, descriptor)).ToArray()),
             LibraDexConditionOperatorKind.NotInSet => CreateProjectionMembershipLeaf(
                 projectionIndex,
-                (object)RequireStringSet(values, 0, descriptor).Select(value => CreateSortKeyProjectionValue(value, descriptor)).ToArray()).Not(),
+                (object)RequireNonNullStringEnumerable(values, 0, descriptor).Select(value => CreateSortKeyProjectionValue(value, descriptor)).ToArray()).Not(),
             _ => throw new NotSupportedException($"Sort-key projection bridge for condition operator {descriptor.Operator} is not connected yet.")
         };
     }
@@ -9272,24 +9283,24 @@ internal sealed class LibraDexConditionNode
 
         return descriptor.Operator switch
         {
-            LibraDexConditionOperatorKind.EqualTo => CreateConditionLeaf(projectionIndex, LibraDexCriteriaKind.Find, CreateFoldedTextProjectionValue(RequireString(values, 0, descriptor), descriptor)),
-            LibraDexConditionOperatorKind.NotEqualTo => CreateOrderedPointExclusionLeaf(projectionIndex, CreateFoldedTextProjectionValue(RequireString(values, 0, descriptor), descriptor)),
+            LibraDexConditionOperatorKind.EqualTo => CreateConditionLeaf(projectionIndex, LibraDexCriteriaKind.Find, CreateFoldedTextProjectionValue(RequireNonNullString(values, 0, descriptor), descriptor)),
+            LibraDexConditionOperatorKind.NotEqualTo => CreateOrderedPointExclusionLeaf(projectionIndex, CreateFoldedTextProjectionValue(RequireNonNullString(values, 0, descriptor), descriptor)),
             LibraDexConditionOperatorKind.StartsWith => CreateConditionLeaf(
                 projectionIndex,
                 LibraDexCriteriaKind.Between,
-                CreateFoldedTextProjectionValue(RequireString(values, 0, descriptor), descriptor),
-                CreateFoldedTextPrefixUpperBound(RequireString(values, 0, descriptor), descriptor)),
+                CreateFoldedTextProjectionValue(RequireNonNullString(values, 0, descriptor), descriptor),
+                CreateFoldedTextPrefixUpperBound(RequireNonNullString(values, 0, descriptor), descriptor)),
             LibraDexConditionOperatorKind.EndsWith => CreateConditionLeaf(
                 projectionIndex,
                 LibraDexCriteriaKind.Between,
-                CreateReversedFoldedTextProjectionValue(RequireString(values, 0, descriptor), descriptor),
-                CreateReversedFoldedTextPrefixUpperBound(RequireString(values, 0, descriptor), descriptor)),
+                CreateReversedFoldedTextProjectionValue(RequireNonNullString(values, 0, descriptor), descriptor),
+                CreateReversedFoldedTextPrefixUpperBound(RequireNonNullString(values, 0, descriptor), descriptor)),
             LibraDexConditionOperatorKind.InSet => CreateProjectionMembershipLeaf(
                 projectionIndex,
-                (object)RequireStringSet(values, 0, descriptor).Select(value => CreateFoldedTextProjectionValue(value, descriptor)).ToArray()),
+                (object)RequireNonNullStringEnumerable(values, 0, descriptor).Select(value => CreateFoldedTextProjectionValue(value, descriptor)).ToArray()),
             LibraDexConditionOperatorKind.NotInSet => CreateProjectionMembershipLeaf(
                 projectionIndex,
-                (object)RequireStringSet(values, 0, descriptor).Select(value => CreateFoldedTextProjectionValue(value, descriptor)).ToArray()).Not(),
+                (object)RequireNonNullStringEnumerable(values, 0, descriptor).Select(value => CreateFoldedTextProjectionValue(value, descriptor)).ToArray()).Not(),
             _ => throw new NotSupportedException($"Folded-text projection bridge for condition operator {descriptor.Operator} is not connected yet.")
         };
     }
@@ -9408,10 +9419,23 @@ internal sealed class LibraDexConditionNode
     /// <param name="ordinal">The operand index.</param>
     /// <param name="descriptor">The source descriptor used for error context.</param>
     /// <returns>The required string operand.</returns>
-    private static string RequireString(object?[] values, int ordinal, LibraDexConditionLeafDescriptor descriptor)
+    private static string? RequireString(object?[] values, int ordinal, LibraDexConditionLeafDescriptor descriptor)
     {
-        return RequireValue(values, ordinal, descriptor) as string
-            ?? throw new InvalidOperationException($"Condition leaf '{descriptor.IndexName}' operator '{descriptor.Operator}' requires string operand {ordinal}.");
+        if (ordinal >= values.Length)
+        {
+            throw new InvalidOperationException($"Condition leaf '{descriptor.IndexName}' operator '{descriptor.Operator}' requires string operand {ordinal}.");
+        }
+
+        object? value = values[ordinal];
+        return value is null || value is string
+            ? (string?)value
+            : throw new InvalidOperationException($"Condition leaf '{descriptor.IndexName}' operator '{descriptor.Operator}' requires string operand {ordinal}.");
+    }
+
+    private static string RequireNonNullString(object?[] values, int ordinal, LibraDexConditionLeafDescriptor descriptor)
+    {
+        return RequireString(values, ordinal, descriptor)
+            ?? throw new InvalidOperationException($"Condition leaf '{descriptor.IndexName}' operator '{descriptor.Operator}' requires non-null string operand {ordinal}.");
     }
 
     /// <summary>
@@ -9422,10 +9446,10 @@ internal sealed class LibraDexConditionNode
     /// <param name="ordinal">The operand index.</param>
     /// <param name="descriptor">The source descriptor used for error context.</param>
     /// <returns>The required string values.</returns>
-    private static IReadOnlyList<string> RequireStringSet(object?[] values, int ordinal, LibraDexConditionLeafDescriptor descriptor)
+    private static IReadOnlyList<string?> RequireStringSet(object?[] values, int ordinal, LibraDexConditionLeafDescriptor descriptor)
     {
-        List<string> strings = new();
-        foreach (string text in RequireStringEnumerable(values, ordinal, descriptor))
+        List<string?> strings = new();
+        foreach (string? text in RequireStringEnumerable(values, ordinal, descriptor))
         {
             strings.Add(text);
         }
@@ -9433,16 +9457,31 @@ internal sealed class LibraDexConditionNode
         return strings;
     }
 
-    private static IEnumerable<string> RequireStringEnumerable(object?[] values, int ordinal, LibraDexConditionLeafDescriptor descriptor)
+    private static IEnumerable<string?> RequireStringEnumerable(object?[] values, int ordinal, LibraDexConditionLeafDescriptor descriptor)
     {
         foreach (object? value in RequireEnumerable(values, ordinal, descriptor))
         {
+            if (value is null)
+            {
+                yield return null;
+                continue;
+            }
+
             if (value is not string text)
             {
                 throw new InvalidOperationException($"Condition leaf '{descriptor.IndexName}' operator '{descriptor.Operator}' requires only string set operands.");
             }
 
             yield return text;
+        }
+    }
+
+    private static IEnumerable<string> RequireNonNullStringEnumerable(object?[] values, int ordinal, LibraDexConditionLeafDescriptor descriptor)
+    {
+        foreach (string? value in RequireStringEnumerable(values, ordinal, descriptor))
+        {
+            yield return value
+                ?? throw new InvalidOperationException($"Condition leaf '{descriptor.IndexName}' operator '{descriptor.Operator}' requires only non-null string set operands.");
         }
     }
 

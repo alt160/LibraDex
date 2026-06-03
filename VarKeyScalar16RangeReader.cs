@@ -30,6 +30,7 @@ public sealed class VarKeyScalar16RangeReader : IDisposable
     private int currentSlotIndex = -1;
     private int ordinal = -1;
     private int maxKeyLength;
+    private bool decodeLogicalKeys;
     private bool traversalComplete = true;
     private bool disposed;
 
@@ -46,11 +47,13 @@ public sealed class VarKeyScalar16RangeReader : IDisposable
         int maxKeyLength,
         ReadOnlySpan<byte> lowerKey,
         ReadOnlySpan<byte> upperKey,
-        int maxRouterHops = 8)
+        int maxRouterHops = 8,
+        bool decodeLogicalKeys = false)
         : this()
     {
         this.session = session;
         this.maxKeyLength = maxKeyLength;
+        this.decodeLogicalKeys = decodeLogicalKeys;
         this.lowerKey = lowerKey.ToArray();
         this.upperKey = upperKey.ToArray();
         pendingOffsets = ArrayPool<long>.Shared.Rent(DefaultShelfCapacity);
@@ -95,7 +98,20 @@ public sealed class VarKeyScalar16RangeReader : IDisposable
     /// Gets the raw key bytes for the current row.<br/>
     /// The returned span is valid until <see cref="MoveNext"/> is called again or the reader is disposed.<br/>
     /// </summary>
-    public ReadOnlySpan<byte> CurrentKey => CurrentShelf.ReadKeyAt(currentSlotIndex);
+    public ReadOnlySpan<byte> CurrentKey
+    {
+        get
+        {
+            ReadOnlySpan<byte> encoded = CurrentShelf.ReadKeyAt(currentSlotIndex);
+            return decodeLogicalKeys ? LibraDexVarLenKeyCodec.DecodePayloadSpan(encoded) : encoded;
+        }
+    }
+
+    /// <summary>
+    /// Gets whether the current logical key is the null-key sentinel.<br/>
+    /// This is false for raw encoded readers and for logical empty keys; callers can combine it with <see cref="CurrentKeyLength"/> to distinguish null from empty.<br/>
+    /// </summary>
+    public bool CurrentKeyIsNull => decodeLogicalKeys && LibraDexVarLenKeyCodec.IsNull(CurrentShelf.ReadKeyAt(currentSlotIndex));
 
     /// <summary>
     /// Gets the high encoded 64 bits of the current 16-byte identity.<br/>
@@ -229,6 +245,21 @@ public sealed class VarKeyScalar16RangeReader : IDisposable
     /// <returns>An owned copy of the current key bytes.</returns>
     public byte[] MaterializeCurrentKey()
     {
+        return CurrentKey.ToArray();
+    }
+
+    /// <summary>
+    /// Returns the current logical key as an owned byte array, or null when the current logical key is the null-key sentinel.<br/>
+    /// Prefer <see cref="CurrentKey"/> and <see cref="CurrentKeyIsNull"/> in hot paths to avoid allocation.<br/>
+    /// </summary>
+    /// <returns>An owned copy of the current logical key bytes, or null for a logical null key.</returns>
+    public byte[]? MaterializeCurrentKeyOrNull()
+    {
+        if (CurrentKeyIsNull)
+        {
+            return null;
+        }
+
         return CurrentKey.ToArray();
     }
 
