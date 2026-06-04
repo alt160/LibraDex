@@ -11990,13 +11990,23 @@ internal static class RawHarness
             _ = index;
             ulong encodedNull111 = LibraDexGenericScalarCodec<long>.Encode8(111L);
             ulong encodedNull333 = LibraDexGenericScalarCodec<long>.Encode8(333L);
+            ulong encodedNull555 = LibraDexGenericScalarCodec<long>.Encode8(555L);
             ulong encodedEmpty222 = LibraDexGenericScalarCodec<long>.Encode8(222L);
             if (!catalog.Session.InsertScalar8KeyStateIdentity(slotIndex, KeyStateRoute.Null, encodedNull333) ||
                 !catalog.Session.InsertScalar8KeyStateIdentity(slotIndex, KeyStateRoute.Null, encodedNull111) ||
                 catalog.Session.InsertScalar8KeyStateIdentity(slotIndex, KeyStateRoute.Null, encodedNull333) ||
-                !catalog.Session.InsertScalar8KeyStateIdentity(slotIndex, KeyStateRoute.Empty, encodedEmpty222))
+                !catalog.Session.InsertScalar8KeyStateIdentity(slotIndex, KeyStateRoute.Empty, encodedEmpty222) ||
+                !catalog.Session.InsertScalar8KeyStateIdentity(slotIndex, KeyStateRoute.Null, encodedNull555))
             {
                 throw new InvalidDataException("Key-state scalar-8 identity insertion did not report expected insert/no-op results.");
+            }
+
+            if (!catalog.Session.ContainsScalar8KeyStateIdentity(slotIndex, KeyStateRoute.Null, encodedNull555) ||
+                !catalog.Session.DeleteScalar8KeyStateIdentity(slotIndex, KeyStateRoute.Null, encodedNull555) ||
+                catalog.Session.ContainsScalar8KeyStateIdentity(slotIndex, KeyStateRoute.Null, encodedNull555) ||
+                catalog.Session.DeleteScalar8KeyStateIdentity(slotIndex, KeyStateRoute.Null, encodedNull555))
+            {
+                throw new InvalidDataException("Key-state scalar-8 identity route did not support exact identity contains/delete.");
             }
 
             IndexDirectorySlotSnapshot updatedSlot = FindSlot(catalog, slotIndex);
@@ -12042,6 +12052,14 @@ internal static class RawHarness
                 catalog.Session.InsertScalar16KeyStateIdentity(scalar16SlotIndex, KeyStateRoute.Null, scalar16NullAHigh, scalar16NullALow))
             {
                 throw new InvalidDataException("Key-state scalar-16 identity insertion did not report expected insert/no-op results.");
+            }
+
+            if (!catalog.Session.ContainsScalar16KeyStateIdentity(scalar16SlotIndex, KeyStateRoute.Null, scalar16NullAHigh, scalar16NullALow) ||
+                !catalog.Session.DeleteScalar16KeyStateIdentity(scalar16SlotIndex, KeyStateRoute.Null, scalar16NullAHigh, scalar16NullALow) ||
+                catalog.Session.ContainsScalar16KeyStateIdentity(scalar16SlotIndex, KeyStateRoute.Null, scalar16NullAHigh, scalar16NullALow) ||
+                !catalog.Session.InsertScalar16KeyStateIdentity(scalar16SlotIndex, KeyStateRoute.Null, scalar16NullAHigh, scalar16NullALow))
+            {
+                throw new InvalidDataException("Key-state scalar-16 identity route did not support exact identity contains/delete.");
             }
 
             (ulong[] scalar16Highs, ulong[] scalar16Lows) = catalog.Session.ReadScalar16KeyStateIdentities(scalar16SlotIndex, KeyStateRoute.Null);

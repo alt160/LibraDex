@@ -4,14 +4,14 @@ using System.Runtime.CompilerServices;
 namespace LibraDex.Layouts;
 
 /// <summary>
-/// Defines the compact identity-only shelf used by root-level null and empty key-state routes.<br/>
-/// The shelf stores sorted identities without key payloads or slot indirection because the route itself already identifies the key state.<br/>
+/// Defines the root page for a null-or-empty key-state identity route.<br/>
+/// The route is keyed by encoded identity values rather than by ordinary index keys, so it can start as an inline sorted root and later reshape to ranged or routed identity children without changing catalog metadata.<br/>
 /// </summary>
-internal static class KeyStateIdentityShelfLayout
+internal static class KeyStateIdentityRouteLayout
 {
-    public const uint Magic = 0x49534B53U;
+    public const uint Magic = 0x49524B53U;
     public const ushort FormatVersion = 1;
-    public const ushort HeaderSize = 32;
+    public const ushort HeaderSize = 48;
     public const int ExtentSize = 4096;
     public const int Scalar8IdentitySize = sizeof(ulong);
     public const int Scalar16IdentitySize = sizeof(ulong) * 2;
@@ -19,16 +19,21 @@ internal static class KeyStateIdentityShelfLayout
     public const int MagicOffset = 0;
     public const int FormatVersionOffset = 4;
     public const int HeaderSizeOffset = 6;
-    public const int FlagsOffset = 8;
-    public const int ItemCountOffset = 12;
-    public const int IdentitySizeOffset = 16;
+    public const int StorageKindOffset = 8;
+    public const int FlagsOffset = 10;
+    public const int ItemCountOffset = 14;
+    public const int IdentitySizeOffset = 18;
+    public const int ChildRootOffsetOffset = 24;
+    public const int Reserved0Offset = 32;
+    public const int Reserved1Offset = 40;
 
+    public const ushort InlineSortedStorageKind = 1;
     public const ushort Scalar8IdentityCode = 8;
     public const ushort Scalar16IdentityCode = 16;
 
-    public static int MaxScalar8ItemCount => (ExtentSize - HeaderSize) / Scalar8IdentitySize;
+    public static int MaxScalar8InlineItemCount => (ExtentSize - HeaderSize) / Scalar8IdentitySize;
 
-    public static int MaxScalar16ItemCount => (ExtentSize - HeaderSize) / Scalar16IdentitySize;
+    public static int MaxScalar16InlineItemCount => (ExtentSize - HeaderSize) / Scalar16IdentitySize;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static uint ReadMagic(ReadOnlySpan<byte> source)
@@ -67,6 +72,18 @@ internal static class KeyStateIdentityShelfLayout
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static ushort ReadStorageKind(ReadOnlySpan<byte> source)
+    {
+        return BinaryPrimitives.ReadUInt16LittleEndian(source.Slice(StorageKindOffset, sizeof(ushort)));
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static void WriteStorageKind(Span<byte> target, ushort value)
+    {
+        BinaryPrimitives.WriteUInt16LittleEndian(target.Slice(StorageKindOffset, sizeof(ushort)), value);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static uint ReadFlags(ReadOnlySpan<byte> source)
     {
         return BinaryPrimitives.ReadUInt32LittleEndian(source.Slice(FlagsOffset, sizeof(uint)));
@@ -100,6 +117,18 @@ internal static class KeyStateIdentityShelfLayout
     public static void WriteIdentitySizeCode(Span<byte> target, ushort value)
     {
         BinaryPrimitives.WriteUInt16LittleEndian(target.Slice(IdentitySizeOffset, sizeof(ushort)), value);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static long ReadChildRootOffset(ReadOnlySpan<byte> source)
+    {
+        return BinaryPrimitives.ReadInt64LittleEndian(source.Slice(ChildRootOffsetOffset, sizeof(long)));
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static void WriteChildRootOffset(Span<byte> target, long value)
+    {
+        BinaryPrimitives.WriteInt64LittleEndian(target.Slice(ChildRootOffsetOffset, sizeof(long)), value);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
