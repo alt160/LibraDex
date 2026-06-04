@@ -12250,6 +12250,98 @@ internal static class RawHarness
                 throw new InvalidDataException("Binary NullKey route reads, all-scan ordering, or exact deletes did not match expected route semantics.");
             }
 
+            LibraDexStringScalar8Index stringRekeyIndex = catalog.Indexes["routes"]["codeRekey"].String.Create(stringKeys: StringKeys.Exact);
+            ValidateGenericInsert(stringRekeyIndex.Insert(null, 921UL), "string key-state rekey null insert");
+            ValidateGenericInsert(stringRekeyIndex.Insert(string.Empty, 922UL), "string key-state rekey empty insert");
+            ValidateGenericInsert(stringRekeyIndex.Insert("A", 923UL), "string key-state rekey normal insert");
+            bool stringRekeyNullToValue = stringRekeyIndex.Rekey(921UL, null, "B");
+            bool stringRekeyValueToEmpty = stringRekeyIndex.Rekey(923UL, "A", string.Empty);
+            long stringRekeyEmptyToNull = stringRekeyIndex.Rekey(922UL, null);
+            Func<string, IIndex> stringRekeyResolver = indexName => string.Equals(indexName, "codeRekey", StringComparison.Ordinal)
+                ? stringRekeyIndex
+                : throw new KeyNotFoundException(indexName);
+            IReadOnlyList<ulong> stringRekeyAllIds = LibraDexCondition
+                .ForGroup("routes")
+                .Index("codeRekey").AsString.All()
+                .EndCondition
+                .ToList<ulong>(stringRekeyResolver, deduplication: IdentityDeduplication.Preserve);
+            if (!stringRekeyNullToValue ||
+                !stringRekeyValueToEmpty ||
+                stringRekeyEmptyToNull != 1 ||
+                !stringRekeyAllIds.SequenceEqual(new[] { 922UL, 923UL, 921UL }))
+            {
+                throw new InvalidDataException("String NullKey direct rekey paths did not leave expected null-first route ordering.");
+            }
+
+            LibraDexIdentityMutationResult stringSetKeyToEmpty = LibraDexCondition
+                .ForGroup("routes")
+                .Index("codeRekey").AsString.EqualTo("B")
+                .EndCondition
+                .SetKey(stringRekeyResolver, string.Empty);
+            LibraDexIdentityMutationResult stringSetKeyToNull = LibraDexCondition
+                .ForGroup("routes")
+                .Index("codeRekey").AsString.EqualTo(NullKey.Empty)
+                .EndCondition
+                .SetKey(stringRekeyResolver, null);
+            IReadOnlyList<ulong> stringSetKeyNullIds = LibraDexCondition
+                .ForGroup("routes")
+                .Index("codeRekey").AsString.EqualTo(NullKey.Null)
+                .EndCondition
+                .ToList<ulong>(stringRekeyResolver, deduplication: IdentityDeduplication.Preserve);
+            if (stringSetKeyToEmpty.ChangedCount != 1 ||
+                stringSetKeyToNull.ChangedCount != 2 ||
+                !stringSetKeyNullIds.SequenceEqual(new[] { 921UL, 922UL, 923UL }))
+            {
+                throw new InvalidDataException("String NullKey condition SetKey did not move identities through null and empty routes.");
+            }
+
+            LibraDexIndex<byte[], long> binaryRekeyIndex = catalog.Indexes["routes"]["fingerprintRekey"].Blob.Scalar<long>(LibraDexScalarWidth.Bytes32).Create();
+            byte[] binaryRekeyA = Convert.FromHexString("100102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F");
+            byte[] binaryRekeyB = Convert.FromHexString("200102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F");
+            ValidateGenericInsert(binaryRekeyIndex.Insert(NullKey.Null, 931L), "binary key-state rekey null insert");
+            ValidateGenericInsert(binaryRekeyIndex.Insert(NullKey.Empty, 932L), "binary key-state rekey empty insert");
+            ValidateGenericInsert(binaryRekeyIndex.Insert(binaryRekeyA, 933L), "binary key-state rekey normal insert");
+            bool binaryRekeyNullToValue = binaryRekeyIndex.Rekey(931L, NullKey.Null, binaryRekeyB);
+            bool binaryRekeyValueToEmpty = binaryRekeyIndex.Rekey(933L, binaryRekeyA, NullKey.Empty);
+            long binaryRekeyEmptyToNull = ((IIndex)binaryRekeyIndex).Rekey(932L, null);
+            Func<string, IIndex> binaryRekeyResolver = indexName => string.Equals(indexName, "fingerprintRekey", StringComparison.Ordinal)
+                ? binaryRekeyIndex
+                : throw new KeyNotFoundException(indexName);
+            IReadOnlyList<long> binaryRekeyAllIds = LibraDexCondition
+                .ForGroup("routes")
+                .Index("fingerprintRekey").AsBinary.All()
+                .EndCondition
+                .ToList<long>(binaryRekeyResolver, deduplication: IdentityDeduplication.Preserve);
+            if (!binaryRekeyNullToValue ||
+                !binaryRekeyValueToEmpty ||
+                binaryRekeyEmptyToNull != 1 ||
+                !binaryRekeyAllIds.SequenceEqual(new[] { 932L, 933L, 931L }))
+            {
+                throw new InvalidDataException("Binary NullKey direct rekey paths did not leave expected null-first route ordering.");
+            }
+
+            LibraDexIdentityMutationResult binarySetKeyToEmpty = LibraDexCondition
+                .ForGroup("routes")
+                .Index("fingerprintRekey").AsBinary.EqualTo(binaryRekeyB)
+                .EndCondition
+                .SetKey(binaryRekeyResolver, Array.Empty<byte>());
+            LibraDexIdentityMutationResult binarySetKeyToNull = LibraDexCondition
+                .ForGroup("routes")
+                .Index("fingerprintRekey").AsBinary.EqualTo(NullKey.Empty)
+                .EndCondition
+                .SetKey(binaryRekeyResolver, null);
+            IReadOnlyList<long> binarySetKeyNullIds = LibraDexCondition
+                .ForGroup("routes")
+                .Index("fingerprintRekey").AsBinary.EqualTo(NullKey.Null)
+                .EndCondition
+                .ToList<long>(binaryRekeyResolver, deduplication: IdentityDeduplication.Preserve);
+            if (binarySetKeyToEmpty.ChangedCount != 1 ||
+                binarySetKeyToNull.ChangedCount != 2 ||
+                !binarySetKeyNullIds.SequenceEqual(new[] { 931L, 932L, 933L }))
+            {
+                throw new InvalidDataException("Binary NullKey condition SetKey did not move identities through null and empty routes.");
+            }
+
             _ = scalar16Index;
             if (!catalog.Session.InsertScalar16KeyStateIdentity(scalar16SlotIndex, KeyStateRoute.Null, scalar16NullAHigh, scalar16NullALow) ||
                 !catalog.Session.InsertScalar16KeyStateIdentity(scalar16SlotIndex, KeyStateRoute.Null, scalar16NullBHigh, scalar16NullBLow) ||

@@ -464,6 +464,23 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     {
         ThrowIfDisposed();
         TIdentity typedIdentity = RequireObjectIdentity(identity, nameof(identity));
+        bool oldIsNullKey = TryClassifyNullKeyRouteKey(oldKey, out NullKey oldNullKeyState);
+        bool newIsNullKey = TryClassifyNullKeyRouteKey(newKey, out NullKey newNullKeyState);
+        if (oldIsNullKey || newIsNullKey)
+        {
+            if (oldIsNullKey && newIsNullKey)
+            {
+                return Rekey(typedIdentity, oldNullKeyState, newNullKeyState);
+            }
+
+            if (oldIsNullKey)
+            {
+                return Rekey(typedIdentity, oldNullKeyState, RequireObjectKey(newKey!, nameof(newKey)));
+            }
+
+            return Rekey(typedIdentity, RequireObjectKey(oldKey!, nameof(oldKey)), newNullKeyState);
+        }
+
         if (oldKey is null || oldKey == DBNull.Value)
         {
             if (newKey is null || newKey == DBNull.Value)
@@ -513,6 +530,39 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     {
         ThrowIfDisposed();
         TIdentity typedIdentity = RequireObjectIdentity(identity, nameof(identity));
+        if (TryClassifyNullKeyRouteKey(newKey, out NullKey newNullKeyState))
+        {
+            long changedToNullKey = 0;
+            List<TKey> oldNormalKeys = new();
+            using (LibraDexRangeReader<TKey, TIdentity> reader = OpenAllRangeReader())
+            {
+                while (reader.TryReadNext(out TKey key, out TIdentity currentIdentity))
+                {
+                    if (TupleComponentEquals(currentIdentity, typedIdentity))
+                    {
+                        oldNormalKeys.Add(key);
+                    }
+                }
+            }
+
+            for (int i = 0; i < oldNormalKeys.Count; i++)
+            {
+                if (Rekey(typedIdentity, oldNormalKeys[i], newNullKeyState))
+                {
+                    changedToNullKey++;
+                }
+            }
+
+            NullKey otherState = newNullKeyState == NullKey.Null ? NullKey.Empty : NullKey.Null;
+            if (ContainsNullKeyIdentity(otherState, typedIdentity) &&
+                Rekey(typedIdentity, otherState, newNullKeyState))
+            {
+                changedToNullKey++;
+            }
+
+            return changedToNullKey;
+        }
+
         if (newKey is null || newKey == DBNull.Value)
         {
             long changedToNull = 0;
@@ -561,10 +611,25 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
             }
         }
 
-        if (ContainsScalarNullIdentity(typedIdentity) &&
+        if (SupportsScalarNullKeyRoute() &&
+            ContainsScalarNullIdentity(typedIdentity) &&
             Rekey(typedIdentity, ScalarNull.Null, typedNewKey))
         {
             changed++;
+        }
+        else if (SupportsNullKeyRoute())
+        {
+            if (ContainsNullKeyIdentity(NullKey.Null, typedIdentity) &&
+                Rekey(typedIdentity, NullKey.Null, typedNewKey))
+            {
+                changed++;
+            }
+
+            if (ContainsNullKeyIdentity(NullKey.Empty, typedIdentity) &&
+                Rekey(typedIdentity, NullKey.Empty, typedNewKey))
+            {
+                changed++;
+            }
         }
 
         return changed;
@@ -1432,6 +1497,26 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     public void Rekey(TIdentity identity, TKey oldKey, TKey newKey)
     {
         ThrowIfDisposed();
+        bool oldIsNullKey = TryClassifyNullKeyRouteKey(oldKey, out NullKey oldNullKeyState);
+        bool newIsNullKey = TryClassifyNullKeyRouteKey(newKey, out NullKey newNullKeyState);
+        if (oldIsNullKey || newIsNullKey)
+        {
+            if (oldIsNullKey && newIsNullKey)
+            {
+                _ = Rekey(identity, oldNullKeyState, newNullKeyState);
+                return;
+            }
+
+            if (oldIsNullKey)
+            {
+                _ = Rekey(identity, oldNullKeyState, newKey);
+                return;
+            }
+
+            _ = Rekey(identity, oldKey, newNullKeyState);
+            return;
+        }
+
         if (TupleComponentEquals(oldKey, newKey))
         {
             return;
@@ -1534,6 +1619,127 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     }
 
     /// <summary>
+    /// Re-keys one identity from a binary null or empty key-state route to an ordinary binary key.<br/>
+    /// The replacement tuple is created before the old key-state identity is removed so a failed replacement cannot lose the existing association.<br/>
+    /// </summary>
+    /// <param name="identity">The identity to re-key.</param>
+    /// <param name="oldKeyState">The old binary key state; only <see cref="NullKey.Null"/> and <see cref="NullKey.Empty"/> are accepted.</param>
+    /// <param name="newKey">The replacement ordinary binary key.</param>
+    /// <returns><see langword="true"/> when the old key-state identity existed and was removed after the replacement tuple was available.</returns>
+    public bool Rekey(TIdentity identity, NullKey oldKeyState, TKey newKey)
+    {
+        ThrowIfDisposed();
+        EnsureConcreteNullKeyState(oldKeyState, nameof(oldKeyState));
+        if (TryClassifyNullKeyRouteKey(newKey, out NullKey newKeyState))
+        {
+            return Rekey(identity, oldKeyState, newKeyState);
+        }
+
+        if (!ContainsNullKeyIdentity(oldKeyState, identity))
+        {
+            return false;
+        }
+
+        if (!ContainsExactTuple(newKey, identity))
+        {
+            LibraDexGenericInsertResult insert = Insert(newKey, identity);
+            if (!insert.Inserted && !ContainsExactTuple(newKey, identity))
+            {
+                throw new InvalidOperationException("NullKey rekey could not create the replacement tuple; the key-state identity was left unchanged.");
+            }
+        }
+
+        bool deleted = DeleteNullKeyIdentity(oldKeyState, identity);
+        if (deleted)
+        {
+            RecordRekey();
+        }
+
+        return deleted;
+    }
+
+    /// <summary>
+    /// Re-keys one identity from an ordinary binary key to a binary null or empty key-state route.<br/>
+    /// The key-state identity is created before the old ordinary tuple is removed so a failed replacement cannot lose the existing association.<br/>
+    /// </summary>
+    /// <param name="identity">The identity to re-key.</param>
+    /// <param name="oldKey">The old ordinary binary key.</param>
+    /// <param name="newKeyState">The replacement binary key state; only <see cref="NullKey.Null"/> and <see cref="NullKey.Empty"/> are accepted.</param>
+    /// <returns><see langword="true"/> when the old ordinary tuple existed and was removed after the key-state identity was available.</returns>
+    public bool Rekey(TIdentity identity, TKey oldKey, NullKey newKeyState)
+    {
+        ThrowIfDisposed();
+        EnsureConcreteNullKeyState(newKeyState, nameof(newKeyState));
+        if (TryClassifyNullKeyRouteKey(oldKey, out NullKey oldKeyState))
+        {
+            return Rekey(identity, oldKeyState, newKeyState);
+        }
+
+        if (!ContainsExactTuple(oldKey, identity))
+        {
+            return false;
+        }
+
+        if (!ContainsNullKeyIdentity(newKeyState, identity))
+        {
+            LibraDexGenericInsertResult insert = Insert(newKeyState, identity);
+            if (!insert.Inserted && !ContainsNullKeyIdentity(newKeyState, identity))
+            {
+                throw new InvalidOperationException("NullKey rekey could not create the key-state identity; the original tuple was left unchanged.");
+            }
+        }
+
+        bool deleted = DeleteExactTuple(oldKey, identity);
+        if (deleted)
+        {
+            RecordRekey();
+        }
+
+        return deleted;
+    }
+
+    /// <summary>
+    /// Re-keys one identity between binary null and empty key-state routes.<br/>
+    /// The replacement route identity is created before the old route identity is removed so the move remains lossless across route classes.<br/>
+    /// </summary>
+    /// <param name="identity">The identity to re-key.</param>
+    /// <param name="oldKeyState">The old binary key state; only <see cref="NullKey.Null"/> and <see cref="NullKey.Empty"/> are accepted.</param>
+    /// <param name="newKeyState">The replacement binary key state; only <see cref="NullKey.Null"/> and <see cref="NullKey.Empty"/> are accepted.</param>
+    /// <returns><see langword="true"/> when the old key-state identity existed and was removed after the replacement route was available.</returns>
+    public bool Rekey(TIdentity identity, NullKey oldKeyState, NullKey newKeyState)
+    {
+        ThrowIfDisposed();
+        EnsureConcreteNullKeyState(oldKeyState, nameof(oldKeyState));
+        EnsureConcreteNullKeyState(newKeyState, nameof(newKeyState));
+        if (oldKeyState == newKeyState)
+        {
+            return false;
+        }
+
+        if (!ContainsNullKeyIdentity(oldKeyState, identity))
+        {
+            return false;
+        }
+
+        if (!ContainsNullKeyIdentity(newKeyState, identity))
+        {
+            LibraDexGenericInsertResult insert = Insert(newKeyState, identity);
+            if (!insert.Inserted && !ContainsNullKeyIdentity(newKeyState, identity))
+            {
+                throw new InvalidOperationException("NullKey rekey could not create the replacement key-state identity; the original route identity was left unchanged.");
+            }
+        }
+
+        bool deleted = DeleteNullKeyIdentity(oldKeyState, identity);
+        if (deleted)
+        {
+            RecordRekey();
+        }
+
+        return deleted;
+    }
+
+    /// <summary>
     /// Re-keys the exact tuple captured by a live range cursor.<br/>
     /// The range reader owns traversal state only; this method performs the durable mutation through the owning index so retained shelf snapshots are not rewritten after a replacement insert.<br/>
     /// A no-op is returned when the old tuple is already gone or when the requested key is equal to the current key.<br/>
@@ -1545,6 +1751,29 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     private LibraDexGenericInsertResult RekeyForCursor(TKey oldKey, TIdentity identity, TKey newKey)
     {
         ThrowIfDisposed();
+        if (TryClassifyNullKeyRouteKey(newKey, out NullKey newKeyState))
+        {
+            if (!ContainsExactTuple(oldKey, identity))
+            {
+                return new LibraDexGenericInsertResult(false, false, default, default);
+            }
+
+            LibraDexGenericInsertResult keyStateInsert = ContainsNullKeyIdentity(newKeyState, identity)
+                ? new LibraDexGenericInsertResult(false, false, default, default)
+                : Insert(newKeyState, identity);
+            if (!keyStateInsert.Inserted && !ContainsNullKeyIdentity(newKeyState, identity))
+            {
+                throw new InvalidOperationException("Cursor-local SetKey could not create the key-state replacement tuple; the original tuple was left unchanged.");
+            }
+
+            if (DeleteExactTuple(oldKey, identity))
+            {
+                RecordRekey();
+            }
+
+            return keyStateInsert;
+        }
+
         if (TupleComponentEquals(oldKey, newKey))
         {
             return new LibraDexGenericInsertResult(false, false, default, default);
@@ -1598,9 +1827,22 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
             Rekey(identity, oldKeys[i], newKey);
         }
 
-        if (ContainsScalarNullIdentity(identity))
+        if (SupportsScalarNullKeyRoute() &&
+            ContainsScalarNullIdentity(identity))
         {
             _ = Rekey(identity, ScalarNull.Null, newKey);
+        }
+        else if (SupportsNullKeyRoute())
+        {
+            if (ContainsNullKeyIdentity(NullKey.Null, identity))
+            {
+                _ = Rekey(identity, NullKey.Null, newKey);
+            }
+
+            if (ContainsNullKeyIdentity(NullKey.Empty, identity))
+            {
+                _ = Rekey(identity, NullKey.Empty, newKey);
+            }
         }
     }
 
@@ -1613,6 +1855,12 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     public void Delete(TKey key, TIdentity identity)
     {
         ThrowIfDisposed();
+        if (TryClassifyNullKeyRouteKey(key, out NullKey keyState))
+        {
+            _ = DeleteNullKeyIdentity(keyState, identity);
+            return;
+        }
+
         _ = DeleteExactTuple(key, identity);
     }
 
