@@ -12432,6 +12432,31 @@ internal static class RawHarness
                 throw new InvalidDataException("Binary NullKey membership, prepared membership, NotInSet, delete, or SetKey did not route null and empty members correctly.");
             }
 
+            LibraDexStringScalar8Index reopenStringRouteIndex = catalog.Indexes["routes"]["reopenCode"].String.Create(stringKeys: StringKeys.Exact);
+            ValidateGenericInsert(reopenStringRouteIndex.Insert(null, 961UL), "reopen string key-state null insert");
+            ValidateGenericInsert(reopenStringRouteIndex.Insert(string.Empty, 962UL), "reopen string key-state empty insert");
+            ValidateGenericInsert(reopenStringRouteIndex.Insert("A", 963UL), "reopen string key-state normal A insert");
+            ValidateGenericInsert(reopenStringRouteIndex.Insert("B", 964UL), "reopen string key-state normal B insert");
+
+            LibraDexStringScalar8Index reopenStringMutationIndex = catalog.Indexes["routes"]["reopenCodeMutation"].String.Create(stringKeys: StringKeys.Exact);
+            ValidateGenericInsert(reopenStringMutationIndex.Insert(null, 965UL), "reopen string mutation null insert");
+            ValidateGenericInsert(reopenStringMutationIndex.Insert(string.Empty, 966UL), "reopen string mutation empty insert");
+            ValidateGenericInsert(reopenStringMutationIndex.Insert("A", 967UL), "reopen string mutation normal insert");
+
+            LibraDexIndex<byte[], long> reopenBinaryRouteIndex = catalog.Indexes["routes"]["reopenFingerprint"].Blob.Scalar<long>(LibraDexScalarWidth.Bytes32).Create();
+            byte[] reopenBinaryA = Convert.FromHexString("500102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F");
+            byte[] reopenBinaryB = Convert.FromHexString("600102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F");
+            ValidateGenericInsert(reopenBinaryRouteIndex.Insert(NullKey.Null, 971L), "reopen binary key-state null insert");
+            ValidateGenericInsert(reopenBinaryRouteIndex.Insert(NullKey.Empty, 972L), "reopen binary key-state empty insert");
+            ValidateGenericInsert(reopenBinaryRouteIndex.Insert(reopenBinaryA, 973L), "reopen binary key-state normal A insert");
+            ValidateGenericInsert(reopenBinaryRouteIndex.Insert(reopenBinaryB, 974L), "reopen binary key-state normal B insert");
+
+            LibraDexIndex<byte[], long> reopenBinaryMutationIndex = catalog.Indexes["routes"]["reopenFingerprintMutation"].Blob.Scalar<long>(LibraDexScalarWidth.Bytes32).Create();
+            byte[] reopenBinaryMutationA = Convert.FromHexString("700102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F");
+            ValidateGenericInsert(reopenBinaryMutationIndex.Insert(NullKey.Null, 975L), "reopen binary mutation null insert");
+            ValidateGenericInsert(reopenBinaryMutationIndex.Insert(NullKey.Empty, 976L), "reopen binary mutation empty insert");
+            ValidateGenericInsert(reopenBinaryMutationIndex.Insert(reopenBinaryMutationA, 977L), "reopen binary mutation normal insert");
+
             _ = scalar16Index;
             if (!catalog.Session.InsertScalar16KeyStateIdentity(scalar16SlotIndex, KeyStateRoute.Null, scalar16NullAHigh, scalar16NullALow) ||
                 !catalog.Session.InsertScalar16KeyStateIdentity(scalar16SlotIndex, KeyStateRoute.Null, scalar16NullBHigh, scalar16NullBLow) ||
@@ -12511,6 +12536,140 @@ internal static class RawHarness
             if (!reopenedScalarNullIds.SequenceEqual(new[] { 111L, 333L, 777L, 999L }))
             {
                 throw new InvalidDataException("ScalarNull condition route identities did not survive reopen.");
+            }
+
+            LibraDexStringScalar8Index reopenedStringRouteIndex = reopened.Indexes["routes"]["reopenCode"].String.Open();
+            Func<string, IIndex> reopenedStringRouteResolver = indexName => string.Equals(indexName, "reopenCode", StringComparison.Ordinal)
+                ? reopenedStringRouteIndex
+                : throw new KeyNotFoundException(indexName);
+            IReadOnlyList<ulong> reopenedStringNullIds = LibraDexCondition
+                .ForGroup("routes")
+                .Index("reopenCode").AsString.EqualTo(NullKey.Null)
+                .EndCondition
+                .ToList<ulong>(reopenedStringRouteResolver, deduplication: IdentityDeduplication.Preserve);
+            IReadOnlyList<ulong> reopenedStringEmptyIds = LibraDexCondition
+                .ForGroup("routes")
+                .Index("reopenCode").AsString.EqualTo(NullKey.Empty)
+                .EndCondition
+                .ToList<ulong>(reopenedStringRouteResolver, deduplication: IdentityDeduplication.Preserve);
+            IReadOnlyList<ulong> reopenedStringMembershipIds = LibraDexCondition
+                .ForGroup("routes")
+                .Index("reopenCode").AsString.InSet(new[] { null!, string.Empty, "B" })
+                .EndCondition
+                .ToList<ulong>(reopenedStringRouteResolver, deduplication: IdentityDeduplication.Preserve);
+            IReadOnlyList<ulong> reopenedStringAllIds = LibraDexCondition
+                .ForGroup("routes")
+                .Index("reopenCode").AsString.All()
+                .EndCondition
+                .ToList<ulong>(reopenedStringRouteResolver, deduplication: IdentityDeduplication.Preserve);
+            if (!reopenedStringNullIds.SequenceEqual(new[] { 961UL }) ||
+                !reopenedStringEmptyIds.SequenceEqual(new[] { 962UL }) ||
+                !reopenedStringMembershipIds.SequenceEqual(new[] { 961UL, 962UL, 964UL }) ||
+                !reopenedStringAllIds.SequenceEqual(new[] { 961UL, 962UL, 963UL, 964UL }))
+            {
+                throw new InvalidDataException("Reopened string NullKey route equality, membership, or all-scan did not use persisted route offsets.");
+            }
+
+            LibraDexStringScalar8Index reopenedStringMutationIndex = reopened.Indexes["routes"]["reopenCodeMutation"].String.Open();
+            Func<string, IIndex> reopenedStringMutationResolver = indexName => string.Equals(indexName, "reopenCodeMutation", StringComparison.Ordinal)
+                ? reopenedStringMutationIndex
+                : throw new KeyNotFoundException(indexName);
+            LibraDexIdentityMutationResult reopenedStringDelete = LibraDexCondition
+                .ForGroup("routes")
+                .Index("reopenCodeMutation").AsString.EqualTo(NullKey.Empty)
+                .EndCondition
+                .Delete(reopenedStringMutationResolver);
+            LibraDexIdentityMutationResult reopenedStringSetKey = LibraDexCondition
+                .ForGroup("routes")
+                .Index("reopenCodeMutation").AsString.EqualTo("A")
+                .EndCondition
+                .SetKey(reopenedStringMutationResolver, null);
+            bool reopenedStringRekey = reopenedStringMutationIndex.Rekey(965UL, null, "B");
+            IReadOnlyList<ulong> reopenedStringMutationAllIds = LibraDexCondition
+                .ForGroup("routes")
+                .Index("reopenCodeMutation").AsString.All()
+                .EndCondition
+                .ToList<ulong>(reopenedStringMutationResolver, deduplication: IdentityDeduplication.Preserve);
+            if (reopenedStringDelete.ChangedCount != 1 ||
+                reopenedStringSetKey.ChangedCount != 1 ||
+                !reopenedStringRekey ||
+                !reopenedStringMutationAllIds.SequenceEqual(new[] { 967UL, 965UL }))
+            {
+                throw new InvalidDataException("Reopened string NullKey delete, SetKey, or rekey did not use persisted route offsets.");
+            }
+
+            byte[] reopenedBinaryA = Convert.FromHexString("500102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F");
+            byte[] reopenedBinaryB = Convert.FromHexString("600102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F");
+            if (!reopened.Indexes.TryGetInfo("routes", "reopenFingerprint", out CatalogIndexInfo reopenedBinaryInfo))
+            {
+                throw new InvalidDataException("Reopened binary NullKey route proof index was not discoverable.");
+            }
+
+            LibraDexIndex<byte[], long> reopenedBinaryRouteIndex = (LibraDexIndex<byte[], long>)reopened.OpenIndex(reopenedBinaryInfo);
+            Func<string, IIndex> reopenedBinaryRouteResolver = indexName => string.Equals(indexName, "reopenFingerprint", StringComparison.Ordinal)
+                ? reopenedBinaryRouteIndex
+                : throw new KeyNotFoundException(indexName);
+            IReadOnlyList<long> reopenedBinaryNullIds = LibraDexCondition
+                .ForGroup("routes")
+                .Index("reopenFingerprint").AsBinary.EqualTo(NullKey.Null)
+                .EndCondition
+                .ToList<long>(reopenedBinaryRouteResolver, deduplication: IdentityDeduplication.Preserve);
+            IReadOnlyList<long> reopenedBinaryEmptyIds = LibraDexCondition
+                .ForGroup("routes")
+                .Index("reopenFingerprint").AsBinary.EqualTo(NullKey.Empty)
+                .EndCondition
+                .ToList<long>(reopenedBinaryRouteResolver, deduplication: IdentityDeduplication.Preserve);
+            IReadOnlyList<long> reopenedBinaryMembershipIds = LibraDexCondition
+                .ForGroup("routes")
+                .Index("reopenFingerprint").AsBinary.InSet(new byte[][] { null!, Array.Empty<byte>(), reopenedBinaryB })
+                .EndCondition
+                .ToList<long>(reopenedBinaryRouteResolver, deduplication: IdentityDeduplication.Preserve);
+            IReadOnlyList<long> reopenedBinaryAllIds = LibraDexCondition
+                .ForGroup("routes")
+                .Index("reopenFingerprint").AsBinary.All()
+                .EndCondition
+                .ToList<long>(reopenedBinaryRouteResolver, deduplication: IdentityDeduplication.Preserve);
+            if (!reopenedBinaryNullIds.SequenceEqual(new[] { 971L }) ||
+                !reopenedBinaryEmptyIds.SequenceEqual(new[] { 972L }) ||
+                !reopenedBinaryMembershipIds.SequenceEqual(new[] { 971L, 972L, 974L }) ||
+                !reopenedBinaryAllIds.SequenceEqual(new[] { 971L, 972L, 973L, 974L }))
+            {
+                throw new InvalidDataException("Reopened binary NullKey route equality, membership, or all-scan did not use persisted route offsets.");
+            }
+
+            byte[] reopenedBinaryMutationA = Convert.FromHexString("700102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F");
+            byte[] reopenedBinaryMutationB = Convert.FromHexString("800102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F");
+            if (!reopened.Indexes.TryGetInfo("routes", "reopenFingerprintMutation", out CatalogIndexInfo reopenedBinaryMutationInfo))
+            {
+                throw new InvalidDataException("Reopened binary NullKey mutation proof index was not discoverable.");
+            }
+
+            LibraDexIndex<byte[], long> reopenedBinaryMutationIndex = (LibraDexIndex<byte[], long>)reopened.OpenIndex(reopenedBinaryMutationInfo);
+            Func<string, IIndex> reopenedBinaryMutationResolver = indexName => string.Equals(indexName, "reopenFingerprintMutation", StringComparison.Ordinal)
+                ? reopenedBinaryMutationIndex
+                : throw new KeyNotFoundException(indexName);
+            LibraDexIdentityMutationResult reopenedBinaryDelete = LibraDexCondition
+                .ForGroup("routes")
+                .Index("reopenFingerprintMutation").AsBinary.EqualTo(NullKey.Empty)
+                .EndCondition
+                .Delete(reopenedBinaryMutationResolver);
+            LibraDexIdentityMutationResult reopenedBinarySetKey = LibraDexCondition
+                .ForGroup("routes")
+                .Index("reopenFingerprintMutation").AsBinary.EqualTo(reopenedBinaryMutationA)
+                .EndCondition
+                .SetKey(reopenedBinaryMutationResolver, null);
+            bool reopenedBinaryRekey = reopenedBinaryMutationIndex.Rekey(975L, NullKey.Null, reopenedBinaryMutationB);
+            IReadOnlyList<long> reopenedBinaryMutationAllIds = LibraDexCondition
+                .ForGroup("routes")
+                .Index("reopenFingerprintMutation").AsBinary.All()
+                .EndCondition
+                .ToList<long>(reopenedBinaryMutationResolver, deduplication: IdentityDeduplication.Preserve);
+            if (reopenedBinaryDelete.ChangedCount != 1 ||
+                reopenedBinarySetKey.ChangedCount != 1 ||
+                !reopenedBinaryRekey ||
+                !reopenedBinaryMutationAllIds.SequenceEqual(new[] { 977L, 975L }))
+            {
+                throw new InvalidDataException("Reopened binary NullKey delete, SetKey, or rekey did not use persisted route offsets.");
             }
         }
     }
