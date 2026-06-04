@@ -4,17 +4,21 @@ This checklist tracks developer-friction complaints found while reviewing `artif
 
 ## Open
 
-1. [ ] Corpus appears to overuse `.AsString` for numeric/domain rows.
-
-   Complaint:
-
-   - F101-F104 previously used `.AsString` for measurement temperature/pressure comparisons and now use `.AsInt64`.
-   - Temperature and pressure are likely numeric values unless the row explicitly says they are stored as sortable normalized text.
-   - Audit similar corpus rows for accidental `.AsString` use where `.AsInt64`, decimal/fixed numeric, or another numeric/domain key family is more appropriate.
+No active complaints are currently listed.
 
 ## Resolved
 
-1. [x] Public string condition operators needed consistent optional case/culture parameters.
+1. [x] Corpus appeared to overuse `.AsString` for numeric/domain rows.
+
+   Resolution:
+
+   - F086-F090 now model product quantity-on-hand predicates as `.AsInt64` over `quantityOnHand`.
+   - F208-F210 now model appointment duration predicates as `.AsInt64` over normalized `durationMinutes`.
+   - Mixed text-plus-numeric rows now include both clauses instead of showing only the text clause: F287, F329, F334, F349, F353, F354, F363, and F440.
+   - Composite typed-part rows now type each part independently instead of using string/string placeholders: F388, F390, F393, F401, F404, F409, F618, F620, and F635.
+   - F436, F519, and F520 now use numeric versions/buckets instead of string membership/ranges.
+
+2. [x] Public string condition operators needed consistent optional case/culture parameters.
 
    Resolution:
 
@@ -24,7 +28,7 @@ This checklist tracks developer-friction complaints found while reviewing `artif
    - Ordered multikey `.AsString` wrappers forward the same options.
    - Opened composite named string-part and full-key string operators preserve the same options for their public string predicates.
 
-2. [x] Captured-match string operators needed a real capture grammar.
+3. [x] Captured-match string operators needed a real capture grammar.
 
    Resolution:
 
@@ -34,14 +38,14 @@ This checklist tracks developer-friction complaints found while reviewing `artif
    - Routed the family through executable string-pattern predicates rather than whole-key wildcard aliases.
    - Added harness proof rows for whole-match comparison, numbered capture comparison, capture membership, and negation.
 
-3. [x] Public `.MatchesPattern(...)` examples were too verbose.
+4. [x] Public `.MatchesPattern(...)` examples were too verbose.
 
    Resolution:
 
    - Added `.Matches(...)` short aliases for string, Guid, binary hex, multikey, and composite string/full-key pattern surfaces.
    - Updated the filter-DX corpus and harness examples to advertise `.Matches(...)`.
 
-4. [x] Null/empty key condition DX needed explicit enum overloads and low-allocation aliases.
+5. [x] Null/empty key condition DX needed explicit enum overloads and low-allocation aliases.
 
    Resolution:
 
@@ -50,7 +54,7 @@ This checklist tracks developer-friction complaints found while reviewing `artif
    - Routed string `.EqualTo(null)` / `.NotEqualTo(null)` to `NullKey.Null`, and empty string to `NullKey.Empty`.
    - F026 now shows `NullKey.Null` for stored string null.
 
-5. [x] F001 catalog-group string-field syntax was type-first instead of index-first.
+6. [x] F001 catalog-group string-field syntax was type-first instead of index-first.
 
    Complaint:
 
