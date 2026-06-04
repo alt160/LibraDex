@@ -2491,7 +2491,7 @@ internal interface IIdentityExactTupleMutator
     /// <param name="key">The key value to test.</param>
     /// <param name="identity">The identity value to test.</param>
     /// <returns><see langword="true"/> when the exact tuple exists.</returns>
-    bool ContainsExactTuple(object key, object identity);
+    bool ContainsExactTuple(object? key, object identity);
 
     /// <summary>
     /// Deletes one exact key/identity tuple from this index.<br/>
@@ -2500,7 +2500,7 @@ internal interface IIdentityExactTupleMutator
     /// <param name="key">The key side of the tuple to delete.</param>
     /// <param name="identity">The identity side of the tuple to delete.</param>
     /// <returns><see langword="true"/> when a tuple was removed.</returns>
-    bool DeleteExactTuple(object key, object identity);
+    bool DeleteExactTuple(object? key, object identity);
 }
 
 internal sealed class LibraDexIdentityCriterion : IIdentityCriterion
@@ -2914,6 +2914,7 @@ internal static class LibraDexIdentityExecutionPlanner
     internal static LibraDexIdentityMutationResult ExecuteTargetSetKey(
         IIdentityCriterion criterion,
         IIndex targetIndex,
+        bool hasNewKey,
         object? newKey,
         Func<object, object?>? newKeyFactory)
     {
@@ -2947,8 +2948,8 @@ internal static class LibraDexIdentityExecutionPlanner
                 continue;
             }
 
-            object replacementKey = newKeyFactory is null
-                ? newKey ?? throw new InvalidOperationException("Targeted SetKey mutation is missing a replacement key.")
+            object? replacementKey = newKeyFactory is null
+                ? hasNewKey ? newKey : throw new InvalidOperationException("Targeted SetKey mutation is missing a replacement key.")
                 : newKeyFactory(tuple.Identity) ?? throw new InvalidOperationException("Targeted SetKey replacement-key factory returned null.");
             oldTuples.Add(tuple);
             replacementTuples.Add(new LibraDexObjectTuple(replacementKey, tuple.Identity));
@@ -2963,10 +2964,10 @@ internal static class LibraDexIdentityExecutionPlanner
                 continue;
             }
 
-            if (!exactMutator.ContainsExactTuple(replacement.Key!, replacement.Identity))
+            if (!exactMutator.ContainsExactTuple(replacement.Key, replacement.Identity))
             {
-                LibraDexGenericInsertResult insert = targetIndex.Insert(replacement.Key!, replacement.Identity);
-                if (!insert.Inserted && !exactMutator.ContainsExactTuple(replacement.Key!, replacement.Identity))
+                LibraDexGenericInsertResult insert = targetIndex.Insert(replacement.Key, replacement.Identity);
+                if (!insert.Inserted && !exactMutator.ContainsExactTuple(replacement.Key, replacement.Identity))
                 {
                     throw new InvalidOperationException("Targeted SetKey could not create a replacement tuple; original tuples were left unchanged.");
                 }
@@ -2983,7 +2984,7 @@ internal static class LibraDexIdentityExecutionPlanner
                 continue;
             }
 
-            if (exactMutator.DeleteExactTuple(oldTuple.Key!, oldTuple.Identity))
+            if (targetIndex.Delete(oldTuple.Key, oldTuple.Identity))
             {
                 changed++;
             }
@@ -3027,8 +3028,8 @@ internal static class LibraDexIdentityExecutionPlanner
         for (int i = 0; i < tuples.Count; i++)
         {
             LibraDexObjectTuple tuple = tuples[i];
-            object newKey = mutation.NewKeyFactory is null
-                ? mutation.NewKey ?? throw new InvalidOperationException("SetKey mutation is missing a replacement key.")
+            object? newKey = mutation.NewKeyFactory is null
+                ? mutation.HasNewKey ? mutation.NewKey : throw new InvalidOperationException("SetKey mutation is missing a replacement key.")
                 : mutation.NewKeyFactory(tuple.Identity) ?? throw new InvalidOperationException("SetKey replacement-key factory returned null.");
 
             replacements.Add(new LibraDexObjectTuple(newKey, tuple.Identity));
@@ -3056,7 +3057,7 @@ internal static class LibraDexIdentityExecutionPlanner
                 continue;
             }
 
-            if (exactMutator.DeleteExactTuple(oldTuple.Key!, oldTuple.Identity))
+            if (criterion.Index.Delete(oldTuple.Key, oldTuple.Identity))
             {
                 changed++;
             }
@@ -3898,19 +3899,18 @@ internal sealed class LibraDexIdentityCriterionMutationBuilder : IIdentityCriter
 
     public IIdentityCriterionMutation Delete()
     {
-        return new LibraDexIdentityCriterionMutation(criterion, LibraDexCriteriaMutationKind.Delete, newKey: null, newKeyFactory: null);
+        return new LibraDexIdentityCriterionMutation(criterion, LibraDexCriteriaMutationKind.Delete, hasNewKey: false, newKey: null, newKeyFactory: null);
     }
 
-    public IIdentityCriterionMutation SetKey(object newKey)
+    public IIdentityCriterionMutation SetKey(object? newKey)
     {
-        ArgumentNullException.ThrowIfNull(newKey);
-        return new LibraDexIdentityCriterionMutation(criterion, LibraDexCriteriaMutationKind.SetKey, newKey, newKeyFactory: null);
+        return new LibraDexIdentityCriterionMutation(criterion, LibraDexCriteriaMutationKind.SetKey, hasNewKey: true, newKey, newKeyFactory: null);
     }
 
-    public IIdentityCriterionMutation SetKey(Func<object, object?> newKeyFactory)
+    public IIdentityCriterionMutation SetKeyUsing(Func<object, object?> newKeyFactory)
     {
         ArgumentNullException.ThrowIfNull(newKeyFactory);
-        return new LibraDexIdentityCriterionMutation(criterion, LibraDexCriteriaMutationKind.SetKey, newKey: null, newKeyFactory);
+        return new LibraDexIdentityCriterionMutation(criterion, LibraDexCriteriaMutationKind.SetKey, hasNewKey: false, newKey: null, newKeyFactory);
     }
 }
 
@@ -3919,11 +3919,13 @@ internal sealed class LibraDexIdentityCriterionMutation : IIdentityCriterionMuta
     internal LibraDexIdentityCriterionMutation(
         IIdentityCriterion criterion,
         LibraDexCriteriaMutationKind kind,
+        bool hasNewKey,
         object? newKey,
         Func<object, object?>? newKeyFactory)
     {
         Criterion = criterion ?? throw new ArgumentNullException(nameof(criterion));
         Kind = kind;
+        HasNewKey = hasNewKey;
         NewKey = newKey;
         NewKeyFactory = newKeyFactory;
     }
@@ -3931,6 +3933,8 @@ internal sealed class LibraDexIdentityCriterionMutation : IIdentityCriterionMuta
     public IIdentityCriterion Criterion { get; }
 
     public LibraDexCriteriaMutationKind Kind { get; }
+
+    public bool HasNewKey { get; }
 
     public object? NewKey { get; }
 
@@ -4246,6 +4250,12 @@ public interface IIdentityCriterionMutation
     LibraDexCriteriaMutationKind Kind { get; }
 
     /// <summary>
+    /// Gets whether <see cref="NewKey"/> was supplied as a literal replacement key.<br/>
+    /// This distinguishes `SetKey(null)` from factory-based mutations where no static key exists.<br/>
+    /// </summary>
+    bool HasNewKey { get; }
+
+    /// <summary>
     /// Gets the static replacement key when one was supplied.<br/>
     /// </summary>
     object? NewKey { get; }
@@ -4281,14 +4291,14 @@ public interface IIdentityCriterionMutationBuilder
     /// </summary>
     /// <param name="newKey">The replacement key value.</param>
     /// <returns>A mutation descriptor.</returns>
-    IIdentityCriterionMutation SetKey(object newKey);
+    IIdentityCriterionMutation SetKey(object? newKey);
 
     /// <summary>
     /// Captures set-key intent with a replacement-key factory.<br/>
     /// </summary>
     /// <param name="newKeyFactory">Factory that receives a matched identity and returns its replacement key.</param>
     /// <returns>A mutation descriptor.</returns>
-    IIdentityCriterionMutation SetKey(Func<object, object?> newKeyFactory);
+    IIdentityCriterionMutation SetKeyUsing(Func<object, object?> newKeyFactory);
 }
 
 /// <summary>

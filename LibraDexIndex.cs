@@ -551,13 +551,23 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
         return ExecuteTuplePrimitive(request);
     }
 
-    bool IIdentityExactTupleMutator.ContainsExactTuple(object key, object identity)
+    bool IIdentityExactTupleMutator.ContainsExactTuple(object? key, object identity)
     {
+        if (key is null || key == DBNull.Value)
+        {
+            return ContainsScalarNullIdentity(RequireObjectIdentity(identity, nameof(identity)));
+        }
+
         return ContainsExactTuple(RequireObjectKey(key, nameof(key)), RequireObjectIdentity(identity, nameof(identity)));
     }
 
-    bool IIdentityExactTupleMutator.DeleteExactTuple(object key, object identity)
+    bool IIdentityExactTupleMutator.DeleteExactTuple(object? key, object identity)
     {
+        if (key is null || key == DBNull.Value)
+        {
+            return DeleteScalarNullIdentity(RequireObjectIdentity(identity, nameof(identity)));
+        }
+
         return DeleteExactTuple(RequireObjectKey(key, nameof(key)), RequireObjectIdentity(identity, nameof(identity)));
     }
 
@@ -865,6 +875,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
             LibraDexCriteriaKind.In or LibraDexCriteriaKind.InSet => MaterializeMembershipTupleObjects(request.Values),
             LibraDexCriteriaKind.MultiRange => MaterializeMultiRangeTupleObjects(request.Values),
             LibraDexCriteriaKind.Bitmask => MaterializeBitmaskTupleObjects(request.Values),
+            LibraDexCriteriaKind.ScalarNull => MaterializeScalarNullTupleObjects(request.Values),
             _ => throw new NotSupportedException($"{request.CriteriaKind} tuple execution is not connected to physical readers yet.")
         };
     }
@@ -2416,6 +2427,25 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
             LibraDexGenericScalarShape.FS3216 => session.ReadScalar16KeyStateIdentities(SlotIndex, KeyStateRoute.Null).Highs.LongLength,
             _ => throw new NotSupportedException($"Scalar null routes do not support resolved shape {shape}.")
         };
+    }
+
+    /// <summary>
+    /// Materializes tuple rows for a scalar-null presence primitive.<br/>
+    /// `ScalarNull.Null` returns null-key tuple rows from the identity-keyed route, while `ScalarNull.NonNull` returns ordinary value-route tuples.<br/>
+    /// </summary>
+    /// <param name="values">The condition primitive operands; operand zero must be <see cref="ScalarNull"/>.</param>
+    /// <returns>The matching key/identity tuples.</returns>
+    private IReadOnlyList<LibraDexObjectTuple> MaterializeScalarNullTupleObjects(IReadOnlyList<object?> values)
+    {
+        ScalarNull state = RequireScalarNullState(values);
+        if (state == ScalarNull.NonNull)
+        {
+            return MaterializeTupleObjects(OpenAllRangeReader());
+        }
+
+        return IterateScalarNullRouteIdentityObjects()
+            .Select(static identity => new LibraDexObjectTuple(null, identity))
+            .ToList();
     }
 
     private static bool SupportsScalarNullKeyRoute()

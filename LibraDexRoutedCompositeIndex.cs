@@ -434,14 +434,14 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
         };
     }
 
-    bool IIdentityExactTupleMutator.ContainsExactTuple(object key, object identity)
+    bool IIdentityExactTupleMutator.ContainsExactTuple(object? key, object identity)
     {
         return ContainsExactTuple(
             key as LibraDexCompositeKey ?? throw new ArgumentException("Composite indexes require LibraDexCompositeKey keys.", nameof(key)),
             identity);
     }
 
-    bool IIdentityExactTupleMutator.DeleteExactTuple(object key, object identity)
+    bool IIdentityExactTupleMutator.DeleteExactTuple(object? key, object identity)
     {
         return DeleteExactTuple(
             key as LibraDexCompositeKey ?? throw new ArgumentException("Composite indexes require LibraDexCompositeKey keys.", nameof(key)),

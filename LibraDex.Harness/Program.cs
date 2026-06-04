@@ -12142,6 +12142,40 @@ internal static class RawHarness
                 throw new InvalidDataException("Scalar-null rekey paths did not leave expected null-first all-scan identities.");
             }
 
+            LibraDexIndex<long, long> setKeyIndex = catalog.Indexes["routes"]["setKeyValue"].Int64Keys<long>().Create();
+            ValidateGenericInsert(setKeyIndex.Insert(60, 801L), "key-state SetKey proof non-null 801 insert");
+            ValidateGenericInsert(setKeyIndex.Insert(ScalarNull.Null, 802L), "key-state SetKey proof null 802 insert");
+            Func<string, IIndex> setKeyResolver = indexName => string.Equals(indexName, "setKeyValue", StringComparison.Ordinal)
+                ? setKeyIndex
+                : throw new KeyNotFoundException(indexName);
+            LibraDexIdentityMutationResult setKeyToNullResult = LibraDexCondition
+                .ForGroup("routes")
+                .Index("setKeyValue").AsInt64.EqualTo(60)
+                .EndCondition
+                .SetKey(setKeyResolver, null);
+            LibraDexIdentityMutationResult setKeyFromNullResult = LibraDexCondition
+                .ForGroup("routes")
+                .Index("setKeyValue").AsInt64.EqualTo(ScalarNull.Null)
+                .EndCondition
+                .SetKey(setKeyResolver, 70L);
+            IReadOnlyList<long> setKeyNullIds = LibraDexCondition
+                .ForGroup("routes")
+                .Index("setKeyValue").AsInt64.EqualTo(ScalarNull.Null)
+                .EndCondition
+                .ToList<long>(setKeyResolver, deduplication: IdentityDeduplication.Preserve);
+            IReadOnlyList<long> setKeyAllIds = LibraDexCondition
+                .ForGroup("routes")
+                .Index("setKeyValue").AsInt64.All()
+                .EndCondition
+                .ToList<long>(setKeyResolver, deduplication: IdentityDeduplication.Preserve);
+            if (setKeyToNullResult.ChangedCount != 1 ||
+                setKeyFromNullResult.ChangedCount != 2 ||
+                setKeyNullIds.Count != 0 ||
+                !setKeyAllIds.SequenceEqual(new[] { 801L, 802L }))
+            {
+                throw new InvalidDataException($"Scalar-null SetKey did not move identities between null and ordinary routes. toNull={setKeyToNullResult.ChangedCount} fromNull={setKeyFromNullResult.ChangedCount} nullIds={string.Join(",", setKeyNullIds)} allIds={string.Join(",", setKeyAllIds)}");
+            }
+
             _ = scalar16Index;
             if (!catalog.Session.InsertScalar16KeyStateIdentity(scalar16SlotIndex, KeyStateRoute.Null, scalar16NullAHigh, scalar16NullALow) ||
                 !catalog.Session.InsertScalar16KeyStateIdentity(scalar16SlotIndex, KeyStateRoute.Null, scalar16NullBHigh, scalar16NullBLow) ||

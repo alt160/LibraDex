@@ -1401,7 +1401,7 @@ public sealed class LibraDexConditionEndCondition
     /// <param name="resolveIndex">Function that resolves a condition index name to an opened LibraDex index.</param>
     /// <param name="newKey">The replacement key to assign to every matched tuple.</param>
     /// <returns>A mutation result describing matched and re-keyed tuple counts.</returns>
-    public LibraDexIdentityMutationResult SetKey(Func<string, IIndex> resolveIndex, object newKey)
+    public LibraDexIdentityMutationResult SetKey(Func<string, IIndex> resolveIndex, object? newKey)
     {
         return Materialize(resolveIndex).Mutate.SetKey(newKey).Execute();
     }
@@ -1413,7 +1413,7 @@ public sealed class LibraDexConditionEndCondition
     /// <param name="indexes">The opened indexes keyed by LibraDex index name.</param>
     /// <param name="newKey">The replacement key to assign to every matched tuple.</param>
     /// <returns>A mutation result describing matched and re-keyed tuple counts.</returns>
-    public LibraDexIdentityMutationResult SetKey(IReadOnlyDictionary<string, IIndex> indexes, object newKey)
+    public LibraDexIdentityMutationResult SetKey(IReadOnlyDictionary<string, IIndex> indexes, object? newKey)
     {
         return Materialize(indexes).Mutate.SetKey(newKey).Execute();
     }
@@ -1427,12 +1427,12 @@ public sealed class LibraDexConditionEndCondition
     /// <param name="resolveIndex">Function that resolves condition and target index names to opened LibraDex indexes.</param>
     /// <param name="newKey">The replacement key to assign on the target index.</param>
     /// <returns>A mutation result describing target tuples matched and re-keyed.</returns>
-    public LibraDexIdentityMutationResult SetKeyOn(string targetIndexName, Func<string, IIndex> resolveIndex, object newKey)
+    public LibraDexIdentityMutationResult SetKeyOn(string targetIndexName, Func<string, IIndex> resolveIndex, object? newKey)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(targetIndexName);
         ArgumentNullException.ThrowIfNull(resolveIndex);
         IIndex targetIndex = resolveIndex(targetIndexName);
-        return LibraDexIdentityExecutionPlanner.ExecuteTargetSetKey(Materialize(resolveIndex), targetIndex, newKey, newKeyFactory: null);
+        return LibraDexIdentityExecutionPlanner.ExecuteTargetSetKey(Materialize(resolveIndex), targetIndex, hasNewKey: true, newKey, newKeyFactory: null);
     }
 
     /// <summary>
@@ -1443,7 +1443,7 @@ public sealed class LibraDexConditionEndCondition
     /// <param name="indexes">The opened indexes keyed by LibraDex index name.</param>
     /// <param name="newKey">The replacement key to assign on the target index.</param>
     /// <returns>A mutation result describing target tuples matched and re-keyed.</returns>
-    public LibraDexIdentityMutationResult SetKeyOn(string targetIndexName, IReadOnlyDictionary<string, IIndex> indexes, object newKey)
+    public LibraDexIdentityMutationResult SetKeyOn(string targetIndexName, IReadOnlyDictionary<string, IIndex> indexes, object? newKey)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(targetIndexName);
         ArgumentNullException.ThrowIfNull(indexes);
@@ -1452,7 +1452,7 @@ public sealed class LibraDexConditionEndCondition
             throw new KeyNotFoundException($"Target index '{targetIndexName}' was not supplied for condition group '{Group}'.");
         }
 
-        return LibraDexIdentityExecutionPlanner.ExecuteTargetSetKey(Materialize(indexes), targetIndex, newKey, newKeyFactory: null);
+        return LibraDexIdentityExecutionPlanner.ExecuteTargetSetKey(Materialize(indexes), targetIndex, hasNewKey: true, newKey, newKeyFactory: null);
     }
 
     /// <summary>
@@ -1463,9 +1463,9 @@ public sealed class LibraDexConditionEndCondition
     /// <param name="resolveIndex">Function that resolves a condition index name to an opened LibraDex index.</param>
     /// <param name="newKeyFactory">Factory that receives a matched identity and returns its replacement key.</param>
     /// <returns>A mutation result describing matched and re-keyed tuple counts.</returns>
-    public LibraDexIdentityMutationResult SetKey(Func<string, IIndex> resolveIndex, Func<object, object?> newKeyFactory)
+    public LibraDexIdentityMutationResult SetKeyUsing(Func<string, IIndex> resolveIndex, Func<object, object?> newKeyFactory)
     {
-        return Materialize(resolveIndex).Mutate.SetKey(newKeyFactory).Execute();
+        return Materialize(resolveIndex).Mutate.SetKeyUsing(newKeyFactory).Execute();
     }
 
     /// <summary>
@@ -1475,9 +1475,9 @@ public sealed class LibraDexConditionEndCondition
     /// <param name="indexes">The opened indexes keyed by LibraDex index name.</param>
     /// <param name="newKeyFactory">Factory that receives a matched identity and returns its replacement key.</param>
     /// <returns>A mutation result describing matched and re-keyed tuple counts.</returns>
-    public LibraDexIdentityMutationResult SetKey(IReadOnlyDictionary<string, IIndex> indexes, Func<object, object?> newKeyFactory)
+    public LibraDexIdentityMutationResult SetKeyUsing(IReadOnlyDictionary<string, IIndex> indexes, Func<object, object?> newKeyFactory)
     {
-        return Materialize(indexes).Mutate.SetKey(newKeyFactory).Execute();
+        return Materialize(indexes).Mutate.SetKeyUsing(newKeyFactory).Execute();
     }
 
     /// <summary>
@@ -1488,13 +1488,13 @@ public sealed class LibraDexConditionEndCondition
     /// <param name="resolveIndex">Function that resolves condition and target index names to opened LibraDex indexes.</param>
     /// <param name="newKeyFactory">Factory that receives a matched identity and returns its target-index replacement key.</param>
     /// <returns>A mutation result describing target tuples matched and re-keyed.</returns>
-    public LibraDexIdentityMutationResult SetKeyOn(string targetIndexName, Func<string, IIndex> resolveIndex, Func<object, object?> newKeyFactory)
+    public LibraDexIdentityMutationResult SetKeyOnUsing(string targetIndexName, Func<string, IIndex> resolveIndex, Func<object, object?> newKeyFactory)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(targetIndexName);
         ArgumentNullException.ThrowIfNull(resolveIndex);
         ArgumentNullException.ThrowIfNull(newKeyFactory);
         IIndex targetIndex = resolveIndex(targetIndexName);
-        return LibraDexIdentityExecutionPlanner.ExecuteTargetSetKey(Materialize(resolveIndex), targetIndex, newKey: null, newKeyFactory);
+        return LibraDexIdentityExecutionPlanner.ExecuteTargetSetKey(Materialize(resolveIndex), targetIndex, hasNewKey: false, newKey: null, newKeyFactory);
     }
 
     /// <summary>
@@ -1505,7 +1505,7 @@ public sealed class LibraDexConditionEndCondition
     /// <param name="indexes">The opened indexes keyed by LibraDex index name.</param>
     /// <param name="newKeyFactory">Factory that receives a matched identity and returns its target-index replacement key.</param>
     /// <returns>A mutation result describing target tuples matched and re-keyed.</returns>
-    public LibraDexIdentityMutationResult SetKeyOn(string targetIndexName, IReadOnlyDictionary<string, IIndex> indexes, Func<object, object?> newKeyFactory)
+    public LibraDexIdentityMutationResult SetKeyOnUsing(string targetIndexName, IReadOnlyDictionary<string, IIndex> indexes, Func<object, object?> newKeyFactory)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(targetIndexName);
         ArgumentNullException.ThrowIfNull(indexes);
@@ -1515,7 +1515,7 @@ public sealed class LibraDexConditionEndCondition
             throw new KeyNotFoundException($"Target index '{targetIndexName}' was not supplied for condition group '{Group}'.");
         }
 
-        return LibraDexIdentityExecutionPlanner.ExecuteTargetSetKey(Materialize(indexes), targetIndex, newKey: null, newKeyFactory);
+        return LibraDexIdentityExecutionPlanner.ExecuteTargetSetKey(Materialize(indexes), targetIndex, hasNewKey: false, newKey: null, newKeyFactory);
     }
 
     /// <summary>
