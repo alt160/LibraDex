@@ -351,7 +351,13 @@ public enum LibraDexCriteriaKind
     /// The descriptor represents scalar null presence over the metadata-backed null route.<br/>
     /// `ScalarNull.Null` reads the compact identity-only route, while `ScalarNull.NonNull` reads ordinary value routes and excludes scalar nulls.<br/>
     /// </summary>
-    ScalarNull = 21
+    ScalarNull = 21,
+
+    /// <summary>
+    /// The descriptor represents null or empty key states over metadata-backed key-state routes.<br/>
+    /// `NullKey.Null` and `NullKey.Empty` read compact identity-only routes, while `NullKey.NullOrEmpty` reads both routes in key-state order.<br/>
+    /// </summary>
+    KeyState = 22
 }
 
 internal enum LibraDexStringPatternMode

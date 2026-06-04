@@ -12176,6 +12176,80 @@ internal static class RawHarness
                 throw new InvalidDataException($"Scalar-null SetKey did not move identities between null and ordinary routes. toNull={setKeyToNullResult.ChangedCount} fromNull={setKeyFromNullResult.ChangedCount} nullIds={string.Join(",", setKeyNullIds)} allIds={string.Join(",", setKeyAllIds)}");
             }
 
+            LibraDexStringScalar8Index stringRouteIndex = catalog.Indexes["routes"]["code"].String.Create(stringKeys: StringKeys.Exact);
+            ValidateGenericInsert(stringRouteIndex.Insert(null, 901UL), "string key-state null insert");
+            ValidateGenericInsert(stringRouteIndex.Insert(string.Empty, 902UL), "string key-state empty insert");
+            ValidateGenericInsert(stringRouteIndex.Insert("A", 903UL), "string key-state normal insert");
+            Func<string, IIndex> stringRouteResolver = indexName => string.Equals(indexName, "code", StringComparison.Ordinal)
+                ? stringRouteIndex
+                : throw new KeyNotFoundException(indexName);
+            IReadOnlyList<ulong> stringNullIds = LibraDexCondition
+                .ForGroup("routes")
+                .Index("code").AsString.EqualTo(NullKey.Null)
+                .EndCondition
+                .ToList<ulong>(stringRouteResolver, deduplication: IdentityDeduplication.Preserve);
+            IReadOnlyList<ulong> stringEmptyIds = LibraDexCondition
+                .ForGroup("routes")
+                .Index("code").AsString.EqualTo(string.Empty)
+                .EndCondition
+                .ToList<ulong>(stringRouteResolver, deduplication: IdentityDeduplication.Preserve);
+            IReadOnlyList<ulong> stringNullOrEmptyIds = LibraDexCondition
+                .ForGroup("routes")
+                .Index("code").AsString.EqualTo(NullKey.NullOrEmpty)
+                .EndCondition
+                .ToList<ulong>(stringRouteResolver, deduplication: IdentityDeduplication.Preserve);
+            IReadOnlyList<ulong> stringAllIds = LibraDexCondition
+                .ForGroup("routes")
+                .Index("code").AsString.All()
+                .EndCondition
+                .ToList<ulong>(stringRouteResolver, deduplication: IdentityDeduplication.Preserve);
+            if (!stringNullIds.SequenceEqual(new[] { 901UL }) ||
+                !stringEmptyIds.SequenceEqual(new[] { 902UL }) ||
+                !stringNullOrEmptyIds.SequenceEqual(new[] { 901UL, 902UL }) ||
+                !stringAllIds.SequenceEqual(new[] { 901UL, 902UL, 903UL }) ||
+                !((IIndex)stringRouteIndex).Delete(string.Empty, 902UL) ||
+                ((IIndex)stringRouteIndex).Delete(string.Empty, 902UL))
+            {
+                throw new InvalidDataException("String NullKey route reads, all-scan ordering, or exact deletes did not match expected route semantics.");
+            }
+
+            LibraDexIndex<byte[], long> binaryRouteIndex = catalog.Indexes["routes"]["fingerprint"].Blob.Scalar<long>(LibraDexScalarWidth.Bytes32).Create();
+            ValidateGenericInsert(((IIndex)binaryRouteIndex).Insert(null, 911L), "binary key-state null insert");
+            ValidateGenericInsert(binaryRouteIndex.Insert(Array.Empty<byte>(), 912L), "binary key-state empty insert");
+            ValidateGenericInsert(binaryRouteIndex.Insert(Convert.FromHexString("000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F"), 913L), "binary key-state normal insert");
+            Func<string, IIndex> binaryRouteResolver = indexName => string.Equals(indexName, "fingerprint", StringComparison.Ordinal)
+                ? binaryRouteIndex
+                : throw new KeyNotFoundException(indexName);
+            IReadOnlyList<long> binaryNullIds = LibraDexCondition
+                .ForGroup("routes")
+                .Index("fingerprint").AsBinary.EqualTo(NullKey.Null)
+                .EndCondition
+                .ToList<long>(binaryRouteResolver, deduplication: IdentityDeduplication.Preserve);
+            IReadOnlyList<long> binaryEmptyIds = LibraDexCondition
+                .ForGroup("routes")
+                .Index("fingerprint").AsBinary.EqualTo(Array.Empty<byte>())
+                .EndCondition
+                .ToList<long>(binaryRouteResolver, deduplication: IdentityDeduplication.Preserve);
+            IReadOnlyList<long> binaryNullOrEmptyIds = LibraDexCondition
+                .ForGroup("routes")
+                .Index("fingerprint").AsBinary.EqualTo(NullKey.NullOrEmpty)
+                .EndCondition
+                .ToList<long>(binaryRouteResolver, deduplication: IdentityDeduplication.Preserve);
+            IReadOnlyList<long> binaryAllIds = LibraDexCondition
+                .ForGroup("routes")
+                .Index("fingerprint").AsBinary.All()
+                .EndCondition
+                .ToList<long>(binaryRouteResolver, deduplication: IdentityDeduplication.Preserve);
+            if (!binaryNullIds.SequenceEqual(new[] { 911L }) ||
+                !binaryEmptyIds.SequenceEqual(new[] { 912L }) ||
+                !binaryNullOrEmptyIds.SequenceEqual(new[] { 911L, 912L }) ||
+                !binaryAllIds.SequenceEqual(new[] { 911L, 912L, 913L }) ||
+                !binaryRouteIndex.Delete(NullKey.Empty, 912L) ||
+                binaryRouteIndex.Delete(NullKey.Empty, 912L))
+            {
+                throw new InvalidDataException("Binary NullKey route reads, all-scan ordering, or exact deletes did not match expected route semantics.");
+            }
+
             _ = scalar16Index;
             if (!catalog.Session.InsertScalar16KeyStateIdentity(scalar16SlotIndex, KeyStateRoute.Null, scalar16NullAHigh, scalar16NullALow) ||
                 !catalog.Session.InsertScalar16KeyStateIdentity(scalar16SlotIndex, KeyStateRoute.Null, scalar16NullBHigh, scalar16NullBLow) ||

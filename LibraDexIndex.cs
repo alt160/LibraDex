@@ -270,6 +270,11 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     public LibraDexGenericInsertResult Insert(TKey key, TIdentity identity)
     {
         ThrowIfDisposed();
+        if (TryClassifyNullKeyRouteKey(key, out NullKey keyState))
+        {
+            return Insert(keyState, identity);
+        }
+
         if (catalog?.TryGetActiveIdentityGroupBatch(Group, out CatalogIdentityGroupBatchManager? groupBatch) == true)
         {
             return groupBatch.Insert(this, key, identity);
@@ -340,6 +345,48 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     }
 
     /// <summary>
+    /// Inserts one identity onto this binary index's metadata-backed null or empty key-state route.<br/>
+    /// This is the typed public write spelling for `byte[]` key families where null and empty are key states rather than ordinary fixed-width byte values.<br/>
+    /// Use <see cref="NullKey.Null"/> or <see cref="NullKey.Empty"/> as concrete write states; <see cref="NullKey.NullOrEmpty"/> is a predicate state and is not a single writable key.<br/>
+    /// </summary>
+    /// <param name="keyState">The binary key state to write; only <see cref="NullKey.Null"/> and <see cref="NullKey.Empty"/> are accepted.</param>
+    /// <param name="identity">The typed identity value associated with the key state.</param>
+    /// <returns>The insert result plus commit telemetry when available.</returns>
+    public LibraDexGenericInsertResult Insert(NullKey keyState, TIdentity identity)
+    {
+        ThrowIfDisposed();
+        EnsureNullKeyRouteSupported();
+        if (keyState == NullKey.NullOrEmpty)
+        {
+            throw new ArgumentOutOfRangeException(nameof(keyState), keyState, "NullKey.NullOrEmpty is a predicate state and cannot be inserted as one concrete key.");
+        }
+
+        if (catalog?.TryGetActiveIdentityGroupBatch(Group, out _) == true)
+        {
+            throw new NotSupportedException("NullKey route inserts are not connected to identity-group batch publication yet.");
+        }
+
+        if (BatchManager.IsEnabled)
+        {
+            throw new NotSupportedException("NullKey route inserts are not connected to index batch publication yet.");
+        }
+
+        return InsertNullKeyIdentity(keyState, identity);
+    }
+
+    /// <summary>
+    /// Adds one identity onto this binary index's metadata-backed null or empty key-state route.<br/>
+    /// This is the short spelling counterpart to <see cref="Insert(NullKey, TIdentity)"/> and preserves the same route semantics.<br/>
+    /// </summary>
+    /// <param name="keyState">The binary key state to write; only <see cref="NullKey.Null"/> and <see cref="NullKey.Empty"/> are accepted.</param>
+    /// <param name="identity">The typed identity value associated with the key state.</param>
+    /// <returns>The insert result plus commit telemetry when available.</returns>
+    public LibraDexGenericInsertResult Add(NullKey keyState, TIdentity identity)
+    {
+        return Insert(keyState, identity);
+    }
+
+    /// <summary>
     /// Materializes identities for a completed condition rooted at this index.<br/>
     /// This convenience is intentionally single-index scoped: composed cross-index conditions should be executed from the owning identity group so every referenced index can be resolved by name.<br/>
     /// </summary>
@@ -376,7 +423,17 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     {
         if (key is null || key == DBNull.Value)
         {
+            if (SupportsNullKeyRoute())
+            {
+                return Insert(NullKey.Null, RequireObjectIdentity(identity, nameof(identity)));
+            }
+
             return Insert(ScalarNull.Null, RequireObjectIdentity(identity, nameof(identity)));
+        }
+
+        if (TryClassifyNullKeyRouteKey(key, out NullKey keyState))
+        {
+            return Insert(keyState, RequireObjectIdentity(identity, nameof(identity)));
         }
 
         return Insert(RequireObjectKey(key, nameof(key)), RequireObjectIdentity(identity, nameof(identity)));
@@ -387,7 +444,17 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
         ThrowIfDisposed();
         if (key is null || key == DBNull.Value)
         {
+            if (SupportsNullKeyRoute())
+            {
+                return DeleteNullKeyIdentity(NullKey.Null, RequireObjectIdentity(identity, nameof(identity)));
+            }
+
             return DeleteScalarNullIdentity(RequireObjectIdentity(identity, nameof(identity)));
+        }
+
+        if (TryClassifyNullKeyRouteKey(key, out NullKey keyState))
+        {
+            return DeleteNullKeyIdentity(keyState, RequireObjectIdentity(identity, nameof(identity)));
         }
 
         return DeleteExactTuple(RequireObjectKey(key, nameof(key)), RequireObjectIdentity(identity, nameof(identity)));
@@ -555,7 +622,17 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     {
         if (key is null || key == DBNull.Value)
         {
+            if (SupportsNullKeyRoute())
+            {
+                return ContainsNullKeyIdentity(NullKey.Null, RequireObjectIdentity(identity, nameof(identity)));
+            }
+
             return ContainsScalarNullIdentity(RequireObjectIdentity(identity, nameof(identity)));
+        }
+
+        if (TryClassifyNullKeyRouteKey(key, out NullKey keyState))
+        {
+            return ContainsNullKeyIdentity(keyState, RequireObjectIdentity(identity, nameof(identity)));
         }
 
         return ContainsExactTuple(RequireObjectKey(key, nameof(key)), RequireObjectIdentity(identity, nameof(identity)));
@@ -565,7 +642,17 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     {
         if (key is null || key == DBNull.Value)
         {
+            if (SupportsNullKeyRoute())
+            {
+                return DeleteNullKeyIdentity(NullKey.Null, RequireObjectIdentity(identity, nameof(identity)));
+            }
+
             return DeleteScalarNullIdentity(RequireObjectIdentity(identity, nameof(identity)));
+        }
+
+        if (TryClassifyNullKeyRouteKey(key, out NullKey keyState))
+        {
+            return DeleteNullKeyIdentity(keyState, RequireObjectIdentity(identity, nameof(identity)));
         }
 
         return DeleteExactTuple(RequireObjectKey(key, nameof(key)), RequireObjectIdentity(identity, nameof(identity)));
@@ -596,6 +683,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
             LibraDexCriteriaKind.BinaryTypedSlice => MaterializeBinaryTypedSliceIdentityObjects(request.Values, request.TakeLimit),
             LibraDexCriteriaKind.Bitmask => MaterializeBitmaskIdentityObjects(request.Values, request.TakeLimit),
             LibraDexCriteriaKind.ScalarNull => MaterializeScalarNullIdentityObjects(request.Values, request.TakeLimit),
+            LibraDexCriteriaKind.KeyState => MaterializeNullKeyIdentityObjects(request.Values, request.TakeLimit),
             _ => throw new NotSupportedException($"{request.CriteriaKind} identity execution is not connected to physical readers yet.")
         };
     }
@@ -722,6 +810,13 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
                 }
 
                 yield break;
+            case LibraDexCriteriaKind.KeyState:
+                foreach (object identity in IterateNullKeyIdentityObjects(request.Values, request.TakeLimit))
+                {
+                    yield return identity;
+                }
+
+                yield break;
             default:
                 throw new NotSupportedException($"{request.CriteriaKind} identity iteration is not connected to physical readers yet.");
         }
@@ -809,6 +904,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
             LibraDexCriteriaKind.BinaryTypedSlice => CountBinaryTypedSliceIdentityObjects(request.Values),
             LibraDexCriteriaKind.Bitmask => CountBitmaskIdentityObjects(request.Values),
             LibraDexCriteriaKind.ScalarNull => CountScalarNullIdentityObjects(request.Values),
+            LibraDexCriteriaKind.KeyState => CountNullKeyIdentityObjects(request.Values),
             _ => throw new NotSupportedException($"{request.CriteriaKind} identity count is not connected to physical readers yet.")
         };
     }
@@ -839,6 +935,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
             LibraDexCriteriaKind.In or LibraDexCriteriaKind.InSet => DeleteMembershipIdentityPrimitive(request.Values),
             LibraDexCriteriaKind.MultiRange => DeleteMultiRangeIdentityPrimitive(request.Values),
             LibraDexCriteriaKind.ScalarNull => DeleteScalarNullIdentityPrimitive(request.Values),
+            LibraDexCriteriaKind.KeyState => DeleteNullKeyIdentityPrimitive(request.Values),
             _ => throw new NotSupportedException($"{request.CriteriaKind} identity deletion is not connected to physical mutation yet.")
         };
 
@@ -876,6 +973,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
             LibraDexCriteriaKind.MultiRange => MaterializeMultiRangeTupleObjects(request.Values),
             LibraDexCriteriaKind.Bitmask => MaterializeBitmaskTupleObjects(request.Values),
             LibraDexCriteriaKind.ScalarNull => MaterializeScalarNullTupleObjects(request.Values),
+            LibraDexCriteriaKind.KeyState => MaterializeNullKeyTupleObjects(request.Values),
             _ => throw new NotSupportedException($"{request.CriteriaKind} tuple execution is not connected to physical readers yet.")
         };
     }
@@ -910,6 +1008,11 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
         if (SupportsScalarNullKeyRoute())
         {
             deleted += DeleteScalarNullRouteIdentities();
+        }
+        else if (SupportsNullKeyRoute())
+        {
+            deleted += DeleteNullKeyRouteIdentities(NullKey.Null);
+            deleted += DeleteNullKeyRouteIdentities(NullKey.Empty);
         }
 
         deleted += DeleteIdentityPrimitiveRange(GetLowerFullKeyBound(), GetUpperFullKeyBound());
@@ -1532,6 +1635,20 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     }
 
     /// <summary>
+    /// Deletes one identity from this binary index's metadata-backed null or empty key-state route.<br/>
+    /// This is the typed exact-delete counterpart to <see cref="Insert(NullKey, TIdentity)"/> and targets the identity-keyed route directly.<br/>
+    /// </summary>
+    /// <param name="keyState">The binary key state to delete; only <see cref="NullKey.Null"/> and <see cref="NullKey.Empty"/> are accepted.</param>
+    /// <param name="identity">The typed identity value to remove from the key-state route.</param>
+    /// <returns><see langword="true"/> when the identity was removed.</returns>
+    public bool Delete(NullKey keyState, TIdentity identity)
+    {
+        ThrowIfDisposed();
+        EnsureConcreteNullKeyState(keyState, nameof(keyState));
+        return DeleteNullKeyIdentity(keyState, identity);
+    }
+
+    /// <summary>
     /// Closes the index by delegating to `Dispose`.<br/>
     /// This method exists for callers who prefer explicit verb-style lifetime control over `using` while preserving the same cleanup path.<br/>
     /// </summary>
@@ -2082,6 +2199,29 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
                 }
             }
         }
+        else if (SupportsNullKeyRoute())
+        {
+            foreach (object identity in IterateNullKeyRouteIdentityObjects(NullKey.Null, takeLimit))
+            {
+                yield return identity;
+                returned++;
+                if (takeLimit is not null && returned >= takeLimit.Value)
+                {
+                    yield break;
+                }
+            }
+
+            int? remainingForEmpty = takeLimit is null ? null : takeLimit.Value - returned;
+            foreach (object identity in IterateNullKeyRouteIdentityObjects(NullKey.Empty, remainingForEmpty))
+            {
+                yield return identity;
+                returned++;
+                if (takeLimit is not null && returned >= takeLimit.Value)
+                {
+                    yield break;
+                }
+            }
+        }
 
         int? remaining = takeLimit is null ? null : takeLimit.Value - returned;
         foreach (object identity in IterateIdentityObjects(OpenAllRangeReader(), remaining))
@@ -2101,6 +2241,11 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
         if (SupportsScalarNullKeyRoute())
         {
             count += CountScalarNullRouteIdentityObjects();
+        }
+        else if (SupportsNullKeyRoute())
+        {
+            count += CountNullKeyRouteIdentityObjects(NullKey.Null);
+            count += CountNullKeyRouteIdentityObjects(NullKey.Empty);
         }
 
         return count;
@@ -2458,6 +2603,364 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
         if (!SupportsScalarNullKeyRoute())
         {
             throw new NotSupportedException("ScalarNull routes are for scalar key families. Use NullKey for binary key states.");
+        }
+    }
+
+    /// <summary>
+    /// Materializes identities for a null or empty binary key-state primitive.<br/>
+    /// Null and empty routes are identity-keyed roots, so this reads only compact route state and never scans ordinary fixed-width byte-key shelves.<br/>
+    /// </summary>
+    /// <param name="values">The condition primitive operands; operand zero must be <see cref="NullKey"/>.</param>
+    /// <param name="takeLimit">The optional maximum number of identities to materialize.</param>
+    /// <returns>The decoded identities selected by the key state.</returns>
+    private IReadOnlyList<object> MaterializeNullKeyIdentityObjects(IReadOnlyList<object?> values, int? takeLimit = null)
+    {
+        return IterateNullKeyIdentityObjects(values, takeLimit).ToList();
+    }
+
+    /// <summary>
+    /// Streams identities for a null or empty binary key-state primitive without materializing the route first.<br/>
+    /// `NullKey.NullOrEmpty` streams null before empty, matching the index-natural all-scan ordering contract.<br/>
+    /// </summary>
+    /// <param name="values">The condition primitive operands; operand zero must be <see cref="NullKey"/>.</param>
+    /// <param name="takeLimit">The optional maximum number of identities to yield.</param>
+    /// <returns>A forward-only sequence of decoded identities.</returns>
+    private IEnumerable<object> IterateNullKeyIdentityObjects(IReadOnlyList<object?> values, int? takeLimit = null)
+    {
+        NullKey keyState = RequireNullKeyState(values);
+        if (keyState != NullKey.NullOrEmpty)
+        {
+            foreach (object identity in IterateNullKeyRouteIdentityObjects(keyState, takeLimit))
+            {
+                yield return identity;
+            }
+
+            yield break;
+        }
+
+        int returned = 0;
+        foreach (object identity in IterateNullKeyRouteIdentityObjects(NullKey.Null, takeLimit))
+        {
+            yield return identity;
+            returned++;
+            if (takeLimit is not null && returned >= takeLimit.Value)
+            {
+                yield break;
+            }
+        }
+
+        int? remaining = takeLimit is null ? null : takeLimit.Value - returned;
+        foreach (object identity in IterateNullKeyRouteIdentityObjects(NullKey.Empty, remaining))
+        {
+            yield return identity;
+        }
+    }
+
+    /// <summary>
+    /// Counts identities for a null or empty binary key-state primitive.<br/>
+    /// The count reads route metadata directly, and `NullKey.NullOrEmpty` is the sum of the two compact route counts.<br/>
+    /// </summary>
+    /// <param name="values">The condition primitive operands; operand zero must be <see cref="NullKey"/>.</param>
+    /// <returns>The selected identity count.</returns>
+    private long CountNullKeyIdentityObjects(IReadOnlyList<object?> values)
+    {
+        NullKey keyState = RequireNullKeyState(values);
+        return keyState == NullKey.NullOrEmpty
+            ? CountNullKeyRouteIdentityObjects(NullKey.Null) + CountNullKeyRouteIdentityObjects(NullKey.Empty)
+            : CountNullKeyRouteIdentityObjects(keyState);
+    }
+
+    /// <summary>
+    /// Deletes identities selected by a null or empty binary key-state primitive.<br/>
+    /// `NullKey.NullOrEmpty` clears null first, then empty, matching the key-state ordering used by reads.<br/>
+    /// </summary>
+    /// <param name="values">The condition primitive operands; operand zero must be <see cref="NullKey"/>.</param>
+    /// <returns>The number of deleted identities.</returns>
+    private long DeleteNullKeyIdentityPrimitive(IReadOnlyList<object?> values)
+    {
+        NullKey keyState = RequireNullKeyState(values);
+        return keyState == NullKey.NullOrEmpty
+            ? DeleteNullKeyRouteIdentities(NullKey.Null) + DeleteNullKeyRouteIdentities(NullKey.Empty)
+            : DeleteNullKeyRouteIdentities(keyState);
+    }
+
+    /// <summary>
+    /// Materializes tuple rows for a null or empty binary key-state primitive.<br/>
+    /// The tuple key is returned as null for <see cref="NullKey.Null"/> and <see cref="Array.Empty{T}"/> for <see cref="NullKey.Empty"/> so mutation bridges can preserve caller-visible key semantics.<br/>
+    /// </summary>
+    /// <param name="values">The condition primitive operands; operand zero must be <see cref="NullKey"/>.</param>
+    /// <returns>The matching key/identity tuples.</returns>
+    private IReadOnlyList<LibraDexObjectTuple> MaterializeNullKeyTupleObjects(IReadOnlyList<object?> values)
+    {
+        NullKey keyState = RequireNullKeyState(values);
+        List<LibraDexObjectTuple> tuples = new();
+        if (keyState is NullKey.Null or NullKey.NullOrEmpty)
+        {
+            tuples.AddRange(IterateNullKeyRouteIdentityObjects(NullKey.Null).Select(static identity => new LibraDexObjectTuple(null, identity)));
+        }
+
+        if (keyState is NullKey.Empty or NullKey.NullOrEmpty)
+        {
+            tuples.AddRange(IterateNullKeyRouteIdentityObjects(NullKey.Empty).Select(static identity => new LibraDexObjectTuple(Array.Empty<byte>(), identity)));
+        }
+
+        return tuples;
+    }
+
+    private LibraDexGenericInsertResult InsertNullKeyIdentity(NullKey keyState, TIdentity identity)
+    {
+        EnsureConcreteNullKeyState(keyState, nameof(keyState));
+        bool inserted = shape switch
+        {
+            LibraDexGenericScalarShape.FS328 => InsertScalar8NullKeyRouteIdentity(keyState, identity),
+            LibraDexGenericScalarShape.FS3216 => InsertScalar16NullKeyRouteIdentity(keyState, identity),
+            _ => throw new NotSupportedException($"NullKey route inserts do not support resolved shape {shape}.")
+        };
+
+        LibraDexGenericInsertResult result = new(inserted, false, default, default);
+        Stats.RecordInsert(result);
+        Catalog?.Stats.RecordInsert(result);
+        return result;
+    }
+
+    private bool InsertScalar8NullKeyRouteIdentity(NullKey keyState, TIdentity identity)
+    {
+        ulong encodedIdentity = LibraDexGenericScalarCodec<TIdentity>.Encode8(identity);
+        KeyStateRoute route = ToKeyStateRoute(keyState);
+        if (keyContract == IndexKeys.Unique)
+        {
+            ulong[] existing = session.ReadScalar8KeyStateIdentities(SlotIndex, route);
+            if (existing.Length != 0 && !session.ContainsScalar8KeyStateIdentity(SlotIndex, route, encodedIdentity))
+            {
+                return false;
+            }
+        }
+
+        return session.InsertScalar8KeyStateIdentity(SlotIndex, route, encodedIdentity);
+    }
+
+    private bool InsertScalar16NullKeyRouteIdentity(NullKey keyState, TIdentity identity)
+    {
+        LibraDexGenericScalarCodec<TIdentity>.Encode16(identity, out ulong identityHigh, out ulong identityLow);
+        KeyStateRoute route = ToKeyStateRoute(keyState);
+        if (keyContract == IndexKeys.Unique)
+        {
+            (ulong[] highs, _) = session.ReadScalar16KeyStateIdentities(SlotIndex, route);
+            if (highs.Length != 0 && !session.ContainsScalar16KeyStateIdentity(SlotIndex, route, identityHigh, identityLow))
+            {
+                return false;
+            }
+        }
+
+        return session.InsertScalar16KeyStateIdentity(SlotIndex, route, identityHigh, identityLow);
+    }
+
+    private bool DeleteNullKeyIdentity(NullKey keyState, TIdentity identity)
+    {
+        EnsureConcreteNullKeyState(keyState, nameof(keyState));
+        KeyStateRoute route = ToKeyStateRoute(keyState);
+        return shape switch
+        {
+            LibraDexGenericScalarShape.FS328 => session.DeleteScalar8KeyStateIdentity(
+                SlotIndex,
+                route,
+                LibraDexGenericScalarCodec<TIdentity>.Encode8(identity)),
+            LibraDexGenericScalarShape.FS3216 => DeleteScalar16NullKeyRouteIdentity(route, identity),
+            _ => throw new NotSupportedException($"NullKey route deletes do not support resolved shape {shape}.")
+        };
+    }
+
+    private bool DeleteScalar16NullKeyRouteIdentity(KeyStateRoute route, TIdentity identity)
+    {
+        LibraDexGenericScalarCodec<TIdentity>.Encode16(identity, out ulong identityHigh, out ulong identityLow);
+        return session.DeleteScalar16KeyStateIdentity(SlotIndex, route, identityHigh, identityLow);
+    }
+
+    private bool ContainsNullKeyIdentity(NullKey keyState, TIdentity identity)
+    {
+        EnsureConcreteNullKeyState(keyState, nameof(keyState));
+        KeyStateRoute route = ToKeyStateRoute(keyState);
+        return shape switch
+        {
+            LibraDexGenericScalarShape.FS328 => session.ContainsScalar8KeyStateIdentity(
+                SlotIndex,
+                route,
+                LibraDexGenericScalarCodec<TIdentity>.Encode8(identity)),
+            LibraDexGenericScalarShape.FS3216 => ContainsScalar16NullKeyRouteIdentity(route, identity),
+            _ => throw new NotSupportedException($"NullKey routes do not support resolved shape {shape}.")
+        };
+    }
+
+    private bool ContainsScalar16NullKeyRouteIdentity(KeyStateRoute route, TIdentity identity)
+    {
+        LibraDexGenericScalarCodec<TIdentity>.Encode16(identity, out ulong identityHigh, out ulong identityLow);
+        return session.ContainsScalar16KeyStateIdentity(SlotIndex, route, identityHigh, identityLow);
+    }
+
+    private long DeleteNullKeyRouteIdentities(NullKey keyState)
+    {
+        EnsureConcreteNullKeyState(keyState, nameof(keyState));
+        return shape switch
+        {
+            LibraDexGenericScalarShape.FS328 => DeleteScalar8NullKeyRouteIdentities(ToKeyStateRoute(keyState)),
+            LibraDexGenericScalarShape.FS3216 => DeleteScalar16NullKeyRouteIdentities(ToKeyStateRoute(keyState)),
+            _ => throw new NotSupportedException($"NullKey route deletes do not support resolved shape {shape}.")
+        };
+    }
+
+    private long DeleteScalar8NullKeyRouteIdentities(KeyStateRoute route)
+    {
+        ulong[] encodedIdentities = session.ReadScalar8KeyStateIdentities(SlotIndex, route);
+        long deleted = 0;
+        for (int i = 0; i < encodedIdentities.Length; i++)
+        {
+            if (session.DeleteScalar8KeyStateIdentity(SlotIndex, route, encodedIdentities[i]))
+            {
+                deleted++;
+            }
+        }
+
+        return deleted;
+    }
+
+    private long DeleteScalar16NullKeyRouteIdentities(KeyStateRoute route)
+    {
+        (ulong[] highs, ulong[] lows) = session.ReadScalar16KeyStateIdentities(SlotIndex, route);
+        long deleted = 0;
+        for (int i = 0; i < highs.Length; i++)
+        {
+            if (session.DeleteScalar16KeyStateIdentity(SlotIndex, route, highs[i], lows[i]))
+            {
+                deleted++;
+            }
+        }
+
+        return deleted;
+    }
+
+    private IEnumerable<object> IterateNullKeyRouteIdentityObjects(NullKey keyState, int? takeLimit = null)
+    {
+        if (takeLimit is < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(takeLimit), takeLimit, "Take cannot be negative.");
+        }
+
+        EnsureConcreteNullKeyState(keyState, nameof(keyState));
+        if (takeLimit == 0)
+        {
+            yield break;
+        }
+
+        KeyStateRoute route = ToKeyStateRoute(keyState);
+        switch (shape)
+        {
+            case LibraDexGenericScalarShape.FS328:
+                int returned8 = 0;
+                ulong[] encodedIdentities = session.ReadScalar8KeyStateIdentities(SlotIndex, route);
+                for (int i = 0; i < encodedIdentities.Length; i++)
+                {
+                    yield return LibraDexGenericScalarCodec<TIdentity>.Decode8(encodedIdentities[i])!;
+                    returned8++;
+                    if (takeLimit is not null && returned8 >= takeLimit.Value)
+                    {
+                        yield break;
+                    }
+                }
+
+                yield break;
+            case LibraDexGenericScalarShape.FS3216:
+                int returned16 = 0;
+                (ulong[] highs, ulong[] lows) = session.ReadScalar16KeyStateIdentities(SlotIndex, route);
+                for (int i = 0; i < highs.Length; i++)
+                {
+                    yield return LibraDexGenericScalarCodec<TIdentity>.Decode16(highs[i], lows[i])!;
+                    returned16++;
+                    if (takeLimit is not null && returned16 >= takeLimit.Value)
+                    {
+                        yield break;
+                    }
+                }
+
+                yield break;
+            default:
+                throw new NotSupportedException($"NullKey routes do not support resolved shape {shape}.");
+        }
+    }
+
+    private long CountNullKeyRouteIdentityObjects(NullKey keyState)
+    {
+        EnsureConcreteNullKeyState(keyState, nameof(keyState));
+        KeyStateRoute route = ToKeyStateRoute(keyState);
+        return shape switch
+        {
+            LibraDexGenericScalarShape.FS328 => session.ReadScalar8KeyStateIdentities(SlotIndex, route).LongLength,
+            LibraDexGenericScalarShape.FS3216 => session.ReadScalar16KeyStateIdentities(SlotIndex, route).Highs.LongLength,
+            _ => throw new NotSupportedException($"NullKey routes do not support resolved shape {shape}.")
+        };
+    }
+
+    private static NullKey RequireNullKeyState(IReadOnlyList<object?> values)
+    {
+        if (values.Count == 0 || values[0] is not NullKey state)
+        {
+            throw new InvalidOperationException("Key-state criteria require a NullKey operand.");
+        }
+
+        return state;
+    }
+
+    private static bool TryClassifyNullKeyRouteKey(object? key, out NullKey keyState)
+    {
+        if (!SupportsNullKeyRoute())
+        {
+            keyState = default;
+            return false;
+        }
+
+        switch (key)
+        {
+            case null:
+            case DBNull:
+                keyState = NullKey.Null;
+                return true;
+            case byte[] bytes when bytes.Length == 0:
+                keyState = NullKey.Empty;
+                return true;
+            default:
+                keyState = default;
+                return false;
+        }
+    }
+
+    private static KeyStateRoute ToKeyStateRoute(NullKey keyState)
+    {
+        return keyState switch
+        {
+            NullKey.Null => KeyStateRoute.Null,
+            NullKey.Empty => KeyStateRoute.Empty,
+            _ => throw new ArgumentOutOfRangeException(nameof(keyState), keyState, "NullKey.NullOrEmpty is not a single physical route.")
+        };
+    }
+
+    private static void EnsureConcreteNullKeyState(NullKey keyState, string parameterName)
+    {
+        EnsureNullKeyRouteSupported();
+        if (keyState == NullKey.NullOrEmpty)
+        {
+            throw new ArgumentOutOfRangeException(parameterName, keyState, "NullKey.NullOrEmpty is a predicate state and is not one concrete key-state route.");
+        }
+    }
+
+    private static bool SupportsNullKeyRoute()
+    {
+        return typeof(TKey) == typeof(byte[]);
+    }
+
+    private static void EnsureNullKeyRouteSupported()
+    {
+        if (!SupportsNullKeyRoute())
+        {
+            throw new NotSupportedException("NullKey routes are for binary key families. Use ScalarNull for scalar key states.");
         }
     }
 

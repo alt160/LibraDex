@@ -5290,7 +5290,7 @@ public sealed class LibraDexStringConditionOperator : LibraDexConditionOperator<
 
     /// <summary>
     /// Captures string equality against an explicit null or empty key state.<br/>
-    /// `NullKey.Null` maps to the stored string null sentinel, `NullKey.Empty` maps to the stored empty-string sentinel, and `NullKey.NullOrEmpty` maps to the ordered sentinel range ending at empty.<br/>
+    /// `NullKey.Null` maps to the stored string null route, `NullKey.Empty` maps to the stored empty-string route, and `NullKey.NullOrEmpty` maps to both key-state routes.<br/>
     /// </summary>
     /// <param name="keyState">The key-state sentinel to match.</param>
     /// <returns>A continuation for adding more clauses or ending the condition.</returns>
@@ -5298,9 +5298,7 @@ public sealed class LibraDexStringConditionOperator : LibraDexConditionOperator<
     {
         return keyState switch
         {
-            NullKey.Null => AddText(LibraDexConditionOperatorKind.EqualTo, (string?)null, ignoreCase: false, culture: null),
-            NullKey.Empty => AddText(LibraDexConditionOperatorKind.EqualTo, string.Empty, ignoreCase: false, culture: null),
-            NullKey.NullOrEmpty => AddText(LibraDexConditionOperatorKind.LessOrEqual, string.Empty, ignoreCase: false, culture: null),
+            NullKey.Null or NullKey.Empty or NullKey.NullOrEmpty => AddText(LibraDexConditionOperatorKind.EqualTo, keyState, ignoreCase: false, culture: null),
             _ => throw new ArgumentOutOfRangeException(nameof(keyState), keyState, "Unknown null-key state.")
         };
     }
@@ -5342,7 +5340,7 @@ public sealed class LibraDexStringConditionOperator : LibraDexConditionOperator<
 
     /// <summary>
     /// Captures string inequality against an explicit null or empty key state.<br/>
-    /// `NullKey.NullOrEmpty` maps to the ordered sentinel complement after empty, excluding both explicit null and explicit empty without constructing a caller-side collection.<br/>
+    /// `NullKey.NullOrEmpty` maps to the identity-universe complement of both key-state routes, excluding explicit null and explicit empty without constructing a caller-side collection.<br/>
     /// </summary>
     /// <param name="keyState">The key-state sentinel to exclude.</param>
     /// <returns>A continuation for adding more clauses or ending the condition.</returns>
@@ -5350,9 +5348,7 @@ public sealed class LibraDexStringConditionOperator : LibraDexConditionOperator<
     {
         return keyState switch
         {
-            NullKey.Null => AddText(LibraDexConditionOperatorKind.NotEqualTo, (string?)null, ignoreCase: false, culture: null),
-            NullKey.Empty => AddText(LibraDexConditionOperatorKind.NotEqualTo, string.Empty, ignoreCase: false, culture: null),
-            NullKey.NullOrEmpty => AddText(LibraDexConditionOperatorKind.GreaterThan, string.Empty, ignoreCase: false, culture: null),
+            NullKey.Null or NullKey.Empty or NullKey.NullOrEmpty => AddText(LibraDexConditionOperatorKind.NotEqualTo, keyState, ignoreCase: false, culture: null),
             _ => throw new ArgumentOutOfRangeException(nameof(keyState), keyState, "Unknown null-key state.")
         };
     }
@@ -5953,6 +5949,16 @@ public sealed class LibraDexStringConditionOperator : LibraDexConditionOperator<
     private LibraDexConditionContinueOrEnd AddText(
         LibraDexConditionOperatorKind operatorKind,
         string? value,
+        bool ignoreCase,
+        string? culture,
+        LibraDexStringComparisonPolicy? stringComparisonPolicy = null)
+    {
+        return AddText(operatorKind, new[] { LibraDexConditionOperand.Value(value) }, ignoreCase, culture, stringComparisonPolicy);
+    }
+
+    private LibraDexConditionContinueOrEnd AddText(
+        LibraDexConditionOperatorKind operatorKind,
+        object? value,
         bool ignoreCase,
         string? culture,
         LibraDexStringComparisonPolicy? stringComparisonPolicy = null)
@@ -6602,7 +6608,7 @@ public sealed class LibraDexBinaryConditionOperator : LibraDexConditionOperator<
 
     /// <summary>
     /// Captures binary equality against an explicit null or empty key state.<br/>
-    /// `NullKey.Null` maps to the stored binary null sentinel, `NullKey.Empty` maps to an empty byte sequence, and `NullKey.NullOrEmpty` maps to the ordered sentinel range ending at empty.<br/>
+    /// `NullKey.Null` maps to the stored binary null route, `NullKey.Empty` maps to the stored empty-byte route, and `NullKey.NullOrEmpty` maps to both key-state routes.<br/>
     /// </summary>
     /// <param name="keyState">The key-state sentinel to match.</param>
     /// <returns>A continuation for adding more clauses or ending the condition.</returns>
@@ -6610,9 +6616,7 @@ public sealed class LibraDexBinaryConditionOperator : LibraDexConditionOperator<
     {
         return keyState switch
         {
-            NullKey.Null => Add(LibraDexConditionOperatorKind.EqualTo, LibraDexConditionOperand.Value(null)),
-            NullKey.Empty => Add(LibraDexConditionOperatorKind.EqualTo, LibraDexConditionOperand.Value(Array.Empty<byte>())),
-            NullKey.NullOrEmpty => Add(LibraDexConditionOperatorKind.LessOrEqual, LibraDexConditionOperand.Value(Array.Empty<byte>())),
+            NullKey.Null or NullKey.Empty or NullKey.NullOrEmpty => Add(LibraDexConditionOperatorKind.EqualTo, LibraDexConditionOperand.Value(keyState)),
             _ => throw new ArgumentOutOfRangeException(nameof(keyState), keyState, "Unknown null-key state.")
         };
     }
@@ -6631,7 +6635,7 @@ public sealed class LibraDexBinaryConditionOperator : LibraDexConditionOperator<
 
     /// <summary>
     /// Captures binary inequality against an explicit null or empty key state.<br/>
-    /// `NullKey.NullOrEmpty` maps to the ordered sentinel complement after empty, excluding both explicit null and explicit empty without allocating a caller-side set.<br/>
+    /// `NullKey.NullOrEmpty` maps to the identity-universe complement of both key-state routes, excluding explicit null and explicit empty without allocating a caller-side set.<br/>
     /// </summary>
     /// <param name="keyState">The key-state sentinel to exclude.</param>
     /// <returns>A continuation for adding more clauses or ending the condition.</returns>
@@ -6639,9 +6643,7 @@ public sealed class LibraDexBinaryConditionOperator : LibraDexConditionOperator<
     {
         return keyState switch
         {
-            NullKey.Null => Add(LibraDexConditionOperatorKind.NotEqualTo, LibraDexConditionOperand.Value(null)),
-            NullKey.Empty => Add(LibraDexConditionOperatorKind.NotEqualTo, LibraDexConditionOperand.Value(Array.Empty<byte>())),
-            NullKey.NullOrEmpty => Add(LibraDexConditionOperatorKind.GreaterThan, LibraDexConditionOperand.Value(Array.Empty<byte>())),
+            NullKey.Null or NullKey.Empty or NullKey.NullOrEmpty => Add(LibraDexConditionOperatorKind.NotEqualTo, LibraDexConditionOperand.Value(keyState)),
             _ => throw new ArgumentOutOfRangeException(nameof(keyState), keyState, "Unknown null-key state.")
         };
     }
@@ -7978,8 +7980,12 @@ internal sealed class LibraDexConditionNode
         criterion = descriptor.Operator switch
         {
             LibraDexConditionOperatorKind.All => CreateConditionLeaf(index, LibraDexCriteriaKind.All),
+            LibraDexConditionOperatorKind.EqualTo when descriptor.ValueKind == LibraDexConditionValueKind.String && TryGetNullKeyState(values, 0, out NullKey stringEqualState) => CreateConditionLeaf(index, LibraDexCriteriaKind.KeyState, stringEqualState),
+            LibraDexConditionOperatorKind.NotEqualTo when descriptor.ValueKind == LibraDexConditionValueKind.String && TryGetNullKeyState(values, 0, out NullKey stringNotEqualState) => CreateConditionLeaf(index, LibraDexCriteriaKind.KeyState, stringNotEqualState).Not(),
             LibraDexConditionOperatorKind.EqualTo when descriptor.ValueKind == LibraDexConditionValueKind.String => CreateConditionLeaf(index, LibraDexCriteriaKind.Find, RequireString(values, 0, descriptor)),
             LibraDexConditionOperatorKind.NotEqualTo when descriptor.ValueKind == LibraDexConditionValueKind.String => CreateOrderedPointExclusionLeaf(index, RequireString(values, 0, descriptor)),
+            LibraDexConditionOperatorKind.EqualTo when descriptor.ValueKind == LibraDexConditionValueKind.Binary && TryGetNullKeyState(values, 0, out NullKey binaryEqualState) => CreateConditionLeaf(index, LibraDexCriteriaKind.KeyState, binaryEqualState),
+            LibraDexConditionOperatorKind.NotEqualTo when descriptor.ValueKind == LibraDexConditionValueKind.Binary && TryGetNullKeyState(values, 0, out NullKey binaryNotEqualState) => CreateConditionLeaf(index, LibraDexCriteriaKind.KeyState, binaryNotEqualState).Not(),
             LibraDexConditionOperatorKind.GreaterThan when descriptor.ValueKind == LibraDexConditionValueKind.String => CreateConditionLeaf(index, LibraDexCriteriaKind.After, RequireString(values, 0, descriptor)),
             LibraDexConditionOperatorKind.GreaterOrEqual when descriptor.ValueKind == LibraDexConditionValueKind.String => CreateConditionLeaf(index, LibraDexCriteriaKind.AtOrAfter, RequireString(values, 0, descriptor)),
             LibraDexConditionOperatorKind.LessThan when descriptor.ValueKind == LibraDexConditionValueKind.String => CreateConditionLeaf(index, LibraDexCriteriaKind.Before, RequireString(values, 0, descriptor)),
@@ -8495,6 +8501,13 @@ internal sealed class LibraDexConditionNode
             return value is ScalarNull
                 ? value
                 : throw new ArgumentException("Scalar null conditions require a ScalarNull operand.");
+        }
+
+        if (criteriaKind == LibraDexCriteriaKind.KeyState)
+        {
+            return value is NullKey
+                ? value
+                : throw new ArgumentException("Key-state conditions require a NullKey operand.");
         }
 
         if (criteriaKind == LibraDexCriteriaKind.CompositeMatch)
@@ -10207,6 +10220,44 @@ internal sealed class LibraDexConditionNode
     {
         return RequireString(values, ordinal, descriptor)
             ?? throw new InvalidOperationException($"Condition leaf '{descriptor.IndexName}' operator '{descriptor.Operator}' requires non-null string operand {ordinal}.");
+    }
+
+    /// <summary>
+    /// Attempts to classify one already-materialized operand as a null or empty key-state selector.<br/>
+    /// The condition builder uses this before ordinary key materialization so explicit null/empty predicates route through metadata-backed key-state roots instead of sentinel values in the value router.<br/>
+    /// </summary>
+    /// <param name="values">The materialized operand values.</param>
+    /// <param name="ordinal">The operand index.</param>
+    /// <param name="keyState">Receives the key-state selector when the operand is null, empty, or already a <see cref="NullKey"/>.</param>
+    /// <returns><see langword="true"/> when the operand is a key-state selector.</returns>
+    private static bool TryGetNullKeyState(object?[] values, int ordinal, out NullKey keyState)
+    {
+        if (ordinal >= values.Length)
+        {
+            keyState = default;
+            return false;
+        }
+
+        object? value = values[ordinal];
+        switch (value)
+        {
+            case NullKey state:
+                keyState = state;
+                return true;
+            case null:
+            case DBNull:
+                keyState = NullKey.Null;
+                return true;
+            case string text when text.Length == 0:
+                keyState = NullKey.Empty;
+                return true;
+            case byte[] bytes when bytes.Length == 0:
+                keyState = NullKey.Empty;
+                return true;
+            default:
+                keyState = default;
+                return false;
+        }
     }
 
     /// <summary>

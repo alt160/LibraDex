@@ -94,9 +94,9 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
     public LibraDexStringComparisonPolicy? StringComparisonPolicy => stringComparisonPolicy;
 
     /// <summary>
-    /// Inserts one exact string key and scalar identity, also maintaining the folded-text and sort-key projections when present.<br/>
-    /// A null key is encoded as the ordered string null sentinel, which sorts before empty and non-empty string values.<br/>
-    /// The exact and projection keys are written in the same call so condition projection retrieval does not require callers to manually populate companion indexes.<br/>
+    /// Inserts one exact string key and scalar identity, also maintaining the folded-text and sort-key projections when present for non-empty text.<br/>
+    /// Null and empty string keys are written to metadata-backed identity routes so they remain compact and fast to enumerate before ordinary non-empty string values.<br/>
+    /// Non-empty exact and projection keys are written in the same call so condition projection retrieval does not require callers to manually populate companion indexes.<br/>
     /// </summary>
     /// <param name="key">The developer-facing string key, or null for the null-key sentinel.</param>
     /// <param name="identity">The scalar identity to associate with the key.</param>
@@ -104,6 +104,11 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
     public LibraDexGenericInsertResult Insert(string? key, ulong identity)
     {
         ThrowIfDisposed();
+        if (TryClassifyStringKeyState(key, out NullKey keyState))
+        {
+            return InsertStringKeyStateIdentity(keyState, identity);
+        }
+
         byte[] exactKey = Encode(key);
         VarKeyScalar8InsertOutcome exactResult = exact.InsertEncoded(exactKey, identity);
         if (folded is not null)
@@ -395,6 +400,16 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         for (int i = 0; i < tuples.Count; i++)
         {
             StringScalar8Tuple tuple = tuples[i];
+            if (TryClassifyStringKeyState(tuple.Key, out NullKey keyState))
+            {
+                if (exact.Session.DeleteScalar8KeyStateIdentity(exact.SlotIndex, ToKeyStateRoute(keyState), tuple.Identity))
+                {
+                    changed++;
+                }
+
+                continue;
+            }
+
             byte[] exactKey = Encode(tuple.Key);
             if (!batch.DeleteExactTuple(exactKey, tuple.Identity))
             {
@@ -442,6 +457,11 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
     private bool ContainsExactTuple(string? key, ulong identity)
     {
         ThrowIfDisposed();
+        if (TryClassifyStringKeyState(key, out NullKey keyState))
+        {
+            return exact.Session.ContainsScalar8KeyStateIdentity(exact.SlotIndex, ToKeyStateRoute(keyState), identity);
+        }
+
         byte[] encodedKey = Encode(key);
         using VarKeyScalar8RangeReader reader = exact.OpenEncodedRangeReader(encodedKey, encodedKey);
         while (reader.MoveNext())
@@ -456,8 +476,8 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
     }
 
     /// <summary>
-    /// Deletes one exact string key and scalar identity tuple while maintaining every owned projection tuple.<br/>
-    /// The exact and projection rows are removed inside one `VS8` durability batch so condition `SetKey` cannot leave stale folded, sort-key, or reversed rows for the old key.<br/>
+    /// Deletes one exact string key and scalar identity tuple while maintaining every owned projection tuple for non-empty text.<br/>
+    /// Null and empty string keys are removed from their metadata-backed identity routes, while non-empty exact and projection rows are removed inside one `VS8` durability batch.<br/>
     /// </summary>
     /// <param name="key">The exact string key to delete, or null for the null-key sentinel.</param>
     /// <param name="identity">The scalar identity to delete.</param>
@@ -465,6 +485,11 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
     private bool DeleteExactTuple(string? key, ulong identity)
     {
         ThrowIfDisposed();
+        if (TryClassifyStringKeyState(key, out NullKey keyState))
+        {
+            return exact.Session.DeleteScalar8KeyStateIdentity(exact.SlotIndex, ToKeyStateRoute(keyState), identity);
+        }
+
         using VarKeyScalar8Batch batch = exact.BeginBatch();
         if (!batch.DeleteExactTuple(Encode(key), identity))
         {
@@ -501,7 +526,8 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
     {
         return request.CriteriaKind switch
         {
-            LibraDexCriteriaKind.All => MaterializeExactTuplesInRange(FullLowerBound(), FullUpperBound(), keyFilter: null, textFilter: null, request.TakeLimit),
+            LibraDexCriteriaKind.All => MaterializeExactAllTuples(request.TakeLimit),
+            LibraDexCriteriaKind.KeyState => MaterializeExactKeyStateTuples(RequireNullKeyState(request.Values), request.TakeLimit),
             LibraDexCriteriaKind.Find => MaterializeExactTuplesInRange(
                 Encode(RequireString(request.Values, 0)),
                 Encode(RequireString(request.Values, 0)),
@@ -514,14 +540,114 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
                 keyFilter: null,
                 textFilter: null,
                 request.TakeLimit),
+            LibraDexCriteriaKind.Before when TryClassifyStringKeyState(RequireString(request.Values, 0), out NullKey beforeState) => MaterializeExactOrderedKeyStateTuples(beforeState, before: true, inclusive: false, request.TakeLimit),
             LibraDexCriteriaKind.Before => MaterializeExactTuplesBefore(Encode(RequireString(request.Values, 0)), inclusive: false, request.TakeLimit),
+            LibraDexCriteriaKind.AtOrBefore when TryClassifyStringKeyState(RequireString(request.Values, 0), out NullKey atOrBeforeState) => MaterializeExactOrderedKeyStateTuples(atOrBeforeState, before: true, inclusive: true, request.TakeLimit),
             LibraDexCriteriaKind.AtOrBefore => MaterializeExactTuplesBefore(Encode(RequireString(request.Values, 0)), inclusive: true, request.TakeLimit),
+            LibraDexCriteriaKind.After when TryClassifyStringKeyState(RequireString(request.Values, 0), out NullKey afterState) => MaterializeExactOrderedKeyStateTuples(afterState, before: false, inclusive: false, request.TakeLimit),
             LibraDexCriteriaKind.After => MaterializeExactTuplesAfter(Encode(RequireString(request.Values, 0)), inclusive: false, request.TakeLimit),
+            LibraDexCriteriaKind.AtOrAfter when TryClassifyStringKeyState(RequireString(request.Values, 0), out NullKey atOrAfterState) => MaterializeExactOrderedKeyStateTuples(atOrAfterState, before: false, inclusive: true, request.TakeLimit),
             LibraDexCriteriaKind.AtOrAfter => MaterializeExactTuplesAfter(Encode(RequireString(request.Values, 0)), inclusive: true, request.TakeLimit),
             LibraDexCriteriaKind.InSet => MaterializeExactMembershipTuples(request.Values, request.TakeLimit),
             LibraDexCriteriaKind.StringPattern => MaterializeExactStringPatternTuples(RequireStringPatternPredicate(request.Values), request.TakeLimit),
             _ => throw new NotSupportedException($"{request.CriteriaKind} string identity deletion is not connected to the string scalar facade yet.")
         };
+    }
+
+    /// <summary>
+    /// Captures every exact string tuple in key-state order: null route, empty route, then ordinary non-empty string router.<br/>
+    /// The route-backed tuples are materialized before normal var-key tuples so condition mutations observe the same index-natural order as identity reads.<br/>
+    /// </summary>
+    /// <param name="takeLimit">Optional tuple limit.</param>
+    /// <returns>The exact string tuples matched by the all-scan request.</returns>
+    private List<StringScalar8Tuple> MaterializeExactAllTuples(int? takeLimit)
+    {
+        List<StringScalar8Tuple> tuples = new();
+        tuples.AddRange(MaterializeExactKeyStateTuples(NullKey.Null, RemainingTake(takeLimit, tuples.Count)));
+        if (takeLimit is int limit && tuples.Count >= limit)
+        {
+            return tuples;
+        }
+
+        tuples.AddRange(MaterializeExactKeyStateTuples(NullKey.Empty, RemainingTake(takeLimit, tuples.Count)));
+        if (takeLimit is int limitAfterEmpty && tuples.Count >= limitAfterEmpty)
+        {
+            return tuples;
+        }
+
+        tuples.AddRange(MaterializeExactTuplesInRange(FullLowerBound(), FullUpperBound(), keyFilter: null, textFilter: null, RemainingTake(takeLimit, tuples.Count)));
+        return tuples;
+    }
+
+    /// <summary>
+    /// Captures exact string tuples from metadata-backed null and empty key-state routes.<br/>
+    /// `NullKey.NullOrEmpty` captures null first and then empty, matching all-scan route ordering.<br/>
+    /// </summary>
+    /// <param name="keyState">The key-state route selector.</param>
+    /// <param name="takeLimit">Optional tuple limit.</param>
+    /// <returns>The exact string tuples matched by the key-state request.</returns>
+    private List<StringScalar8Tuple> MaterializeExactKeyStateTuples(NullKey keyState, int? takeLimit)
+    {
+        List<StringScalar8Tuple> tuples = new();
+        if (keyState is NullKey.Null or NullKey.NullOrEmpty)
+        {
+            foreach (ulong identity in ReadStringKeyStateIdentities(NullKey.Null, takeLimit))
+            {
+                tuples.Add(new StringScalar8Tuple(null, identity));
+            }
+        }
+
+        if (takeLimit is int limit && tuples.Count >= limit)
+        {
+            return tuples;
+        }
+
+        if (keyState is NullKey.Empty or NullKey.NullOrEmpty)
+        {
+            foreach (ulong identity in ReadStringKeyStateIdentities(NullKey.Empty, RemainingTake(takeLimit, tuples.Count)))
+            {
+                tuples.Add(new StringScalar8Tuple(string.Empty, identity));
+            }
+        }
+
+        return tuples;
+    }
+
+    private List<StringScalar8Tuple> MaterializeExactOrderedKeyStateTuples(NullKey boundary, bool before, bool inclusive, int? takeLimit)
+    {
+        if (boundary == NullKey.Null)
+        {
+            if (before && inclusive)
+            {
+                return MaterializeExactKeyStateTuples(NullKey.Null, takeLimit);
+            }
+
+            return before
+                ? new List<StringScalar8Tuple>()
+                : inclusive
+                    ? MaterializeExactAllTuples(takeLimit)
+                    : MaterializeExactOrderedKeyStateTuples(NullKey.Empty, before: false, inclusive: true, takeLimit);
+        }
+
+        if (before)
+        {
+            List<StringScalar8Tuple> tuples = MaterializeExactKeyStateTuples(NullKey.Null, takeLimit);
+            if (inclusive)
+            {
+                tuples.AddRange(MaterializeExactKeyStateTuples(NullKey.Empty, RemainingTake(takeLimit, tuples.Count)));
+            }
+
+            return tuples;
+        }
+
+        if (inclusive)
+        {
+            List<StringScalar8Tuple> tuples = MaterializeExactKeyStateTuples(NullKey.Empty, takeLimit);
+            tuples.AddRange(MaterializeExactTuplesInRange(FullLowerBound(), FullUpperBound(), keyFilter: null, textFilter: null, RemainingTake(takeLimit, tuples.Count)));
+            return tuples;
+        }
+
+        return MaterializeExactTuplesInRange(FullLowerBound(), FullUpperBound(), keyFilter: null, textFilter: null, takeLimit);
     }
 
     /// <summary>
@@ -649,10 +775,20 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
     private List<StringScalar8Tuple> MaterializeExactStringPatternTuples(LibraDexStringPatternPredicate predicate, int? takeLimit)
     {
         List<StringScalar8Tuple> tuples = new();
+        if (predicate.Matches(string.Empty))
+        {
+            tuples.AddRange(MaterializeExactKeyStateTuples(NullKey.Empty, takeLimit));
+            if (takeLimit is int limit && tuples.Count >= limit)
+            {
+                return tuples;
+            }
+        }
+
         IReadOnlyList<(string Lower, string Upper)> candidateRanges = predicate.CreateCandidateRanges();
         if (candidateRanges.Count == 0)
         {
-            return MaterializeExactTuplesInRange(FullLowerBound(), FullUpperBound(), keyFilter: null, predicate.Matches, takeLimit);
+            tuples.AddRange(MaterializeExactTuplesInRange(FullLowerBound(), FullUpperBound(), keyFilter: null, predicate.Matches, RemainingTake(takeLimit, tuples.Count)));
+            return tuples;
         }
 
         foreach ((string lower, string upper) in candidateRanges)
@@ -737,19 +873,34 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         {
             case LibraDexCriteriaKind.All:
                 return IterateAll(index);
+            case LibraDexCriteriaKind.KeyState:
+                return IterateKeyState(index, RequireNullKeyState(request.Values), request.TakeLimit);
             case LibraDexCriteriaKind.Find:
                 string? key = transform(RequireString(request.Values, 0));
+                if (TryClassifyStringKeyState(key, out NullKey keyState))
+                {
+                    return IterateKeyState(index, keyState, request.TakeLimit);
+                }
+
                 return IterateRange(index, key, key, null);
             case LibraDexCriteriaKind.Between:
                 return IterateRange(index, transform(RequireString(request.Values, 0)), transform(RequireString(request.Values, 1)), request.TakeLimit);
             case LibraDexCriteriaKind.Before:
-                return IterateBefore(index, Encode(transform(RequireString(request.Values, 0))), inclusive: false, request.TakeLimit);
+                return TryCreateOrderedKeyStateIterator(index, transform(RequireString(request.Values, 0)), before: true, inclusive: false, request.TakeLimit, out IEnumerable<object>? beforeKeyState)
+                    ? beforeKeyState!
+                    : IterateBefore(index, Encode(transform(RequireString(request.Values, 0))), inclusive: false, request.TakeLimit);
             case LibraDexCriteriaKind.AtOrBefore:
-                return IterateBefore(index, Encode(transform(RequireString(request.Values, 0))), inclusive: true, request.TakeLimit);
+                return TryCreateOrderedKeyStateIterator(index, transform(RequireString(request.Values, 0)), before: true, inclusive: true, request.TakeLimit, out IEnumerable<object>? atOrBeforeKeyState)
+                    ? atOrBeforeKeyState!
+                    : IterateBefore(index, Encode(transform(RequireString(request.Values, 0))), inclusive: true, request.TakeLimit);
             case LibraDexCriteriaKind.After:
-                return IterateAfter(index, Encode(transform(RequireString(request.Values, 0))), inclusive: false, request.TakeLimit);
+                return TryCreateOrderedKeyStateIterator(index, transform(RequireString(request.Values, 0)), before: false, inclusive: false, request.TakeLimit, out IEnumerable<object>? afterKeyState)
+                    ? afterKeyState!
+                    : IterateAfter(index, Encode(transform(RequireString(request.Values, 0))), inclusive: false, request.TakeLimit);
             case LibraDexCriteriaKind.AtOrAfter:
-                return IterateAfter(index, Encode(transform(RequireString(request.Values, 0))), inclusive: true, request.TakeLimit);
+                return TryCreateOrderedKeyStateIterator(index, transform(RequireString(request.Values, 0)), before: false, inclusive: true, request.TakeLimit, out IEnumerable<object>? atOrAfterKeyState)
+                    ? atOrAfterKeyState!
+                    : IterateAfter(index, Encode(transform(RequireString(request.Values, 0))), inclusive: true, request.TakeLimit);
             case LibraDexCriteriaKind.InSet:
                 return IterateMembership(index, request.Values, transform, request.TakeLimit);
             case LibraDexCriteriaKind.StringPattern:
@@ -761,7 +912,136 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
 
     private static IEnumerable<object> IterateAll(VarKeyScalar8Index index)
     {
-        return IterateRange(index, FullLowerBound(), FullUpperBound(), null);
+        return IterateAll(index, null);
+    }
+
+    private static bool TryCreateOrderedKeyStateIterator(
+        VarKeyScalar8Index index,
+        string? boundary,
+        bool before,
+        bool inclusive,
+        int? takeLimit,
+        out IEnumerable<object>? identities)
+    {
+        if (!TryClassifyStringKeyState(boundary, out NullKey keyState))
+        {
+            identities = null;
+            return false;
+        }
+
+        identities = IterateOrderedKeyState(index, keyState, before, inclusive, takeLimit);
+        return true;
+    }
+
+    private static IEnumerable<object> IterateOrderedKeyState(
+        VarKeyScalar8Index index,
+        NullKey boundary,
+        bool before,
+        bool inclusive,
+        int? takeLimit)
+    {
+        if (boundary == NullKey.Null)
+        {
+            if (before && inclusive)
+            {
+                foreach (object identity in IterateKeyState(index, NullKey.Null, takeLimit))
+                {
+                    yield return identity;
+                }
+            }
+            else if (!before)
+            {
+                foreach (object identity in inclusive ? IterateAll(index, takeLimit) : IterateOrderedKeyState(index, NullKey.Empty, before: false, inclusive: true, takeLimit))
+                {
+                    yield return identity;
+                }
+            }
+
+            yield break;
+        }
+
+        if (before)
+        {
+            int returned = 0;
+            foreach (object identity in IterateKeyState(index, NullKey.Null, takeLimit))
+            {
+                yield return identity;
+                returned++;
+                if (takeLimit is not null && returned >= takeLimit.Value)
+                {
+                    yield break;
+                }
+            }
+
+            if (inclusive)
+            {
+                int? remaining = takeLimit is null ? null : takeLimit.Value - returned;
+                foreach (object identity in IterateKeyState(index, NullKey.Empty, remaining))
+                {
+                    yield return identity;
+                }
+            }
+
+            yield break;
+        }
+
+        if (inclusive)
+        {
+            int returned = 0;
+            foreach (object identity in IterateKeyState(index, NullKey.Empty, takeLimit))
+            {
+                yield return identity;
+                returned++;
+                if (takeLimit is not null && returned >= takeLimit.Value)
+                {
+                    yield break;
+                }
+            }
+
+            int? remaining = takeLimit is null ? null : takeLimit.Value - returned;
+            foreach (object identity in IterateRange(index, FullLowerBound(), FullUpperBound(), remaining))
+            {
+                yield return identity;
+            }
+
+            yield break;
+        }
+
+        foreach (object identity in IterateRange(index, FullLowerBound(), FullUpperBound(), takeLimit))
+        {
+            yield return identity;
+        }
+    }
+
+    private static IEnumerable<object> IterateAll(VarKeyScalar8Index index, int? takeLimit)
+    {
+        int returned = 0;
+        foreach (object identity in IterateKeyState(index, NullKey.Null, takeLimit))
+        {
+            yield return identity;
+            returned++;
+            if (takeLimit is not null && returned >= takeLimit.Value)
+            {
+                yield break;
+            }
+        }
+
+        int? remainingForEmpty = takeLimit is null ? null : takeLimit.Value - returned;
+        foreach (object identity in IterateKeyState(index, NullKey.Empty, remainingForEmpty))
+        {
+            yield return identity;
+            returned++;
+            if (takeLimit is not null && returned >= takeLimit.Value)
+            {
+                yield break;
+            }
+        }
+
+        int? remainingForNormal = takeLimit is null ? null : takeLimit.Value - returned;
+        foreach (object identity in IterateRange(index, FullLowerBound(), FullUpperBound(), remainingForNormal))
+        {
+            yield return identity;
+        }
     }
 
     private static IEnumerable<object> IterateRange(VarKeyScalar8Index index, string? lower, string? upper, int? takeLimit)
@@ -890,9 +1170,22 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
     {
         IReadOnlyList<(string Lower, string Upper)> candidateRanges = predicate.CreateCandidateRanges();
         int yielded = 0;
+        if (predicate.Matches(string.Empty))
+        {
+            foreach (object identity in IterateKeyState(index, NullKey.Empty, takeLimit))
+            {
+                yield return identity;
+                yielded++;
+                if (takeLimit is int limit && yielded >= limit)
+                {
+                    yield break;
+                }
+            }
+        }
+
         if (candidateRanges.Count == 0)
         {
-            foreach (object identity in IterateStringPatternRange(index, FullLowerBound(), FullUpperBound(), predicate, null))
+            foreach (object identity in IterateStringPatternRange(index, FullLowerBound(), FullUpperBound(), predicate, takeLimit.HasValue ? takeLimit.Value - yielded : null))
             {
                 yield return identity;
                 yielded++;
@@ -975,16 +1268,130 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
             : throw new InvalidOperationException("String pattern primitive requests require a string predicate operand.");
     }
 
+    private static NullKey RequireNullKeyState(IReadOnlyList<object?> values)
+    {
+        return values.Count > 0 && values[0] is NullKey state
+            ? state
+            : throw new InvalidOperationException("String key-state primitive requests require a NullKey operand.");
+    }
+
     private static string? RequireStringKey(object? value, string paramName)
     {
-        return value is null || value is string
-            ? (string?)value
-            : throw new ArgumentException("String indexes require string keys.", paramName);
+        return value switch
+        {
+            null or DBNull => null,
+            string text => text,
+            _ => throw new ArgumentException("String indexes require string keys.", paramName)
+        };
     }
 
     private static ulong RequireScalar8Identity(object value, string paramName)
     {
         return value is ulong typed ? typed : throw new ArgumentException("StringScalar8 indexes require UInt64 identities.", paramName);
+    }
+
+    /// <summary>
+    /// Inserts one scalar identity into this string index's null or empty key-state route.<br/>
+    /// The route stores encoded identities only, making null and empty string keys compact to count and enumerate before ordinary string values.<br/>
+    /// </summary>
+    /// <param name="keyState">The concrete string key state to write.</param>
+    /// <param name="identity">The scalar identity to associate with the key state.</param>
+    /// <returns>The insert result reported through the generic public result contract.</returns>
+    private LibraDexGenericInsertResult InsertStringKeyStateIdentity(NullKey keyState, ulong identity)
+    {
+        if (keyState == NullKey.NullOrEmpty)
+        {
+            throw new ArgumentOutOfRangeException(nameof(keyState), keyState, "NullKey.NullOrEmpty is a predicate state and cannot be inserted as one concrete key.");
+        }
+
+        bool inserted = exact.Session.InsertScalar8KeyStateIdentity(exact.SlotIndex, ToKeyStateRoute(keyState), identity);
+        return new LibraDexGenericInsertResult(inserted, false, default, default);
+    }
+
+    private static IEnumerable<object> IterateKeyState(VarKeyScalar8Index index, NullKey keyState, int? takeLimit)
+    {
+        if (keyState != NullKey.NullOrEmpty)
+        {
+            foreach (ulong identity in ReadStringKeyStateIdentities(index, keyState, takeLimit))
+            {
+                yield return identity;
+            }
+
+            yield break;
+        }
+
+        int returned = 0;
+        foreach (ulong identity in ReadStringKeyStateIdentities(index, NullKey.Null, takeLimit))
+        {
+            yield return identity;
+            returned++;
+            if (takeLimit is not null && returned >= takeLimit.Value)
+            {
+                yield break;
+            }
+        }
+
+        int? remaining = takeLimit is null ? null : takeLimit.Value - returned;
+        foreach (ulong identity in ReadStringKeyStateIdentities(index, NullKey.Empty, remaining))
+        {
+            yield return identity;
+        }
+    }
+
+    private IEnumerable<ulong> ReadStringKeyStateIdentities(NullKey keyState, int? takeLimit)
+    {
+        return ReadStringKeyStateIdentities(exact, keyState, takeLimit);
+    }
+
+    private static IEnumerable<ulong> ReadStringKeyStateIdentities(VarKeyScalar8Index index, NullKey keyState, int? takeLimit)
+    {
+        if (takeLimit is < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(takeLimit), takeLimit, "Take cannot be negative.");
+        }
+
+        if (takeLimit == 0)
+        {
+            yield break;
+        }
+
+        ulong[] identities = index.Session.ReadScalar8KeyStateIdentities(index.SlotIndex, ToKeyStateRoute(keyState));
+        for (int i = 0; i < identities.Length; i++)
+        {
+            yield return identities[i];
+            if (takeLimit is not null && i + 1 >= takeLimit.Value)
+            {
+                yield break;
+            }
+        }
+    }
+
+    private static bool TryClassifyStringKeyState(string? key, out NullKey keyState)
+    {
+        if (key is null)
+        {
+            keyState = NullKey.Null;
+            return true;
+        }
+
+        if (key.Length == 0)
+        {
+            keyState = NullKey.Empty;
+            return true;
+        }
+
+        keyState = default;
+        return false;
+    }
+
+    private static KeyStateRoute ToKeyStateRoute(NullKey keyState)
+    {
+        return keyState switch
+        {
+            NullKey.Null => KeyStateRoute.Null,
+            NullKey.Empty => KeyStateRoute.Empty,
+            _ => throw new ArgumentOutOfRangeException(nameof(keyState), keyState, "NullKey.NullOrEmpty is not a single physical route.")
+        };
     }
 
     private const byte StringNullMarker = 0x00;
