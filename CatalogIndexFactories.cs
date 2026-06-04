@@ -441,6 +441,30 @@ public sealed class CatalogIdentityGroupIndexes
     }
 
     /// <summary>
+    /// Starts a low-friction condition builder from a generic typed index instance and selects the index key type automatically.<br/>
+    /// This enables `catalog.Indexes["group"].Where(age).GreaterOrEqual(18)` for typed scalar handles while preserving the existing `.Where(index).As...` form when callers need a richer projection family.<br/>
+    /// </summary>
+    /// <typeparam name="TKey">The key type carried by the opened index handle.</typeparam>
+    /// <typeparam name="TIdentity">The identity type carried by the opened index handle.</typeparam>
+    /// <param name="index">The opened generic index instance to select.</param>
+    /// <returns>A typed operator for the selected index key type.</returns>
+    public LibraDexConditionOperator<TKey> Where<TKey, TIdentity>(LibraDexIndex<TKey, TIdentity> index)
+    {
+        return Where((IIndex)index).As<TKey>();
+    }
+
+    /// <summary>
+    /// Starts a low-friction condition builder from a string index facade and selects string operators automatically.<br/>
+    /// This enables `catalog.Indexes["group"].Where(name).StartsWith("A")` without requiring `.AsString` when the handle itself is already string-typed.<br/>
+    /// </summary>
+    /// <param name="index">The opened string index instance to select.</param>
+    /// <returns>String operators for the selected index.</returns>
+    public LibraDexStringConditionOperator Where(LibraDexStringScalar8Index index)
+    {
+        return Where((IIndex)index).AsString;
+    }
+
+    /// <summary>
     /// Gets a name-first builder for an index inside this identity group.<br/>
     /// </summary>
     /// <param name="name">The index name inside this identity group.</param>

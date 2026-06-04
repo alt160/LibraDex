@@ -81,3 +81,12 @@ No active complaints are currently listed.
    - Catalog identity groups now start condition syntax with `Where(indexName)` or `Where(indexInstance)`.
    - Multi-index continuation now supports `AndAlso(indexName)`, `AndAlso(indexInstance)`, `OrElse(indexName)`, and `OrElse(indexInstance)`.
    - Type-first named and handle selectors were removed from the group-level condition builder; ordered `MultiKey(...)` programmatic syntax now uses index-first ordinal selectors.
+
+8. [x] Catalog and MultiKey conditions needed a `.Not` operator and richer instance/programmatic selectors.
+
+   Resolution:
+
+   - Catalog/group selectors now support `.Not` before the value family, so both same-index and cross-index chains can express negative predicates without spelling the inverse method directly.
+   - Generic typed index handles now support `.Where(indexInstance).EqualTo(...)` / `.AndAlso(indexInstance).EqualTo(...)` / `.OrElse(indexInstance).EqualTo(...)` for base typed operators without repeating `.AsInt64`, `.AsBoolean`, and similar scalar-family selectors.
+   - Opened string index facades now support `.Where(stringIndex).StartsWith(...)` and typed string continuations without repeating `.AsString`.
+   - Ordered `MultiKey(...)` now supports `.Not` plus Boolean, date/time, TimeSpan, narrow/wide numeric, `char`, and `BigInteger` selector families, and also exposes name/handle `Where`, `AndAlso`, and `OrElse` bridges for mixed generated/manual condition assembly.

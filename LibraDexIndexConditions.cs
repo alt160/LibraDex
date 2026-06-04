@@ -728,6 +728,12 @@ public sealed class LibraDexMultiKeyValueTypeSelector
     }
 
     /// <summary>
+    /// Negates the next selected multi-key predicate over the current participant.<br/>
+    /// This mirrors catalog-group `.Where(...).Not.As...` syntax while preserving the ordered participant list for later `.AndAlso(ordinal)` and `.OrElse(ordinal)` continuations.<br/>
+    /// </summary>
+    public LibraDexMultiKeyValueTypeSelector Not => new(inner.Not, selectedIndex, orderedIndexes);
+
+    /// <summary>
     /// Selects string operators for the current ordered multi-key participant.<br/>
     /// The selected participant must be a string-keyed index; the check happens immediately so generated ordinal mistakes fail before materialization.<br/>
     /// </summary>
@@ -738,6 +744,12 @@ public sealed class LibraDexMultiKeyValueTypeSelector
     /// The selected participant must be a byte-array-keyed index.<br/>
     /// </summary>
     public LibraDexMultiKeyBinaryWhere AsBinary => new(inner.AsBinary, ValidateKeyType(typeof(byte[])));
+
+    /// <summary>
+    /// Selects Boolean operators for the current ordered multi-key participant.<br/>
+    /// The selected participant must be a Boolean-keyed index.<br/>
+    /// </summary>
+    public LibraDexMultiKeyScalarWhere<bool> AsBoolean => new(inner.AsBoolean, ValidateKeyType(typeof(bool)));
 
     /// <summary>
     /// Selects Guid operators for the current ordered multi-key participant.<br/>
@@ -752,16 +764,100 @@ public sealed class LibraDexMultiKeyValueTypeSelector
     public LibraDexMultiKeyDateWhere<DateTime> AsDate => new(inner.AsDate, ValidateKeyType(typeof(DateTime)));
 
     /// <summary>
+    /// Selects DateTimeOffset operators for the current ordered multi-key participant.<br/>
+    /// The selected participant must be a DateTimeOffset-keyed index.<br/>
+    /// </summary>
+    public LibraDexMultiKeyDateWhere<DateTimeOffset> AsDateTimeOffset => new(inner.AsDateTimeOffset, ValidateKeyType(typeof(DateTimeOffset)));
+
+    /// <summary>
+    /// Selects DateOnly operators for the current ordered multi-key participant.<br/>
+    /// The selected participant must be a DateOnly-keyed index.<br/>
+    /// </summary>
+    public LibraDexMultiKeyDateWhere<DateOnly> AsDateOnly => new(inner.AsDateOnly, ValidateKeyType(typeof(DateOnly)));
+
+    /// <summary>
+    /// Selects TimeOnly operators for the current ordered multi-key participant.<br/>
+    /// The selected participant must be a TimeOnly-keyed index.<br/>
+    /// </summary>
+    public LibraDexMultiKeyDateWhere<TimeOnly> AsTimeOnly => new(inner.AsTimeOnly, ValidateKeyType(typeof(TimeOnly)));
+
+    /// <summary>
+    /// Selects TimeSpan operators for the current ordered multi-key participant.<br/>
+    /// The selected participant must be a TimeSpan-keyed index.<br/>
+    /// </summary>
+    public LibraDexMultiKeyScalarWhere<TimeSpan> AsTimeSpan => new(inner.AsTimeSpan, ValidateKeyType(typeof(TimeSpan)));
+
+    /// <summary>
     /// Selects Int32 operators for the current ordered multi-key participant.<br/>
     /// The selected participant must be an Int32-keyed index.<br/>
     /// </summary>
     public LibraDexMultiKeyScalarWhere<int> AsInt32 => new(inner.AsInt32, ValidateKeyType(typeof(int)));
 
     /// <summary>
+    /// Selects Byte operators for the current ordered multi-key participant.<br/>
+    /// The selected participant must be a Byte-keyed index.<br/>
+    /// </summary>
+    public LibraDexMultiKeyScalarWhere<byte> AsByte => new(inner.AsByte, ValidateKeyType(typeof(byte)));
+
+    /// <summary>
+    /// Selects SByte operators for the current ordered multi-key participant.<br/>
+    /// The selected participant must be an SByte-keyed index.<br/>
+    /// </summary>
+    public LibraDexMultiKeyScalarWhere<sbyte> AsSByte => new(inner.AsSByte, ValidateKeyType(typeof(sbyte)));
+
+    /// <summary>
+    /// Selects Int16 operators for the current ordered multi-key participant.<br/>
+    /// The selected participant must be an Int16-keyed index.<br/>
+    /// </summary>
+    public LibraDexMultiKeyScalarWhere<short> AsInt16 => new(inner.AsInt16, ValidateKeyType(typeof(short)));
+
+    /// <summary>
+    /// Selects UInt16 operators for the current ordered multi-key participant.<br/>
+    /// The selected participant must be a UInt16-keyed index.<br/>
+    /// </summary>
+    public LibraDexMultiKeyScalarWhere<ushort> AsUInt16 => new(inner.AsUInt16, ValidateKeyType(typeof(ushort)));
+
+    /// <summary>
     /// Selects Int64 operators for the current ordered multi-key participant.<br/>
     /// The selected participant must be an Int64-keyed index.<br/>
     /// </summary>
     public LibraDexMultiKeyScalarWhere<long> AsInt64 => new(inner.AsInt64, ValidateKeyType(typeof(long)));
+
+    /// <summary>
+    /// Selects UInt32 operators for the current ordered multi-key participant.<br/>
+    /// The selected participant must be a UInt32-keyed index.<br/>
+    /// </summary>
+    public LibraDexMultiKeyScalarWhere<uint> AsUInt32 => new(inner.AsUInt32, ValidateKeyType(typeof(uint)));
+
+    /// <summary>
+    /// Selects UInt64 operators for the current ordered multi-key participant.<br/>
+    /// The selected participant must be a UInt64-keyed index.<br/>
+    /// </summary>
+    public LibraDexMultiKeyScalarWhere<ulong> AsUInt64 => new(inner.AsUInt64, ValidateKeyType(typeof(ulong)));
+
+    /// <summary>
+    /// Selects Int128 operators for the current ordered multi-key participant.<br/>
+    /// The selected participant must be an Int128-keyed index.<br/>
+    /// </summary>
+    public LibraDexMultiKeyScalarWhere<Int128> AsInt128 => new(inner.AsInt128, ValidateKeyType(typeof(Int128)));
+
+    /// <summary>
+    /// Selects UInt128 operators for the current ordered multi-key participant.<br/>
+    /// The selected participant must be a UInt128-keyed index.<br/>
+    /// </summary>
+    public LibraDexMultiKeyScalarWhere<UInt128> AsUInt128 => new(inner.AsUInt128, ValidateKeyType(typeof(UInt128)));
+
+    /// <summary>
+    /// Selects BigInteger operators for the current ordered multi-key participant.<br/>
+    /// The selected participant must be a BigInteger-keyed index.<br/>
+    /// </summary>
+    public LibraDexMultiKeyScalarWhere<System.Numerics.BigInteger> AsBigInteger => new(inner.AsBigInteger, ValidateKeyType(typeof(System.Numerics.BigInteger)));
+
+    /// <summary>
+    /// Selects Char operators for the current ordered multi-key participant.<br/>
+    /// The selected participant must be a Char-keyed index.<br/>
+    /// </summary>
+    public LibraDexMultiKeyScalarWhere<char> AsChar => new(inner.AsChar, ValidateKeyType(typeof(char)));
 
     private IIndex[] ValidateKeyType(Type expectedKeyType)
     {
@@ -815,6 +911,28 @@ public sealed class LibraDexMultiKeyContinuation
     }
 
     /// <summary>
+    /// Adds an identity-set intersection and selects the next participant by index name.<br/>
+    /// This keeps ordered `MultiKey(...)` chains compatible with generated code that sometimes switches from ordinal-selected participants to a known named index in the same identity group.<br/>
+    /// </summary>
+    /// <param name="indexName">The next index name inside the same identity group.</param>
+    /// <returns>A value-family selector for the selected participant.</returns>
+    public LibraDexConditionValueTypeSelector AndAlso(string indexName)
+    {
+        return continuation.AndAlso(indexName);
+    }
+
+    /// <summary>
+    /// Adds an identity-set intersection and selects the next participant from an opened index handle.<br/>
+    /// The handle is validated by the underlying group continuation, preserving the same group-safety checks as catalog conditions.<br/>
+    /// </summary>
+    /// <param name="index">The opened index instance to select for the next predicate.</param>
+    /// <returns>A value-family selector for the selected participant.</returns>
+    public LibraDexConditionValueTypeSelector AndAlso(IIndex index)
+    {
+        return continuation.AndAlso(index);
+    }
+
+    /// <summary>
     /// Adds an identity-set union and selects the next ordered multi-key participant by ordinal.<br/>
     /// Key typing and projection intent are chosen after the ordinal through members such as `.AsString`, `.AsGuid`, and `.AsInt64`.<br/>
     /// </summary>
@@ -823,6 +941,28 @@ public sealed class LibraDexMultiKeyContinuation
     public LibraDexMultiKeyValueTypeSelector OrElse(int ordinal)
     {
         return SelectOrdinal(continuation.OR, ordinal);
+    }
+
+    /// <summary>
+    /// Adds an identity-set union and selects the next participant by index name.<br/>
+    /// This mirrors catalog-group `.OrElse(indexName)` for mixed generated/manual condition assembly; callers that need later ordinal continuation should keep using ordinal selectors.<br/>
+    /// </summary>
+    /// <param name="indexName">The next index name inside the same identity group.</param>
+    /// <returns>A value-family selector for the selected participant.</returns>
+    public LibraDexConditionValueTypeSelector OrElse(string indexName)
+    {
+        return continuation.OrElse(indexName);
+    }
+
+    /// <summary>
+    /// Adds an identity-set union and selects the next participant from an opened index handle.<br/>
+    /// The handle is validated by the underlying group continuation, preserving the same group-safety checks as catalog conditions.<br/>
+    /// </summary>
+    /// <param name="index">The opened index instance to select for the next predicate.</param>
+    /// <returns>A value-family selector for the selected participant.</returns>
+    public LibraDexConditionValueTypeSelector OrElse(IIndex index)
+    {
+        return continuation.OrElse(index);
     }
 
     /// <summary>
@@ -874,9 +1014,21 @@ public sealed class LibraDexMultiKeyScalarWhere<TValue>
     public LibraDexMultiKeyContinuation EqualTo(TValue value) => LibraDexMultiKeyContinuation.From(inner.EqualTo(value), orderedIndexes);
 
     /// <summary>
+    /// Captures scalar null-state equality against the selected index.<br/>
+    /// This keeps ordered MultiKey scalar participants aligned with catalog and opened-index scalar-null routing through `ScalarNull.Null` and `ScalarNull.NonNull`.<br/>
+    /// </summary>
+    public LibraDexMultiKeyContinuation EqualTo(ScalarNull state) => LibraDexMultiKeyContinuation.From(inner.EqualTo(state), orderedIndexes);
+
+    /// <summary>
     /// Captures inequality against the selected index.<br/>
     /// </summary>
     public LibraDexMultiKeyContinuation NotEqualTo(TValue value) => LibraDexMultiKeyContinuation.From(inner.NotEqualTo(value), orderedIndexes);
+
+    /// <summary>
+    /// Captures scalar null-state inequality against the selected index.<br/>
+    /// Inequality maps to the opposite scalar null route, avoiding a caller-side complement or allocation-heavy sentinel collection.<br/>
+    /// </summary>
+    public LibraDexMultiKeyContinuation NotEqualTo(ScalarNull state) => LibraDexMultiKeyContinuation.From(inner.NotEqualTo(state), orderedIndexes);
 
     /// <summary>
     /// Captures a greater-than comparison against the selected index.<br/>
@@ -1384,6 +1536,34 @@ public sealed class LibraDexOrderedMultiKeyBuilder
     public LibraDexMultiKeyValueTypeSelector Where(int ordinal)
     {
         return SelectOrdinal(LibraDexCondition.ForGroup(group), ordinal);
+    }
+
+    /// <summary>
+    /// Starts a condition builder by selecting an index name inside the multi-key identity group.<br/>
+    /// This is useful when programmatic callers carry an ordered participant list for some branches but already know the logical index name for the first predicate.<br/>
+    /// </summary>
+    /// <param name="indexName">The index name inside this identity group.</param>
+    /// <returns>A value-family selector for the selected index.</returns>
+    public LibraDexConditionValueTypeSelector Where(string indexName)
+    {
+        return LibraDexCondition.ForGroup(group).Index(indexName);
+    }
+
+    /// <summary>
+    /// Starts a condition builder by selecting an opened index handle inside the multi-key identity group.<br/>
+    /// The handle is validated against the group captured by `MultiKey(...)` before the condition descriptor is created.<br/>
+    /// </summary>
+    /// <param name="index">The opened index instance to select.</param>
+    /// <returns>A value-family selector for the selected index.</returns>
+    public LibraDexConditionValueTypeSelector Where(IIndex index)
+    {
+        ArgumentNullException.ThrowIfNull(index);
+        if (!string.Equals(index.Group, group, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("The supplied index handle belongs to a different LibraDex identity group.");
+        }
+
+        return Where(index.Name);
     }
 
     private LibraDexMultiKeyValueTypeSelector SelectOrdinal(LibraDexConditionClause clause, int ordinal)

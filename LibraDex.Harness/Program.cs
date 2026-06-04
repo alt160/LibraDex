@@ -9488,7 +9488,16 @@ internal static class RawHarness
                 .Index("alias").AsString.InSet(new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "ERIC" })
                 .EndCondition;
             IReadOnlyList<ulong> catalogPolicyInSetIds = catalogPolicyInSetCondition.Materialize(policyDefaultIndex.ResolveIndex).IDs.ToList<ulong>();
-            if (catalogPolicyInSetIds.Count != 1 || catalogPolicyInSetIds[0] != 9001UL)
+            LibraDexConditionEndCondition stringHandleCondition = policyCatalog.Indexes["policy"]
+                .Where(policyDefaultIndex).StartsWith("Er")
+                .EndCondition;
+            IReadOnlyList<ulong> stringHandleIds = policyCatalog.Indexes["policy"].GetIdentities<ulong>(
+                stringHandleCondition,
+                deduplication: IdentityDeduplication.Preserve);
+            if (catalogPolicyInSetIds.Count != 1 ||
+                catalogPolicyInSetIds[0] != 9001UL ||
+                stringHandleIds.Count != 1 ||
+                stringHandleIds[0] != 9001UL)
             {
                 throw new InvalidDataException("Catalog-level string comparison policy did not flow into exact-only membership fallback.");
             }
@@ -11629,6 +11638,26 @@ internal static class RawHarness
         IReadOnlyList<long> handleMultiKeyIds = catalog.Indexes["surface"].GetIdentities<long>(
             handleMultiKeyCondition,
             deduplication: IdentityDeduplication.Preserve);
+        LibraDexConditionEndCondition typedHandleCondition = catalog.Indexes["surface"]
+            .Where(index).GreaterOrEqual(10L)
+            .AndAlso(index).LessOrEqual(11L)
+            .EndCondition;
+        IReadOnlyList<long> typedHandleIds = catalog.Indexes["surface"].GetIdentities<long>(
+            typedHandleCondition,
+            deduplication: IdentityDeduplication.Preserve);
+        LibraDexConditionEndCondition catalogNotCondition = catalog.Indexes["surface"]
+            .Where((IIndex)index).Not.AsInt64.EqualTo(11L)
+            .EndCondition;
+        IReadOnlyList<long> catalogNotIds = catalog.Indexes["surface"].GetIdentities<long>(
+            catalogNotCondition,
+            deduplication: IdentityDeduplication.Preserve);
+        LibraDexConditionEndCondition crossIndexNotCondition = catalog.Indexes["surface"]
+            .Where(index).GreaterOrEqual(10L)
+            .AndAlso(index).Not.EqualTo(12L)
+            .EndCondition;
+        IReadOnlyList<long> crossIndexNotIds = catalog.Indexes["surface"].GetIdentities<long>(
+            crossIndexNotCondition,
+            deduplication: IdentityDeduplication.Preserve);
         LibraDexConditionEndCondition orderedMultiKeyCondition = catalog.Indexes["surface"]
             .MultiKey((IIndex)index, (IIndex)index)
             .Where(0).AsInt64.GreaterOrEqual(10L)
@@ -11636,6 +11665,14 @@ internal static class RawHarness
             .EndCondition;
         IReadOnlyList<long> orderedMultiKeyIds = catalog.Indexes["surface"].GetIdentities<long>(
             orderedMultiKeyCondition,
+            deduplication: IdentityDeduplication.Preserve);
+        LibraDexConditionEndCondition orderedMultiKeyNotCondition = catalog.Indexes["surface"]
+            .MultiKey((IIndex)index, (IIndex)index)
+            .Where(0).AsInt64.GreaterOrEqual(10L)
+            .AndAlso(1).Not.AsInt64.EqualTo(12L)
+            .EndCondition;
+        IReadOnlyList<long> orderedMultiKeyNotIds = catalog.Indexes["surface"].GetIdentities<long>(
+            orderedMultiKeyNotCondition,
             deduplication: IdentityDeduplication.Preserve);
         if (rangeIds.Count != 3 ||
             rangeIds[0] != 1000 ||
@@ -11707,9 +11744,21 @@ internal static class RawHarness
             handleMultiKeyIds.Count != 2 ||
             handleMultiKeyIds[0] != 1000 ||
             handleMultiKeyIds[1] != 1100 ||
+            typedHandleIds.Count != 2 ||
+            typedHandleIds[0] != 1000 ||
+            typedHandleIds[1] != 1100 ||
+            catalogNotIds.Count != 2 ||
+            catalogNotIds[0] != 1000 ||
+            catalogNotIds[1] != 1200 ||
+            crossIndexNotIds.Count != 2 ||
+            crossIndexNotIds[0] != 1000 ||
+            crossIndexNotIds[1] != 1100 ||
             orderedMultiKeyIds.Count != 2 ||
             orderedMultiKeyIds[0] != 1000 ||
             orderedMultiKeyIds[1] != 1100 ||
+            orderedMultiKeyNotIds.Count != 2 ||
+            orderedMultiKeyNotIds[0] != 1000 ||
+            orderedMultiKeyNotIds[1] != 1100 ||
             preparedSet.KeyType != typeof(long) ||
             preparedSet.Values.Count != 2)
         {

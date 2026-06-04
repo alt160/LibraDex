@@ -8,6 +8,9 @@ Use this as the gating map before regenerating or refreshing `artifacts/filter-d
 - Opened index shorthand closes with `.EndCondition`.
 - Catalog group and ordered multi-key builders close with `.EndCondition`; terminal retrieval/mutation/delete APIs own any identity typing.
 - Opened index shorthand currently covers generic equality, inequality, ordered range, between, membership, `NullKey`, and `ScalarNull` equality/inequality. Rich string, binary pattern/slice, date component, bit, and composite predicates should use the raw descriptor or catalog/multi-key builders.
+- Catalog group selectors can negate the next leaf with `.Not` before the value family, for example `.Where("status").Not.AsString.EqualTo("archived")` or `.AndAlso((IIndex)flagIndex).Not.AsBoolean.EqualTo(true)`.
+- Generic typed index handles can skip `.As...` for base typed operators through `.Where(indexInstance)`, `.AndAlso(indexInstance)`, and `.OrElse(indexInstance)`. Dedicated string index handles can also skip `.AsString` for rich string operators such as `.StartsWith(...)`.
+- Ordered `MultiKey(...)` supports ordinal selectors for string, binary, Boolean, GUID, date/time, TimeSpan, narrow/wide numeric, `char`, and `BigInteger` key families, plus `.Not` before the selected value family.
 - Abraxas examples should use the inspected builder shape, such as `store.Where.PropPath(".Email").AsString.EqualTo(value).EndCondition`, with `.AND` / `.OR` / `.Group(...)` composition before the single final `.EndCondition`.
 - Abraxas whole binary equality and typed binary slices are available, but do not generate whole-blob `AsBinary.StartsWith`, `AsBinary.Contains`, or `AsBinary.EndsWith` examples unless those operators are added to Abraxas.
 

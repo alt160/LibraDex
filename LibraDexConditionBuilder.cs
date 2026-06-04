@@ -2795,128 +2795,147 @@ public sealed class LibraDexConditionValueTypeSelector
 {
     private readonly LibraDexConditionBuilder builder;
     private readonly LibraDexConditionIndexSelector indexSelector;
+    private readonly bool negate;
 
-    internal LibraDexConditionValueTypeSelector(LibraDexConditionBuilder builder, LibraDexConditionIndexSelector indexSelector)
+    internal LibraDexConditionValueTypeSelector(LibraDexConditionBuilder builder, LibraDexConditionIndexSelector indexSelector, bool negate = false)
     {
         ArgumentNullException.ThrowIfNull(indexSelector);
         this.builder = builder;
         this.indexSelector = indexSelector;
+        this.negate = negate;
+    }
+
+    /// <summary>
+    /// Negates the next selected value-family predicate over this index.<br/>
+    /// This is a descriptor-level convenience for cross-index and same-index catalog conditions, so `.Where("status").Not.AsString.EqualTo("archived")` records the same leaf as `.Where("status").AsString.NotEqualTo("archived")` where an inverse operator exists.<br/>
+    /// </summary>
+    public LibraDexConditionValueTypeSelector Not => new(builder, indexSelector, !negate);
+
+    /// <summary>
+    /// Selects operators from a known CLR key type supplied by a typed index handle.<br/>
+    /// This supports `.Where(indexInstance).EqualTo(value)` style call sites for generic scalar indexes while richer family-specific selectors such as `.AsString` remain available when string, binary, GUID, or date-only APIs are needed.<br/>
+    /// </summary>
+    /// <typeparam name="TValue">The CLR key type carried by the selected index handle.</typeparam>
+    /// <returns>A typed condition operator for the selected key type.</returns>
+    public LibraDexConditionOperator<TValue> As<TValue>()
+    {
+        return new LibraDexConditionOperator<TValue>(builder, indexSelector, ResolveValueKind(typeof(TValue)), negate);
     }
 
     /// <summary>
     /// Selects string operators for the current index.<br/>
     /// </summary>
-    public LibraDexStringConditionOperator AsString => new(builder, indexSelector);
+    public LibraDexStringConditionOperator AsString => new(builder, indexSelector, negate);
 
     /// <summary>
     /// Selects binary operators for the current index.<br/>
     /// </summary>
-    public LibraDexBinaryConditionOperator AsBinary => new(builder, indexSelector);
+    public LibraDexBinaryConditionOperator AsBinary => new(builder, indexSelector, negate);
 
     /// <summary>
     /// Selects Boolean operators for the current index.<br/>
     /// </summary>
-    public LibraDexConditionOperator<bool> AsBoolean => new(builder, indexSelector, LibraDexConditionValueKind.Boolean);
+    public LibraDexConditionOperator<bool> AsBoolean => new(builder, indexSelector, LibraDexConditionValueKind.Boolean, negate);
 
     /// <summary>
     /// Selects GUID operators for the current index.<br/>
     /// </summary>
-    public LibraDexGuidConditionOperator AsGuid => new(builder, indexSelector);
+    public LibraDexGuidConditionOperator AsGuid => new(builder, indexSelector, negate);
 
     /// <summary>
     /// Selects DateTime operators for the current index.<br/>
     /// </summary>
-    public LibraDexDateConditionOperator<DateTime> AsDate => new(builder, indexSelector, LibraDexConditionValueKind.DateTime);
+    public LibraDexDateConditionOperator<DateTime> AsDate => new(builder, indexSelector, LibraDexConditionValueKind.DateTime, negate);
 
     /// <summary>
     /// Selects DateTimeOffset operators for the current index.<br/>
     /// Full-value comparisons use the exact encoded date/time key, while structured date branches normalize through the same UTC packed format used by DateTimeOffset indexes.<br/>
     /// </summary>
-    public LibraDexDateConditionOperator<DateTimeOffset> AsDateTimeOffset => new(builder, indexSelector, LibraDexConditionValueKind.DateTime);
+    public LibraDexDateConditionOperator<DateTimeOffset> AsDateTimeOffset => new(builder, indexSelector, LibraDexConditionValueKind.DateTime, negate);
 
     /// <summary>
     /// Selects DateOnly operators for the current index.<br/>
     /// </summary>
-    public LibraDexDateConditionOperator<DateOnly> AsDateOnly => new(builder, indexSelector, LibraDexConditionValueKind.DateOnly);
+    public LibraDexDateConditionOperator<DateOnly> AsDateOnly => new(builder, indexSelector, LibraDexConditionValueKind.DateOnly, negate);
 
     /// <summary>
     /// Selects TimeOnly operators for the current index.<br/>
     /// </summary>
-    public LibraDexDateConditionOperator<TimeOnly> AsTimeOnly => new(builder, indexSelector, LibraDexConditionValueKind.TimeOnly);
+    public LibraDexDateConditionOperator<TimeOnly> AsTimeOnly => new(builder, indexSelector, LibraDexConditionValueKind.TimeOnly, negate);
 
     /// <summary>
     /// Selects TimeSpan operators for the current index.<br/>
     /// </summary>
-    public LibraDexConditionOperator<TimeSpan> AsTimeSpan => new(builder, indexSelector, LibraDexConditionValueKind.TimeSpan);
+    public LibraDexConditionOperator<TimeSpan> AsTimeSpan => new(builder, indexSelector, LibraDexConditionValueKind.TimeSpan, negate);
 
     /// <summary>
     /// Selects numeric operators for an Int32 key or projection.<br/>
     /// </summary>
-    public LibraDexNumericConditionOperator<int> AsInt32 => new(builder, indexSelector);
+    public LibraDexNumericConditionOperator<int> AsInt32 => new(builder, indexSelector, negate);
 
     /// <summary>
     /// Selects numeric operators for a Byte key or projection.<br/>
     /// Byte conditions collapse to the same ordered scalar primitive route as wider numeric keys while preserving the developer-facing operand type in the descriptor.<br/>
     /// </summary>
-    public LibraDexNumericConditionOperator<byte> AsByte => new(builder, indexSelector);
+    public LibraDexNumericConditionOperator<byte> AsByte => new(builder, indexSelector, negate);
 
     /// <summary>
     /// Selects numeric operators for an SByte key or projection.<br/>
     /// Signed byte conditions use the existing sortable signed-scalar encoding at execution time, so range and membership operators remain ordered without query-time conversion.<br/>
     /// </summary>
-    public LibraDexNumericConditionOperator<sbyte> AsSByte => new(builder, indexSelector);
+    public LibraDexNumericConditionOperator<sbyte> AsSByte => new(builder, indexSelector, negate);
 
     /// <summary>
     /// Selects numeric operators for an Int16 key or projection.<br/>
     /// The selector keeps copied/generated condition code strongly typed while materialization still resolves against the opened LibraDex index key contract.<br/>
     /// </summary>
-    public LibraDexNumericConditionOperator<short> AsInt16 => new(builder, indexSelector);
+    public LibraDexNumericConditionOperator<short> AsInt16 => new(builder, indexSelector, negate);
 
     /// <summary>
     /// Selects numeric operators for a UInt16 key or projection.<br/>
     /// UInt16 values route through the same exact, boundary, range, and membership bridge used by other scalar numeric keys.<br/>
     /// </summary>
-    public LibraDexNumericConditionOperator<ushort> AsUInt16 => new(builder, indexSelector);
+    public LibraDexNumericConditionOperator<ushort> AsUInt16 => new(builder, indexSelector, negate);
 
     /// <summary>
     /// Selects numeric operators for an Int64 key or projection.<br/>
     /// </summary>
-    public LibraDexNumericConditionOperator<long> AsInt64 => new(builder, indexSelector);
+    public LibraDexNumericConditionOperator<long> AsInt64 => new(builder, indexSelector, negate);
 
     /// <summary>
     /// Selects numeric operators for a UInt32 key or projection.<br/>
     /// This fills the common unsigned-width selector gap without adding a new primitive: materialization remains an ordered scalar condition leaf.<br/>
     /// </summary>
-    public LibraDexNumericConditionOperator<uint> AsUInt32 => new(builder, indexSelector);
+    public LibraDexNumericConditionOperator<uint> AsUInt32 => new(builder, indexSelector, negate);
 
     /// <summary>
     /// Selects numeric operators for a UInt64 key or projection.<br/>
     /// </summary>
-    public LibraDexNumericConditionOperator<ulong> AsUInt64 => new(builder, indexSelector);
+    public LibraDexNumericConditionOperator<ulong> AsUInt64 => new(builder, indexSelector, negate);
 
     /// <summary>
     /// Selects numeric operators for an Int128 key or projection.<br/>
     /// Int128 conditions use the same ordered primitive bridge as other scalar keys; the resolved index owns the signed fixed-16 sortable encoding.<br/>
     /// </summary>
-    public LibraDexNumericConditionOperator<Int128> AsInt128 => new(builder, indexSelector);
+    public LibraDexNumericConditionOperator<Int128> AsInt128 => new(builder, indexSelector, negate);
 
     /// <summary>
     /// Selects numeric operators for a UInt128 key or projection.<br/>
     /// UInt128 conditions use the same ordered primitive bridge as other scalar keys; the resolved index owns the unsigned fixed-16 big-endian encoding.<br/>
     /// </summary>
-    public LibraDexNumericConditionOperator<UInt128> AsUInt128 => new(builder, indexSelector);
+    public LibraDexNumericConditionOperator<UInt128> AsUInt128 => new(builder, indexSelector, negate);
 
     /// <summary>
     /// Selects numeric operators for a BigInteger key or projection.<br/>
     /// BigInteger conditions use the same ordered primitive condition shape as fixed-width scalar keys, while the resolved index owns the sortable BigInt byte encoding and max-width validation.<br/>
     /// </summary>
-    public LibraDexNumericConditionOperator<BigInteger> AsBigInteger => new(builder, indexSelector);
+    public LibraDexNumericConditionOperator<BigInteger> AsBigInteger => new(builder, indexSelector, negate);
 
     /// <summary>
     /// Selects scalar operators for a Char key or projection.<br/>
     /// Char keys are treated as ordered scalar code-unit values, matching the current generic scalar codec rather than text collation semantics.<br/>
     /// </summary>
-    public LibraDexConditionOperator<char> AsChar => new(builder, indexSelector, LibraDexConditionValueKind.Numeric);
+    public LibraDexConditionOperator<char> AsChar => new(builder, indexSelector, LibraDexConditionValueKind.Numeric, negate);
 
     /// <summary>
     /// Captures routed composite-key predicates for the current index.<br/>
@@ -2930,6 +2949,51 @@ public sealed class LibraDexConditionValueTypeSelector
     }
 
     internal LibraDexCompositeConditionWhere CompositeWhereRoot => new(builder, indexSelector);
+
+    private static LibraDexConditionValueKind ResolveValueKind(Type keyType)
+    {
+        if (keyType == typeof(string))
+        {
+            return LibraDexConditionValueKind.String;
+        }
+
+        if (keyType == typeof(byte[]))
+        {
+            return LibraDexConditionValueKind.Binary;
+        }
+
+        if (keyType == typeof(bool))
+        {
+            return LibraDexConditionValueKind.Boolean;
+        }
+
+        if (keyType == typeof(Guid))
+        {
+            return LibraDexConditionValueKind.Guid;
+        }
+
+        if (keyType == typeof(DateTime) || keyType == typeof(DateTimeOffset))
+        {
+            return LibraDexConditionValueKind.DateTime;
+        }
+
+        if (keyType == typeof(DateOnly))
+        {
+            return LibraDexConditionValueKind.DateOnly;
+        }
+
+        if (keyType == typeof(TimeOnly))
+        {
+            return LibraDexConditionValueKind.TimeOnly;
+        }
+
+        if (keyType == typeof(TimeSpan))
+        {
+            return LibraDexConditionValueKind.TimeSpan;
+        }
+
+        return LibraDexConditionValueKind.Numeric;
+    }
 }
 
 /// <summary>
@@ -4514,10 +4578,16 @@ public sealed class LibraDexCompositeScalarPartCondition<TValue>
 /// <typeparam name="TValue">The numeric operand value accepted by this operator chain.</typeparam>
 public sealed class LibraDexNumericConditionOperator<TValue> : LibraDexConditionOperator<TValue>
 {
-    internal LibraDexNumericConditionOperator(LibraDexConditionBuilder builder, LibraDexConditionIndexSelector indexSelector)
-        : base(builder, indexSelector, LibraDexConditionValueKind.Numeric)
+    internal LibraDexNumericConditionOperator(LibraDexConditionBuilder builder, LibraDexConditionIndexSelector indexSelector, bool negate = false)
+        : base(builder, indexSelector, LibraDexConditionValueKind.Numeric, negate)
     {
     }
+
+    /// <summary>
+    /// Negates the next numeric predicate over the selected index.<br/>
+    /// This preserves numeric-specific helpers such as bitmask predicates while letting typed-handle syntax use `.Not` without falling back to `.As...` selectors.<br/>
+    /// </summary>
+    public new LibraDexNumericConditionOperator<TValue> Not => new(Builder, IndexSelector, !IsNegated);
 
     /// <summary>
     /// Captures a bitwise-AND equality predicate over the selected numeric index.<br/>
@@ -4756,13 +4826,27 @@ public class LibraDexConditionOperator<TValue>
     private readonly LibraDexConditionBuilder builder;
     private readonly LibraDexConditionIndexSelector indexSelector;
     private readonly LibraDexConditionValueKind valueKind;
+    private readonly bool negate;
 
-    internal LibraDexConditionOperator(LibraDexConditionBuilder builder, LibraDexConditionIndexSelector indexSelector, LibraDexConditionValueKind valueKind)
+    internal LibraDexConditionOperator(LibraDexConditionBuilder builder, LibraDexConditionIndexSelector indexSelector, LibraDexConditionValueKind valueKind, bool negate = false)
     {
         this.builder = builder;
         this.indexSelector = indexSelector;
         this.valueKind = valueKind;
+        this.negate = negate;
     }
+
+    /// <summary>
+    /// Negates the next predicate over the selected typed index.<br/>
+    /// The negation maps to an existing inverse descriptor, such as `EqualTo` to `NotEqualTo`, rather than adding a separate execution tree node.<br/>
+    /// </summary>
+    public LibraDexConditionOperator<TValue> Not => new(builder, indexSelector, valueKind, !negate);
+
+    private protected LibraDexConditionBuilder Builder => builder;
+
+    private protected LibraDexConditionIndexSelector IndexSelector => indexSelector;
+
+    private protected bool IsNegated => negate;
 
     /// <summary>
     /// Captures all identities visible through the selected index.<br/>
@@ -4806,6 +4890,11 @@ public class LibraDexConditionOperator<TValue>
     /// <returns>A continuation for adding more clauses or ending the condition.</returns>
     public LibraDexConditionContinueOrEnd EqualTo(ScalarNull state)
     {
+        if (negate)
+        {
+            return Add(LibraDexConditionOperatorKind.ScalarNullState, LibraDexConditionOperand.Value(Opposite(state)));
+        }
+
         return Add(LibraDexConditionOperatorKind.ScalarNullState, LibraDexConditionOperand.Value(state));
     }
 
@@ -4841,12 +4930,7 @@ public class LibraDexConditionOperator<TValue>
     /// <returns>A continuation for adding more clauses or ending the condition.</returns>
     public LibraDexConditionContinueOrEnd NotEqualTo(ScalarNull state)
     {
-        ScalarNull opposite = state switch
-        {
-            ScalarNull.Null => ScalarNull.NonNull,
-            ScalarNull.NonNull => ScalarNull.Null,
-            _ => throw new ArgumentOutOfRangeException(nameof(state), state, "Unknown scalar null state.")
-        };
+        ScalarNull opposite = Opposite(state);
         return EqualTo(opposite);
     }
 
@@ -5234,10 +5318,61 @@ public class LibraDexConditionOperator<TValue>
         return builder.AddLeaf(new LibraDexConditionLeafDescriptor(
             indexSelector,
             valueKind,
-            operatorKind,
+            EffectiveOperator(operatorKind),
             operands,
             IgnoreCase: false,
             Culture: null));
+    }
+
+    protected LibraDexConditionOperatorKind EffectiveOperator(LibraDexConditionOperatorKind operatorKind)
+    {
+        return negate ? NegateOperator(operatorKind) : operatorKind;
+    }
+
+    internal static LibraDexConditionOperatorKind NegateOperator(LibraDexConditionOperatorKind operatorKind)
+    {
+        return operatorKind switch
+        {
+            LibraDexConditionOperatorKind.EqualTo => LibraDexConditionOperatorKind.NotEqualTo,
+            LibraDexConditionOperatorKind.NotEqualTo => LibraDexConditionOperatorKind.EqualTo,
+            LibraDexConditionOperatorKind.GreaterThan => LibraDexConditionOperatorKind.LessOrEqual,
+            LibraDexConditionOperatorKind.GreaterOrEqual => LibraDexConditionOperatorKind.LessThan,
+            LibraDexConditionOperatorKind.LessThan => LibraDexConditionOperatorKind.GreaterOrEqual,
+            LibraDexConditionOperatorKind.LessOrEqual => LibraDexConditionOperatorKind.GreaterThan,
+            LibraDexConditionOperatorKind.Between => LibraDexConditionOperatorKind.NotBetween,
+            LibraDexConditionOperatorKind.NotBetween => LibraDexConditionOperatorKind.Between,
+            LibraDexConditionOperatorKind.InSet => LibraDexConditionOperatorKind.NotInSet,
+            LibraDexConditionOperatorKind.NotInSet => LibraDexConditionOperatorKind.InSet,
+            LibraDexConditionOperatorKind.MatchesWith => LibraDexConditionOperatorKind.NotMatchesWith,
+            LibraDexConditionOperatorKind.NotMatchesWith => LibraDexConditionOperatorKind.MatchesWith,
+            LibraDexConditionOperatorKind.MatchesInSet => LibraDexConditionOperatorKind.NotMatchesInSet,
+            LibraDexConditionOperatorKind.NotMatchesInSet => LibraDexConditionOperatorKind.MatchesInSet,
+            LibraDexConditionOperatorKind.YearEqualTo => LibraDexConditionOperatorKind.YearNotEqualTo,
+            LibraDexConditionOperatorKind.YearNotEqualTo => LibraDexConditionOperatorKind.YearEqualTo,
+            LibraDexConditionOperatorKind.YearIn => LibraDexConditionOperatorKind.YearNotIn,
+            LibraDexConditionOperatorKind.YearNotIn => LibraDexConditionOperatorKind.YearIn,
+            LibraDexConditionOperatorKind.YearRange => LibraDexConditionOperatorKind.YearNotRange,
+            LibraDexConditionOperatorKind.YearNotRange => LibraDexConditionOperatorKind.YearRange,
+            LibraDexConditionOperatorKind.MonthIn => LibraDexConditionOperatorKind.MonthNotIn,
+            LibraDexConditionOperatorKind.MonthNotIn => LibraDexConditionOperatorKind.MonthIn,
+            LibraDexConditionOperatorKind.MonthRange => LibraDexConditionOperatorKind.MonthNotRange,
+            LibraDexConditionOperatorKind.MonthNotRange => LibraDexConditionOperatorKind.MonthRange,
+            LibraDexConditionOperatorKind.DayRange => LibraDexConditionOperatorKind.DayNotRange,
+            LibraDexConditionOperatorKind.DayNotRange => LibraDexConditionOperatorKind.DayRange,
+            LibraDexConditionOperatorKind.BitAndEqualTo => LibraDexConditionOperatorKind.BitAndNotEqualTo,
+            LibraDexConditionOperatorKind.BitAndNotEqualTo => LibraDexConditionOperatorKind.BitAndEqualTo,
+            _ => throw new NotSupportedException($"Condition-builder negation is not supported for operator {operatorKind}.")
+        };
+    }
+
+    private static ScalarNull Opposite(ScalarNull state)
+    {
+        return state switch
+        {
+            ScalarNull.Null => ScalarNull.NonNull,
+            ScalarNull.NonNull => ScalarNull.Null,
+            _ => throw new ArgumentOutOfRangeException(nameof(state), state, "Unknown scalar null state.")
+        };
     }
 
     private static object CaptureMembershipInput(IEnumerable<TValue> values)
@@ -5258,12 +5393,18 @@ public sealed class LibraDexStringConditionOperator : LibraDexConditionOperator<
     private readonly LibraDexConditionBuilder builder;
     private readonly LibraDexConditionIndexSelector indexSelector;
 
-    internal LibraDexStringConditionOperator(LibraDexConditionBuilder builder, LibraDexConditionIndexSelector indexSelector)
-        : base(builder, indexSelector, LibraDexConditionValueKind.String)
+    internal LibraDexStringConditionOperator(LibraDexConditionBuilder builder, LibraDexConditionIndexSelector indexSelector, bool negate = false)
+        : base(builder, indexSelector, LibraDexConditionValueKind.String, negate)
     {
         this.builder = builder;
         this.indexSelector = indexSelector;
     }
+
+    /// <summary>
+    /// Negates the next string predicate over the selected index.<br/>
+    /// This preserves string-specific operators while mapping supported predicates to their inverse descriptor, such as `EqualTo` to `NotEqualTo` and regex capture membership to negated capture membership.<br/>
+    /// </summary>
+    public new LibraDexStringConditionOperator Not => new(builder, indexSelector, !IsNegated);
 
     /// <summary>
     /// Captures a string equality condition with optional case-insensitive projection intent.<br/>
@@ -5976,7 +6117,7 @@ public sealed class LibraDexStringConditionOperator : LibraDexConditionOperator<
         return builder.AddLeaf(new LibraDexConditionLeafDescriptor(
             indexSelector,
             LibraDexConditionValueKind.String,
-            operatorKind,
+            EffectiveOperator(operatorKind),
             operands,
             ignoreCase,
             culture,
@@ -6021,13 +6162,19 @@ public sealed class LibraDexDateConditionOperator<TValue> : LibraDexConditionOpe
     private readonly LibraDexConditionIndexSelector indexSelector;
     private readonly LibraDexConditionValueKind valueKind;
 
-    internal LibraDexDateConditionOperator(LibraDexConditionBuilder builder, LibraDexConditionIndexSelector indexSelector, LibraDexConditionValueKind valueKind)
-        : base(builder, indexSelector, valueKind)
+    internal LibraDexDateConditionOperator(LibraDexConditionBuilder builder, LibraDexConditionIndexSelector indexSelector, LibraDexConditionValueKind valueKind, bool negate = false)
+        : base(builder, indexSelector, valueKind, negate)
     {
         this.builder = builder;
         this.indexSelector = indexSelector;
         this.valueKind = valueKind;
     }
+
+    /// <summary>
+    /// Negates the next date/time predicate over the selected index.<br/>
+    /// This preserves structured date helpers while mapping supported exact, range, and component predicates to their existing inverse descriptors.<br/>
+    /// </summary>
+    public new LibraDexDateConditionOperator<TValue> Not => new(builder, indexSelector, valueKind, !IsNegated);
 
     /// <summary>
     /// Captures a structured year-part condition.<br/>
@@ -6553,7 +6700,7 @@ public sealed class LibraDexDateConditionOperator<TValue> : LibraDexConditionOpe
         return builder.AddLeaf(new LibraDexConditionLeafDescriptor(
             indexSelector,
             valueKind,
-            operatorKind,
+            EffectiveOperator(operatorKind),
             values.Select(static value => LibraDexConditionOperand.Value(value)).ToArray(),
             IgnoreCase: false,
             Culture: null));
@@ -6584,7 +6731,7 @@ public sealed class LibraDexDateConditionOperator<TValue> : LibraDexConditionOpe
         return builder.AddLeaf(new LibraDexConditionLeafDescriptor(
             indexSelector,
             valueKind,
-            operatorKind,
+            EffectiveOperator(operatorKind),
             new[] { LibraDexConditionOperand.Value(value) },
             IgnoreCase: false,
             Culture: null));
@@ -6599,12 +6746,18 @@ public sealed class LibraDexBinaryConditionOperator : LibraDexConditionOperator<
     private readonly LibraDexConditionBuilder builder;
     private readonly LibraDexConditionIndexSelector indexSelector;
 
-    internal LibraDexBinaryConditionOperator(LibraDexConditionBuilder builder, LibraDexConditionIndexSelector indexSelector)
-        : base(builder, indexSelector, LibraDexConditionValueKind.Binary)
+    internal LibraDexBinaryConditionOperator(LibraDexConditionBuilder builder, LibraDexConditionIndexSelector indexSelector, bool negate = false)
+        : base(builder, indexSelector, LibraDexConditionValueKind.Binary, negate)
     {
         this.builder = builder;
         this.indexSelector = indexSelector;
     }
+
+    /// <summary>
+    /// Negates the next binary predicate over the selected index.<br/>
+    /// Exact equality, inequality, membership, and supported range-like descriptors map to their inverse operators; unsupported pattern negation fails when the predicate is captured.<br/>
+    /// </summary>
+    public new LibraDexBinaryConditionOperator Not => new(builder, indexSelector, !IsNegated);
 
     /// <summary>
     /// Captures binary equality against an explicit null or empty key state.<br/>
@@ -7113,7 +7266,7 @@ public sealed class LibraDexBinaryConditionOperator : LibraDexConditionOperator<
         return builder.AddLeaf(new LibraDexConditionLeafDescriptor(
             indexSelector,
             LibraDexConditionValueKind.Binary,
-            operatorKind,
+            EffectiveOperator(operatorKind),
             new[] { LibraDexConditionOperand.Value((byte[])value.Clone()) },
             IgnoreCase: false,
             Culture: null));
@@ -7124,7 +7277,7 @@ public sealed class LibraDexBinaryConditionOperator : LibraDexConditionOperator<
         return builder.AddLeaf(new LibraDexConditionLeafDescriptor(
             indexSelector,
             LibraDexConditionValueKind.Binary,
-            operatorKind,
+            EffectiveOperator(operatorKind),
             new[] { LibraDexConditionOperand.Value(predicate) },
             IgnoreCase: false,
             Culture: null));
@@ -7440,12 +7593,18 @@ public sealed class LibraDexGuidConditionOperator : LibraDexConditionOperator<Gu
     private readonly LibraDexConditionBuilder builder;
     private readonly LibraDexConditionIndexSelector indexSelector;
 
-    internal LibraDexGuidConditionOperator(LibraDexConditionBuilder builder, LibraDexConditionIndexSelector indexSelector)
-        : base(builder, indexSelector, LibraDexConditionValueKind.Guid)
+    internal LibraDexGuidConditionOperator(LibraDexConditionBuilder builder, LibraDexConditionIndexSelector indexSelector, bool negate = false)
+        : base(builder, indexSelector, LibraDexConditionValueKind.Guid, negate)
     {
         this.builder = builder;
         this.indexSelector = indexSelector;
     }
+
+    /// <summary>
+    /// Negates the next GUID predicate over the selected index.<br/>
+    /// Exact equality and inequality map to inverse GUID descriptors; unsupported GUID pattern negation fails when the predicate is captured.<br/>
+    /// </summary>
+    public new LibraDexGuidConditionOperator Not => new(builder, indexSelector, !IsNegated);
 
     /// <summary>
     /// Captures a GUID text or segment starts-with condition.<br/>
@@ -7585,7 +7744,7 @@ public sealed class LibraDexGuidConditionOperator : LibraDexConditionOperator<Gu
         return builder.AddLeaf(new LibraDexConditionLeafDescriptor(
             indexSelector,
             LibraDexConditionValueKind.Guid,
-            operatorKind,
+            EffectiveOperator(operatorKind),
             new[] { LibraDexConditionOperand.Value(predicate) },
             IgnoreCase: false,
             Culture: null));
@@ -7642,6 +7801,30 @@ public sealed class LibraDexConditionContinueOrEnd
     }
 
     /// <summary>
+    /// Adds an identity-set intersection from a generic typed index instance and selects the index key type automatically.<br/>
+    /// This supports cross-index chains such as `.Where(age).GreaterOrEqual(18).AndAlso(status).EqualTo(1)` without repeating `.AsInt32` when the index handle already carries the key type.<br/>
+    /// </summary>
+    /// <typeparam name="TKey">The key type carried by the opened index handle.</typeparam>
+    /// <typeparam name="TIdentity">The identity type carried by the opened index handle.</typeparam>
+    /// <param name="index">The opened generic index instance to select for the next condition leaf.</param>
+    /// <returns>A typed operator for the selected index key type.</returns>
+    public LibraDexConditionOperator<TKey> AndAlso<TKey, TIdentity>(LibraDexIndex<TKey, TIdentity> index)
+    {
+        return AndAlso((IIndex)index).As<TKey>();
+    }
+
+    /// <summary>
+    /// Adds an identity-set intersection from a string index facade and selects string operators automatically.<br/>
+    /// This keeps `.AndAlso(name).StartsWith("A")` available when the continuation receives an opened string index handle.<br/>
+    /// </summary>
+    /// <param name="index">The opened string index instance to select for the next condition leaf.</param>
+    /// <returns>String operators for the selected index.</returns>
+    public LibraDexStringConditionOperator AndAlso(LibraDexStringScalar8Index index)
+    {
+        return AndAlso((IIndex)index).AsString;
+    }
+
+    /// <summary>
     /// Adds a union operator and starts the next clause.<br/>
     /// </summary>
     public LibraDexConditionClause OR
@@ -7675,6 +7858,30 @@ public sealed class LibraDexConditionContinueOrEnd
     public LibraDexConditionValueTypeSelector OrElse(IIndex index)
     {
         return OR.Index(ValidateIndex(index).Name);
+    }
+
+    /// <summary>
+    /// Adds an identity-set union from a generic typed index instance and selects the index key type automatically.<br/>
+    /// This supports cross-index chains such as `.Where(priority).GreaterOrEqual(3).OrElse(status).EqualTo(1)` without repeating `.AsInt32` when the index handle already carries the key type.<br/>
+    /// </summary>
+    /// <typeparam name="TKey">The key type carried by the opened index handle.</typeparam>
+    /// <typeparam name="TIdentity">The identity type carried by the opened index handle.</typeparam>
+    /// <param name="index">The opened generic index instance to select for the next condition leaf.</param>
+    /// <returns>A typed operator for the selected index key type.</returns>
+    public LibraDexConditionOperator<TKey> OrElse<TKey, TIdentity>(LibraDexIndex<TKey, TIdentity> index)
+    {
+        return OrElse((IIndex)index).As<TKey>();
+    }
+
+    /// <summary>
+    /// Adds an identity-set union from a string index facade and selects string operators automatically.<br/>
+    /// This keeps `.OrElse(name).StartsWith("A")` available when the continuation receives an opened string index handle.<br/>
+    /// </summary>
+    /// <param name="index">The opened string index instance to select for the next condition leaf.</param>
+    /// <returns>String operators for the selected index.</returns>
+    public LibraDexStringConditionOperator OrElse(LibraDexStringScalar8Index index)
+    {
+        return OrElse((IIndex)index).AsString;
     }
 
     /// <summary>
