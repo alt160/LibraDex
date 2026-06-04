@@ -8355,10 +8355,13 @@ internal sealed class LibraDexConditionNode
 
         foreach (object? item in enumerable)
         {
-            object? membershipValue = descriptor.ValueKind == LibraDexConditionValueKind.String
-                ? item
-                : RequireNonNullMembershipValue(item, descriptor);
-            _ = ValidateConditionLeafValue(index, LibraDexCriteriaKind.Find, membershipValue);
+            if (TryGetNullKeyState(new[] { item }, 0, out _) &&
+                descriptor.ValueKind is LibraDexConditionValueKind.String or LibraDexConditionValueKind.Binary)
+            {
+                continue;
+            }
+
+            _ = ValidateConditionLeafValue(index, LibraDexCriteriaKind.Find, RequireNonNullMembershipValue(item, descriptor));
         }
 
         return LibraDexIdentityCriterion.Leaf(index, LibraDexCriteriaKind.InSet, CreateConditionDiagnostics(LibraDexCriteriaKind.InSet), source);

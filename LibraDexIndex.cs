@@ -645,16 +645,32 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
         ArgumentNullException.ThrowIfNull(keys);
         if (keys is ISet<object> objectSet)
         {
-            foreach (object key in objectSet)
+            foreach (object? key in objectSet)
             {
-                _ = RequireObjectKey(key, nameof(keys));
+                if (!TryClassifyNullKeyRouteKey(key, out _))
+                {
+                    _ = RequireObjectKey(key!, nameof(keys));
+                }
             }
 
             IEqualityComparer<object>? comparer = objectSet is HashSet<object> hashSet ? hashSet.Comparer : null;
             return new LibraDexPreparedObjectSet(typeof(TKey), values: null, objectSet, comparer);
         }
 
-        object[] values = keys.Select(key => (object)RequireObjectKey(key, nameof(keys))!).ToArray();
+        object[] values = keys.Select(key =>
+        {
+            if (TryClassifyNullKeyRouteKey(key, out NullKey keyState))
+            {
+                return keyState switch
+                {
+                    NullKey.Null => null!,
+                    NullKey.Empty => Array.Empty<byte>(),
+                    _ => keyState
+                };
+            }
+
+            return (object)RequireObjectKey(key, nameof(keys))!;
+        }).ToArray();
         return new LibraDexPreparedObjectSet(typeof(TKey), values);
     }
 
@@ -1095,27 +1111,33 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     {
         if (values.Count > 1)
         {
-            return DeleteMembershipIdentityPrimitive(values.Select(RequireNonNullMembershipValue));
+            return DeleteMembershipIdentityPrimitive(values);
         }
 
         object value = RequireCriterionValue(values, 0);
-        IEnumerable<object> keys = value switch
+        IEnumerable<object?> keys = value switch
         {
             LibraDexPreparedObjectSet prepared => prepared.Source,
-            IEnumerable<object> objectValues => objectValues,
-            System.Collections.IEnumerable enumerable => enumerable.Cast<object>(),
+            IEnumerable<object> objectValues => objectValues.Cast<object?>(),
+            System.Collections.IEnumerable enumerable => enumerable.Cast<object?>(),
             _ => throw new InvalidOperationException("Membership identity deletion requires an enumerable key value or prepared set.")
         };
 
         return DeleteMembershipIdentityPrimitive(keys);
     }
 
-    private long DeleteMembershipIdentityPrimitive(IEnumerable<object> keys)
+    private long DeleteMembershipIdentityPrimitive(IEnumerable<object?> keys)
     {
         long deleted = 0;
-        foreach (object keyValue in keys)
+        foreach (object? keyValue in keys)
         {
-            TKey key = RequireObjectKey(keyValue, nameof(keys));
+            if (TryClassifyNullKeyRouteKey(keyValue, out NullKey keyState))
+            {
+                deleted += DeleteNullKeyIdentityPrimitive(new object?[] { keyState });
+                continue;
+            }
+
+            TKey key = RequireObjectKey(keyValue!, nameof(keys));
             deleted += DeleteIdentityPrimitiveRange(key, key);
         }
 
@@ -3167,6 +3189,9 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
 
         switch (key)
         {
+            case NullKey state:
+                keyState = state;
+                return true;
             case null:
             case DBNull:
                 keyState = NullKey.Null;
@@ -3216,22 +3241,22 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     {
         if (values.Count > 1)
         {
-            return MaterializeMembershipIdentityObjects(values.Select(RequireNonNullMembershipValue), takeLimit);
+            return MaterializeMembershipIdentityObjects(values, takeLimit);
         }
 
         object value = RequireCriterionValue(values, 0);
-        IEnumerable<object> keys = value switch
+        IEnumerable<object?> keys = value switch
         {
             LibraDexPreparedObjectSet prepared => prepared.Source,
-            IEnumerable<object> objectValues => objectValues,
-            System.Collections.IEnumerable enumerable => enumerable.Cast<object>(),
+            IEnumerable<object> objectValues => objectValues.Cast<object?>(),
+            System.Collections.IEnumerable enumerable => enumerable.Cast<object?>(),
             _ => throw new InvalidOperationException("Membership identity execution requires an enumerable key value or prepared set.")
         };
 
         return MaterializeMembershipIdentityObjects(keys, takeLimit);
     }
 
-    private IReadOnlyList<object> MaterializeMembershipIdentityObjects(IEnumerable<object> keys, int? takeLimit = null)
+    private IReadOnlyList<object> MaterializeMembershipIdentityObjects(IEnumerable<object?> keys, int? takeLimit = null)
     {
         return IterateMembershipIdentityObjects(keys, takeLimit).ToList();
     }
@@ -3240,15 +3265,15 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     {
         if (values.Count > 1)
         {
-            return MaterializeMembershipTupleObjects(values.Select(RequireNonNullMembershipValue));
+            return MaterializeMembershipTupleObjects(values);
         }
 
         object value = RequireCriterionValue(values, 0);
-        IEnumerable<object> keys = value switch
+        IEnumerable<object?> keys = value switch
         {
             LibraDexPreparedObjectSet prepared => prepared.Source,
-            IEnumerable<object> objectValues => objectValues,
-            System.Collections.IEnumerable enumerable => enumerable.Cast<object>(),
+            IEnumerable<object> objectValues => objectValues.Cast<object?>(),
+            System.Collections.IEnumerable enumerable => enumerable.Cast<object?>(),
             _ => throw new InvalidOperationException("Membership tuple execution requires an enumerable key value or prepared set.")
         };
 
@@ -3261,14 +3286,20 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     /// </summary>
     /// <param name="keys">The membership keys to read.</param>
     /// <returns>The matching key/identity tuples.</returns>
-    private IReadOnlyList<LibraDexObjectTuple> MaterializeMembershipTupleObjects(IEnumerable<object> keys)
+    private IReadOnlyList<LibraDexObjectTuple> MaterializeMembershipTupleObjects(IEnumerable<object?> keys)
     {
         List<LibraDexObjectTuple> tuples = new();
-        foreach (object keyValue in keys)
+        foreach (object? keyValue in keys)
         {
+            if (TryClassifyNullKeyRouteKey(keyValue, out NullKey keyState))
+            {
+                tuples.AddRange(MaterializeNullKeyTupleObjects(new object?[] { keyState }));
+                continue;
+            }
+
             using LibraDexRangeReader<TKey, TIdentity> reader = OpenRangeReader(
-                RequireObjectKey(keyValue, nameof(keys)),
-                RequireObjectKey(keyValue, nameof(keys)));
+                RequireObjectKey(keyValue!, nameof(keys)),
+                RequireObjectKey(keyValue!, nameof(keys)));
             while (reader.TryReadNext(out TKey key, out TIdentity identity))
             {
                 tuples.Add(new LibraDexObjectTuple(key!, identity!));
@@ -3290,15 +3321,15 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     {
         if (values.Count > 1)
         {
-            return IterateMembershipIdentityObjects(values.Select(RequireNonNullMembershipValue), takeLimit);
+            return IterateMembershipIdentityObjects(values, takeLimit);
         }
 
         object value = RequireCriterionValue(values, 0);
-        IEnumerable<object> keys = value switch
+        IEnumerable<object?> keys = value switch
         {
             LibraDexPreparedObjectSet prepared => prepared.Source,
-            IEnumerable<object> objectValues => objectValues,
-            System.Collections.IEnumerable enumerable => enumerable.Cast<object>(),
+            IEnumerable<object> objectValues => objectValues.Cast<object?>(),
+            System.Collections.IEnumerable enumerable => enumerable.Cast<object?>(),
             _ => throw new InvalidOperationException("Membership identity iteration requires an enumerable key value or prepared set.")
         };
 
@@ -3313,7 +3344,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     /// <param name="keys">The membership keys to read.</param>
     /// <param name="takeLimit">The optional maximum number of identities to yield across all keys.</param>
     /// <returns>A forward-only identity sequence.</returns>
-    private IEnumerable<object> IterateMembershipIdentityObjects(IEnumerable<object> keys, int? takeLimit = null)
+    private IEnumerable<object> IterateMembershipIdentityObjects(IEnumerable<object?> keys, int? takeLimit = null)
     {
         if (takeLimit is < 0)
         {
@@ -3326,11 +3357,26 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
         }
 
         int returned = 0;
-        foreach (object keyValue in keys)
+        foreach (object? keyValue in keys)
         {
+            if (TryClassifyNullKeyRouteKey(keyValue, out NullKey keyState))
+            {
+                foreach (object identity in IterateNullKeyIdentityObjects(new object?[] { keyState }, takeLimit.HasValue ? takeLimit.Value - returned : null))
+                {
+                    yield return identity;
+                    returned++;
+                    if (takeLimit is not null && returned >= takeLimit.Value)
+                    {
+                        yield break;
+                    }
+                }
+
+                continue;
+            }
+
             using LibraDexRangeReader<TKey, TIdentity> reader = OpenRangeReader(
-                RequireObjectKey(keyValue, nameof(keys)),
-                RequireObjectKey(keyValue, nameof(keys)));
+                RequireObjectKey(keyValue!, nameof(keys)),
+                RequireObjectKey(keyValue!, nameof(keys)));
             while (reader.TryReadNextIdentity(out TIdentity identity))
             {
                 yield return identity!;
@@ -3412,29 +3458,35 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     {
         if (values.Count > 1)
         {
-            return CountMembershipIdentityObjects(values.Select(RequireNonNullMembershipValue));
+            return CountMembershipIdentityObjects(values);
         }
 
         object value = RequireCriterionValue(values, 0);
-        IEnumerable<object> keys = value switch
+        IEnumerable<object?> keys = value switch
         {
             LibraDexPreparedObjectSet prepared => prepared.Source,
-            IEnumerable<object> objectValues => objectValues,
-            System.Collections.IEnumerable enumerable => enumerable.Cast<object>(),
+            IEnumerable<object> objectValues => objectValues.Cast<object?>(),
+            System.Collections.IEnumerable enumerable => enumerable.Cast<object?>(),
             _ => throw new InvalidOperationException("Membership identity count requires an enumerable key value or prepared set.")
         };
 
         return CountMembershipIdentityObjects(keys);
     }
 
-    private long CountMembershipIdentityObjects(IEnumerable<object> keys)
+    private long CountMembershipIdentityObjects(IEnumerable<object?> keys)
     {
         long count = 0;
-        foreach (object keyValue in keys)
+        foreach (object? keyValue in keys)
         {
+            if (TryClassifyNullKeyRouteKey(keyValue, out NullKey keyState))
+            {
+                count += CountNullKeyIdentityObjects(new object?[] { keyState });
+                continue;
+            }
+
             using LibraDexRangeReader<TKey, TIdentity> reader = OpenRangeReader(
-                RequireObjectKey(keyValue, nameof(keys)),
-                RequireObjectKey(keyValue, nameof(keys)));
+                RequireObjectKey(keyValue!, nameof(keys)),
+                RequireObjectKey(keyValue!, nameof(keys)));
             count += reader.Count;
         }
 

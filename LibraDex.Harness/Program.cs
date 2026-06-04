@@ -12342,6 +12342,96 @@ internal static class RawHarness
                 throw new InvalidDataException("Binary NullKey condition SetKey did not move identities through null and empty routes.");
             }
 
+            LibraDexStringScalar8Index stringMembershipIndex = catalog.Indexes["routes"]["codeMembership"].String.Create(stringKeys: StringKeys.Exact);
+            ValidateGenericInsert(stringMembershipIndex.Insert(null, 941UL), "string key-state membership null insert");
+            ValidateGenericInsert(stringMembershipIndex.Insert(string.Empty, 942UL), "string key-state membership empty insert");
+            ValidateGenericInsert(stringMembershipIndex.Insert("A", 943UL), "string key-state membership normal A insert");
+            ValidateGenericInsert(stringMembershipIndex.Insert("B", 944UL), "string key-state membership normal B insert");
+            Func<string, IIndex> stringMembershipResolver = indexName => string.Equals(indexName, "codeMembership", StringComparison.Ordinal)
+                ? stringMembershipIndex
+                : throw new KeyNotFoundException(indexName);
+            IReadOnlyList<ulong> stringMembershipIds = LibraDexCondition
+                .ForGroup("routes")
+                .Index("codeMembership").AsString.InSet(new[] { null!, string.Empty, "B" })
+                .EndCondition
+                .ToList<ulong>(stringMembershipResolver, deduplication: IdentityDeduplication.Preserve);
+            IReadOnlyList<ulong> stringNotMembershipIds = LibraDexCondition
+                .ForGroup("routes")
+                .Index("codeMembership").AsString.NotInSet(new[] { null!, string.Empty, "B" })
+                .EndCondition
+                .ToList<ulong>(stringMembershipResolver, deduplication: IdentityDeduplication.Preserve);
+            LibraDexIdentityMutationResult stringMembershipDelete = LibraDexCondition
+                .ForGroup("routes")
+                .Index("codeMembership").AsString.InSet(new[] { string.Empty, "B" })
+                .EndCondition
+                .Delete(stringMembershipResolver);
+            LibraDexIdentityMutationResult stringMembershipSetKey = LibraDexCondition
+                .ForGroup("routes")
+                .Index("codeMembership").AsString.InSet(new[] { null!, "A" })
+                .EndCondition
+                .SetKey(stringMembershipResolver, string.Empty);
+            IReadOnlyList<ulong> stringMembershipEmptyIds = LibraDexCondition
+                .ForGroup("routes")
+                .Index("codeMembership").AsString.EqualTo(NullKey.Empty)
+                .EndCondition
+                .ToList<ulong>(stringMembershipResolver, deduplication: IdentityDeduplication.Preserve);
+            if (!stringMembershipIds.SequenceEqual(new[] { 941UL, 942UL, 944UL }) ||
+                !stringNotMembershipIds.SequenceEqual(new[] { 943UL }) ||
+                stringMembershipDelete.ChangedCount != 2 ||
+                stringMembershipSetKey.ChangedCount != 2 ||
+                !stringMembershipEmptyIds.SequenceEqual(new[] { 941UL, 943UL }))
+            {
+                throw new InvalidDataException("String NullKey membership, NotInSet, delete, or SetKey did not route null and empty members correctly.");
+            }
+
+            LibraDexIndex<byte[], long> binaryMembershipIndex = catalog.Indexes["routes"]["fingerprintMembership"].Blob.Scalar<long>(LibraDexScalarWidth.Bytes32).Create();
+            byte[] binaryMembershipA = Convert.FromHexString("300102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F");
+            byte[] binaryMembershipB = Convert.FromHexString("400102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F");
+            ValidateGenericInsert(binaryMembershipIndex.Insert(NullKey.Null, 951L), "binary key-state membership null insert");
+            ValidateGenericInsert(binaryMembershipIndex.Insert(NullKey.Empty, 952L), "binary key-state membership empty insert");
+            ValidateGenericInsert(binaryMembershipIndex.Insert(binaryMembershipA, 953L), "binary key-state membership normal A insert");
+            ValidateGenericInsert(binaryMembershipIndex.Insert(binaryMembershipB, 954L), "binary key-state membership normal B insert");
+            Func<string, IIndex> binaryMembershipResolver = indexName => string.Equals(indexName, "fingerprintMembership", StringComparison.Ordinal)
+                ? binaryMembershipIndex
+                : throw new KeyNotFoundException(indexName);
+            IReadOnlyList<long> binaryMembershipIds = LibraDexCondition
+                .ForGroup("routes")
+                .Index("fingerprintMembership").AsBinary.InSet(new byte[][] { null!, Array.Empty<byte>(), binaryMembershipB })
+                .EndCondition
+                .ToList<long>(binaryMembershipResolver, deduplication: IdentityDeduplication.Preserve);
+            IReadOnlyList<long> binaryNotMembershipIds = LibraDexCondition
+                .ForGroup("routes")
+                .Index("fingerprintMembership").AsBinary.NotInSet(new byte[][] { null!, Array.Empty<byte>(), binaryMembershipB })
+                .EndCondition
+                .ToList<long>(binaryMembershipResolver, deduplication: IdentityDeduplication.Preserve);
+            LibraDexPreparedObjectSet binaryPreparedMembership = ((IIndex)binaryMembershipIndex).PrepareInSet(new object[] { null!, Array.Empty<byte>(), binaryMembershipB });
+            IReadOnlyList<object> binaryPreparedIds = ((IIdentityPrimitiveExecutor)binaryMembershipIndex).ExecuteIdentityPrimitive(
+                new LibraDexIdentityPrimitiveRequest(LibraDexCriteriaKind.InSet, new object?[] { binaryPreparedMembership }));
+            LibraDexIdentityMutationResult binaryMembershipDelete = LibraDexCondition
+                .ForGroup("routes")
+                .Index("fingerprintMembership").AsBinary.InSet(new byte[][] { Array.Empty<byte>(), binaryMembershipB })
+                .EndCondition
+                .Delete(binaryMembershipResolver);
+            LibraDexIdentityMutationResult binaryMembershipSetKey = LibraDexCondition
+                .ForGroup("routes")
+                .Index("fingerprintMembership").AsBinary.InSet(new byte[][] { null!, binaryMembershipA })
+                .EndCondition
+                .SetKey(binaryMembershipResolver, Array.Empty<byte>());
+            IReadOnlyList<long> binaryMembershipEmptyIds = LibraDexCondition
+                .ForGroup("routes")
+                .Index("fingerprintMembership").AsBinary.EqualTo(NullKey.Empty)
+                .EndCondition
+                .ToList<long>(binaryMembershipResolver, deduplication: IdentityDeduplication.Preserve);
+            if (!binaryMembershipIds.SequenceEqual(new[] { 951L, 952L, 954L }) ||
+                !binaryNotMembershipIds.SequenceEqual(new[] { 953L }) ||
+                !binaryPreparedIds.Cast<long>().SequenceEqual(new[] { 951L, 952L, 954L }) ||
+                binaryMembershipDelete.ChangedCount != 2 ||
+                binaryMembershipSetKey.ChangedCount != 2 ||
+                !binaryMembershipEmptyIds.SequenceEqual(new[] { 951L, 953L }))
+            {
+                throw new InvalidDataException("Binary NullKey membership, prepared membership, NotInSet, delete, or SetKey did not route null and empty members correctly.");
+            }
+
             _ = scalar16Index;
             if (!catalog.Session.InsertScalar16KeyStateIdentity(scalar16SlotIndex, KeyStateRoute.Null, scalar16NullAHigh, scalar16NullALow) ||
                 !catalog.Session.InsertScalar16KeyStateIdentity(scalar16SlotIndex, KeyStateRoute.Null, scalar16NullBHigh, scalar16NullBLow) ||

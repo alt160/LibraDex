@@ -754,7 +754,15 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
                     throw new InvalidOperationException("String membership primitive requires string values.");
                 }
 
-                tuples.AddRange(MaterializeExactTuplesInRange(Encode(key), Encode(key), keyFilter: null, textFilter: null, RemainingTake(takeLimit, tuples.Count)));
+                if (TryClassifyStringKeyState(key, out NullKey keyState))
+                {
+                    tuples.AddRange(MaterializeExactKeyStateTuples(keyState, RemainingTake(takeLimit, tuples.Count)));
+                }
+                else
+                {
+                    tuples.AddRange(MaterializeExactTuplesInRange(Encode(key), Encode(key), keyFilter: null, textFilter: null, RemainingTake(takeLimit, tuples.Count)));
+                }
+
                 if (takeLimit is int limit && tuples.Count >= limit)
                 {
                     return tuples;
@@ -1145,7 +1153,10 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
                 }
 
                 key = transform(key);
-                foreach (object identity in IterateRange(index, key, key, null))
+                IEnumerable<object> identities = TryClassifyStringKeyState(key, out NullKey keyState)
+                    ? IterateKeyState(index, keyState, takeLimit.HasValue ? takeLimit.Value - yielded : null)
+                    : IterateRange(index, key, key, null);
+                foreach (object identity in identities)
                 {
                     yield return identity;
                     yielded++;
