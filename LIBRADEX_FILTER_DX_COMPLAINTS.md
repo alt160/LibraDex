@@ -8,7 +8,15 @@ No active complaints are currently listed.
 
 ## Resolved
 
-1. [x] Corpus appeared to overuse `.AsString` for numeric/domain rows.
+1. [x] Regenerate LibraDex corpus examples and scores after the condition-builder changes.
+
+   Resolution:
+
+   - Recreated stale LibraDex examples around `.AsBoolean`, `NullKey`, `ScalarNull`, binary null/empty key state, case/culture string options, and index-first catalog syntax.
+   - Rescored rows against current API support: direct boolean/null examples are now 5s, while the remaining 3s are true modeling-policy rows for absent tuples or whitespace normalization.
+   - Updated `artifacts/filter-dx-corpus-regeneration-capabilities.md` so future rebuilds do not preserve old boolean or nullable-scalar assumptions.
+
+2. [x] Corpus appeared to overuse `.AsString` for numeric/domain rows.
 
    Resolution:
 
@@ -18,7 +26,7 @@ No active complaints are currently listed.
    - Composite typed-part rows now type each part independently instead of using string/string placeholders: F388, F390, F393, F401, F404, F409, F618, F620, and F635.
    - F436, F519, and F520 now use numeric versions/buckets instead of string membership/ranges.
 
-2. [x] Public string condition operators needed consistent optional case/culture parameters.
+3. [x] Public string condition operators needed consistent optional case/culture parameters.
 
    Resolution:
 
@@ -28,7 +36,7 @@ No active complaints are currently listed.
    - Ordered multikey `.AsString` wrappers forward the same options.
    - Opened composite named string-part and full-key string operators preserve the same options for their public string predicates.
 
-3. [x] Captured-match string operators needed a real capture grammar.
+4. [x] Captured-match string operators needed a real capture grammar.
 
    Resolution:
 
@@ -38,14 +46,14 @@ No active complaints are currently listed.
    - Routed the family through executable string-pattern predicates rather than whole-key wildcard aliases.
    - Added harness proof rows for whole-match comparison, numbered capture comparison, capture membership, and negation.
 
-4. [x] Public `.MatchesPattern(...)` examples were too verbose.
+5. [x] Public `.MatchesPattern(...)` examples were too verbose.
 
    Resolution:
 
    - Added `.Matches(...)` short aliases for string, Guid, binary hex, multikey, and composite string/full-key pattern surfaces.
    - Updated the filter-DX corpus and harness examples to advertise `.Matches(...)`.
 
-5. [x] Null/empty key condition DX needed explicit enum overloads and low-allocation aliases.
+6. [x] Null/empty key condition DX needed explicit enum overloads and low-allocation aliases.
 
    Resolution:
 
@@ -54,7 +62,7 @@ No active complaints are currently listed.
    - Routed string `.EqualTo(null)` / `.NotEqualTo(null)` to `NullKey.Null`, and empty string to `NullKey.Empty`.
    - F026 now shows `NullKey.Null` for stored string null.
 
-6. [x] F001 catalog-group string-field syntax was type-first instead of index-first.
+7. [x] F001 catalog-group string-field syntax was type-first instead of index-first.
 
    Complaint:
 
