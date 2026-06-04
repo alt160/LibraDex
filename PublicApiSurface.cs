@@ -2203,7 +2203,7 @@ public interface IIndex
     /// <param name="key">The runtime key side of the tuple to delete.</param>
     /// <param name="identity">The runtime identity side of the tuple to delete.</param>
     /// <returns><see langword="true"/> when one tuple was removed.</returns>
-    bool Delete(object key, object identity)
+    bool Delete(object? key, object identity)
     {
         throw new NotSupportedException($"Index '{Name}' does not expose non-generic exact tuple deletion.");
     }

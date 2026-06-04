@@ -382,9 +382,14 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
         return Insert(RequireObjectKey(key, nameof(key)), RequireObjectIdentity(identity, nameof(identity)));
     }
 
-    bool IIndex.Delete(object key, object identity)
+    bool IIndex.Delete(object? key, object identity)
     {
         ThrowIfDisposed();
+        if (key is null || key == DBNull.Value)
+        {
+            return DeleteScalarNullIdentity(RequireObjectIdentity(identity, nameof(identity)));
+        }
+
         return DeleteExactTuple(RequireObjectKey(key, nameof(key)), RequireObjectIdentity(identity, nameof(identity)));
     }
 
@@ -763,7 +768,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
         ThrowIfDisposed();
         long deleted = request.CriteriaKind switch
         {
-            LibraDexCriteriaKind.All => DeleteIdentityPrimitiveRange(GetLowerFullKeyBound(), GetUpperFullKeyBound()),
+            LibraDexCriteriaKind.All => DeleteAllIdentityPrimitive(),
             LibraDexCriteriaKind.Find => DeleteIdentityPrimitiveRange(
                 RequireObjectKey(RequireCriterionValue(request.Values, 0), nameof(request.Values)),
                 RequireObjectKey(RequireCriterionValue(request.Values, 0), nameof(request.Values))),
@@ -776,6 +781,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
             LibraDexCriteriaKind.AtOrAfter => DeleteIdentityPrimitiveRange(RequireObjectKey(RequireCriterionValue(request.Values, 0), nameof(request.Values)), GetUpperFullKeyBound()),
             LibraDexCriteriaKind.In or LibraDexCriteriaKind.InSet => DeleteMembershipIdentityPrimitive(request.Values),
             LibraDexCriteriaKind.MultiRange => DeleteMultiRangeIdentityPrimitive(request.Values),
+            LibraDexCriteriaKind.ScalarNull => DeleteScalarNullIdentityPrimitive(request.Values),
             _ => throw new NotSupportedException($"{request.CriteriaKind} identity deletion is not connected to physical mutation yet.")
         };
 
@@ -835,6 +841,23 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
             : 0;
     }
 
+    /// <summary>
+    /// Deletes every identity visible through this index's all-scan contract.<br/>
+    /// Scalar null-route identities are removed before ordinary value-route tuples so mutation semantics match null-first enumeration.<br/>
+    /// </summary>
+    /// <returns>The number of deleted identities or tuples.</returns>
+    private long DeleteAllIdentityPrimitive()
+    {
+        long deleted = 0;
+        if (SupportsScalarNullKeyRoute())
+        {
+            deleted += DeleteScalarNullRouteIdentities();
+        }
+
+        deleted += DeleteIdentityPrimitiveRange(GetLowerFullKeyBound(), GetUpperFullKeyBound());
+        return deleted;
+    }
+
     private long DeleteAfterIdentityPrimitive(TKey key)
     {
         return TryGetNextKey(key, out TKey lowerKey)
@@ -889,6 +912,20 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
         }
 
         return deleted;
+    }
+
+    /// <summary>
+    /// Deletes identities selected by a scalar-null condition primitive.<br/>
+    /// `ScalarNull.Null` clears the null route, while `ScalarNull.NonNull` deletes ordinary value-route tuples only.<br/>
+    /// </summary>
+    /// <param name="values">The condition primitive operands; operand zero must be <see cref="ScalarNull"/>.</param>
+    /// <returns>The number of deleted identities or tuples.</returns>
+    private long DeleteScalarNullIdentityPrimitive(IReadOnlyList<object?> values)
+    {
+        ScalarNull state = RequireScalarNullState(values);
+        return state == ScalarNull.Null
+            ? DeleteScalarNullRouteIdentities()
+            : DeleteIdentityPrimitiveRange(GetLowerFullKeyBound(), GetUpperFullKeyBound());
     }
 
     private long DeleteIdentityPrimitiveRange(TKey lowerKey, TKey upperKey)
@@ -1333,6 +1370,24 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     {
         ThrowIfDisposed();
         _ = DeleteExactTuple(key, identity);
+    }
+
+    /// <summary>
+    /// Deletes one identity from this scalar index's metadata-backed null-key route.<br/>
+    /// This is the typed exact-delete counterpart to <see cref="Insert(ScalarNull, TIdentity)"/> and targets the identity-keyed route directly.<br/>
+    /// </summary>
+    /// <param name="keyState">The scalar key state to delete; only <see cref="ScalarNull.Null"/> is accepted.</param>
+    /// <param name="identity">The typed identity value to remove from the null route.</param>
+    /// <returns><see langword="true"/> when the identity was removed.</returns>
+    public bool Delete(ScalarNull keyState, TIdentity identity)
+    {
+        ThrowIfDisposed();
+        if (keyState != ScalarNull.Null)
+        {
+            throw new ArgumentOutOfRangeException(nameof(keyState), keyState, "Only ScalarNull.Null is a concrete scalar key state for deletion.");
+        }
+
+        return DeleteScalarNullIdentity(identity);
     }
 
     /// <summary>
@@ -2043,6 +2098,86 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
         }
 
         return session.InsertScalar16KeyStateIdentity(SlotIndex, KeyStateRoute.Null, identityHigh, identityLow);
+    }
+
+    /// <summary>
+    /// Deletes one identity from this index's scalar null route.<br/>
+    /// The route is keyed by encoded identity, so exact null-key deletion avoids scanning ordinary value shelves.<br/>
+    /// </summary>
+    /// <param name="identity">The public identity value to remove from the scalar null key state.</param>
+    /// <returns><see langword="true"/> when the identity was removed.</returns>
+    private bool DeleteScalarNullIdentity(TIdentity identity)
+    {
+        EnsureScalarNullKeyRouteSupported();
+        return shape switch
+        {
+            LibraDexGenericScalarShape.SS88 or
+            LibraDexGenericScalarShape.SS168 or
+            LibraDexGenericScalarShape.FS328 => session.DeleteScalar8KeyStateIdentity(
+                SlotIndex,
+                KeyStateRoute.Null,
+                LibraDexGenericScalarCodec<TIdentity>.Encode8(identity)),
+            LibraDexGenericScalarShape.SS816 or
+            LibraDexGenericScalarShape.SS1616 or
+            LibraDexGenericScalarShape.FS3216 => DeleteScalar16NullRouteIdentity(identity),
+            _ => throw new NotSupportedException($"Scalar null route deletes do not support resolved shape {shape}.")
+        };
+    }
+
+    private bool DeleteScalar16NullRouteIdentity(TIdentity identity)
+    {
+        LibraDexGenericScalarCodec<TIdentity>.Encode16(identity, out ulong identityHigh, out ulong identityLow);
+        return session.DeleteScalar16KeyStateIdentity(SlotIndex, KeyStateRoute.Null, identityHigh, identityLow);
+    }
+
+    /// <summary>
+    /// Deletes every identity currently present on the scalar null route.<br/>
+    /// The snapshot is taken before mutation so the current inline route can be compacted after each exact delete without invalidating enumeration state.<br/>
+    /// </summary>
+    /// <returns>The number of removed identities.</returns>
+    private long DeleteScalarNullRouteIdentities()
+    {
+        EnsureScalarNullKeyRouteSupported();
+        return shape switch
+        {
+            LibraDexGenericScalarShape.SS88 or
+            LibraDexGenericScalarShape.SS168 or
+            LibraDexGenericScalarShape.FS328 => DeleteScalar8NullRouteIdentities(),
+            LibraDexGenericScalarShape.SS816 or
+            LibraDexGenericScalarShape.SS1616 or
+            LibraDexGenericScalarShape.FS3216 => DeleteScalar16NullRouteIdentities(),
+            _ => throw new NotSupportedException($"Scalar null route deletes do not support resolved shape {shape}.")
+        };
+    }
+
+    private long DeleteScalar8NullRouteIdentities()
+    {
+        ulong[] encodedIdentities = session.ReadScalar8KeyStateIdentities(SlotIndex, KeyStateRoute.Null);
+        long deleted = 0;
+        for (int i = 0; i < encodedIdentities.Length; i++)
+        {
+            if (session.DeleteScalar8KeyStateIdentity(SlotIndex, KeyStateRoute.Null, encodedIdentities[i]))
+            {
+                deleted++;
+            }
+        }
+
+        return deleted;
+    }
+
+    private long DeleteScalar16NullRouteIdentities()
+    {
+        (ulong[] highs, ulong[] lows) = session.ReadScalar16KeyStateIdentities(SlotIndex, KeyStateRoute.Null);
+        long deleted = 0;
+        for (int i = 0; i < highs.Length; i++)
+        {
+            if (session.DeleteScalar16KeyStateIdentity(SlotIndex, KeyStateRoute.Null, highs[i], lows[i]))
+            {
+                deleted++;
+            }
+        }
+
+        return deleted;
     }
 
     /// <summary>

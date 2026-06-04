@@ -12016,6 +12016,16 @@ internal static class RawHarness
                 throw new InvalidDataException("Public scalar-null insert paths did not report expected insert/no-op results.");
             }
 
+            if (!index.Insert(ScalarNull.Null, 555L).Inserted ||
+                !index.Delete(ScalarNull.Null, 555L) ||
+                index.Delete(ScalarNull.Null, 555L) ||
+                !((IIndex)index).Insert(null, 555L).Inserted ||
+                !((IIndex)index).Delete(null, 555L) ||
+                ((IIndex)index).Delete(null, 555L))
+            {
+                throw new InvalidDataException("Public scalar-null exact delete paths did not report expected delete/no-op results.");
+            }
+
             IndexDirectorySlotSnapshot updatedSlot = FindSlot(catalog, slotIndex);
             if (!catalog.Session.TryReadKeyRouteOffsets(updatedSlot, out KeyRouteOffsets updatedOffsets) ||
                 updatedOffsets.Null <= 0 ||
@@ -12058,6 +12068,41 @@ internal static class RawHarness
                 !scalarNullCondition.Exists(routeResolver, deduplication: IdentityDeduplication.Preserve))
             {
                 throw new InvalidDataException("ScalarNull condition materialization did not route through expected null/non-null identities.");
+            }
+
+            LibraDexIndex<long, long> deleteIndex = catalog.Indexes["routes"]["deleteValue"].Int64Keys<long>().Create();
+            ValidateGenericInsert(deleteIndex.Insert(10, 610L), "key-state delete proof non-null insert");
+            ValidateGenericInsert(deleteIndex.Insert(ScalarNull.Null, 611L), "key-state delete proof null 611 insert");
+            ValidateGenericInsert(deleteIndex.Insert(ScalarNull.Null, 612L), "key-state delete proof null 612 insert");
+            Func<string, IIndex> deleteResolver = indexName => string.Equals(indexName, "deleteValue", StringComparison.Ordinal)
+                ? deleteIndex
+                : throw new KeyNotFoundException(indexName);
+            LibraDexIdentityMutationResult deleteNullResult = LibraDexCondition
+                .ForGroup("routes")
+                .Index("deleteValue").AsInt64.EqualTo(ScalarNull.Null)
+                .EndCondition
+                .Delete(deleteResolver);
+            IReadOnlyList<long> deleteAfterNullIds = LibraDexCondition
+                .ForGroup("routes")
+                .Index("deleteValue").AsInt64.All()
+                .EndCondition
+                .ToList<long>(deleteResolver, deduplication: IdentityDeduplication.Preserve);
+            if (deleteNullResult.ChangedCount != 2 ||
+                !deleteAfterNullIds.SequenceEqual(new[] { 610L }))
+            {
+                throw new InvalidDataException("ScalarNull condition delete did not remove only null-route identities.");
+            }
+
+            ValidateGenericInsert(deleteIndex.Insert(ScalarNull.Null, 613L), "key-state all delete proof null insert");
+            LibraDexIdentityMutationResult deleteAllResult = LibraDexCondition
+                .ForGroup("routes")
+                .Index("deleteValue").AsInt64.All()
+                .EndCondition
+                .Delete(deleteResolver);
+            if (deleteAllResult.ChangedCount != 2 ||
+                LibraDexCondition.ForGroup("routes").Index("deleteValue").AsInt64.All().EndCondition.Count(deleteResolver, deduplication: IdentityDeduplication.Preserve) != 0)
+            {
+                throw new InvalidDataException("Scalar all-condition delete did not remove null-route and ordinary identities.");
             }
 
             _ = scalar16Index;

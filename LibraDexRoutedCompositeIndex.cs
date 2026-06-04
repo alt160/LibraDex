@@ -257,7 +257,7 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
     /// <param name="key">The runtime key, which must be a <see cref="LibraDexCompositeKey"/>.</param>
     /// <param name="identity">The runtime identity matching the composite index identity type.</param>
     /// <returns><see langword="true"/> when one tuple was removed.</returns>
-    public bool Delete(object key, object identity)
+    public bool Delete(object? key, object identity)
     {
         return Delete(
             key as LibraDexCompositeKey ?? throw new ArgumentException("Composite indexes require LibraDexCompositeKey keys.", nameof(key)),
