@@ -380,6 +380,73 @@ public sealed partial class LibraDexFileSession : IDisposable
     }
 
     /// <summary>
+    /// Attempts to read the durable root-level null and empty key-state routes for an index slot.<br/>
+    /// Older catalog metadata versions decode with both offsets set to zero, which means no special route has been published yet.<br/>
+    /// The offsets are intentionally stored in catalog metadata rather than the direct root router, because all 256 root prefix bytes are valid normal routes.<br/>
+    /// </summary>
+    /// <param name="slot">The active index-directory slot whose route offsets should be read.</param>
+    /// <param name="offsets">Receives the decoded key-state route offsets when metadata exists.</param>
+    /// <returns><see langword="true"/> when catalog metadata was decoded; otherwise <see langword="false"/>.</returns>
+    internal bool TryReadKeyRouteOffsets(IndexDirectorySlotSnapshot slot, out KeyRouteOffsets offsets)
+    {
+        offsets = default;
+        if (!TryReadCatalogIndexMetadata(slot, out CatalogIndexMetadata metadata))
+        {
+            return false;
+        }
+
+        offsets = new KeyRouteOffsets(metadata.NullKeyRouteOffset, metadata.EmptyKeyRouteOffset);
+        return true;
+    }
+
+    /// <summary>
+    /// Appends replacement catalog metadata with updated null and empty key-state routes, then publishes the metadata offset through the fixed directory slot.<br/>
+    /// This keeps special root routes durable without stealing slot-array bits or reserving magic root-router prefixes.<br/>
+    /// The normal enumeration order remains null route first, empty route second, then ordinary root-router value routes.<br/>
+    /// </summary>
+    /// <param name="slotIndex">The fixed directory slot that owns the index metadata.</param>
+    /// <param name="offsets">The root-level key-state route offsets to publish.</param>
+    /// <returns>The DataKernel commit telemetry for the metadata append and directory update.</returns>
+    /// <exception cref="ArgumentOutOfRangeException">Thrown when a route offset is negative.</exception>
+    /// <exception cref="InvalidDataException">Thrown when the requested slot is inactive or has no decodable catalog metadata.</exception>
+    internal DataKernelCommitTelemetry UpdateKeyRouteOffsets(int slotIndex, KeyRouteOffsets offsets)
+    {
+        if (offsets.Null < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(offsets), offsets.Null, "The null key route offset cannot be negative.");
+        }
+
+        if (offsets.Empty < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(offsets), offsets.Empty, "The empty key route offset cannot be negative.");
+        }
+
+        if (!TryFindIndexDirectorySlot(slotIndex, out IndexDirectorySlotSnapshot slot))
+        {
+            throw new InvalidDataException("The requested index slot is not active.");
+        }
+
+        if (!TryReadCatalogIndexMetadata(slot, out CatalogIndexMetadata metadata))
+        {
+            throw new InvalidDataException("The requested index slot does not have decodable catalog metadata for key-state routes.");
+        }
+
+        CatalogIndexMetadata updatedMetadata = metadata with
+        {
+            NullKeyRouteOffset = offsets.Null,
+            EmptyKeyRouteOffset = offsets.Empty
+        };
+        int metadataLength = CatalogIndexMetadataCodec.GetEncodedSize(updatedMetadata);
+        RawDataReservation metadataReservation = kernel.Reserve(metadataLength);
+        CatalogIndexMetadataCodec.Write(metadataReservation.Span, updatedMetadata);
+        return UpsertIndexDirectorySlot(slot with
+        {
+            MetadataOffset = metadataReservation.Extent.Offset,
+            Generation = slot.Generation + 1
+        });
+    }
+
+    /// <summary>
     /// Creates a composite index catalog slot with versioned metadata and an initial persisted composite snapshot.<br/>
     /// The snapshot offset is stored in the slot root offset for this first durable composite-content slice; later mini-router pages can keep the same catalog anchor while changing the pointed-to byte format.<br/>
     /// </summary>

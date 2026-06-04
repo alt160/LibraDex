@@ -106,7 +106,16 @@ internal readonly record struct CatalogIndexMetadata(
     CompareOptions StringComparisonCompareOptions,
     string StringComparisonCulture,
     string StringComparisonCustomComparerTypeName,
-    bool HasShapeMetadata);
+    bool HasShapeMetadata,
+    long NullKeyRouteOffset = 0,
+    long EmptyKeyRouteOffset = 0);
+
+internal readonly record struct KeyRouteOffsets(long Null, long Empty)
+{
+    public bool HasNull => Null > 0;
+
+    public bool HasEmpty => Empty > 0;
+}
 
 internal static class CatalogIndexMetadataCodec
 {
@@ -118,6 +127,7 @@ internal static class CatalogIndexMetadataCodec
     private const ushort Version5 = 5;
     private const ushort Version6 = 6;
     private const ushort Version7 = 7;
+    private const ushort Version8 = 8;
     private const int Version1HeaderSize = 20;
     private const int Version2HeaderSize = 28;
     private const int Version3HeaderSize = 44;
@@ -125,13 +135,14 @@ internal static class CatalogIndexMetadataCodec
     private const int Version5HeaderSize = 54;
     private const int Version6HeaderSize = 58;
     private const int Version7HeaderSize = 60;
+    private const int Version8HeaderSize = 76;
     private const int ProjectionSize = 6;
     private const int Version6CompositePartPrefixSize = 7;
     private const int Version7CompositePartPrefixSize = 9;
 
     internal static int GetEncodedSize(CatalogIndexMetadata metadata)
     {
-        int size = Version7HeaderSize +
+        int size = Version8HeaderSize +
             GetUtf8ByteCount(metadata.Group) +
             GetUtf8ByteCount(metadata.IndexName) +
             GetUtf8ByteCount(metadata.KeyTypeName) +
@@ -159,7 +170,7 @@ internal static class CatalogIndexMetadataCodec
         }
 
         BinaryPrimitives.WriteUInt32LittleEndian(destination[..4], Magic);
-        BinaryPrimitives.WriteUInt16LittleEndian(destination.Slice(4, 2), Version7);
+        BinaryPrimitives.WriteUInt16LittleEndian(destination.Slice(4, 2), Version8);
         BinaryPrimitives.WriteInt32LittleEndian(destination.Slice(6, 4), required);
         destination[10] = checked((byte)metadata.KeyFamily);
         destination[11] = checked((byte)metadata.IdentityFamily);
@@ -180,8 +191,10 @@ internal static class CatalogIndexMetadataCodec
         BinaryPrimitives.WriteInt32LittleEndian(destination.Slice(50, 4), metadata.ExactReversedProjectionSlotIndex);
         BinaryPrimitives.WriteInt32LittleEndian(destination.Slice(54, 4), metadata.VarIdentityMaxLength);
         BinaryPrimitives.WriteUInt16LittleEndian(destination.Slice(58, 2), checked((ushort)metadata.DateTimeKeyEncoding));
+        BinaryPrimitives.WriteInt64LittleEndian(destination.Slice(60, 8), metadata.NullKeyRouteOffset);
+        BinaryPrimitives.WriteInt64LittleEndian(destination.Slice(68, 8), metadata.EmptyKeyRouteOffset);
 
-        int cursor = Version7HeaderSize;
+        int cursor = Version8HeaderSize;
         WriteString(destination, ref cursor, metadata.Group);
         WriteString(destination, ref cursor, metadata.IndexName);
         WriteString(destination, ref cursor, metadata.KeyTypeName);
@@ -228,13 +241,14 @@ internal static class CatalogIndexMetadataCodec
         }
 
         ushort version = BinaryPrimitives.ReadUInt16LittleEndian(source.Slice(4, 2));
-        if (version != Version1 && version != Version2 && version != Version3 && version != Version4 && version != Version5 && version != Version6 && version != Version7)
+        if (version != Version1 && version != Version2 && version != Version3 && version != Version4 && version != Version5 && version != Version6 && version != Version7 && version != Version8)
         {
             return false;
         }
 
         int headerSize = version switch
         {
+            Version8 => Version8HeaderSize,
             Version7 => Version7HeaderSize,
             Version6 => Version6HeaderSize,
             Version5 => Version5HeaderSize,
@@ -268,6 +282,8 @@ internal static class CatalogIndexMetadataCodec
         int foldedReversedProjectionSlotIndex = -1;
         LibraDexStringComparisonPolicyKind stringComparisonPolicyKind = LibraDexStringComparisonPolicyKind.Invariant;
         CompareOptions stringComparisonCompareOptions = CompareOptions.None;
+        long nullKeyRouteOffset = 0;
+        long emptyKeyRouteOffset = 0;
         if (version >= Version2)
         {
             directions = (LibraDexProjectionDirectionSet)BinaryPrimitives.ReadUInt16LittleEndian(source.Slice(20, 2));
@@ -303,6 +319,12 @@ internal static class CatalogIndexMetadataCodec
         if (version >= Version7)
         {
             dateTimeKeyEncoding = (DateTimeKeyEncoding)BinaryPrimitives.ReadUInt16LittleEndian(source.Slice(58, 2));
+        }
+
+        if (version >= Version8)
+        {
+            nullKeyRouteOffset = BinaryPrimitives.ReadInt64LittleEndian(source.Slice(60, 8));
+            emptyKeyRouteOffset = BinaryPrimitives.ReadInt64LittleEndian(source.Slice(68, 8));
         }
 
         int cursor = headerSize;
@@ -423,7 +445,9 @@ internal static class CatalogIndexMetadataCodec
             stringComparisonCompareOptions,
             stringComparisonCulture,
             stringComparisonCustomComparerTypeName,
-            version >= Version2);
+            version >= Version2,
+            nullKeyRouteOffset,
+            emptyKeyRouteOffset);
         return true;
     }
 
@@ -437,7 +461,7 @@ internal static class CatalogIndexMetadataCodec
         }
 
         ushort version = BinaryPrimitives.ReadUInt16LittleEndian(header.Slice(4, 2));
-        if (version != Version1 && version != Version2 && version != Version3 && version != Version4 && version != Version5 && version != Version6 && version != Version7)
+        if (version != Version1 && version != Version2 && version != Version3 && version != Version4 && version != Version5 && version != Version6 && version != Version7 && version != Version8)
         {
             return false;
         }
@@ -445,6 +469,7 @@ internal static class CatalogIndexMetadataCodec
         length = BinaryPrimitives.ReadInt32LittleEndian(header.Slice(6, 4));
         int headerSize = version switch
         {
+            Version8 => Version8HeaderSize,
             Version7 => Version7HeaderSize,
             Version6 => Version6HeaderSize,
             Version5 => Version5HeaderSize,

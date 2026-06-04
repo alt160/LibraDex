@@ -6,8 +6,10 @@ Use this as the gating map before regenerating or refreshing `artifacts/filter-d
 
 - Raw descriptors close with `.EndCondition`.
 - Opened index shorthand closes with `.EndCondition`.
-- Catalog group and ordered multi-key builders close with `.Condition`; type them for terminal APIs with `.Condition.As<TIdentity>()`.
+- Catalog group and ordered multi-key builders close with `.EndCondition`; terminal retrieval/mutation/delete APIs own any identity typing.
 - Opened index shorthand currently covers generic equality, inequality, ordered range, between, and membership. Rich string, binary pattern/slice, date component, bit, and composite predicates should use the raw descriptor or catalog/multi-key builders.
+- Abraxas examples should use the inspected builder shape, such as `store.Where.PropPath(".Email").AsString.EqualTo(value).EndCondition`, with `.AND` / `.OR` / `.Group(...)` composition before the single final `.EndCondition`.
+- Abraxas whole binary equality and typed binary slices are available, but do not generate whole-blob `AsBinary.StartsWith`, `AsBinary.Contains`, or `AsBinary.EndsWith` examples unless those operators are added to Abraxas.
 
 ## Current Value Semantics
 
@@ -29,6 +31,8 @@ Use this as the gating map before regenerating or refreshing `artifacts/filter-d
 ## Post-Refresh Validation Checks
 
 - No `AsBoolean` or `Where.Boolean` examples.
-- No untyped catalog `.Condition` examples where a typed terminal is implied; use `.Condition.As<TIdentity>()`.
+- No catalog `.Condition` or `.Condition.As<TIdentity>()` examples; use `.EndCondition` as the single final terminator.
+- No opened-index cross-index fragments such as `email.Where.EqualTo(...).AND.Index(...)`; use raw descriptors, catalog typed continuers, `MultiKey(...)`, or close reusable fragments explicitly where the API supports it.
+- No Abraxas whole-binary prefix/contains/suffix method calls unless the Abraxas builder grows those methods; use typed slices, projections, or custom predicate notes instead.
 - Rows containing `missing`, `null`, `empty`, `blank`, `optional`, or `nullable` must say which semantic bucket they mean: stored null, stored empty, null-or-empty, absent tuple, or normalized/domain blank.
 - Rows using `presence` must explain why the requested value cannot be represented by the searched key itself.

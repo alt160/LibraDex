@@ -7975,7 +7975,7 @@ internal static class RawHarness
                 .ForGroup("people")
                 .Index("tenantUser").Where(
                     LibraDexCompositePart.Scalar<Guid>("tenantId").EqualTo(persistedTenant),
-                    LibraDexCompositePart.String("username").MatchesPattern("C?r?"))
+                    LibraDexCompositePart.String("username").Matches("C?r?"))
                 .EndCondition;
             IReadOnlyList<long> reopenedTenantUserContainsIds = reopenedTenantUserContainsCondition.ToList<long>(
                 indexName => string.Equals(indexName, "tenantUser", StringComparison.Ordinal)
@@ -8019,7 +8019,7 @@ internal static class RawHarness
             LibraDexConditionEndCondition reopenedTenantUserFullKeyPatternCondition = LibraDexCondition
                 .ForGroup("people")
                 .Index("tenantUser").Where(
-                    LibraDexCompositePart.FullKey("|").Parts("username").AsString.MatchesPattern("Co*"))
+                    LibraDexCompositePart.FullKey("|").Parts("username").AsString.Matches("Co*"))
                 .EndCondition;
             LibraDexConditionEndCondition reopenedTenantUserMixedFullKeyCondition = LibraDexCondition
                 .ForGroup("people")
@@ -9805,7 +9805,7 @@ internal static class RawHarness
         IReadOnlyList<ulong> adoptedExactScanContainsIds = adoptedExactScanContainsCriterion.IDs.ToList<ulong>();
         LibraDexConditionEndCondition adoptedExactScanPatternCondition = LibraDexCondition
             .ForGroup("people")
-            .Index("alias").AsString.MatchesPattern("ma*ck", ignoreCase: true)
+            .Index("alias").AsString.Matches("ma*ck", ignoreCase: true)
             .EndCondition;
         IIdentityCriterion adoptedExactScanPatternCriterion = adoptedExactScanPatternCondition.Materialize(peopleAlias.ResolveIndex);
         IReadOnlyList<ulong> adoptedExactScanPatternIds = adoptedExactScanPatternCriterion.IDs.ToList<ulong>();
@@ -10621,33 +10621,33 @@ internal static class RawHarness
             .EndCondition;
         LibraDexConditionEndCondition adoptedGuidPatternCondition = LibraDexCondition
             .ForGroup("people")
-            .Index("externalId").AsGuid.MatchesPattern("00112233xxxxxxxxxxxxxxxxxxxxxxxx")
+            .Index("externalId").AsGuid.Matches("00112233xxxxxxxxxxxxxxxxxxxxxxxx")
             .EndCondition;
         LibraDexConditionEndCondition adoptedGuidBytePatternCondition = LibraDexCondition
             .ForGroup("people")
-            .Index("externalId").AsGuid.MatchesPattern(adoptedGuidFirstBytes)
+            .Index("externalId").AsGuid.Matches(adoptedGuidFirstBytes)
             .EndCondition;
-        LibraDexGroupCondition groupGuidExactCondition = catalog.Indexes["people"].Where
-            .Guid("externalId").EqualTo(adoptedGuidFirst)
-            .Condition;
+        LibraDexConditionEndCondition groupGuidExactCondition = catalog.Indexes["people"]
+            .Where("externalId").AsGuid.EqualTo(adoptedGuidFirst)
+            .EndCondition;
         IReadOnlyList<long> groupGuidExactIds = catalog.Indexes["people"].GetIdentities<long>(
             groupGuidExactCondition,
             deduplication: IdentityDeduplication.Preserve);
-        LibraDexGroupCondition groupGuidTextExactCondition = catalog.Indexes["people"].Where
-            .Guid("externalId").EqualTo("00112233-4455-6677-8899-aabbccddeeff")
-            .Condition;
+        LibraDexConditionEndCondition groupGuidTextExactCondition = catalog.Indexes["people"]
+            .Where("externalId").AsGuid.EqualTo("00112233-4455-6677-8899-aabbccddeeff")
+            .EndCondition;
         IReadOnlyList<long> groupGuidTextExactIds = catalog.Indexes["people"].GetIdentities<long>(
             groupGuidTextExactCondition,
             deduplication: IdentityDeduplication.Preserve);
-        LibraDexGroupCondition groupGuidWildcardCondition = catalog.Indexes["people"].Where
-            .Guid("externalId").MatchesPattern("00112233-XXXX-XXXX-XXXX-XXXXXXXXXXXX")
-            .Condition;
+        LibraDexConditionEndCondition groupGuidWildcardCondition = catalog.Indexes["people"]
+            .Where("externalId").AsGuid.Matches("00112233-XXXX-XXXX-XXXX-XXXXXXXXXXXX")
+            .EndCondition;
         IReadOnlyList<long> groupGuidWildcardIds = catalog.Indexes["people"].GetIdentities<long>(
             groupGuidWildcardCondition,
             deduplication: IdentityDeduplication.Preserve);
-        LibraDexGroupCondition groupGuidBytePrefixCondition = catalog.Indexes["people"].Where
-            .Guid("externalId").StartsWith(adoptedGuidFirstBytes[..4])
-            .Condition;
+        LibraDexConditionEndCondition groupGuidBytePrefixCondition = catalog.Indexes["people"]
+            .Where("externalId").AsGuid.StartsWith(adoptedGuidFirstBytes[..4])
+            .EndCondition;
         IReadOnlyList<long> groupGuidBytePrefixIds = catalog.Indexes["people"].GetIdentities<long>(
             groupGuidBytePrefixCondition,
             deduplication: IdentityDeduplication.Preserve);
@@ -10671,75 +10671,75 @@ internal static class RawHarness
             .ForGroup("people")
             .Index("fingerprint").AsBinary.SliceEqual(4, Convert.FromHexString("44556677"))
             .EndCondition;
-        LibraDexGroupCondition groupBinaryExactCondition = catalog.Indexes["people"].Where
-            .Binary("fingerprint").EqualTo(adoptedBinaryFirst)
-            .Condition;
+        LibraDexConditionEndCondition groupBinaryExactCondition = catalog.Indexes["people"]
+            .Where("fingerprint").AsBinary.EqualTo(adoptedBinaryFirst)
+            .EndCondition;
         IReadOnlyList<long> groupBinaryExactIds = catalog.Indexes["people"].GetIdentities<long>(
             groupBinaryExactCondition,
             deduplication: IdentityDeduplication.Preserve);
-        LibraDexGroupCondition groupBinaryPrefixCondition = catalog.Indexes["people"].Where
-            .Binary("fingerprint").StartsWith(Convert.FromHexString("00112233"))
-            .Condition;
+        LibraDexConditionEndCondition groupBinaryPrefixCondition = catalog.Indexes["people"]
+            .Where("fingerprint").AsBinary.StartsWith(Convert.FromHexString("00112233"))
+            .EndCondition;
         IReadOnlyList<long> groupBinaryPrefixIds = catalog.Indexes["people"].GetIdentities<long>(
             groupBinaryPrefixCondition,
             deduplication: IdentityDeduplication.Preserve);
-        LibraDexGroupCondition groupBinarySuffixCondition = catalog.Indexes["people"].Where
-            .Binary("fingerprint").EndsWith(Convert.FromHexString("CCDDEEFF"))
-            .Condition;
+        LibraDexConditionEndCondition groupBinarySuffixCondition = catalog.Indexes["people"]
+            .Where("fingerprint").AsBinary.EndsWith(Convert.FromHexString("CCDDEEFF"))
+            .EndCondition;
         IReadOnlyList<long> groupBinarySuffixIds = catalog.Indexes["people"].GetIdentities<long>(
             groupBinarySuffixCondition,
             deduplication: IdentityDeduplication.Preserve);
-        LibraDexGroupCondition groupBinaryContainsCondition = catalog.Indexes["people"].Where
-            .Binary("fingerprint").Contains(Convert.FromHexString("44556677"))
-            .Condition;
+        LibraDexConditionEndCondition groupBinaryContainsCondition = catalog.Indexes["people"]
+            .Where("fingerprint").AsBinary.Contains(Convert.FromHexString("44556677"))
+            .EndCondition;
         IReadOnlyList<long> groupBinaryContainsIds = catalog.Indexes["people"].GetIdentities<long>(
             groupBinaryContainsCondition,
             deduplication: IdentityDeduplication.Preserve);
-        LibraDexGroupCondition groupBinarySliceCondition = catalog.Indexes["people"].Where
-            .Binary("fingerprint").SliceEqual(4, Convert.FromHexString("44556677"))
-            .Condition;
+        LibraDexConditionEndCondition groupBinarySliceCondition = catalog.Indexes["people"]
+            .Where("fingerprint").AsBinary.SliceEqual(4, Convert.FromHexString("44556677"))
+            .EndCondition;
         IReadOnlyList<long> groupBinarySliceIds = catalog.Indexes["people"].GetIdentities<long>(
             groupBinarySliceCondition,
             deduplication: IdentityDeduplication.Preserve);
-        LibraDexGroupCondition groupBinaryHexPrefixCondition = catalog.Indexes["people"].Where
-            .Binary("fingerprint").StartsWithHex("00-11-22-33")
-            .Condition;
+        LibraDexConditionEndCondition groupBinaryHexPrefixCondition = catalog.Indexes["people"]
+            .Where("fingerprint").AsBinary.StartsWithHex("00-11-22-33")
+            .EndCondition;
         IReadOnlyList<long> groupBinaryHexPrefixIds = catalog.Indexes["people"].GetIdentities<long>(
             groupBinaryHexPrefixCondition,
             deduplication: IdentityDeduplication.Preserve);
-        LibraDexGroupCondition groupBinaryHexSuffixCondition = catalog.Indexes["people"].Where
-            .Binary("fingerprint").EndsWithHex("CCxxEEFF")
-            .Condition;
+        LibraDexConditionEndCondition groupBinaryHexSuffixCondition = catalog.Indexes["people"]
+            .Where("fingerprint").AsBinary.EndsWithHex("CCxxEEFF")
+            .EndCondition;
         IReadOnlyList<long> groupBinaryHexSuffixIds = catalog.Indexes["people"].GetIdentities<long>(
             groupBinaryHexSuffixCondition,
             deduplication: IdentityDeduplication.Preserve);
-        LibraDexGroupCondition groupBinaryHexContainsCondition = catalog.Indexes["people"].Where
-            .Binary("fingerprint").ContainsHex("44 XX 66 77")
-            .Condition;
+        LibraDexConditionEndCondition groupBinaryHexContainsCondition = catalog.Indexes["people"]
+            .Where("fingerprint").AsBinary.ContainsHex("44 XX 66 77")
+            .EndCondition;
         IReadOnlyList<long> groupBinaryHexContainsIds = catalog.Indexes["people"].GetIdentities<long>(
             groupBinaryHexContainsCondition,
             deduplication: IdentityDeduplication.Preserve);
-        LibraDexGroupCondition groupBinaryHexSliceCondition = catalog.Indexes["people"].Where
-            .Binary("fingerprint").SliceMatchesHex(4, "44xx6677")
-            .Condition;
+        LibraDexConditionEndCondition groupBinaryHexSliceCondition = catalog.Indexes["people"]
+            .Where("fingerprint").AsBinary.SliceMatchesHex(4, "44xx6677")
+            .EndCondition;
         IReadOnlyList<long> groupBinaryHexSliceIds = catalog.Indexes["people"].GetIdentities<long>(
             groupBinaryHexSliceCondition,
             deduplication: IdentityDeduplication.Preserve);
-        LibraDexGroupCondition groupBinaryHexPatternCondition = catalog.Indexes["people"].Where
-            .Binary("fingerprint").MatchesHexPattern("00112233xxxxxxxx8899AABBCCDDEEFF")
-            .Condition;
+        LibraDexConditionEndCondition groupBinaryHexPatternCondition = catalog.Indexes["people"]
+            .Where("fingerprint").AsBinary.MatchesHexPattern("00112233xxxxxxxx8899AABBCCDDEEFF")
+            .EndCondition;
         IReadOnlyList<long> groupBinaryHexPatternIds = catalog.Indexes["people"].GetIdentities<long>(
             groupBinaryHexPatternCondition,
             deduplication: IdentityDeduplication.Preserve);
-        LibraDexGroupCondition groupBinaryReversedSuffixCondition = catalog.Indexes["people"].Where
-            .Binary("fingerprintReversed").EndsWith(Convert.FromHexString("CCDDEEFF"))
-            .Condition;
+        LibraDexConditionEndCondition groupBinaryReversedSuffixCondition = catalog.Indexes["people"]
+            .Where("fingerprintReversed").AsBinary.EndsWith(Convert.FromHexString("CCDDEEFF"))
+            .EndCondition;
         IReadOnlyList<long> groupBinaryReversedSuffixIds = catalog.Indexes["people"].GetIdentities<long>(
             groupBinaryReversedSuffixCondition,
             deduplication: IdentityDeduplication.Preserve);
-        LibraDexGroupCondition groupBinaryReversedHexSuffixCondition = catalog.Indexes["people"].Where
-            .Binary("fingerprintReversed").EndsWithHex("CCxxEEFF")
-            .Condition;
+        LibraDexConditionEndCondition groupBinaryReversedHexSuffixCondition = catalog.Indexes["people"]
+            .Where("fingerprintReversed").AsBinary.EndsWithHex("CCxxEEFF")
+            .EndCondition;
         IReadOnlyList<long> groupBinaryReversedHexSuffixIds = catalog.Indexes["people"].GetIdentities<long>(
             groupBinaryReversedHexSuffixCondition,
             deduplication: IdentityDeduplication.Preserve);
@@ -11563,45 +11563,45 @@ internal static class RawHarness
         adoptedDeferredMembershipSet = new HashSet<long> { 11L };
         IReadOnlyList<long> updatedAdoptedDeferredMembershipIds = adoptedDeferredMembershipCondition.ToList<long>(surfaceResolver, deduplication: IdentityDeduplication.Preserve);
         IReadOnlyList<long> indexWhereIds = index.GetIdentities(index.Where.GreaterOrEqual(10).And.Not.EqualTo(11).EndCondition, deduplication: IdentityDeduplication.Preserve);
-        IReadOnlyList<long> catalogIndexerIds = catalog["surface"].GetIdentities(
+        IReadOnlyList<long> catalogIndexerIds = catalog["surface"].GetIdentities<long>(
             index.Where.GreaterOrEqual(10).EndCondition.AndAlso(index.Where.LessOrEqual(11).EndCondition),
             deduplication: IdentityDeduplication.Preserve);
-        IReadOnlyList<long> groupWhereIds = catalog.Indexes["surface"].GetIdentities(
+        IReadOnlyList<long> groupWhereIds = catalog.Indexes["surface"].GetIdentities<long>(
             index.Where.GreaterOrEqual(10).EndCondition.AndAlso(index.Where.LessOrEqual(11).EndCondition),
             deduplication: IdentityDeduplication.Preserve);
         long reusableMinimum = 10;
-        LibraDexConditionExpression<long> deferredMinimum = index.Where.GreaterOrEqual(() => reusableMinimum, "minimum").EndCondition;
+        LibraDexConditionEndCondition deferredMinimum = index.Where.GreaterOrEqual(() => reusableMinimum, "minimum").EndCondition;
         IReadOnlyList<long> deferredMinimumIds = index.GetIdentities(deferredMinimum, deduplication: IdentityDeduplication.Preserve);
         reusableMinimum = 12;
         IReadOnlyList<long> updatedDeferredMinimumIds = index.GetIdentities(deferredMinimum, deduplication: IdentityDeduplication.Preserve);
         IReadOnlyList<long> replacedMinimumIds = index.GetIdentities(
             deferredMinimum.WithValue("minimum", 11L),
             deduplication: IdentityDeduplication.Preserve);
-        LibraDexConditionExpression<long> adoptedNamedMinimum = LibraDexConditionExpression<long>.From(LibraDexCondition
+        LibraDexConditionEndCondition adoptedNamedMinimum = LibraDexCondition
             .ForGroup("surface")
             .Index("value").AsInt64.GreaterOrEqual(0L, "minimum")
-            .EndCondition);
+            .EndCondition;
         IReadOnlyList<long> adoptedNamedMinimumIds = adoptedNamedMinimum
             .WithValue("minimum", 11L)
-            .GetIdentities(
+            .ToList<long>(
             surfaceResolver,
             deduplication: IdentityDeduplication.Preserve);
         string selectedIndexName = "public-surface";
-        LibraDexConditionExpression<long> deferredIndexCondition = LibraDexConditionExpression<long>.From(LibraDexCondition
+        LibraDexConditionEndCondition deferredIndexCondition = LibraDexCondition
             .ForGroup("surface")
             .Index(() => selectedIndexName, "selected").AsInt64.EqualTo(12L)
-            .EndCondition);
-        IReadOnlyList<long> deferredIndexValueIds = catalog.Indexes["surface"].GetIdentities(
+            .EndCondition;
+        IReadOnlyList<long> deferredIndexValueIds = catalog.Indexes["surface"].GetIdentities<long>(
             deferredIndexCondition,
             deduplication: IdentityDeduplication.Preserve);
         selectedIndexName = "alternate";
-        IReadOnlyList<long> updatedDeferredIndexIds = catalog.Indexes["surface"].GetIdentities(
+        IReadOnlyList<long> updatedDeferredIndexIds = catalog.Indexes["surface"].GetIdentities<long>(
             deferredIndexCondition,
             deduplication: IdentityDeduplication.Preserve);
-        IReadOnlyList<long> replacedIndexIds = catalog.Indexes["surface"].GetIdentities(
+        IReadOnlyList<long> replacedIndexIds = catalog.Indexes["surface"].GetIdentities<long>(
             deferredIndexCondition.WithIndex("selected", "public-surface"),
             deduplication: IdentityDeduplication.Preserve);
-        LibraDexConditionExpression<long> lowOrHighFragment = LibraDexConditionExpression<long>.Grouped(index.Where.EqualTo(10).Or.EqualTo(12).EndCondition);
+        LibraDexConditionEndCondition lowOrHighFragment = LibraDexConditionEndCondition.Grouped(index.Where.EqualTo(10).Or.EqualTo(12).EndCondition);
         IReadOnlyList<long> groupedFragmentIds = index.GetIdentities(
             lowOrHighFragment.AndAlso(() => index.Where.GreaterOrEqual(11).EndCondition),
             deduplication: IdentityDeduplication.Preserve);
@@ -11615,25 +11615,25 @@ internal static class RawHarness
         IReadOnlyList<long> originalDeferredAfterReplacementIds = index.GetIdentities(
             deferredMinimum,
             deduplication: IdentityDeduplication.Preserve);
-        LibraDexGroupCondition namedMultiKeyCondition = catalog.Indexes["surface"].Where
-            .Int64("public-surface").GreaterOrEqual(10L)
-            .And.Int64("public-surface").LessOrEqual(11L)
-            .Condition;
+        LibraDexConditionEndCondition namedMultiKeyCondition = catalog.Indexes["surface"]
+            .Where("public-surface").AsInt64.GreaterOrEqual(10L)
+            .AndAlso("public-surface").AsInt64.LessOrEqual(11L)
+            .EndCondition;
         IReadOnlyList<long> namedMultiKeyIds = catalog.Indexes["surface"].GetIdentities<long>(
             namedMultiKeyCondition,
             deduplication: IdentityDeduplication.Preserve);
-        LibraDexGroupCondition handleMultiKeyCondition = catalog.Indexes["surface"].Where
-            .Int64((IIndex)index).GreaterOrEqual(10L)
-            .And.Int64((IIndex)index).LessOrEqual(11L)
-            .Condition;
+        LibraDexConditionEndCondition handleMultiKeyCondition = catalog.Indexes["surface"]
+            .Where((IIndex)index).AsInt64.GreaterOrEqual(10L)
+            .AndAlso((IIndex)index).AsInt64.LessOrEqual(11L)
+            .EndCondition;
         IReadOnlyList<long> handleMultiKeyIds = catalog.Indexes["surface"].GetIdentities<long>(
             handleMultiKeyCondition,
             deduplication: IdentityDeduplication.Preserve);
-        LibraDexGroupCondition orderedMultiKeyCondition = catalog.Indexes["surface"]
+        LibraDexConditionEndCondition orderedMultiKeyCondition = catalog.Indexes["surface"]
             .MultiKey((IIndex)index, (IIndex)index)
-            .Where.Int64(0).GreaterOrEqual(10L)
-            .And.Int64(1).LessOrEqual(11L)
-            .Condition;
+            .Where(0).AsInt64.GreaterOrEqual(10L)
+            .AndAlso(1).AsInt64.LessOrEqual(11L)
+            .EndCondition;
         IReadOnlyList<long> orderedMultiKeyIds = catalog.Indexes["surface"].GetIdentities<long>(
             orderedMultiKeyCondition,
             deduplication: IdentityDeduplication.Preserve);
@@ -11799,6 +11799,8 @@ internal static class RawHarness
             throw new InvalidDataException("Index maintenance descriptors did not capture expected intent.");
         }
 
+        ValidateKeyRouteMetadataContract();
+
         _ = catalogDelta;
         _ = indexDelta;
         _ = layout;
@@ -11817,6 +11819,7 @@ internal static class RawHarness
         Console.WriteLine("publicCatalogDiscovery ok");
         Console.WriteLine("publicIndexShapeDescriptors ok");
         Console.WriteLine("publicShapeDrivenCatalogCreate ok");
+        Console.WriteLine("keyRouteMetadataContract ok");
         Console.WriteLine("adoptedConditionBuilder ok");
         Console.WriteLine("adoptedConditionClassification ok");
         Console.WriteLine("adoptedStructuredDateBridge ok");
@@ -11843,7 +11846,7 @@ internal static class RawHarness
         static IReadOnlyList<long> SuffixIds(Catalog catalog, string group, string indexName, string suffixHex)
         {
             return catalog.Indexes[group].GetIdentities<long>(
-                catalog.Indexes[group].Where.Binary(indexName).EndsWith(Hex(suffixHex)).Condition,
+                catalog.Indexes[group].Where(indexName).AsBinary.EndsWith(Hex(suffixHex)).EndCondition,
                 deduplication: IdentityDeduplication.Preserve);
         }
 
@@ -11923,10 +11926,188 @@ internal static class RawHarness
             AssertSequence(SuffixIds(reopened, "binary", "fingerprint", "CCDDBEEF"), new[] { 9402L }, "binary reversed projection alternate suffix after reopen");
             AssertSequence(
                 reopened.Indexes["binary"].GetIdentities<long>(
-                    reopened.Indexes["binary"].Where.Binary("fingerprint").EndsWithHex("CCxxEEFF").Condition,
+                    reopened.Indexes["binary"].Where("fingerprint").AsBinary.EndsWithHex("CCxxEEFF").EndCondition,
                     deduplication: IdentityDeduplication.Preserve),
                 new[] { 9401L },
                 "binary reversed masked hex suffix after reopen");
+        }
+    }
+
+    /// <summary>
+    /// Validates that catalog metadata can durably carry root-level null and empty key-state route offsets across reopen.<br/>
+    /// The proof covers metadata anchoring, compact identity-only route shelves, and condition materialization for scalar null presence.<br/>
+    /// </summary>
+    private static void ValidateKeyRouteMetadataContract()
+    {
+        static IndexDirectorySlotSnapshot FindSlot(Catalog catalog, int slotIndex)
+        {
+            ReadOnlySpan<IndexDirectorySlotSnapshot> activeSlots = catalog.Session.IndexDirectory.ActiveSlots;
+            for (int i = 0; i < activeSlots.Length; i++)
+            {
+                if (activeSlots[i].SlotIndex == slotIndex)
+                {
+                    return activeSlots[i];
+                }
+            }
+
+            throw new InvalidDataException($"Catalog slot {slotIndex} was not active.");
+        }
+
+        string path = Path.Combine("artifacts", "key-route-metadata-contract-sanity.lbdx");
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
+        File.Delete(path);
+        int slotIndex;
+        int scalar16SlotIndex;
+        Guid scalar16NullA = Guid.Parse("00112233-4455-6677-8899-aabbccddeeff");
+        Guid scalar16NullB = Guid.Parse("00112233-4455-6677-1111-222222222222");
+        LibraDexGenericScalarCodec<Guid>.Encode16(scalar16NullA, out ulong scalar16NullAHigh, out ulong scalar16NullALow);
+        LibraDexGenericScalarCodec<Guid>.Encode16(scalar16NullB, out ulong scalar16NullBHigh, out ulong scalar16NullBLow);
+        using (Catalog catalog = Catalog.Create(path))
+        {
+            LibraDexIndex<long, long> index = catalog.Indexes["routes"]["value"].Int64Keys<long>().Create();
+            LibraDexIndex<long, Guid> scalar16Index = catalog.Indexes["routes"]["guidValue"].Int64Keys<Guid>().Create();
+            ValidateGenericInsert(index.Insert(10, 444L), "key-state non-null scalar insert");
+            if (!catalog.Indexes.TryGetInfo("routes", "value", out CatalogIndexInfo info))
+            {
+                throw new InvalidDataException("Created key-route metadata proof index was not discoverable.");
+            }
+
+            if (!catalog.Indexes.TryGetInfo("routes", "guidValue", out CatalogIndexInfo scalar16Info))
+            {
+                throw new InvalidDataException("Created scalar-16 key-route metadata proof index was not discoverable.");
+            }
+
+            slotIndex = info.SlotIndex;
+            scalar16SlotIndex = scalar16Info.SlotIndex;
+            IndexDirectorySlotSnapshot slot = FindSlot(catalog, slotIndex);
+            if (!catalog.Session.TryReadKeyRouteOffsets(slot, out KeyRouteOffsets initialOffsets) ||
+                initialOffsets.Null != 0 ||
+                initialOffsets.Empty != 0)
+            {
+                throw new InvalidDataException("Fresh catalog metadata did not expose zeroed key-state route offsets.");
+            }
+
+            _ = index;
+            ulong encodedNull111 = LibraDexGenericScalarCodec<long>.Encode8(111L);
+            ulong encodedNull333 = LibraDexGenericScalarCodec<long>.Encode8(333L);
+            ulong encodedEmpty222 = LibraDexGenericScalarCodec<long>.Encode8(222L);
+            if (!catalog.Session.InsertScalar8KeyStateIdentity(slotIndex, KeyStateRoute.Null, encodedNull333) ||
+                !catalog.Session.InsertScalar8KeyStateIdentity(slotIndex, KeyStateRoute.Null, encodedNull111) ||
+                catalog.Session.InsertScalar8KeyStateIdentity(slotIndex, KeyStateRoute.Null, encodedNull333) ||
+                !catalog.Session.InsertScalar8KeyStateIdentity(slotIndex, KeyStateRoute.Empty, encodedEmpty222))
+            {
+                throw new InvalidDataException("Key-state scalar-8 identity insertion did not report expected insert/no-op results.");
+            }
+
+            IndexDirectorySlotSnapshot updatedSlot = FindSlot(catalog, slotIndex);
+            if (!catalog.Session.TryReadKeyRouteOffsets(updatedSlot, out KeyRouteOffsets updatedOffsets) ||
+                updatedOffsets.Null <= 0 ||
+                updatedOffsets.Empty <= 0)
+            {
+                throw new InvalidDataException("Updated catalog metadata did not expose published key-state route offsets.");
+            }
+
+            ulong[] nullIdentities = catalog.Session.ReadScalar8KeyStateIdentities(slotIndex, KeyStateRoute.Null);
+            ulong[] emptyIdentities = catalog.Session.ReadScalar8KeyStateIdentities(slotIndex, KeyStateRoute.Empty);
+            if (!nullIdentities.SequenceEqual(new[] { encodedNull111, encodedNull333 }) ||
+                !emptyIdentities.SequenceEqual(new[] { encodedEmpty222 }))
+            {
+                throw new InvalidDataException("Key-state scalar-8 identity shelves did not preserve sorted route identities.");
+            }
+
+            Func<string, IIndex> routeResolver = indexName => string.Equals(indexName, "value", StringComparison.Ordinal)
+                ? index
+                : throw new KeyNotFoundException(indexName);
+            LibraDexConditionEndCondition scalarNullCondition = LibraDexCondition
+                .ForGroup("routes")
+                .Index("value").AsInt64.EqualTo(ScalarNull.Null)
+                .EndCondition;
+            LibraDexConditionEndCondition scalarNonNullCondition = LibraDexCondition
+                .ForGroup("routes")
+                .Index("value").AsInt64.NotEqualTo(ScalarNull.Null)
+                .EndCondition;
+            IReadOnlyList<long> scalarNullIds = scalarNullCondition.ToList<long>(routeResolver, deduplication: IdentityDeduplication.Preserve);
+            IReadOnlyList<long> scalarNonNullIds = scalarNonNullCondition.ToList<long>(routeResolver, deduplication: IdentityDeduplication.Preserve);
+            if (!scalarNullIds.SequenceEqual(new[] { 111L, 333L }) ||
+                !scalarNonNullIds.SequenceEqual(new[] { 444L }) ||
+                scalarNullCondition.Count(routeResolver, deduplication: IdentityDeduplication.Preserve) != 2 ||
+                !scalarNullCondition.Exists(routeResolver, deduplication: IdentityDeduplication.Preserve))
+            {
+                throw new InvalidDataException("ScalarNull condition materialization did not route through expected null/non-null identities.");
+            }
+
+            _ = scalar16Index;
+            if (!catalog.Session.InsertScalar16KeyStateIdentity(scalar16SlotIndex, KeyStateRoute.Null, scalar16NullAHigh, scalar16NullALow) ||
+                !catalog.Session.InsertScalar16KeyStateIdentity(scalar16SlotIndex, KeyStateRoute.Null, scalar16NullBHigh, scalar16NullBLow) ||
+                catalog.Session.InsertScalar16KeyStateIdentity(scalar16SlotIndex, KeyStateRoute.Null, scalar16NullAHigh, scalar16NullALow))
+            {
+                throw new InvalidDataException("Key-state scalar-16 identity insertion did not report expected insert/no-op results.");
+            }
+
+            (ulong[] scalar16Highs, ulong[] scalar16Lows) = catalog.Session.ReadScalar16KeyStateIdentities(scalar16SlotIndex, KeyStateRoute.Null);
+            if (scalar16Highs.Length != 2 ||
+                scalar16Lows.Length != 2)
+            {
+                throw new InvalidDataException("Key-state scalar-16 identity shelf did not preserve sorted route identities.");
+            }
+
+            Func<string, IIndex> scalar16Resolver = indexName => string.Equals(indexName, "guidValue", StringComparison.Ordinal)
+                ? scalar16Index
+                : throw new KeyNotFoundException(indexName);
+            IReadOnlyList<Guid> scalar16NullIds = LibraDexCondition
+                .ForGroup("routes")
+                .Index("guidValue").AsInt64.EqualTo(ScalarNull.Null)
+                .EndCondition
+                .ToList<Guid>(scalar16Resolver, deduplication: IdentityDeduplication.Preserve);
+            if (!scalar16NullIds.OrderBy(static value => value).SequenceEqual(new[] { scalar16NullA, scalar16NullB }.OrderBy(static value => value)))
+            {
+                throw new InvalidDataException("ScalarNull condition materialization did not decode scalar-16 route identities.");
+            }
+        }
+
+        using (Catalog reopened = Catalog.Open(path))
+        {
+            IndexDirectorySlotSnapshot reopenedSlot = FindSlot(reopened, slotIndex);
+            if (!reopened.Session.TryReadKeyRouteOffsets(reopenedSlot, out KeyRouteOffsets reopenedOffsets) ||
+                reopenedOffsets.Null <= 0 ||
+                reopenedOffsets.Empty <= 0)
+            {
+                throw new InvalidDataException("Catalog metadata key-state route offsets did not survive reopen.");
+            }
+
+            ulong[] reopenedNullIdentities = reopened.Session.ReadScalar8KeyStateIdentities(slotIndex, KeyStateRoute.Null);
+            ulong[] reopenedEmptyIdentities = reopened.Session.ReadScalar8KeyStateIdentities(slotIndex, KeyStateRoute.Empty);
+            if (!reopenedNullIdentities.SequenceEqual(new[] { LibraDexGenericScalarCodec<long>.Encode8(111L), LibraDexGenericScalarCodec<long>.Encode8(333L) }) ||
+                !reopenedEmptyIdentities.SequenceEqual(new[] { LibraDexGenericScalarCodec<long>.Encode8(222L) }))
+            {
+                throw new InvalidDataException("Key-state scalar-8 identity shelves did not survive reopen.");
+            }
+
+            (ulong[] reopenedScalar16Highs, ulong[] reopenedScalar16Lows) = reopened.Session.ReadScalar16KeyStateIdentities(scalar16SlotIndex, KeyStateRoute.Null);
+            if (reopenedScalar16Highs.Length != 2 ||
+                reopenedScalar16Lows.Length != 2)
+            {
+                throw new InvalidDataException("Key-state scalar-16 identity shelf did not survive reopen.");
+            }
+
+            if (!reopened.Indexes.TryGetInfo("routes", "value", out CatalogIndexInfo reopenedInfo))
+            {
+                throw new InvalidDataException("Reopened key-route metadata proof index was not discoverable.");
+            }
+
+            IIndex reopenedIndex = reopened.OpenIndex(reopenedInfo);
+            Func<string, IIndex> reopenedRouteResolver = indexName => string.Equals(indexName, "value", StringComparison.Ordinal)
+                ? reopenedIndex
+                : throw new KeyNotFoundException(indexName);
+            IReadOnlyList<long> reopenedScalarNullIds = LibraDexCondition
+                .ForGroup("routes")
+                .Index("value").AsInt64.EqualTo(ScalarNull.Null)
+                .EndCondition
+                .ToList<long>(reopenedRouteResolver, deduplication: IdentityDeduplication.Preserve);
+            if (!reopenedScalarNullIds.SequenceEqual(new[] { 111L, 333L }))
+            {
+                throw new InvalidDataException("ScalarNull condition route identities did not survive reopen.");
+            }
         }
     }
 
@@ -12656,13 +12837,20 @@ internal static class RawHarness
         AssertSet(IDs(LibraDexCondition.ForGroup("strings").Index("email").AsString.EndsWith("EXAMPLE.COM", ignoreCase: true).EndCondition, email), new[] { 1401UL, 1411UL }, "proof row 141 string no-case suffix");
         AssertSet(IDs(LibraDexCondition.ForGroup("strings").Index("description").AsString.Contains("battery").EndCondition, description), new[] { 1421UL }, "proof row 142 string contains");
         AssertSet(IDs(LibraDexCondition.ForGroup("strings").Index("description").AsString.Contains("battery", ignoreCase: true).EndCondition, description), new[] { 1421UL, 1431UL }, "proof row 143 string no-case contains");
-        AssertSet(IDs(LibraDexCondition.ForGroup("strings").Index("username").AsString.MatchesPattern("admin*").EndCondition, username), new[] { 1441UL }, "proof row 144 string wildcard pattern");
+        AssertSet(IDs(LibraDexCondition.ForGroup("strings").Index("username").AsString.Matches("admin*").EndCondition, username), new[] { 1441UL }, "proof row 144 string wildcard pattern");
+        AssertSet(IDs(LibraDexCondition.ForGroup("strings").Index("code").AsString.MatchesWith(@"[A-Z]\d-\d{4}", "A1-2345").EndCondition, code), new[] { 1451UL }, "proof row 144 string regex whole match comparison");
+        AssertSet(IDs(LibraDexCondition.ForGroup("strings").Index("code").AsString.MatchesWith(@"([A-Z]\d)-(\d{4})", "2345", 2).EndCondition, code), new[] { 1451UL }, "proof row 144 string regex capture comparison");
+        AssertSet(IDs(LibraDexCondition.ForGroup("strings").Index("code").AsString.MatchesInSet(@"([A-Z]\d)-(\d{4})", new[] { "2345", "6789" }, 2).EndCondition, code), new[] { 1451UL }, "proof row 144 string regex capture membership");
+        AssertSet(IDs(LibraDexCondition.ForGroup("strings").Index("code").AsString.NotMatchesWith(@"([A-Z]\d)-(\d{4})", "9999", 2).EndCondition, code), new[] { 1451UL, 1501UL }, "proof row 144 string regex capture negation");
         AssertSet(IDs(LibraDexCondition.ForGroup("strings").Index("country").AsString.InSet(new[] { "US", "CA", "MX" }).EndCondition, country), new[] { 1481UL, 1482UL }, "proof row 148 string membership");
         HashSet<string> tags = new(StringComparer.OrdinalIgnoreCase) { "BETA", "PREVIEW" };
         AssertSet(IDs(LibraDexCondition.ForGroup("strings").Index("tag").AsString.InSet(tags).EndCondition, tag), new[] { 1491UL, 1492UL }, "proof row 149 string policy membership");
         AssertSet(IDs(LibraDexCondition.ForGroup("strings").Index("code").AsString.EqualTo((string?)null).EndCondition, code), new[] { 1500UL }, "proof row 150 string null");
+        AssertSet(IDs(LibraDexCondition.ForGroup("strings").Index("code").AsString.EqualTo(NullKey.Null).EndCondition, code), new[] { 1500UL }, "proof row 150 string NullKey null");
         AssertSet(IDs(LibraDexCondition.ForGroup("strings").Index("code").AsString.EqualTo(string.Empty).EndCondition, code), new[] { 1501UL }, "proof row 150 string empty");
+        AssertSet(IDs(LibraDexCondition.ForGroup("strings").Index("code").AsString.EqualTo(NullKey.Empty).EndCondition, code), new[] { 1501UL }, "proof row 150 string NullKey empty");
         AssertSet(IDs(LibraDexCondition.ForGroup("strings").Index("code").AsString.LessOrEqual(string.Empty).EndCondition, code), new[] { 1500UL, 1501UL }, "proof row 150 string null empty ordering");
+        AssertSet(IDs(LibraDexCondition.ForGroup("strings").Index("code").AsString.EqualTo(NullKey.NullOrEmpty).EndCondition, code), new[] { 1500UL, 1501UL }, "proof row 150 string NullKey null or empty");
         AssertSet(IDs(LibraDexCondition.ForGroup("strings").Index("foldedText").AsString.EqualTo("abc", ignoreCase: true).EndCondition, foldedText), new[] { 1951UL }, "proof row 195 folded text equality");
         AssertSet(IDs(LibraDexCondition.ForGroup("strings").Index("reversedText").AsString.EndsWith("com").EndCondition, reversedText), new[] { 1971UL }, "proof row 197 reversed text suffix");
     }
@@ -12771,9 +12959,9 @@ internal static class RawHarness
             UIDs(deferredIndexCondition, deferredResolver),
             new[] { 1763UL },
             "proof row 176 deferred selector alternate");
-        LibraDexConditionExpression<ulong> deferredIndexExpression = LibraDexConditionExpression<ulong>.From(deferredIndexCondition);
+        LibraDexConditionEndCondition deferredIndexExpression = deferredIndexCondition;
         AssertSet(
-            catalog.Indexes["deferred"].GetIdentities(
+            catalog.Indexes["deferred"].GetIdentities<ulong>(
                 deferredIndexExpression.WithIndex("selectedIndex", "primary"),
                 deduplication: IdentityDeduplication.Preserve),
             new[] { 1762UL },
@@ -12901,7 +13089,7 @@ internal static class RawHarness
         Func<string, IIndex> tenantUserResolver = indexName => indexName == "tenantUser" ? tenantUser : throw new KeyNotFoundException(indexName);
         AssertSet(
             UIDs(LibraDexCondition.ForGroup("people").Index("tenantUser").Where(
-                LibraDexCompositePart.FullKey("/").AsString.MatchesPattern("tenant-a/ad*")).EndCondition, tenantUserResolver),
+                LibraDexCompositePart.FullKey("/").AsString.Matches("tenant-a/ad*")).EndCondition, tenantUserResolver),
             new[] { 1611UL },
             "proof row 161 composite full-key delimiter pattern");
         AssertSet(

@@ -87,6 +87,50 @@ public enum LibraDexConditionValueKind
 }
 
 /// <summary>
+/// Identifies a logical null or empty key sentinel for exact key-state conditions.<br/>
+/// LibraDex string and varlen binary encodings preserve null and empty as distinct ordered key states, so callers can express the state directly without allocating placeholder values.<br/>
+/// </summary>
+public enum NullKey
+{
+    /// <summary>
+    /// Matches the stored null-key sentinel.<br/>
+    /// This represents a key value that was explicitly indexed as null; it does not mean the identity has no tuple in the selected index.<br/>
+    /// </summary>
+    Null = 0,
+
+    /// <summary>
+    /// Matches the stored empty-key sentinel.<br/>
+    /// For string keys this is the empty string; for binary keys this is an empty byte sequence such as <see cref="Array.Empty{T}"/>.<br/>
+    /// </summary>
+    Empty = 1,
+
+    /// <summary>
+    /// Matches either the stored null-key sentinel or the stored empty-key sentinel.<br/>
+    /// This is a convenience state for filters that treat explicit null and explicit empty as equivalent while still excluding ordinary non-empty keys.<br/>
+    /// </summary>
+    NullOrEmpty = 2
+}
+
+/// <summary>
+/// Identifies scalar key presence for indexes whose ordinary key domain has no empty value.<br/>
+/// Scalar null routes are stored outside the normal value router, so callers can ask for null-only or non-null scalar keys without inventing impossible numeric sentinel values.<br/>
+/// </summary>
+public enum ScalarNull
+{
+    /// <summary>
+    /// Matches identities stored on the scalar null key route.<br/>
+    /// Scalar nulls sort before ordinary non-null key values in LibraDex index-natural order.<br/>
+    /// </summary>
+    Null = 0,
+
+    /// <summary>
+    /// Matches ordinary non-null scalar keys and excludes the scalar null route.<br/>
+    /// This state is the scalar-key counterpart to an `IS NOT NULL` predicate and has no empty-key route.<br/>
+    /// </summary>
+    NonNull = 1
+}
+
+/// <summary>
 /// Identifies the adopted condition operation captured by one condition leaf.<br/>
 /// These names mirror Abraxas operator intent at the descriptor boundary; the execution bridge maps them to LibraDex primitive requests only after an index is resolved.<br/>
 /// </summary>
@@ -455,7 +499,32 @@ public enum LibraDexConditionOperatorKind
     /// <summary>
     /// Matches a routed composite-key shape using one or more ordered tier predicates.<br/>
     /// </summary>
-    CompositeMatch = 72
+    CompositeMatch = 72,
+
+    /// <summary>
+    /// Matches string keys whose regex match or capture group equals the supplied value.<br/>
+    /// </summary>
+    MatchesWith = 73,
+
+    /// <summary>
+    /// Matches string keys whose regex match or capture group does not equal the supplied value.<br/>
+    /// </summary>
+    NotMatchesWith = 74,
+
+    /// <summary>
+    /// Matches string keys whose regex match or capture group is in a supplied value set.<br/>
+    /// </summary>
+    MatchesInSet = 75,
+
+    /// <summary>
+    /// Matches string keys whose regex match or capture group is not in a supplied value set.<br/>
+    /// </summary>
+    NotMatchesInSet = 76,
+
+    /// <summary>
+    /// Matches scalar key presence through root-level null-route metadata.<br/>
+    /// </summary>
+    ScalarNullState = 77
 }
 
 /// <summary>
@@ -958,6 +1027,127 @@ public sealed class LibraDexConditionEndCondition
     }
 
     /// <summary>
+    /// Returns this completed condition wrapped as an explicit condition group.<br/>
+    /// This is useful when a completed reusable condition is intentionally composed into a larger condition while preserving parenthesized precedence.<br/>
+    /// </summary>
+    /// <returns>A completed condition whose root is an explicit group around this condition.</returns>
+    public LibraDexConditionEndCondition Grouped()
+    {
+        return LibraDexCondition.ForGroup(Group).Group(this).EndCondition;
+    }
+
+    /// <summary>
+    /// Wraps a completed condition as an explicit condition group.<br/>
+    /// </summary>
+    /// <param name="condition">The completed condition to group.</param>
+    /// <returns>A completed condition whose root is an explicit group around <paramref name="condition"/>.</returns>
+    public static LibraDexConditionEndCondition Grouped(LibraDexConditionEndCondition condition)
+    {
+        ArgumentNullException.ThrowIfNull(condition);
+        return condition.Grouped();
+    }
+
+    /// <summary>
+    /// Composes this completed condition with another completed condition from the same identity group using identity-set intersection.<br/>
+    /// Prefer fluent continuation before `.EndCondition` for handwritten conditions; this method exists for reusable completed fragments.<br/>
+    /// </summary>
+    /// <param name="other">The completed condition to intersect with this condition.</param>
+    /// <returns>A composed completed condition.</returns>
+    public LibraDexConditionEndCondition AndAlso(LibraDexConditionEndCondition other)
+    {
+        return Compose(other, useOr: false);
+    }
+
+    /// <summary>
+    /// Composes this completed condition with a lazily supplied completed condition from the same identity group using identity-set intersection.<br/>
+    /// </summary>
+    /// <param name="otherFactory">Factory that supplies the completed condition to intersect with this condition.</param>
+    /// <returns>A composed completed condition.</returns>
+    public LibraDexConditionEndCondition AndAlso(Func<LibraDexConditionEndCondition> otherFactory)
+    {
+        ArgumentNullException.ThrowIfNull(otherFactory);
+        return AndAlso(otherFactory());
+    }
+
+    /// <summary>
+    /// Composes this completed condition with another completed condition from the same identity group using identity-set union.<br/>
+    /// Prefer fluent continuation before `.EndCondition` for handwritten conditions; this method exists for reusable completed fragments.<br/>
+    /// </summary>
+    /// <param name="other">The completed condition to union with this condition.</param>
+    /// <returns>A composed completed condition.</returns>
+    public LibraDexConditionEndCondition OrElse(LibraDexConditionEndCondition other)
+    {
+        return Compose(other, useOr: true);
+    }
+
+    /// <summary>
+    /// Composes this completed condition with a lazily supplied completed condition from the same identity group using identity-set union.<br/>
+    /// </summary>
+    /// <param name="otherFactory">Factory that supplies the completed condition to union with this condition.</param>
+    /// <returns>A composed completed condition.</returns>
+    public LibraDexConditionEndCondition OrElse(Func<LibraDexConditionEndCondition> otherFactory)
+    {
+        ArgumentNullException.ThrowIfNull(otherFactory);
+        return OrElse(otherFactory());
+    }
+
+    /// <summary>
+    /// Replaces every named operand in this completed condition with a static value.<br/>
+    /// The original condition is not modified, so reusable condition descriptors can be assigned once and rebound for later operations.<br/>
+    /// </summary>
+    /// <param name="name">The operand name to replace.</param>
+    /// <param name="value">The static replacement value.</param>
+    /// <returns>A new completed condition with matching operands replaced.</returns>
+    public LibraDexConditionEndCondition WithValue(string name, object? value)
+    {
+        return RewriteOperands(name, LibraDexConditionOperand.Value(value, name));
+    }
+
+    /// <summary>
+    /// Replaces every named operand in this completed condition with a deferred value factory.<br/>
+    /// The factory is evaluated during materialization so a reusable condition can bind to current request state without rebuilding the chain.<br/>
+    /// </summary>
+    /// <param name="name">The operand name to replace.</param>
+    /// <param name="valueFactory">Factory that returns the current operand value.</param>
+    /// <returns>A new completed condition with matching operands replaced.</returns>
+    public LibraDexConditionEndCondition WithDeferredValue(string name, Func<object?> valueFactory)
+    {
+        return RewriteOperands(name, LibraDexConditionOperand.Deferred(valueFactory, name));
+    }
+
+    /// <summary>
+    /// Replaces every named index selector in this completed condition with a static index name.<br/>
+    /// This supports Abraxas-style proppath aliasing in a LibraDex-shaped form where aliases bind to index names inside the condition's identity group.<br/>
+    /// </summary>
+    /// <param name="name">The selector name to replace.</param>
+    /// <param name="indexName">The replacement index name inside this condition's identity group.</param>
+    /// <returns>A new completed condition with matching selectors replaced.</returns>
+    public LibraDexConditionEndCondition WithIndex(string name, string indexName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        return Rewrite(leaf =>
+            string.Equals(leaf.IndexSelector.Name, name, StringComparison.Ordinal)
+                ? leaf.WithIndexSelector(LibraDexConditionIndexSelector.Static(indexName, name))
+                : leaf);
+    }
+
+    /// <summary>
+    /// Replaces every named index selector in this completed condition with a deferred index-name factory.<br/>
+    /// The factory is evaluated only when the condition is inspected or materialized, allowing one reusable condition to target different aligned indexes over time.<br/>
+    /// </summary>
+    /// <param name="name">The selector name to replace.</param>
+    /// <param name="indexNameFactory">Factory that returns the replacement index name inside this condition's identity group.</param>
+    /// <returns>A new completed condition with matching selectors replaced.</returns>
+    public LibraDexConditionEndCondition WithDeferredIndex(string name, Func<string> indexNameFactory)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        return Rewrite(leaf =>
+            string.Equals(leaf.IndexSelector.Name, name, StringComparison.Ordinal)
+                ? leaf.WithIndexSelector(LibraDexConditionIndexSelector.Deferred(indexNameFactory, name))
+                : leaf);
+    }
+
+    /// <summary>
     /// Materializes this adopted condition with an explicit maintained-projection resolver.<br/>
     /// The normal index resolver supplies the logical indexes referenced by the condition, while the projection resolver may supply a physical projection index for leaves classified as projection-backed.<br/>
     /// This keeps projection execution explicit: LibraDex can use a maintained projection when the caller provides one, but it does not silently scan or invent projection storage.<br/>
@@ -1421,6 +1611,45 @@ public sealed class LibraDexConditionEndCondition
         return new LibraDexConditionEndCondition(Group, root.Rewrite(rewriteLeaf));
     }
 
+    private LibraDexConditionEndCondition Compose(LibraDexConditionEndCondition other, bool useOr)
+    {
+        ArgumentNullException.ThrowIfNull(other);
+        if (!string.Equals(Group, other.Group, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("LibraDex conditions can only compose inside the same identity group.");
+        }
+
+        LibraDexConditionContinueOrEnd left = LibraDexCondition.ForGroup(Group).Group(this);
+        return useOr
+            ? left.OR.Group(other).EndCondition
+            : left.AND.Group(other).EndCondition;
+    }
+
+    private LibraDexConditionEndCondition RewriteOperands(string name, LibraDexConditionOperand replacement)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        return Rewrite(leaf =>
+        {
+            LibraDexConditionOperand[] operands = new LibraDexConditionOperand[leaf.Operands.Count];
+            bool changed = false;
+            for (int i = 0; i < operands.Length; i++)
+            {
+                LibraDexConditionOperand operand = leaf.Operands[i];
+                if (string.Equals(operand.Name, name, StringComparison.Ordinal))
+                {
+                    operands[i] = replacement;
+                    changed = true;
+                }
+                else
+                {
+                    operands[i] = operand;
+                }
+            }
+
+            return changed ? leaf.WithOperands(operands) : leaf;
+        });
+    }
+
     private static LibraDexConditionBridgePlanRow CreateBridgePlanRow(LibraDexConditionLeafClassification classification)
     {
         return classification.ExecutionClass switch
@@ -1538,7 +1767,8 @@ public sealed class LibraDexConditionEndCondition
             LibraDexConditionOperatorKind.Between or
             LibraDexConditionOperatorKind.NotBetween or
             LibraDexConditionOperatorKind.InSet or
-            LibraDexConditionOperatorKind.NotInSet => new LibraDexConditionLeafClassification(
+            LibraDexConditionOperatorKind.NotInSet or
+            LibraDexConditionOperatorKind.ScalarNullState => new LibraDexConditionLeafClassification(
                 leaf.IndexName,
                 leaf.ValueKind,
                 leaf.Operator,
@@ -1934,12 +2164,16 @@ public sealed class LibraDexConditionEndCondition
             LibraDexConditionOperatorKind.EndsWith when leaf.IgnoreCase => ClassifyTextProjection(leaf, index, LibraDexIndexProjectionKind.FoldedText, LibraDexIndexByteDirection.Reversed, "Case-insensitive ends-with requires a maintained reversed folded-text projection."),
             LibraDexConditionOperatorKind.EndsWith => ClassifyTextProjection(leaf, index, LibraDexIndexProjectionKind.Exact, LibraDexIndexByteDirection.Reversed, "Case-sensitive ends-with prefers a maintained reversed exact-text projection."),
             LibraDexConditionOperatorKind.Contains or
-            LibraDexConditionOperatorKind.MatchesPattern => new LibraDexConditionLeafClassification(
+            LibraDexConditionOperatorKind.MatchesPattern or
+            LibraDexConditionOperatorKind.MatchesWith or
+            LibraDexConditionOperatorKind.NotMatchesWith or
+            LibraDexConditionOperatorKind.MatchesInSet or
+            LibraDexConditionOperatorKind.NotMatchesInSet => new LibraDexConditionLeafClassification(
                 leaf.IndexName,
                 leaf.ValueKind,
                 leaf.Operator,
                 LibraDexConditionExecutionClass.VisibleScanLike,
-                "No contains or pattern-capable maintained projection is declared in the current shape model.",
+                "No contains, wildcard-pattern, or regex-capture maintained projection is declared in the current shape model.",
                 ProjectionKind: null),
             LibraDexConditionOperatorKind.InSet or
             LibraDexConditionOperatorKind.NotInSet when !leaf.IgnoreCase => new LibraDexConditionLeafClassification(
@@ -2967,6 +3201,12 @@ public sealed class LibraDexCompositeConditionStringOperator
     public LibraDexCompositeConditionContinuation MatchesPattern(string pattern, bool ignoreCase = false, string? culture = null) => capture(inner.MatchesPattern(pattern, ignoreCase, culture));
 
     /// <summary>
+    /// Captures a pattern text condition over the selected composite string component using the short public spelling.<br/>
+    /// This is the preferred alias for <see cref="MatchesPattern(string, bool, string?)"/> and preserves the same case and culture metadata.<br/>
+    /// </summary>
+    public LibraDexCompositeConditionContinuation Matches(string pattern, bool ignoreCase = false, string? culture = null) => MatchesPattern(pattern, ignoreCase, culture);
+
+    /// <summary>
     /// Captures a greater-than predicate against the selected string key part.<br/>
     /// The produced predicate is immediately attached to the owning composite index condition.<br/>
     /// </summary>
@@ -3106,6 +3346,12 @@ public sealed class LibraDexCompositeConditionFullKeyStringOperator
     /// <param name="culture">Optional culture name for managed comparison.</param>
     /// <returns>A continuation for the same composite index condition.</returns>
     public LibraDexCompositeConditionContinuation MatchesPattern(string pattern, bool ignoreCase = false, string? culture = null) => capture(inner.MatchesPattern(pattern, ignoreCase, culture));
+
+    /// <summary>
+    /// Captures a pattern text condition over the selected composite full-key string view using the short public spelling.<br/>
+    /// This is the preferred alias for <see cref="MatchesPattern(string, bool, string?)"/> and preserves the same case and culture metadata.<br/>
+    /// </summary>
+    public LibraDexCompositeConditionContinuation Matches(string pattern, bool ignoreCase = false, string? culture = null) => MatchesPattern(pattern, ignoreCase, culture);
 }
 
 /// <summary>
@@ -3722,6 +3968,15 @@ public sealed class LibraDexCompositeFullKeyStringCondition
         return Create(LibraDexConditionOperatorKind.MatchesPattern, ignoreCase, culture, pattern);
     }
 
+    /// <summary>
+    /// Captures a pattern text predicate for this composite string part using the short public spelling.<br/>
+    /// This is the preferred alias for <see cref="MatchesPattern(string, bool, string?)"/> and preserves the same case and culture metadata.<br/>
+    /// </summary>
+    public LibraDexCompositePartCriterion Matches(string pattern, bool ignoreCase = false, string? culture = null)
+    {
+        return MatchesPattern(pattern, ignoreCase, culture);
+    }
+
     private LibraDexCompositePartCriterion Create(
         LibraDexConditionOperatorKind operatorKind,
         bool ignoreCase,
@@ -3870,6 +4125,15 @@ public sealed class LibraDexCompositeStringPartCondition
     public LibraDexCompositePartCriterion MatchesPattern(string pattern, bool ignoreCase = false, string? culture = null)
     {
         return Create(LibraDexConditionOperatorKind.MatchesPattern, ignoreCase, culture, pattern);
+    }
+
+    /// <summary>
+    /// Captures a pattern text predicate for this composite full-key string view using the short public spelling.<br/>
+    /// This is the preferred alias for <see cref="MatchesPattern(string, bool, string?)"/> and preserves the same case and culture metadata.<br/>
+    /// </summary>
+    public LibraDexCompositePartCriterion Matches(string pattern, bool ignoreCase = false, string? culture = null)
+    {
+        return MatchesPattern(pattern, ignoreCase, culture);
     }
 
     /// <summary>
@@ -4535,6 +4799,17 @@ public class LibraDexConditionOperator<TValue>
     }
 
     /// <summary>
+    /// Captures scalar null-state equality for key families that have no empty-key state.<br/>
+    /// `ScalarNull.Null` selects the compact root null route; `ScalarNull.NonNull` selects ordinary non-null scalar value routes.<br/>
+    /// </summary>
+    /// <param name="state">The scalar null-state predicate to capture.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd EqualTo(ScalarNull state)
+    {
+        return Add(LibraDexConditionOperatorKind.ScalarNullState, LibraDexConditionOperand.Value(state));
+    }
+
+    /// <summary>
     /// Captures inequality against a static value.<br/>
     /// </summary>
     /// <param name="value">The value to exclude.</param>
@@ -4556,6 +4831,23 @@ public class LibraDexConditionOperator<TValue>
     {
         ArgumentNullException.ThrowIfNull(value);
         return Add(LibraDexConditionOperatorKind.NotEqualTo, LibraDexConditionOperand.Deferred(() => value(), name));
+    }
+
+    /// <summary>
+    /// Captures scalar null-state inequality for key families that have no empty-key state.<br/>
+    /// Inequality maps to the opposite scalar null state so the descriptor remains a single executable key-state predicate.<br/>
+    /// </summary>
+    /// <param name="state">The scalar null-state predicate to exclude.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd NotEqualTo(ScalarNull state)
+    {
+        ScalarNull opposite = state switch
+        {
+            ScalarNull.Null => ScalarNull.NonNull,
+            ScalarNull.NonNull => ScalarNull.Null,
+            _ => throw new ArgumentOutOfRangeException(nameof(state), state, "Unknown scalar null state.")
+        };
+        return EqualTo(opposite);
     }
 
     /// <summary>
@@ -4983,7 +5275,46 @@ public sealed class LibraDexStringConditionOperator : LibraDexConditionOperator<
     /// <returns>A continuation for adding more clauses or ending the condition.</returns>
     public LibraDexConditionContinueOrEnd EqualTo(string? value, bool ignoreCase = false, string? culture = null)
     {
+        if (value is null)
+        {
+            return EqualTo(NullKey.Null);
+        }
+
+        if (value.Length == 0)
+        {
+            return EqualTo(NullKey.Empty);
+        }
+
         return AddText(LibraDexConditionOperatorKind.EqualTo, value, ignoreCase, culture);
+    }
+
+    /// <summary>
+    /// Captures string equality against an explicit null or empty key state.<br/>
+    /// `NullKey.Null` maps to the stored string null sentinel, `NullKey.Empty` maps to the stored empty-string sentinel, and `NullKey.NullOrEmpty` maps to the ordered sentinel range ending at empty.<br/>
+    /// </summary>
+    /// <param name="keyState">The key-state sentinel to match.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd EqualTo(NullKey keyState)
+    {
+        return keyState switch
+        {
+            NullKey.Null => AddText(LibraDexConditionOperatorKind.EqualTo, (string?)null, ignoreCase: false, culture: null),
+            NullKey.Empty => AddText(LibraDexConditionOperatorKind.EqualTo, string.Empty, ignoreCase: false, culture: null),
+            NullKey.NullOrEmpty => AddText(LibraDexConditionOperatorKind.LessOrEqual, string.Empty, ignoreCase: false, culture: null),
+            _ => throw new ArgumentOutOfRangeException(nameof(keyState), keyState, "Unknown null-key state.")
+        };
+    }
+
+    /// <summary>
+    /// Captures string equality against the stored null-key sentinel from <see cref="DBNull.Value"/>.<br/>
+    /// This overload keeps database-shaped call sites allocation-free and routes to <see cref="NullKey.Null"/> rather than treating `DBNull` as a string value.<br/>
+    /// </summary>
+    /// <param name="value">The database null sentinel; normally <see cref="DBNull.Value"/>.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd EqualTo(DBNull value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        return EqualTo(NullKey.Null);
     }
 
     /// <summary>
@@ -4996,7 +5327,46 @@ public sealed class LibraDexStringConditionOperator : LibraDexConditionOperator<
     /// <returns>A continuation for adding more clauses or ending the condition.</returns>
     public LibraDexConditionContinueOrEnd NotEqualTo(string? value, bool ignoreCase = false, string? culture = null)
     {
+        if (value is null)
+        {
+            return NotEqualTo(NullKey.Null);
+        }
+
+        if (value.Length == 0)
+        {
+            return NotEqualTo(NullKey.Empty);
+        }
+
         return AddText(LibraDexConditionOperatorKind.NotEqualTo, value, ignoreCase, culture);
+    }
+
+    /// <summary>
+    /// Captures string inequality against an explicit null or empty key state.<br/>
+    /// `NullKey.NullOrEmpty` maps to the ordered sentinel complement after empty, excluding both explicit null and explicit empty without constructing a caller-side collection.<br/>
+    /// </summary>
+    /// <param name="keyState">The key-state sentinel to exclude.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd NotEqualTo(NullKey keyState)
+    {
+        return keyState switch
+        {
+            NullKey.Null => AddText(LibraDexConditionOperatorKind.NotEqualTo, (string?)null, ignoreCase: false, culture: null),
+            NullKey.Empty => AddText(LibraDexConditionOperatorKind.NotEqualTo, string.Empty, ignoreCase: false, culture: null),
+            NullKey.NullOrEmpty => AddText(LibraDexConditionOperatorKind.GreaterThan, string.Empty, ignoreCase: false, culture: null),
+            _ => throw new ArgumentOutOfRangeException(nameof(keyState), keyState, "Unknown null-key state.")
+        };
+    }
+
+    /// <summary>
+    /// Captures string inequality against the stored null-key sentinel from <see cref="DBNull.Value"/>.<br/>
+    /// This overload keeps database-shaped call sites explicit and routes to <see cref="NullKey.Null"/> instead of comparing against the `DBNull` object itself.<br/>
+    /// </summary>
+    /// <param name="value">The database null sentinel; normally <see cref="DBNull.Value"/>.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd NotEqualTo(DBNull value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        return NotEqualTo(NullKey.Null);
     }
 
     /// <summary>
@@ -5393,6 +5763,193 @@ public sealed class LibraDexStringConditionOperator : LibraDexConditionOperator<
         return AddText(LibraDexConditionOperatorKind.MatchesPattern, pattern, ignoreCase, culture);
     }
 
+    /// <summary>
+    /// Captures a pattern text condition using the short public spelling.<br/>
+    /// This is the preferred alias for <see cref="MatchesPattern(string, bool, string?)"/> and preserves the same optional case and culture projection intent.<br/>
+    /// </summary>
+    /// <param name="pattern">The pattern descriptor.</param>
+    /// <param name="ignoreCase">Whether case-insensitive text behavior was requested.</param>
+    /// <param name="culture">The culture name for case or sort behavior, when supplied.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd Matches(string pattern, bool ignoreCase = false, string? culture = null)
+    {
+        return MatchesPattern(pattern, ignoreCase, culture);
+    }
+
+    /// <summary>
+    /// Captures a regex match-value comparison against the selected string index.<br/>
+    /// The regular expression is evaluated with <see cref="System.Text.RegularExpressions.Regex.Match(string, string)"/> semantics, and <see cref="System.Text.RegularExpressions.Match.Value"/> is compared to <paramref name="value"/>.<br/>
+    /// </summary>
+    /// <param name="pattern">The regular expression pattern.</param>
+    /// <param name="value">The expected whole-match value.</param>
+    /// <param name="ignoreCase">Whether regex matching and captured-value comparison should ignore case.</param>
+    /// <param name="culture">The culture name for captured-value comparison, when supplied.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd MatchesWith(string pattern, string value, bool ignoreCase = false, string? culture = null)
+    {
+        return AddText(LibraDexConditionOperatorKind.MatchesWith, CreateRegexCaptureOperands(pattern, value, groupNumber: null), ignoreCase, culture);
+    }
+
+    /// <summary>
+    /// Captures a regex capture-group comparison against the selected string index.<br/>
+    /// The regular expression is evaluated with <see cref="System.Text.RegularExpressions.Regex.Match(string, string)"/> semantics, and `Match.Groups[groupNumber].Value` is compared to <paramref name="value"/>.<br/>
+    /// </summary>
+    /// <param name="pattern">The regular expression pattern.</param>
+    /// <param name="value">The expected capture-group value.</param>
+    /// <param name="groupNumber">The regex group number to compare; zero compares the whole match.</param>
+    /// <param name="ignoreCase">Whether regex matching and captured-value comparison should ignore case.</param>
+    /// <param name="culture">The culture name for captured-value comparison, when supplied.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd MatchesWith(string pattern, string value, int groupNumber, bool ignoreCase = false, string? culture = null)
+    {
+        return AddText(LibraDexConditionOperatorKind.MatchesWith, CreateRegexCaptureOperands(pattern, value, groupNumber), ignoreCase, culture);
+    }
+
+    /// <summary>
+    /// Captures a negated regex match-value comparison against the selected string index.<br/>
+    /// The regular expression is evaluated with <see cref="System.Text.RegularExpressions.Regex.Match(string, string)"/> semantics, and identities match when <see cref="System.Text.RegularExpressions.Match.Value"/> differs from <paramref name="value"/> or the regex does not match.<br/>
+    /// </summary>
+    /// <param name="pattern">The regular expression pattern.</param>
+    /// <param name="value">The whole-match value to exclude.</param>
+    /// <param name="ignoreCase">Whether regex matching and captured-value comparison should ignore case.</param>
+    /// <param name="culture">The culture name for captured-value comparison, when supplied.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd NotMatchesWith(string pattern, string value, bool ignoreCase = false, string? culture = null)
+    {
+        return AddText(LibraDexConditionOperatorKind.NotMatchesWith, CreateRegexCaptureOperands(pattern, value, groupNumber: null), ignoreCase, culture);
+    }
+
+    /// <summary>
+    /// Captures a negated regex capture-group comparison against the selected string index.<br/>
+    /// The regular expression is evaluated with <see cref="System.Text.RegularExpressions.Regex.Match(string, string)"/> semantics, and identities match when `Match.Groups[groupNumber].Value` differs from <paramref name="value"/> or the regex/group does not match.<br/>
+    /// </summary>
+    /// <param name="pattern">The regular expression pattern.</param>
+    /// <param name="value">The capture-group value to exclude.</param>
+    /// <param name="groupNumber">The regex group number to compare; zero compares the whole match.</param>
+    /// <param name="ignoreCase">Whether regex matching and captured-value comparison should ignore case.</param>
+    /// <param name="culture">The culture name for captured-value comparison, when supplied.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd NotMatchesWith(string pattern, string value, int groupNumber, bool ignoreCase = false, string? culture = null)
+    {
+        return AddText(LibraDexConditionOperatorKind.NotMatchesWith, CreateRegexCaptureOperands(pattern, value, groupNumber), ignoreCase, culture);
+    }
+
+    /// <summary>
+    /// Captures regex match-value membership against the selected string index.<br/>
+    /// The regular expression is evaluated once per candidate key, and <see cref="System.Text.RegularExpressions.Match.Value"/> is compared to the supplied values.<br/>
+    /// </summary>
+    /// <param name="pattern">The regular expression pattern.</param>
+    /// <param name="values">The expected whole-match values.</param>
+    /// <param name="ignoreCase">Whether regex matching and captured-value comparison should ignore case.</param>
+    /// <param name="culture">The culture name for captured-value comparison, when supplied.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd MatchesIn(string pattern, IEnumerable<string> values, bool ignoreCase = false, string? culture = null)
+    {
+        return MatchesInSet(pattern, values, ignoreCase, culture);
+    }
+
+    /// <summary>
+    /// Captures regex capture-group membership against the selected string index.<br/>
+    /// The regular expression is evaluated once per candidate key, and `Match.Groups[groupNumber].Value` is compared to the supplied values.<br/>
+    /// </summary>
+    /// <param name="pattern">The regular expression pattern.</param>
+    /// <param name="values">The expected capture-group values.</param>
+    /// <param name="groupNumber">The regex group number to compare; zero compares the whole match.</param>
+    /// <param name="ignoreCase">Whether regex matching and captured-value comparison should ignore case.</param>
+    /// <param name="culture">The culture name for captured-value comparison, when supplied.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd MatchesIn(string pattern, IEnumerable<string> values, int groupNumber, bool ignoreCase = false, string? culture = null)
+    {
+        return MatchesInSet(pattern, values, groupNumber, ignoreCase, culture);
+    }
+
+    /// <summary>
+    /// Captures regex match-value membership against the selected string index using set terminology.<br/>
+    /// Compatible set-shaped inputs can be reused by the executor while preserving the captured-value comparison policy.<br/>
+    /// </summary>
+    /// <param name="pattern">The regular expression pattern.</param>
+    /// <param name="values">The expected whole-match values.</param>
+    /// <param name="ignoreCase">Whether regex matching and captured-value comparison should ignore case.</param>
+    /// <param name="culture">The culture name for captured-value comparison, when supplied.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd MatchesInSet(string pattern, IEnumerable<string> values, bool ignoreCase = false, string? culture = null)
+    {
+        return AddText(LibraDexConditionOperatorKind.MatchesInSet, CreateRegexCaptureSetOperands(pattern, values, groupNumber: null), ignoreCase, culture);
+    }
+
+    /// <summary>
+    /// Captures regex capture-group membership against the selected string index using set terminology.<br/>
+    /// Compatible set-shaped inputs can be reused by the executor while preserving the captured-value comparison policy.<br/>
+    /// </summary>
+    /// <param name="pattern">The regular expression pattern.</param>
+    /// <param name="values">The expected capture-group values.</param>
+    /// <param name="groupNumber">The regex group number to compare; zero compares the whole match.</param>
+    /// <param name="ignoreCase">Whether regex matching and captured-value comparison should ignore case.</param>
+    /// <param name="culture">The culture name for captured-value comparison, when supplied.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd MatchesInSet(string pattern, IEnumerable<string> values, int groupNumber, bool ignoreCase = false, string? culture = null)
+    {
+        return AddText(LibraDexConditionOperatorKind.MatchesInSet, CreateRegexCaptureSetOperands(pattern, values, groupNumber), ignoreCase, culture);
+    }
+
+    /// <summary>
+    /// Captures negated regex match-value membership against the selected string index.<br/>
+    /// Identities match when the regex does not match or the selected match value is not in the supplied values.<br/>
+    /// </summary>
+    /// <param name="pattern">The regular expression pattern.</param>
+    /// <param name="values">The whole-match values to exclude.</param>
+    /// <param name="ignoreCase">Whether regex matching and captured-value comparison should ignore case.</param>
+    /// <param name="culture">The culture name for captured-value comparison, when supplied.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd NotMatchesIn(string pattern, IEnumerable<string> values, bool ignoreCase = false, string? culture = null)
+    {
+        return NotMatchesInSet(pattern, values, ignoreCase, culture);
+    }
+
+    /// <summary>
+    /// Captures negated regex capture-group membership against the selected string index.<br/>
+    /// Identities match when the regex/group does not match or the selected group value is not in the supplied values.<br/>
+    /// </summary>
+    /// <param name="pattern">The regular expression pattern.</param>
+    /// <param name="values">The capture-group values to exclude.</param>
+    /// <param name="groupNumber">The regex group number to compare; zero compares the whole match.</param>
+    /// <param name="ignoreCase">Whether regex matching and captured-value comparison should ignore case.</param>
+    /// <param name="culture">The culture name for captured-value comparison, when supplied.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd NotMatchesIn(string pattern, IEnumerable<string> values, int groupNumber, bool ignoreCase = false, string? culture = null)
+    {
+        return NotMatchesInSet(pattern, values, groupNumber, ignoreCase, culture);
+    }
+
+    /// <summary>
+    /// Captures negated regex match-value membership against the selected string index using set terminology.<br/>
+    /// Identities match when the regex does not match or the selected match value is not in the supplied values.<br/>
+    /// </summary>
+    /// <param name="pattern">The regular expression pattern.</param>
+    /// <param name="values">The whole-match values to exclude.</param>
+    /// <param name="ignoreCase">Whether regex matching and captured-value comparison should ignore case.</param>
+    /// <param name="culture">The culture name for captured-value comparison, when supplied.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd NotMatchesInSet(string pattern, IEnumerable<string> values, bool ignoreCase = false, string? culture = null)
+    {
+        return AddText(LibraDexConditionOperatorKind.NotMatchesInSet, CreateRegexCaptureSetOperands(pattern, values, groupNumber: null), ignoreCase, culture);
+    }
+
+    /// <summary>
+    /// Captures negated regex capture-group membership against the selected string index using set terminology.<br/>
+    /// Identities match when the regex/group does not match or the selected group value is not in the supplied values.<br/>
+    /// </summary>
+    /// <param name="pattern">The regular expression pattern.</param>
+    /// <param name="values">The capture-group values to exclude.</param>
+    /// <param name="groupNumber">The regex group number to compare; zero compares the whole match.</param>
+    /// <param name="ignoreCase">Whether regex matching and captured-value comparison should ignore case.</param>
+    /// <param name="culture">The culture name for captured-value comparison, when supplied.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd NotMatchesInSet(string pattern, IEnumerable<string> values, int groupNumber, bool ignoreCase = false, string? culture = null)
+    {
+        return AddText(LibraDexConditionOperatorKind.NotMatchesInSet, CreateRegexCaptureSetOperands(pattern, values, groupNumber), ignoreCase, culture);
+    }
+
     private LibraDexConditionContinueOrEnd AddText(
         LibraDexConditionOperatorKind operatorKind,
         string? value,
@@ -5426,6 +5983,24 @@ public sealed class LibraDexStringConditionOperator : LibraDexConditionOperator<
         return values is HashSet<string> or ISet<string> or IReadOnlyCollection<string>
             ? values
             : values.ToArray();
+    }
+
+    private static LibraDexConditionOperand[] CreateRegexCaptureOperands(string pattern, string value, int? groupNumber)
+    {
+        ArgumentNullException.ThrowIfNull(pattern);
+        ArgumentNullException.ThrowIfNull(value);
+        return groupNumber.HasValue
+            ? new[] { LibraDexConditionOperand.Value(pattern), LibraDexConditionOperand.Value(value), LibraDexConditionOperand.Value(groupNumber.Value) }
+            : new[] { LibraDexConditionOperand.Value(pattern), LibraDexConditionOperand.Value(value) };
+    }
+
+    private static LibraDexConditionOperand[] CreateRegexCaptureSetOperands(string pattern, IEnumerable<string> values, int? groupNumber)
+    {
+        ArgumentNullException.ThrowIfNull(pattern);
+        ArgumentNullException.ThrowIfNull(values);
+        return groupNumber.HasValue
+            ? new[] { LibraDexConditionOperand.Value(pattern), LibraDexConditionOperand.Value(CaptureStringMembershipInput(values)), LibraDexConditionOperand.Value(groupNumber.Value) }
+            : new[] { LibraDexConditionOperand.Value(pattern), LibraDexConditionOperand.Value(CaptureStringMembershipInput(values)) };
     }
 }
 
@@ -6026,6 +6601,64 @@ public sealed class LibraDexBinaryConditionOperator : LibraDexConditionOperator<
     }
 
     /// <summary>
+    /// Captures binary equality against an explicit null or empty key state.<br/>
+    /// `NullKey.Null` maps to the stored binary null sentinel, `NullKey.Empty` maps to an empty byte sequence, and `NullKey.NullOrEmpty` maps to the ordered sentinel range ending at empty.<br/>
+    /// </summary>
+    /// <param name="keyState">The key-state sentinel to match.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd EqualTo(NullKey keyState)
+    {
+        return keyState switch
+        {
+            NullKey.Null => Add(LibraDexConditionOperatorKind.EqualTo, LibraDexConditionOperand.Value(null)),
+            NullKey.Empty => Add(LibraDexConditionOperatorKind.EqualTo, LibraDexConditionOperand.Value(Array.Empty<byte>())),
+            NullKey.NullOrEmpty => Add(LibraDexConditionOperatorKind.LessOrEqual, LibraDexConditionOperand.Value(Array.Empty<byte>())),
+            _ => throw new ArgumentOutOfRangeException(nameof(keyState), keyState, "Unknown null-key state.")
+        };
+    }
+
+    /// <summary>
+    /// Captures binary equality against the stored null-key sentinel from <see cref="DBNull.Value"/>.<br/>
+    /// This overload keeps database-shaped call sites explicit and routes to <see cref="NullKey.Null"/> instead of comparing against the `DBNull` object itself.<br/>
+    /// </summary>
+    /// <param name="value">The database null sentinel; normally <see cref="DBNull.Value"/>.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd EqualTo(DBNull value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        return EqualTo(NullKey.Null);
+    }
+
+    /// <summary>
+    /// Captures binary inequality against an explicit null or empty key state.<br/>
+    /// `NullKey.NullOrEmpty` maps to the ordered sentinel complement after empty, excluding both explicit null and explicit empty without allocating a caller-side set.<br/>
+    /// </summary>
+    /// <param name="keyState">The key-state sentinel to exclude.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd NotEqualTo(NullKey keyState)
+    {
+        return keyState switch
+        {
+            NullKey.Null => Add(LibraDexConditionOperatorKind.NotEqualTo, LibraDexConditionOperand.Value(null)),
+            NullKey.Empty => Add(LibraDexConditionOperatorKind.NotEqualTo, LibraDexConditionOperand.Value(Array.Empty<byte>())),
+            NullKey.NullOrEmpty => Add(LibraDexConditionOperatorKind.GreaterThan, LibraDexConditionOperand.Value(Array.Empty<byte>())),
+            _ => throw new ArgumentOutOfRangeException(nameof(keyState), keyState, "Unknown null-key state.")
+        };
+    }
+
+    /// <summary>
+    /// Captures binary inequality against the stored null-key sentinel from <see cref="DBNull.Value"/>.<br/>
+    /// This overload keeps database-shaped call sites explicit and routes to <see cref="NullKey.Null"/> instead of comparing against the `DBNull` object itself.<br/>
+    /// </summary>
+    /// <param name="value">The database null sentinel; normally <see cref="DBNull.Value"/>.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd NotEqualTo(DBNull value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        return NotEqualTo(NullKey.Null);
+    }
+
+    /// <summary>
     /// Captures a raw binary starts-with condition.<br/>
     /// The descriptor materializes as an encoded key-byte predicate over fixed-width byte-array keys.<br/>
     /// </summary>
@@ -6100,6 +6733,17 @@ public sealed class LibraDexBinaryConditionOperator : LibraDexConditionOperator<
     public LibraDexConditionContinueOrEnd MatchesHexPattern(string hexPattern)
     {
         return AddBinaryPattern(LibraDexConditionOperatorKind.MatchesPattern, LibraDexBinaryPatternPredicate.CreateHex(LibraDexBinaryPatternMode.MatchesPattern, hexPattern));
+    }
+
+    /// <summary>
+    /// Captures a raw binary full-key pattern from a readable hexadecimal pattern using the short public spelling.<br/>
+    /// This is the preferred alias for <see cref="MatchesHexPattern(string)"/> and preserves the same byte-aligned wildcard semantics.<br/>
+    /// </summary>
+    /// <param name="hexPattern">The byte-aligned full-key hexadecimal pattern.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd Matches(string hexPattern)
+    {
+        return MatchesHexPattern(hexPattern);
     }
 
     /// <summary>
@@ -6901,6 +7545,17 @@ public sealed class LibraDexGuidConditionOperator : LibraDexConditionOperator<Gu
     }
 
     /// <summary>
+    /// Captures a GUID text pattern condition using the short public spelling.<br/>
+    /// This is the preferred alias for <see cref="MatchesPattern(string)"/> and keeps wildcard GUID syntax concise at call sites.<br/>
+    /// </summary>
+    /// <param name="pattern">The GUID text pattern descriptor.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd Matches(string pattern)
+    {
+        return MatchesPattern(pattern);
+    }
+
+    /// <summary>
     /// Captures a full 16-byte GUID byte-domain pattern condition.<br/>
     /// The byte order is the stored GUID byte order produced by `Guid.TryWriteBytes`, and every nibble is compared.<br/>
     /// </summary>
@@ -6910,6 +7565,17 @@ public sealed class LibraDexGuidConditionOperator : LibraDexConditionOperator<Gu
     {
         ArgumentNullException.ThrowIfNull(pattern);
         return AddGuidPattern(LibraDexConditionOperatorKind.MatchesPattern, LibraDexGuidPatternPredicate.Create(pattern, LibraDexGuidPatternMode.MatchesPattern));
+    }
+
+    /// <summary>
+    /// Captures a full 16-byte GUID byte-domain pattern condition using the short public spelling.<br/>
+    /// This is the preferred alias for <see cref="MatchesPattern(byte[])"/> and preserves the stored GUID byte-order contract.<br/>
+    /// </summary>
+    /// <param name="pattern">The full stored GUID byte pattern.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd Matches(byte[] pattern)
+    {
+        return MatchesPattern(pattern);
     }
 
     private LibraDexConditionContinueOrEnd AddGuidPattern(LibraDexConditionOperatorKind operatorKind, LibraDexGuidPatternPredicate predicate)
@@ -6950,6 +7616,30 @@ public sealed class LibraDexConditionContinueOrEnd
     }
 
     /// <summary>
+    /// Adds an identity-set intersection and selects the next index by name.<br/>
+    /// Key typing and projection intent are chosen after this selector through members such as `.AsString`, `.AsGuid`, and `.AsInt64`, preserving the index-first condition grammar across multi-index chains.<br/>
+    /// The index name is resolved only when the completed condition is materialized.<br/>
+    /// </summary>
+    /// <param name="indexName">The next index name inside the current identity group.</param>
+    /// <returns>A value-family selector for the next condition leaf.</returns>
+    public LibraDexConditionValueTypeSelector AndAlso(string indexName)
+    {
+        return AND.Index(indexName);
+    }
+
+    /// <summary>
+    /// Adds an identity-set intersection and selects the next index from an opened index instance.<br/>
+    /// The handle supplies the next index name and verifies the identity group immediately; key-type compatibility remains tied to the `.As...` family selected after the index.<br/>
+    /// This overload keeps instance-based multi-index conditions concise without repeating index names.<br/>
+    /// </summary>
+    /// <param name="index">The opened index instance to select for the next condition leaf.</param>
+    /// <returns>A value-family selector for the next condition leaf.</returns>
+    public LibraDexConditionValueTypeSelector AndAlso(IIndex index)
+    {
+        return AND.Index(ValidateIndex(index).Name);
+    }
+
+    /// <summary>
     /// Adds a union operator and starts the next clause.<br/>
     /// </summary>
     public LibraDexConditionClause OR
@@ -6962,6 +7652,30 @@ public sealed class LibraDexConditionContinueOrEnd
     }
 
     /// <summary>
+    /// Adds an identity-set union and selects the next index by name.<br/>
+    /// Key typing and projection intent are chosen after this selector through members such as `.AsString`, `.AsGuid`, and `.AsInt64`, matching the index-first grammar used by `AndAlso`.<br/>
+    /// The index name is resolved only when the completed condition is materialized.<br/>
+    /// </summary>
+    /// <param name="indexName">The next index name inside the current identity group.</param>
+    /// <returns>A value-family selector for the next condition leaf.</returns>
+    public LibraDexConditionValueTypeSelector OrElse(string indexName)
+    {
+        return OR.Index(indexName);
+    }
+
+    /// <summary>
+    /// Adds an identity-set union and selects the next index from an opened index instance.<br/>
+    /// The handle supplies the next index name and verifies the identity group immediately; key-type compatibility remains tied to the `.As...` family selected after the index.<br/>
+    /// This overload mirrors `AndAlso(IIndex)` for union-shaped multi-index conditions.<br/>
+    /// </summary>
+    /// <param name="index">The opened index instance to select for the next condition leaf.</param>
+    /// <returns>A value-family selector for the next condition leaf.</returns>
+    public LibraDexConditionValueTypeSelector OrElse(IIndex index)
+    {
+        return OR.Index(ValidateIndex(index).Name);
+    }
+
+    /// <summary>
     /// Completes the adopted condition descriptor.<br/>
     /// The returned condition can be inspected as leaves or materialized by resolving index names to opened LibraDex indexes.<br/>
     /// </summary>
@@ -6971,6 +7685,17 @@ public sealed class LibraDexConditionContinueOrEnd
     /// Convenience alias for <see cref="EndCondition"/> that matches Abraxas' short `ec` alias.<br/>
     /// </summary>
     public LibraDexConditionEndCondition ec => EndCondition;
+
+    private IIndex ValidateIndex(IIndex index)
+    {
+        ArgumentNullException.ThrowIfNull(index);
+        if (!string.Equals(index.Group, builder.Group, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("The supplied index handle belongs to a different LibraDex identity group.");
+        }
+
+        return index;
+    }
 }
 
 internal enum LibraDexConditionNodeKind
@@ -7273,6 +7998,7 @@ internal sealed class LibraDexConditionNode
             LibraDexConditionOperatorKind.BitAndNotEqualTo => MaterializeBitmaskLeaf(index, values, descriptor, LibraDexBitmaskComparisonMode.NotEqualTo),
             LibraDexConditionOperatorKind.InSet => CreateMembershipLeaf(index, values, descriptor),
             LibraDexConditionOperatorKind.NotInSet => CreateMembershipLeaf(index, values, descriptor).Not(),
+            LibraDexConditionOperatorKind.ScalarNullState => CreateConditionLeaf(index, LibraDexCriteriaKind.ScalarNull, RequireEnum<ScalarNull>(values, 0, descriptor)),
             _ => null
         };
 
@@ -7316,11 +8042,19 @@ internal sealed class LibraDexConditionNode
             LibraDexConditionOperatorKind.StartsWith or
             LibraDexConditionOperatorKind.EndsWith or
             LibraDexConditionOperatorKind.Contains or
-            LibraDexConditionOperatorKind.MatchesPattern when descriptor.ValueKind == LibraDexConditionValueKind.String => MaterializeStringPatternLeaf(index, values, descriptor),
+            LibraDexConditionOperatorKind.MatchesPattern or
+            LibraDexConditionOperatorKind.MatchesWith or
+            LibraDexConditionOperatorKind.NotMatchesWith or
+            LibraDexConditionOperatorKind.MatchesInSet or
+            LibraDexConditionOperatorKind.NotMatchesInSet when descriptor.ValueKind == LibraDexConditionValueKind.String => MaterializeStringPatternLeaf(index, values, descriptor),
             LibraDexConditionOperatorKind.StartsWith or
             LibraDexConditionOperatorKind.EndsWith or
             LibraDexConditionOperatorKind.Contains or
-            LibraDexConditionOperatorKind.MatchesPattern => throw new NotSupportedException($"Condition operator {descriptor.Operator} requires an explicit maintained projection bridge before it can materialize."),
+            LibraDexConditionOperatorKind.MatchesPattern or
+            LibraDexConditionOperatorKind.MatchesWith or
+            LibraDexConditionOperatorKind.NotMatchesWith or
+            LibraDexConditionOperatorKind.MatchesInSet or
+            LibraDexConditionOperatorKind.NotMatchesInSet => throw new NotSupportedException($"Condition operator {descriptor.Operator} requires an explicit maintained projection bridge before it can materialize."),
             _ => null
         };
 
@@ -7756,6 +8490,13 @@ internal sealed class LibraDexConditionNode
                 : throw new ArgumentException("Bitmask conditions require a compiled bitmask predicate.");
         }
 
+        if (criteriaKind == LibraDexCriteriaKind.ScalarNull)
+        {
+            return value is ScalarNull
+                ? value
+                : throw new ArgumentException("Scalar null conditions require a ScalarNull operand.");
+        }
+
         if (criteriaKind == LibraDexCriteriaKind.CompositeMatch)
         {
             return value is LibraDexCompositePredicate
@@ -7907,8 +8648,38 @@ internal sealed class LibraDexConditionNode
             LibraDexConditionOperatorKind.EndsWith => LibraDexStringPatternMode.EndsWith,
             LibraDexConditionOperatorKind.Contains => LibraDexStringPatternMode.Contains,
             LibraDexConditionOperatorKind.MatchesPattern => LibraDexStringPatternMode.MatchesPattern,
+            LibraDexConditionOperatorKind.MatchesWith => LibraDexStringPatternMode.MatchesWith,
+            LibraDexConditionOperatorKind.NotMatchesWith => LibraDexStringPatternMode.NotMatchesWith,
+            LibraDexConditionOperatorKind.MatchesInSet => LibraDexStringPatternMode.MatchesInSet,
+            LibraDexConditionOperatorKind.NotMatchesInSet => LibraDexStringPatternMode.NotMatchesInSet,
             _ => throw new NotSupportedException($"Condition operator {descriptor.Operator} is not a string pattern operator.")
         };
+        if (descriptor.Operator is LibraDexConditionOperatorKind.MatchesWith or LibraDexConditionOperatorKind.NotMatchesWith)
+        {
+            return CreateConditionLeaf(
+                index,
+                LibraDexCriteriaKind.StringPattern,
+                LibraDexStringPatternPredicate.CreateRegexCapture(
+                    mode,
+                    RequireNonNullString(values, 0, descriptor),
+                    RequireNonNullString(values, 1, descriptor),
+                    TryRequireRegexGroupNumber(values, 2, descriptor),
+                    ResolveStringComparisonPolicy(descriptor, index)));
+        }
+
+        if (descriptor.Operator is LibraDexConditionOperatorKind.MatchesInSet or LibraDexConditionOperatorKind.NotMatchesInSet)
+        {
+            return CreateConditionLeaf(
+                index,
+                LibraDexCriteriaKind.StringPattern,
+                LibraDexStringPatternPredicate.CreateRegexCaptureSet(
+                    mode,
+                    RequireNonNullString(values, 0, descriptor),
+                    RequireNonNullStringEnumerable(values, 1, descriptor),
+                    TryRequireRegexGroupNumber(values, 2, descriptor),
+                    ResolveStringComparisonPolicy(descriptor, index)));
+        }
+
         return CreateConditionLeaf(
             index,
             LibraDexCriteriaKind.StringPattern,
@@ -9514,6 +10285,27 @@ internal sealed class LibraDexConditionNode
         return value is int typed
             ? typed
             : throw new InvalidOperationException($"Condition leaf '{descriptor.IndexName}' operator '{descriptor.Operator}' requires Int32 operand {ordinal}.");
+    }
+
+    /// <summary>
+    /// Reads an optional regex capture-group number from a condition leaf.<br/>
+    /// Missing group operands mean group zero, which compares `Regex.Match(...).Value` rather than a numbered capture group.<br/>
+    /// </summary>
+    /// <param name="values">The materialized operand values.</param>
+    /// <param name="ordinal">The optional operand ordinal to read.</param>
+    /// <param name="descriptor">The source condition leaf descriptor for diagnostics.</param>
+    /// <returns>The capture group number, or null when the whole match should be compared.</returns>
+    private static int? TryRequireRegexGroupNumber(object?[] values, int ordinal, LibraDexConditionLeafDescriptor descriptor)
+    {
+        if (ordinal >= values.Length)
+        {
+            return null;
+        }
+
+        int groupNumber = RequireInt32(values, ordinal, descriptor);
+        return groupNumber >= 0
+            ? groupNumber
+            : throw new ArgumentOutOfRangeException(nameof(values), groupNumber, $"Condition leaf '{descriptor.IndexName}' operator '{descriptor.Operator}' requires a non-negative regex group number.");
     }
 
     private static TEnum RequireEnum<TEnum>(object?[] values, int ordinal, LibraDexConditionLeafDescriptor descriptor)

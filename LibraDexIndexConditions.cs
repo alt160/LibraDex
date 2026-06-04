@@ -1,239 +1,6 @@
 namespace LibraDex;
 
 /// <summary>
-/// Represents a reusable condition expression over one LibraDex identity group.<br/>
-/// The expression remains descriptor-shaped until a terminal method receives an index resolver, preserving Abraxas-style deferred materialization while letting opened index handles provide a lower-friction condition root.<br/>
-/// </summary>
-/// <typeparam name="TIdentity">The identity type shared by the expression's indexes.</typeparam>
-public class LibraDexConditionExpression<TIdentity>
-{
-    internal LibraDexConditionExpression(LibraDexConditionEndCondition condition)
-    {
-        ArgumentNullException.ThrowIfNull(condition);
-        Condition = condition;
-    }
-
-    /// <summary>
-    /// Gets the identity group shared by every index referenced by this expression.<br/>
-    /// Cross-index composition requires the same group so identity-set operations cannot accidentally span unrelated identity universes.<br/>
-    /// </summary>
-    public string Group => Condition.Group;
-
-    internal LibraDexConditionEndCondition Condition { get; }
-
-    /// <summary>
-    /// Wraps an already completed condition as a reusable typed expression.<br/>
-    /// This is the bridge from the adopted Abraxas-style builder to LibraDex group and index terminal helpers when a condition was not started from an opened index handle.<br/>
-    /// </summary>
-    /// <param name="condition">The completed condition descriptor.</param>
-    /// <returns>A reusable typed condition expression.</returns>
-    public static LibraDexConditionExpression<TIdentity> From(LibraDexConditionEndCondition condition)
-    {
-        return new LibraDexConditionExpression<TIdentity>(condition);
-    }
-
-    /// <summary>
-    /// Wraps another reusable expression as an explicitly grouped expression.<br/>
-    /// The resulting descriptor is semantically equivalent by itself, but it preserves grouping intent when used by generated code or later composition helpers.<br/>
-    /// </summary>
-    /// <param name="expression">The expression to group.</param>
-    /// <returns>A grouped reusable condition expression.</returns>
-    public static LibraDexConditionExpression<TIdentity> Grouped(LibraDexConditionExpression<TIdentity> expression)
-    {
-        ArgumentNullException.ThrowIfNull(expression);
-        return expression.Grouped();
-    }
-
-    /// <summary>
-    /// Returns this expression as an explicitly grouped reusable expression.<br/>
-    /// This mirrors the Abraxas habit of preserving parenthesized fragments while still delaying executable materialization until a terminal call.<br/>
-    /// </summary>
-    /// <returns>A grouped reusable condition expression.</returns>
-    public LibraDexConditionExpression<TIdentity> Grouped()
-    {
-        LibraDexConditionEndCondition grouped = LibraDexCondition.ForGroup(Group).Group(Condition).EndCondition;
-        return new LibraDexConditionExpression<TIdentity>(grouped);
-    }
-
-    /// <summary>
-    /// Composes this expression with another expression from the same identity group using identity-set intersection.<br/>
-    /// This is the hand-written/reusable-fragment counterpart to ordinal `MultiKey(...).Where...And...` construction; both forms normalize to the same executable condition tree.<br/>
-    /// Use this form when caller code naturally holds completed condition expressions instead of an ordered index array.<br/>
-    /// </summary>
-    /// <param name="other">The expression to intersect with this expression.</param>
-    /// <returns>A composed condition expression.</returns>
-    public LibraDexConditionExpression<TIdentity> AndAlso(LibraDexConditionExpression<TIdentity> other)
-    {
-        return Compose(other, useOr: false);
-    }
-
-    /// <summary>
-    /// Composes this expression with a lazily supplied expression from the same identity group using identity-set intersection.<br/>
-    /// This lets callers keep reusable fragments in variables and complete a larger expression only when the remaining fragment is known.<br/>
-    /// </summary>
-    /// <param name="otherFactory">Factory that supplies the expression to intersect with this expression.</param>
-    /// <returns>A composed condition expression.</returns>
-    public LibraDexConditionExpression<TIdentity> AndAlso(Func<LibraDexConditionExpression<TIdentity>> otherFactory)
-    {
-        ArgumentNullException.ThrowIfNull(otherFactory);
-        return AndAlso(otherFactory());
-    }
-
-    /// <summary>
-    /// Composes this expression with another expression from the same identity group using identity-set union.<br/>
-    /// This is the hand-written/reusable-fragment counterpart to ordinal `MultiKey(...).Where...Or...` construction; both forms normalize to the same executable condition tree.<br/>
-    /// Use this form when caller code naturally holds completed condition expressions instead of an ordered index array.<br/>
-    /// </summary>
-    /// <param name="other">The expression to union with this expression.</param>
-    /// <returns>A composed condition expression.</returns>
-    public LibraDexConditionExpression<TIdentity> OrElse(LibraDexConditionExpression<TIdentity> other)
-    {
-        return Compose(other, useOr: true);
-    }
-
-    /// <summary>
-    /// Composes this expression with a lazily supplied expression from the same identity group using identity-set union.<br/>
-    /// This is useful for generated or staged condition assembly where the next fragment should not be selected until composition time.<br/>
-    /// </summary>
-    /// <param name="otherFactory">Factory that supplies the expression to union with this expression.</param>
-    /// <returns>A composed condition expression.</returns>
-    public LibraDexConditionExpression<TIdentity> OrElse(Func<LibraDexConditionExpression<TIdentity>> otherFactory)
-    {
-        ArgumentNullException.ThrowIfNull(otherFactory);
-        return OrElse(otherFactory());
-    }
-
-    /// <summary>
-    /// Replaces every named operand in this expression with a static value.<br/>
-    /// The original expression is not modified, so partially built conditions can be assigned once and reused with different runtime bindings.<br/>
-    /// </summary>
-    /// <param name="name">The operand name to replace.</param>
-    /// <param name="value">The static replacement value.</param>
-    /// <returns>A new expression with matching operands replaced.</returns>
-    public LibraDexConditionExpression<TIdentity> WithValue(string name, object? value)
-    {
-        return RewriteOperands(name, LibraDexConditionOperand.Value(value, name));
-    }
-
-    /// <summary>
-    /// Replaces every named operand in this expression with a deferred value factory.<br/>
-    /// The factory is evaluated during materialization so a reusable condition can bind to current request state without rebuilding the chain.<br/>
-    /// </summary>
-    /// <param name="name">The operand name to replace.</param>
-    /// <param name="valueFactory">Factory that returns the current operand value.</param>
-    /// <returns>A new expression with matching operands replaced.</returns>
-    public LibraDexConditionExpression<TIdentity> WithDeferredValue(string name, Func<object?> valueFactory)
-    {
-        return RewriteOperands(name, LibraDexConditionOperand.Deferred(valueFactory, name));
-    }
-
-    /// <summary>
-    /// Replaces every named index selector in this expression with a static index name.<br/>
-    /// This supports Abraxas-style proppath aliasing in a LibraDex-shaped form where aliases bind to index names inside the expression's identity group.<br/>
-    /// </summary>
-    /// <param name="name">The selector name to replace.</param>
-    /// <param name="indexName">The replacement index name inside this expression's identity group.</param>
-    /// <returns>A new expression with matching selectors replaced.</returns>
-    public LibraDexConditionExpression<TIdentity> WithIndex(string name, string indexName)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(name);
-        return new LibraDexConditionExpression<TIdentity>(Condition.Rewrite(leaf =>
-            string.Equals(leaf.IndexSelector.Name, name, StringComparison.Ordinal)
-                ? leaf.WithIndexSelector(LibraDexConditionIndexSelector.Static(indexName, name))
-                : leaf));
-    }
-
-    /// <summary>
-    /// Replaces every named index selector in this expression with a deferred index-name factory.<br/>
-    /// The factory is evaluated only when the expression is inspected or materialized, allowing one reusable condition to target different aligned indexes over time.<br/>
-    /// </summary>
-    /// <param name="name">The selector name to replace.</param>
-    /// <param name="indexNameFactory">Factory that returns the replacement index name inside this expression's identity group.</param>
-    /// <returns>A new expression with matching selectors replaced.</returns>
-    public LibraDexConditionExpression<TIdentity> WithDeferredIndex(string name, Func<string> indexNameFactory)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(name);
-        return new LibraDexConditionExpression<TIdentity>(Condition.Rewrite(leaf =>
-            string.Equals(leaf.IndexSelector.Name, name, StringComparison.Ordinal)
-                ? leaf.WithIndexSelector(LibraDexConditionIndexSelector.Deferred(indexNameFactory, name))
-                : leaf));
-    }
-
-    /// <summary>
-    /// Materializes this expression to the existing identity-criterion tree with a caller supplied index resolver.<br/>
-    /// The resolver is evaluated only at materialization time, allowing reusable condition variables to bind to different catalog sessions.<br/>
-    /// </summary>
-    /// <param name="resolveIndex">Function that resolves index names inside this expression's group.</param>
-    /// <returns>An executable identity criterion.</returns>
-    public IIdentityCriterion Materialize(Func<string, IIndex> resolveIndex)
-    {
-        return Condition.Materialize(resolveIndex);
-    }
-
-    /// <summary>
-    /// Materializes matching identities as a typed list.<br/>
-    /// This is the terminal form used by group and index convenience APIs; it delegates to the adopted condition materializer rather than adding a parallel retrieval grammar.<br/>
-    /// </summary>
-    /// <param name="resolveIndex">Function that resolves index names inside this expression's group.</param>
-    /// <param name="ordering">The requested identity ordering contract.</param>
-    /// <param name="deduplication">The requested duplicate identity policy.</param>
-    /// <param name="skip">The number of matching identities to skip.</param>
-    /// <param name="take">The optional maximum number of identities to return.</param>
-    /// <param name="bookmark">The optional continuation bookmark.</param>
-    /// <returns>A typed list of matching identities.</returns>
-    public IReadOnlyList<TIdentity> GetIdentities(
-        Func<string, IIndex> resolveIndex,
-        IdentityResultOrdering ordering = IdentityResultOrdering.PlanNatural,
-        IdentityDeduplication deduplication = IdentityDeduplication.Distinct,
-        int skip = 0,
-        int? take = null,
-        LibraDexBookmark? bookmark = null)
-    {
-        return Condition.ToList<TIdentity>(resolveIndex, ordering, deduplication, skip, take, bookmark);
-    }
-
-    private LibraDexConditionExpression<TIdentity> Compose(LibraDexConditionExpression<TIdentity> other, bool useOr)
-    {
-        ArgumentNullException.ThrowIfNull(other);
-        if (!string.Equals(Group, other.Group, StringComparison.Ordinal))
-        {
-            throw new InvalidOperationException("LibraDex condition expressions can only compose inside the same identity group.");
-        }
-
-        LibraDexConditionContinueOrEnd left = LibraDexCondition.ForGroup(Group).Group(Condition);
-        LibraDexConditionEndCondition composed = useOr
-            ? left.OR.Group(other.Condition).EndCondition
-            : left.AND.Group(other.Condition).EndCondition;
-        return new LibraDexConditionExpression<TIdentity>(composed);
-    }
-
-    private LibraDexConditionExpression<TIdentity> RewriteOperands(string name, LibraDexConditionOperand replacement)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(name);
-        return new LibraDexConditionExpression<TIdentity>(Condition.Rewrite(leaf =>
-        {
-            LibraDexConditionOperand[] operands = new LibraDexConditionOperand[leaf.Operands.Count];
-            bool changed = false;
-            for (int i = 0; i < operands.Length; i++)
-            {
-                LibraDexConditionOperand operand = leaf.Operands[i];
-                if (string.Equals(operand.Name, name, StringComparison.Ordinal))
-                {
-                    operands[i] = replacement;
-                    changed = true;
-                }
-                else
-                {
-                    operands[i] = operand;
-                }
-            }
-
-            return changed ? leaf.WithOperands(operands) : leaf;
-        }));
-    }
-}
-
-/// <summary>
 /// Represents a condition expression rooted at one typed opened index.<br/>
 /// The expression adds same-index continuation helpers over the shared expression terminal surface.<br/>
 /// </summary>
@@ -259,16 +26,16 @@ public sealed class LibraDexIndexCondition<TKey, TIdentity>
     internal LibraDexConditionEndCondition Condition { get; }
 
     /// <summary>
-    /// Ends opened-index fluent construction and returns the reusable expression accepted by terminal APIs.<br/>
+    /// Ends opened-index fluent construction and returns the completed condition descriptor accepted by terminal APIs.<br/>
     /// Until this boundary is reached the condition remains a continuation-capable grammar state, preserving Abraxas-style variablization and later `.And` / `.Or` continuation.<br/>
     /// </summary>
-    public LibraDexConditionExpression<TIdentity> EndCondition => LibraDexConditionExpression<TIdentity>.From(Condition);
+    public LibraDexConditionEndCondition EndCondition => Condition;
 
     /// <summary>
     /// Ends opened-index fluent construction and returns the reusable expression accepted by terminal APIs.<br/>
     /// This compact alias mirrors the adopted condition builder's `ec` alias for callers that prefer terse handwritten filters.<br/>
     /// </summary>
-    public LibraDexConditionExpression<TIdentity> ec => EndCondition;
+    public LibraDexConditionEndCondition ec => EndCondition;
 
     /// <summary>
     /// Continues this expression with another predicate over the same opened index using identity-set intersection.<br/>
@@ -317,21 +84,21 @@ public sealed class LibraDexIndexWhere<TKey, TIdentity>
     public LibraDexIndexWhere<TKey, TIdentity> Not => new(index, negate: !negate);
 
     /// <summary>
-    /// Resumes same-index condition grammar from an existing reusable expression.<br/>
-    /// This is intended for staged builders that stored a fragment as `LibraDexConditionExpression&lt;TIdentity&gt;` and later need to append another predicate over this opened index.<br/>
+    /// Resumes same-index condition grammar from an existing completed condition.<br/>
+    /// This is intended for staged builders that stored a condition fragment and later need to append another predicate over this opened index.<br/>
     /// </summary>
     /// <param name="expression">The existing expression to continue.</param>
     /// <returns>A same-index continuation rooted at the supplied expression.</returns>
-    public LibraDexIndexConditionContinuation<TKey, TIdentity> Continue(LibraDexConditionExpression<TIdentity> expression)
+    public LibraDexIndexConditionContinuation<TKey, TIdentity> Continue(LibraDexConditionEndCondition condition)
     {
-        ArgumentNullException.ThrowIfNull(expression);
-        if (!string.Equals(expression.Group, index.Group, StringComparison.Ordinal))
+        ArgumentNullException.ThrowIfNull(condition);
+        if (!string.Equals(condition.Group, index.Group, StringComparison.Ordinal))
         {
-            throw new InvalidOperationException("The supplied condition expression belongs to a different LibraDex identity group.");
+            throw new InvalidOperationException("The supplied condition belongs to a different LibraDex identity group.");
         }
 
         return new LibraDexIndexConditionContinuation<TKey, TIdentity>(
-            new LibraDexIndexCondition<TKey, TIdentity>(index, expression.Condition),
+            new LibraDexIndexCondition<TKey, TIdentity>(index, condition),
             index,
             useOr: false,
             negateNext: false);
@@ -346,7 +113,7 @@ public sealed class LibraDexIndexWhere<TKey, TIdentity>
     public LibraDexIndexConditionContinuation<TKey, TIdentity> Continue(LibraDexIndexCondition<TKey, TIdentity> condition)
     {
         ArgumentNullException.ThrowIfNull(condition);
-        return Continue(condition.EndCondition);
+        return Continue(condition.Condition);
     }
 
     /// <summary>
@@ -355,16 +122,16 @@ public sealed class LibraDexIndexWhere<TKey, TIdentity>
     /// </summary>
     /// <param name="expression">The existing expression to continue.</param>
     /// <returns>A same-index union continuation rooted at the supplied expression.</returns>
-    public LibraDexIndexConditionContinuation<TKey, TIdentity> ContinueOr(LibraDexConditionExpression<TIdentity> expression)
+    public LibraDexIndexConditionContinuation<TKey, TIdentity> ContinueOr(LibraDexConditionEndCondition condition)
     {
-        ArgumentNullException.ThrowIfNull(expression);
-        if (!string.Equals(expression.Group, index.Group, StringComparison.Ordinal))
+        ArgumentNullException.ThrowIfNull(condition);
+        if (!string.Equals(condition.Group, index.Group, StringComparison.Ordinal))
         {
-            throw new InvalidOperationException("The supplied condition expression belongs to a different LibraDex identity group.");
+            throw new InvalidOperationException("The supplied condition belongs to a different LibraDex identity group.");
         }
 
         return new LibraDexIndexConditionContinuation<TKey, TIdentity>(
-            new LibraDexIndexCondition<TKey, TIdentity>(index, expression.Condition),
+            new LibraDexIndexCondition<TKey, TIdentity>(index, condition),
             index,
             useOr: true,
             negateNext: false);
@@ -379,7 +146,7 @@ public sealed class LibraDexIndexWhere<TKey, TIdentity>
     public LibraDexIndexConditionContinuation<TKey, TIdentity> ContinueOr(LibraDexIndexCondition<TKey, TIdentity> condition)
     {
         ArgumentNullException.ThrowIfNull(condition);
-        return ContinueOr(condition.EndCondition);
+        return ContinueOr(condition.Condition);
     }
 
     /// <summary>
@@ -390,6 +157,31 @@ public sealed class LibraDexIndexWhere<TKey, TIdentity>
     public LibraDexIndexCondition<TKey, TIdentity> EqualTo(TKey value, string? name = null)
     {
         return Create(LibraDexConditionOperatorKind.EqualTo, LibraDexConditionOperand.Value(value, name));
+    }
+
+    /// <summary>
+    /// Captures equality against an explicit null or empty key state for opened string or binary indexes.<br/>
+    /// `NullKey.Null` records a null operand, `NullKey.Empty` records the key type's empty value, and `NullKey.NullOrEmpty` composes the null and empty predicates without requiring a caller-side set allocation.<br/>
+    /// </summary>
+    /// <param name="keyState">The key-state sentinel to match.</param>
+    /// <param name="name">Optional operand name for later replacement.</param>
+    /// <returns>A reusable index-rooted condition expression.</returns>
+    public LibraDexIndexCondition<TKey, TIdentity> EqualTo(NullKey keyState, string? name = null)
+    {
+        return CreateKeyStateCondition(LibraDexConditionOperatorKind.EqualTo, keyState, name);
+    }
+
+    /// <summary>
+    /// Captures equality against the stored null-key sentinel from <see cref="DBNull.Value"/> for opened string or binary indexes.<br/>
+    /// This overload routes to <see cref="NullKey.Null"/> instead of treating `DBNull` as a key value.<br/>
+    /// </summary>
+    /// <param name="value">The database null sentinel; normally <see cref="DBNull.Value"/>.</param>
+    /// <param name="name">Optional operand name for later replacement.</param>
+    /// <returns>A reusable index-rooted condition expression.</returns>
+    public LibraDexIndexCondition<TKey, TIdentity> EqualTo(DBNull value, string? name = null)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        return EqualTo(NullKey.Null, name);
     }
 
     /// <summary>
@@ -406,6 +198,18 @@ public sealed class LibraDexIndexWhere<TKey, TIdentity>
     }
 
     /// <summary>
+    /// Captures scalar null-state equality for opened scalar indexes.<br/>
+    /// `ScalarNull.Null` selects the compact null route, while `ScalarNull.NonNull` selects ordinary non-null scalar value routes.<br/>
+    /// </summary>
+    /// <param name="state">The scalar null-state predicate to match.</param>
+    /// <returns>A reusable index-rooted condition expression.</returns>
+    public LibraDexIndexCondition<TKey, TIdentity> EqualTo(ScalarNull state)
+    {
+        EnsureScalarNullKeyType();
+        return Create(LibraDexConditionOperatorKind.ScalarNullState, LibraDexConditionOperand.Value(state));
+    }
+
+    /// <summary>
     /// Captures inequality against the opened index key type.<br/>
     /// </summary>
     /// <param name="value">The key value to exclude.</param>
@@ -413,6 +217,49 @@ public sealed class LibraDexIndexWhere<TKey, TIdentity>
     public LibraDexIndexCondition<TKey, TIdentity> NotEqualTo(TKey value, string? name = null)
     {
         return Create(LibraDexConditionOperatorKind.NotEqualTo, LibraDexConditionOperand.Value(value, name));
+    }
+
+    /// <summary>
+    /// Captures inequality against an explicit null or empty key state for opened string or binary indexes.<br/>
+    /// `NullKey.NullOrEmpty` composes non-null and non-empty predicates so both sentinels are excluded without requiring a caller-side set allocation.<br/>
+    /// </summary>
+    /// <param name="keyState">The key-state sentinel to exclude.</param>
+    /// <param name="name">Optional operand name for later replacement.</param>
+    /// <returns>A reusable index-rooted condition expression.</returns>
+    public LibraDexIndexCondition<TKey, TIdentity> NotEqualTo(NullKey keyState, string? name = null)
+    {
+        return CreateKeyStateCondition(LibraDexConditionOperatorKind.NotEqualTo, keyState, name);
+    }
+
+    /// <summary>
+    /// Captures inequality against the stored null-key sentinel from <see cref="DBNull.Value"/> for opened string or binary indexes.<br/>
+    /// This overload routes to <see cref="NullKey.Null"/> instead of treating `DBNull` as a key value.<br/>
+    /// </summary>
+    /// <param name="value">The database null sentinel; normally <see cref="DBNull.Value"/>.</param>
+    /// <param name="name">Optional operand name for later replacement.</param>
+    /// <returns>A reusable index-rooted condition expression.</returns>
+    public LibraDexIndexCondition<TKey, TIdentity> NotEqualTo(DBNull value, string? name = null)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        return NotEqualTo(NullKey.Null, name);
+    }
+
+    /// <summary>
+    /// Captures scalar null-state inequality for opened scalar indexes.<br/>
+    /// Inequality maps to the opposite scalar null state so execution can use the same route-state primitive.<br/>
+    /// </summary>
+    /// <param name="state">The scalar null-state predicate to exclude.</param>
+    /// <returns>A reusable index-rooted condition expression.</returns>
+    public LibraDexIndexCondition<TKey, TIdentity> NotEqualTo(ScalarNull state)
+    {
+        EnsureScalarNullKeyType();
+        ScalarNull opposite = state switch
+        {
+            ScalarNull.Null => ScalarNull.NonNull,
+            ScalarNull.NonNull => ScalarNull.Null,
+            _ => throw new ArgumentOutOfRangeException(nameof(state), state, "Unknown scalar null state.")
+        };
+        return EqualTo(opposite);
     }
 
     /// <summary>
@@ -518,6 +365,23 @@ public sealed class LibraDexIndexWhere<TKey, TIdentity>
     }
 
     /// <summary>
+    /// Captures an outside-range comparison over the opened index key type.<br/>
+    /// The range bounds are inclusive, so identities with keys lower than <paramref name="lower"/> or greater than <paramref name="upper"/> match.<br/>
+    /// </summary>
+    /// <param name="lower">The inclusive lower boundary to exclude.</param>
+    /// <param name="upper">The inclusive upper boundary to exclude.</param>
+    /// <param name="lowerName">Optional operand name for the lower boundary.</param>
+    /// <param name="upperName">Optional operand name for the upper boundary.</param>
+    /// <returns>A reusable index-rooted condition expression.</returns>
+    public LibraDexIndexCondition<TKey, TIdentity> NotBetween(TKey lower, TKey upper, string? lowerName = null, string? upperName = null)
+    {
+        return Create(
+            LibraDexConditionOperatorKind.NotBetween,
+            LibraDexConditionOperand.Value(lower, lowerName),
+            LibraDexConditionOperand.Value(upper, upperName));
+    }
+
+    /// <summary>
     /// Captures membership in a supplied key set.<br/>
     /// HashSet inputs are preserved as the operand object so the materializer can use the caller's set where compatible.<br/>
     /// </summary>
@@ -542,6 +406,41 @@ public sealed class LibraDexIndexWhere<TKey, TIdentity>
             IgnoreCase: false,
             Culture: null)).EndCondition;
         return new LibraDexIndexCondition<TKey, TIdentity>(index, condition);
+    }
+
+    private LibraDexIndexCondition<TKey, TIdentity> CreateKeyStateCondition(LibraDexConditionOperatorKind operatorKind, NullKey keyState, string? name)
+    {
+        Type keyType = typeof(TKey);
+        if (keyType != typeof(string) && keyType != typeof(byte[]))
+        {
+            throw new NotSupportedException("Null-key state conditions are supported only for string and binary opened indexes.");
+        }
+
+        bool effectiveEquals = negate
+            ? operatorKind == LibraDexConditionOperatorKind.NotEqualTo
+            : operatorKind == LibraDexConditionOperatorKind.EqualTo;
+        object? emptyValue = keyType == typeof(string)
+            ? string.Empty
+            : Array.Empty<byte>();
+        return keyState switch
+        {
+            NullKey.Null => Create(operatorKind, LibraDexConditionOperand.Value(null, name)),
+            NullKey.Empty => Create(operatorKind, LibraDexConditionOperand.Value(emptyValue, name)),
+            NullKey.NullOrEmpty when effectiveEquals => Create(LibraDexConditionOperatorKind.EqualTo, LibraDexConditionOperand.Value(null, name))
+                .ComposeSameIndex(new LibraDexIndexWhere<TKey, TIdentity>(index).Create(LibraDexConditionOperatorKind.EqualTo, LibraDexConditionOperand.Value(emptyValue, name)), useOr: true),
+            NullKey.NullOrEmpty => Create(LibraDexConditionOperatorKind.NotEqualTo, LibraDexConditionOperand.Value(null, name))
+                .ComposeSameIndex(new LibraDexIndexWhere<TKey, TIdentity>(index).Create(LibraDexConditionOperatorKind.NotEqualTo, LibraDexConditionOperand.Value(emptyValue, name)), useOr: false),
+            _ => throw new ArgumentOutOfRangeException(nameof(keyState), keyState, "Unknown null-key state.")
+        };
+    }
+
+    private static void EnsureScalarNullKeyType()
+    {
+        Type keyType = typeof(TKey);
+        if (keyType == typeof(string) || keyType == typeof(byte[]))
+        {
+            throw new NotSupportedException("ScalarNull conditions are for scalar key families. Use NullKey for string and binary key states.");
+        }
     }
 
     private static LibraDexConditionOperatorKind Negate(LibraDexConditionOperatorKind operatorKind)
@@ -650,6 +549,40 @@ public sealed class LibraDexIndexConditionContinuation<TKey, TIdentity>
     }
 
     /// <summary>
+    /// Captures equality against an explicit null or empty key state for the next same-index predicate.<br/>
+    /// This keeps opened-index continuations consistent with root `.Where.EqualTo(NullKey...)` syntax for string and binary indexes.<br/>
+    /// </summary>
+    /// <param name="keyState">The key-state sentinel to match.</param>
+    /// <returns>A composed same-index condition expression.</returns>
+    public LibraDexIndexCondition<TKey, TIdentity> EqualTo(NullKey keyState)
+    {
+        return Compose(new LibraDexIndexWhere<TKey, TIdentity>(index, negateNext).EqualTo(keyState));
+    }
+
+    /// <summary>
+    /// Captures equality against the stored null-key sentinel from <see cref="DBNull.Value"/> for the next same-index predicate.<br/>
+    /// This overload routes to <see cref="NullKey.Null"/> instead of treating `DBNull` as a key value.<br/>
+    /// </summary>
+    /// <param name="value">The database null sentinel; normally <see cref="DBNull.Value"/>.</param>
+    /// <returns>A composed same-index condition expression.</returns>
+    public LibraDexIndexCondition<TKey, TIdentity> EqualTo(DBNull value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        return EqualTo(NullKey.Null);
+    }
+
+    /// <summary>
+    /// Captures scalar null-state equality for the next same-index predicate.<br/>
+    /// This keeps continuations aligned with opened-index root `.Where.EqualTo(ScalarNull...)` syntax.<br/>
+    /// </summary>
+    /// <param name="state">The scalar null-state predicate to match.</param>
+    /// <returns>A composed same-index condition expression.</returns>
+    public LibraDexIndexCondition<TKey, TIdentity> EqualTo(ScalarNull state)
+    {
+        return Compose(new LibraDexIndexWhere<TKey, TIdentity>(index, negateNext).EqualTo(state));
+    }
+
+    /// <summary>
     /// Captures inequality for the next same-index predicate.<br/>
     /// </summary>
     /// <param name="value">The key value to exclude.</param>
@@ -657,6 +590,40 @@ public sealed class LibraDexIndexConditionContinuation<TKey, TIdentity>
     public LibraDexIndexCondition<TKey, TIdentity> NotEqualTo(TKey value)
     {
         return Compose(new LibraDexIndexWhere<TKey, TIdentity>(index, negateNext).NotEqualTo(value));
+    }
+
+    /// <summary>
+    /// Captures inequality against an explicit null or empty key state for the next same-index predicate.<br/>
+    /// This keeps opened-index continuations consistent with root `.Where.NotEqualTo(NullKey...)` syntax for string and binary indexes.<br/>
+    /// </summary>
+    /// <param name="keyState">The key-state sentinel to exclude.</param>
+    /// <returns>A composed same-index condition expression.</returns>
+    public LibraDexIndexCondition<TKey, TIdentity> NotEqualTo(NullKey keyState)
+    {
+        return Compose(new LibraDexIndexWhere<TKey, TIdentity>(index, negateNext).NotEqualTo(keyState));
+    }
+
+    /// <summary>
+    /// Captures inequality against the stored null-key sentinel from <see cref="DBNull.Value"/> for the next same-index predicate.<br/>
+    /// This overload routes to <see cref="NullKey.Null"/> instead of treating `DBNull` as a key value.<br/>
+    /// </summary>
+    /// <param name="value">The database null sentinel; normally <see cref="DBNull.Value"/>.</param>
+    /// <returns>A composed same-index condition expression.</returns>
+    public LibraDexIndexCondition<TKey, TIdentity> NotEqualTo(DBNull value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        return NotEqualTo(NullKey.Null);
+    }
+
+    /// <summary>
+    /// Captures scalar null-state inequality for the next same-index predicate.<br/>
+    /// Inequality maps to the opposite scalar null state before composition.<br/>
+    /// </summary>
+    /// <param name="state">The scalar null-state predicate to exclude.</param>
+    /// <returns>A composed same-index condition expression.</returns>
+    public LibraDexIndexCondition<TKey, TIdentity> NotEqualTo(ScalarNull state)
+    {
+        return Compose(new LibraDexIndexWhere<TKey, TIdentity>(index, negateNext).NotEqualTo(state));
     }
 
     /// <summary>
@@ -711,6 +678,18 @@ public sealed class LibraDexIndexConditionContinuation<TKey, TIdentity>
     }
 
     /// <summary>
+    /// Captures an outside-range comparison for the next same-index predicate.<br/>
+    /// The range bounds are inclusive, so identities with keys lower than <paramref name="lower"/> or greater than <paramref name="upper"/> match.<br/>
+    /// </summary>
+    /// <param name="lower">The inclusive lower boundary to exclude.</param>
+    /// <param name="upper">The inclusive upper boundary to exclude.</param>
+    /// <returns>A composed same-index condition expression.</returns>
+    public LibraDexIndexCondition<TKey, TIdentity> NotBetween(TKey lower, TKey upper)
+    {
+        return Compose(new LibraDexIndexWhere<TKey, TIdentity>(index, negateNext).NotBetween(lower, upper));
+    }
+
+    /// <summary>
     /// Captures membership for the next same-index predicate.<br/>
     /// </summary>
     /// <param name="values">The key values to match.</param>
@@ -728,284 +707,76 @@ public sealed class LibraDexIndexConditionContinuation<TKey, TIdentity>
 }
 
 /// <summary>
-/// Represents a completed non-generic condition over one LibraDex identity group.<br/>
-/// This is the descriptor returned by group-level multi-key builders where the identity type is supplied by the terminal API instead of the selector chain.<br/>
+/// Selects the value family for an ordered `MultiKey(...)` participant.<br/>
+/// The participant is selected first by ordinal through `Where(ordinal)` or `AndAlso(ordinal)`, then the caller chooses key typing or projection intent through `.AsString`, `.AsGuid`, `.AsInt64`, and related members.<br/>
+/// This keeps generated and programmatic multi-key syntax aligned with catalog-group index-first condition syntax.<br/>
 /// </summary>
-public sealed class LibraDexGroupCondition
+public sealed class LibraDexMultiKeyValueTypeSelector
 {
-    internal LibraDexGroupCondition(LibraDexConditionEndCondition condition)
+    private readonly LibraDexConditionValueTypeSelector inner;
+    private readonly IIndex selectedIndex;
+    private readonly IIndex[] orderedIndexes;
+
+    internal LibraDexMultiKeyValueTypeSelector(LibraDexConditionValueTypeSelector inner, IIndex selectedIndex, IIndex[] orderedIndexes)
     {
-        ArgumentNullException.ThrowIfNull(condition);
-        EndCondition = condition;
-    }
-
-    /// <summary>
-    /// Gets the identity group shared by every index referenced by this condition.<br/>
-    /// </summary>
-    public string Group => EndCondition.Group;
-
-    internal LibraDexConditionEndCondition EndCondition { get; }
-
-    /// <summary>
-    /// Converts this non-generic descriptor into the typed condition expression expected by typed terminal APIs.<br/>
-    /// The conversion does not materialize data; it only records the caller's expected identity type for the later terminal read, delete, or mutation operation.<br/>
-    /// </summary>
-    /// <typeparam name="TIdentity">The identity type expected from the participating indexes.</typeparam>
-    /// <returns>A typed reusable condition expression.</returns>
-    public LibraDexConditionExpression<TIdentity> As<TIdentity>()
-    {
-        return LibraDexConditionExpression<TIdentity>.From(EndCondition);
-    }
-}
-
-/// <summary>
-/// Starts typed selector-first conditions over one identity group.<br/>
-/// Selector methods identify the index by name, opened handle, or ordered multi-key ordinal; operator calls then provide the condition value.<br/>
-/// This is a construction convenience for programmatic callers: ordinal, name, and handle selectors all emit ordinary index-name condition leaves that execute through the same planner as `.AndAlso(...)`, `.OrElse(...)`, and grouped handwritten expressions.<br/>
-/// </summary>
-public sealed class LibraDexMultiKeyWhere
-{
-    private readonly string group;
-    private readonly LibraDexConditionClause clause;
-    private readonly IIndex[]? orderedIndexes;
-
-    internal LibraDexMultiKeyWhere(string group)
-        : this(group, LibraDexCondition.ForGroup(group), null)
-    {
-    }
-
-    internal LibraDexMultiKeyWhere(string group, LibraDexConditionClause clause, IIndex[]? orderedIndexes)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(group);
-        ArgumentNullException.ThrowIfNull(clause);
-        this.group = group;
-        this.clause = clause;
+        ArgumentNullException.ThrowIfNull(inner);
+        ArgumentNullException.ThrowIfNull(selectedIndex);
+        ArgumentNullException.ThrowIfNull(orderedIndexes);
+        this.inner = inner;
+        this.selectedIndex = selectedIndex;
         this.orderedIndexes = orderedIndexes;
     }
 
     /// <summary>
-    /// Selects a string-keyed index by name for the next predicate.<br/>
-    /// The index name is resolved only at materialization time so reusable conditions can be built before indexes are opened.<br/>
+    /// Selects string operators for the current ordered multi-key participant.<br/>
+    /// The selected participant must be a string-keyed index; the check happens immediately so generated ordinal mistakes fail before materialization.<br/>
     /// </summary>
-    /// <param name="indexName">The index name inside the current identity group.</param>
-    /// <returns>String operators for the selected index.</returns>
-    public LibraDexMultiKeyStringWhere String(string indexName)
-    {
-        return new LibraDexMultiKeyStringWhere(clause.Index(indexName).AsString, orderedIndexes);
-    }
+    public LibraDexMultiKeyStringWhere AsString => new(inner.AsString, ValidateKeyType(typeof(string)));
 
     /// <summary>
-    /// Selects a string-keyed opened index handle for the next predicate.<br/>
-    /// The handle validates group and key type immediately, then the descriptor stores the handle's index name for normal deferred materialization.<br/>
+    /// Selects binary operators for the current ordered multi-key participant.<br/>
+    /// The selected participant must be a byte-array-keyed index.<br/>
     /// </summary>
-    /// <param name="index">The opened string-keyed index handle.</param>
-    /// <returns>String operators for the selected index.</returns>
-    public LibraDexMultiKeyStringWhere String(IIndex index)
-    {
-        return String(ValidateIndex(index, typeof(string)).Name);
-    }
+    public LibraDexMultiKeyBinaryWhere AsBinary => new(inner.AsBinary, ValidateKeyType(typeof(byte[])));
 
     /// <summary>
-    /// Selects a string-keyed participant by ordinal from an ordered `MultiKey(...)` builder.<br/>
-    /// Ordinals make generated and array-backed condition assembly concise while still compiling to the same index-name descriptors produced by handwritten composition.<br/>
+    /// Selects Guid operators for the current ordered multi-key participant.<br/>
+    /// The selected participant must be a Guid-keyed index.<br/>
     /// </summary>
-    /// <param name="ordinal">The zero-based participant ordinal supplied to `MultiKey(...)`.</param>
-    /// <returns>String operators for the selected index.</returns>
-    public LibraDexMultiKeyStringWhere String(int ordinal)
-    {
-        return String(ResolveOrdinal(ordinal, typeof(string)).Name);
-    }
+    public LibraDexMultiKeyGuidWhere AsGuid => new(inner.AsGuid, ValidateKeyType(typeof(Guid)));
 
     /// <summary>
-    /// Selects a byte-array-keyed index by name for the next predicate.<br/>
-    /// Binary selectors keep raw bytes as bytes; pattern helpers such as `StartsWith` and `SliceEqual` compile to encoded key-byte predicates rather than string conversions.<br/>
+    /// Selects DateTime operators for the current ordered multi-key participant.<br/>
+    /// The selected participant must be a DateTime-keyed index.<br/>
     /// </summary>
-    /// <param name="indexName">The index name inside the current identity group.</param>
-    /// <returns>Binary operators for the selected index.</returns>
-    public LibraDexMultiKeyBinaryWhere Binary(string indexName)
-    {
-        return new LibraDexMultiKeyBinaryWhere(clause.Index(indexName).AsBinary, orderedIndexes);
-    }
+    public LibraDexMultiKeyDateWhere<DateTime> AsDate => new(inner.AsDate, ValidateKeyType(typeof(DateTime)));
 
     /// <summary>
-    /// Selects a byte-array-keyed opened index handle for the next predicate.<br/>
-    /// The handle validates group and key type immediately, then the descriptor stores the handle's index name for normal deferred materialization.<br/>
+    /// Selects Int32 operators for the current ordered multi-key participant.<br/>
+    /// The selected participant must be an Int32-keyed index.<br/>
     /// </summary>
-    /// <param name="index">The opened byte-array-keyed index handle.</param>
-    /// <returns>Binary operators for the selected index.</returns>
-    public LibraDexMultiKeyBinaryWhere Binary(IIndex index)
-    {
-        return Binary(ValidateIndex(index, typeof(byte[])).Name);
-    }
+    public LibraDexMultiKeyScalarWhere<int> AsInt32 => new(inner.AsInt32, ValidateKeyType(typeof(int)));
 
     /// <summary>
-    /// Selects a byte-array-keyed participant by ordinal from an ordered `MultiKey(...)` builder.<br/>
+    /// Selects Int64 operators for the current ordered multi-key participant.<br/>
+    /// The selected participant must be an Int64-keyed index.<br/>
     /// </summary>
-    /// <param name="ordinal">The zero-based participant ordinal supplied to `MultiKey(...)`.</param>
-    /// <returns>Binary operators for the selected index.</returns>
-    public LibraDexMultiKeyBinaryWhere Binary(int ordinal)
-    {
-        return Binary(ResolveOrdinal(ordinal, typeof(byte[])).Name);
-    }
+    public LibraDexMultiKeyScalarWhere<long> AsInt64 => new(inner.AsInt64, ValidateKeyType(typeof(long)));
 
-    /// <summary>
-    /// Selects a Guid-keyed index by name for the next predicate.<br/>
-    /// The selector identifies the index, not the condition value; values are supplied by the returned operator methods such as `EqualTo`.<br/>
-    /// </summary>
-    /// <param name="indexName">The index name inside the current identity group.</param>
-    /// <returns>Guid operators for the selected index.</returns>
-    public LibraDexMultiKeyGuidWhere Guid(string indexName)
+    private IIndex[] ValidateKeyType(Type expectedKeyType)
     {
-        return new LibraDexMultiKeyGuidWhere(clause.Index(indexName).AsGuid, orderedIndexes);
-    }
-
-    /// <summary>
-    /// Selects a Guid-keyed opened index handle for the next predicate.<br/>
-    /// The method intentionally accepts an index handle rather than a Guid value, keeping selector and operand roles distinct in IntelliSense and code reviews.<br/>
-    /// </summary>
-    /// <param name="index">The opened Guid-keyed index handle.</param>
-    /// <returns>Guid operators for the selected index.</returns>
-    public LibraDexMultiKeyGuidWhere Guid(IIndex index)
-    {
-        return Guid(ValidateIndex(index, typeof(Guid)).Name);
-    }
-
-    /// <summary>
-    /// Selects a Guid-keyed participant by ordinal from an ordered `MultiKey(...)` builder.<br/>
-    /// </summary>
-    /// <param name="ordinal">The zero-based participant ordinal supplied to `MultiKey(...)`.</param>
-    /// <returns>Guid operators for the selected index.</returns>
-    public LibraDexMultiKeyGuidWhere Guid(int ordinal)
-    {
-        return Guid(ResolveOrdinal(ordinal, typeof(Guid)).Name);
-    }
-
-    /// <summary>
-    /// Selects a DateTime-keyed index by name for the next predicate.<br/>
-    /// Date part operators use the same structured date condition descriptor as the adopted Abraxas-style builder.<br/>
-    /// </summary>
-    /// <param name="indexName">The index name inside the current identity group.</param>
-    /// <returns>DateTime operators for the selected index.</returns>
-    public LibraDexMultiKeyDateWhere<DateTime> Date(string indexName)
-    {
-        return new LibraDexMultiKeyDateWhere<DateTime>(clause.Index(indexName).AsDate, orderedIndexes);
-    }
-
-    /// <summary>
-    /// Selects a DateTime-keyed opened index handle for the next predicate.<br/>
-    /// </summary>
-    /// <param name="index">The opened DateTime-keyed index handle.</param>
-    /// <returns>DateTime operators for the selected index.</returns>
-    public LibraDexMultiKeyDateWhere<DateTime> Date(IIndex index)
-    {
-        return Date(ValidateIndex(index, typeof(DateTime)).Name);
-    }
-
-    /// <summary>
-    /// Selects a DateTime-keyed participant by ordinal from an ordered `MultiKey(...)` builder.<br/>
-    /// </summary>
-    /// <param name="ordinal">The zero-based participant ordinal supplied to `MultiKey(...)`.</param>
-    /// <returns>DateTime operators for the selected index.</returns>
-    public LibraDexMultiKeyDateWhere<DateTime> Date(int ordinal)
-    {
-        return Date(ResolveOrdinal(ordinal, typeof(DateTime)).Name);
-    }
-
-    /// <summary>
-    /// Selects an Int32-keyed index by name for the next predicate.<br/>
-    /// </summary>
-    /// <param name="indexName">The index name inside the current identity group.</param>
-    /// <returns>Int32 operators for the selected index.</returns>
-    public LibraDexMultiKeyScalarWhere<int> Int32(string indexName)
-    {
-        return new LibraDexMultiKeyScalarWhere<int>(clause.Index(indexName).AsInt32, orderedIndexes);
-    }
-
-    /// <summary>
-    /// Selects an Int32-keyed opened index handle for the next predicate.<br/>
-    /// </summary>
-    /// <param name="index">The opened Int32-keyed index handle.</param>
-    /// <returns>Int32 operators for the selected index.</returns>
-    public LibraDexMultiKeyScalarWhere<int> Int32(IIndex index)
-    {
-        return Int32(ValidateIndex(index, typeof(int)).Name);
-    }
-
-    /// <summary>
-    /// Selects an Int32-keyed participant by ordinal from an ordered `MultiKey(...)` builder.<br/>
-    /// </summary>
-    /// <param name="ordinal">The zero-based participant ordinal supplied to `MultiKey(...)`.</param>
-    /// <returns>Int32 operators for the selected index.</returns>
-    public LibraDexMultiKeyScalarWhere<int> Int32(int ordinal)
-    {
-        return Int32(ResolveOrdinal(ordinal, typeof(int)).Name);
-    }
-
-    /// <summary>
-    /// Selects an Int64-keyed index by name for the next predicate.<br/>
-    /// </summary>
-    /// <param name="indexName">The index name inside the current identity group.</param>
-    /// <returns>Int64 operators for the selected index.</returns>
-    public LibraDexMultiKeyScalarWhere<long> Int64(string indexName)
-    {
-        return new LibraDexMultiKeyScalarWhere<long>(clause.Index(indexName).AsInt64, orderedIndexes);
-    }
-
-    /// <summary>
-    /// Selects an Int64-keyed opened index handle for the next predicate.<br/>
-    /// </summary>
-    /// <param name="index">The opened Int64-keyed index handle.</param>
-    /// <returns>Int64 operators for the selected index.</returns>
-    public LibraDexMultiKeyScalarWhere<long> Int64(IIndex index)
-    {
-        return Int64(ValidateIndex(index, typeof(long)).Name);
-    }
-
-    /// <summary>
-    /// Selects an Int64-keyed participant by ordinal from an ordered `MultiKey(...)` builder.<br/>
-    /// </summary>
-    /// <param name="ordinal">The zero-based participant ordinal supplied to `MultiKey(...)`.</param>
-    /// <returns>Int64 operators for the selected index.</returns>
-    public LibraDexMultiKeyScalarWhere<long> Int64(int ordinal)
-    {
-        return Int64(ResolveOrdinal(ordinal, typeof(long)).Name);
-    }
-
-    private IIndex ValidateIndex(IIndex index, Type expectedKeyType)
-    {
-        ArgumentNullException.ThrowIfNull(index);
-        if (!string.Equals(index.Group, group, StringComparison.Ordinal))
+        if (selectedIndex.KeyType != expectedKeyType)
         {
-            throw new InvalidOperationException("The supplied index handle belongs to a different LibraDex identity group.");
+            throw new ArgumentException($"Index '{selectedIndex.Name}' has key type {selectedIndex.KeyType.FullName}, but this selector requires {expectedKeyType.FullName}.");
         }
 
-        if (index.KeyType != expectedKeyType)
-        {
-            throw new ArgumentException($"Index '{index.Name}' has key type {index.KeyType.FullName}, but this selector requires {expectedKeyType.FullName}.", nameof(index));
-        }
-
-        return index;
-    }
-
-    private IIndex ResolveOrdinal(int ordinal, Type expectedKeyType)
-    {
-        if (orderedIndexes is null)
-        {
-            throw new InvalidOperationException("Ordinal selectors require a condition started from MultiKey(...).");
-        }
-
-        if ((uint)ordinal >= (uint)orderedIndexes.Length)
-        {
-            throw new ArgumentOutOfRangeException(nameof(ordinal), "The multi-key ordinal is outside the participant list.");
-        }
-
-        return ValidateIndex(orderedIndexes[ordinal], expectedKeyType);
+        return orderedIndexes;
     }
 }
 
 /// <summary>
 /// Continues a group-level multi-key condition after one predicate has been captured.<br/>
-/// The next selector remains typed so `.And.String(indexName)` and `.Or.Guid(ordinal)` preserve selector-value separation through the whole chain.<br/>
+/// Ordered multi-key continuations select the next participant by ordinal through `.AndAlso(ordinal)` or `.OrElse(ordinal)`, then select value family through `.AsString`, `.AsGuid`, `.AsInt64`, and related members.<br/>
 /// </summary>
 public sealed class LibraDexMultiKeyContinuation
 {
@@ -1033,28 +804,52 @@ public sealed class LibraDexMultiKeyContinuation
     }
 
     /// <summary>
-    /// Adds an identity-set intersection and starts the next typed selector.<br/>
+    /// Adds an identity-set intersection and selects the next ordered multi-key participant by ordinal.<br/>
+    /// Key typing and projection intent are chosen after the ordinal through members such as `.AsString`, `.AsGuid`, and `.AsInt64`.<br/>
     /// </summary>
-    public LibraDexMultiKeyWhere And => new(group, continuation.AND, orderedIndexes);
-
-    /// <summary>
-    /// Adds an identity-set union and starts the next typed selector.<br/>
-    /// </summary>
-    public LibraDexMultiKeyWhere Or => new(group, continuation.OR, orderedIndexes);
-
-    /// <summary>
-    /// Completes the condition as a non-generic group descriptor.<br/>
-    /// </summary>
-    public LibraDexGroupCondition Condition => new(continuation.EndCondition);
-
-    /// <summary>
-    /// Converts the completed condition into a typed reusable expression.<br/>
-    /// </summary>
-    /// <typeparam name="TIdentity">The identity type expected from the participating indexes.</typeparam>
-    /// <returns>A typed reusable condition expression.</returns>
-    public LibraDexConditionExpression<TIdentity> As<TIdentity>()
+    /// <param name="ordinal">The zero-based participant ordinal supplied to `MultiKey(...)`.</param>
+    /// <returns>A value-family selector for the selected participant.</returns>
+    public LibraDexMultiKeyValueTypeSelector AndAlso(int ordinal)
     {
-        return Condition.As<TIdentity>();
+        return SelectOrdinal(continuation.AND, ordinal);
+    }
+
+    /// <summary>
+    /// Adds an identity-set union and selects the next ordered multi-key participant by ordinal.<br/>
+    /// Key typing and projection intent are chosen after the ordinal through members such as `.AsString`, `.AsGuid`, and `.AsInt64`.<br/>
+    /// </summary>
+    /// <param name="ordinal">The zero-based participant ordinal supplied to `MultiKey(...)`.</param>
+    /// <returns>A value-family selector for the selected participant.</returns>
+    public LibraDexMultiKeyValueTypeSelector OrElse(int ordinal)
+    {
+        return SelectOrdinal(continuation.OR, ordinal);
+    }
+
+    /// <summary>
+    /// Completes the multi-key/group fluent construction and returns the condition descriptor accepted by terminal APIs.<br/>
+    /// This mirrors the raw condition builder and opened-index roots so `.EndCondition` is the single final terminator across condition construction.<br/>
+    /// </summary>
+    public LibraDexConditionEndCondition EndCondition => continuation.EndCondition;
+
+    /// <summary>
+    /// Convenience alias for <see cref="EndCondition"/> that matches Abraxas' short `ec` alias.<br/>
+    /// </summary>
+    public LibraDexConditionEndCondition ec => EndCondition;
+
+    private LibraDexMultiKeyValueTypeSelector SelectOrdinal(LibraDexConditionClause clause, int ordinal)
+    {
+        if (orderedIndexes is null)
+        {
+            throw new InvalidOperationException("Ordinal selectors require a condition started from MultiKey(...).");
+        }
+
+        if ((uint)ordinal >= (uint)orderedIndexes.Length)
+        {
+            throw new ArgumentOutOfRangeException(nameof(ordinal), "The multi-key ordinal is outside the participant list.");
+        }
+
+        IIndex index = orderedIndexes[ordinal];
+        return new LibraDexMultiKeyValueTypeSelector(clause.Index(index.Name), index, orderedIndexes);
     }
 }
 
@@ -1109,6 +904,12 @@ public sealed class LibraDexMultiKeyScalarWhere<TValue>
     public LibraDexMultiKeyContinuation Between(TValue lower, TValue upper) => LibraDexMultiKeyContinuation.From(inner.Between(lower, upper), orderedIndexes);
 
     /// <summary>
+    /// Captures an outside-range comparison against the selected index.<br/>
+    /// The range bounds are inclusive, so identities with keys lower than <paramref name="lower"/> or greater than <paramref name="upper"/> match.<br/>
+    /// </summary>
+    public LibraDexMultiKeyContinuation NotBetween(TValue lower, TValue upper) => LibraDexMultiKeyContinuation.From(inner.NotBetween(lower, upper), orderedIndexes);
+
+    /// <summary>
     /// Captures membership against the selected index from any enumerable value list.<br/>
     /// Non-set enumerables are captured by the adopted materializer and can be normalized at execution time.<br/>
     /// </summary>
@@ -1139,13 +940,37 @@ public sealed class LibraDexMultiKeyStringWhere
     /// Captures string equality against the selected index.<br/>
     /// Case and culture options are recorded in the condition descriptor so execution can choose an accelerated folded or sort-key projection when available, or a scoped comparison fallback when it is not.<br/>
     /// </summary>
-    public LibraDexMultiKeyContinuation EqualTo(string value, bool ignoreCase = false, string? culture = null) => LibraDexMultiKeyContinuation.From(inner.EqualTo(value, ignoreCase, culture), orderedIndexes);
+    public LibraDexMultiKeyContinuation EqualTo(string? value, bool ignoreCase = false, string? culture = null) => LibraDexMultiKeyContinuation.From(inner.EqualTo(value, ignoreCase, culture), orderedIndexes);
+
+    /// <summary>
+    /// Captures string equality against an explicit null or empty key state.<br/>
+    /// This forwards to the selected string operator so group-level and ordered multikey syntax share the same null/empty sentinel semantics.<br/>
+    /// </summary>
+    public LibraDexMultiKeyContinuation EqualTo(NullKey keyState) => LibraDexMultiKeyContinuation.From(inner.EqualTo(keyState), orderedIndexes);
+
+    /// <summary>
+    /// Captures string equality against the stored null-key sentinel from <see cref="DBNull.Value"/>.<br/>
+    /// This forwards to <see cref="NullKey.Null"/> instead of treating `DBNull` as a string operand.<br/>
+    /// </summary>
+    public LibraDexMultiKeyContinuation EqualTo(DBNull value) => LibraDexMultiKeyContinuation.From(inner.EqualTo(value), orderedIndexes);
 
     /// <summary>
     /// Captures string inequality against the selected index.<br/>
     /// The selector remains index-bound while the supplied value is recorded as the operand for later materialization.<br/>
     /// </summary>
-    public LibraDexMultiKeyContinuation NotEqualTo(string value, bool ignoreCase = false, string? culture = null) => LibraDexMultiKeyContinuation.From(inner.NotEqualTo(value, ignoreCase, culture), orderedIndexes);
+    public LibraDexMultiKeyContinuation NotEqualTo(string? value, bool ignoreCase = false, string? culture = null) => LibraDexMultiKeyContinuation.From(inner.NotEqualTo(value, ignoreCase, culture), orderedIndexes);
+
+    /// <summary>
+    /// Captures string inequality against an explicit null or empty key state.<br/>
+    /// This forwards to the selected string operator so group-level and ordered multikey syntax share the same null/empty sentinel semantics.<br/>
+    /// </summary>
+    public LibraDexMultiKeyContinuation NotEqualTo(NullKey keyState) => LibraDexMultiKeyContinuation.From(inner.NotEqualTo(keyState), orderedIndexes);
+
+    /// <summary>
+    /// Captures string inequality against the stored null-key sentinel from <see cref="DBNull.Value"/>.<br/>
+    /// This forwards to <see cref="NullKey.Null"/> instead of treating `DBNull` as a string operand.<br/>
+    /// </summary>
+    public LibraDexMultiKeyContinuation NotEqualTo(DBNull value) => LibraDexMultiKeyContinuation.From(inner.NotEqualTo(value), orderedIndexes);
 
     /// <summary>
     /// Captures a prefix condition against the selected string index.<br/>
@@ -1170,6 +995,74 @@ public sealed class LibraDexMultiKeyStringWhere
     /// The condition descriptor preserves pattern intent so execution can apply any available routing prefix before falling back to pattern evaluation.<br/>
     /// </summary>
     public LibraDexMultiKeyContinuation MatchesPattern(string pattern, bool ignoreCase = false, string? culture = null) => LibraDexMultiKeyContinuation.From(inner.MatchesPattern(pattern, ignoreCase, culture), orderedIndexes);
+
+    /// <summary>
+    /// Captures a pattern condition against the selected string index using the short public spelling.<br/>
+    /// This is the preferred alias for <see cref="MatchesPattern(string, bool, string?)"/> and preserves the same optional case and culture metadata.<br/>
+    /// </summary>
+    public LibraDexMultiKeyContinuation Matches(string pattern, bool ignoreCase = false, string? culture = null) => LibraDexMultiKeyContinuation.From(inner.Matches(pattern, ignoreCase, culture), orderedIndexes);
+
+    /// <summary>
+    /// Captures a regex whole-match value comparison against the selected string index.<br/>
+    /// This forwards to the selected string operator so group-level and ordered multikey syntax share the same regex capture semantics.<br/>
+    /// </summary>
+    public LibraDexMultiKeyContinuation MatchesWith(string pattern, string value, bool ignoreCase = false, string? culture = null) => LibraDexMultiKeyContinuation.From(inner.MatchesWith(pattern, value, ignoreCase, culture), orderedIndexes);
+
+    /// <summary>
+    /// Captures a regex numbered-group value comparison against the selected string index.<br/>
+    /// Group zero compares the whole regex match; positive values compare `Regex.Match(...).Groups(groupNumber).Value`.<br/>
+    /// </summary>
+    public LibraDexMultiKeyContinuation MatchesWith(string pattern, string value, int groupNumber, bool ignoreCase = false, string? culture = null) => LibraDexMultiKeyContinuation.From(inner.MatchesWith(pattern, value, groupNumber, ignoreCase, culture), orderedIndexes);
+
+    /// <summary>
+    /// Captures a negated regex whole-match value comparison against the selected string index.<br/>
+    /// </summary>
+    public LibraDexMultiKeyContinuation NotMatchesWith(string pattern, string value, bool ignoreCase = false, string? culture = null) => LibraDexMultiKeyContinuation.From(inner.NotMatchesWith(pattern, value, ignoreCase, culture), orderedIndexes);
+
+    /// <summary>
+    /// Captures a negated regex numbered-group value comparison against the selected string index.<br/>
+    /// </summary>
+    public LibraDexMultiKeyContinuation NotMatchesWith(string pattern, string value, int groupNumber, bool ignoreCase = false, string? culture = null) => LibraDexMultiKeyContinuation.From(inner.NotMatchesWith(pattern, value, groupNumber, ignoreCase, culture), orderedIndexes);
+
+    /// <summary>
+    /// Captures regex whole-match membership against the selected string index.<br/>
+    /// </summary>
+    public LibraDexMultiKeyContinuation MatchesIn(string pattern, IEnumerable<string> values, bool ignoreCase = false, string? culture = null) => LibraDexMultiKeyContinuation.From(inner.MatchesIn(pattern, values, ignoreCase, culture), orderedIndexes);
+
+    /// <summary>
+    /// Captures regex numbered-group membership against the selected string index.<br/>
+    /// </summary>
+    public LibraDexMultiKeyContinuation MatchesIn(string pattern, IEnumerable<string> values, int groupNumber, bool ignoreCase = false, string? culture = null) => LibraDexMultiKeyContinuation.From(inner.MatchesIn(pattern, values, groupNumber, ignoreCase, culture), orderedIndexes);
+
+    /// <summary>
+    /// Captures regex whole-match membership against the selected string index using set terminology.<br/>
+    /// </summary>
+    public LibraDexMultiKeyContinuation MatchesInSet(string pattern, IEnumerable<string> values, bool ignoreCase = false, string? culture = null) => LibraDexMultiKeyContinuation.From(inner.MatchesInSet(pattern, values, ignoreCase, culture), orderedIndexes);
+
+    /// <summary>
+    /// Captures regex numbered-group membership against the selected string index using set terminology.<br/>
+    /// </summary>
+    public LibraDexMultiKeyContinuation MatchesInSet(string pattern, IEnumerable<string> values, int groupNumber, bool ignoreCase = false, string? culture = null) => LibraDexMultiKeyContinuation.From(inner.MatchesInSet(pattern, values, groupNumber, ignoreCase, culture), orderedIndexes);
+
+    /// <summary>
+    /// Captures negated regex whole-match membership against the selected string index.<br/>
+    /// </summary>
+    public LibraDexMultiKeyContinuation NotMatchesIn(string pattern, IEnumerable<string> values, bool ignoreCase = false, string? culture = null) => LibraDexMultiKeyContinuation.From(inner.NotMatchesIn(pattern, values, ignoreCase, culture), orderedIndexes);
+
+    /// <summary>
+    /// Captures negated regex numbered-group membership against the selected string index.<br/>
+    /// </summary>
+    public LibraDexMultiKeyContinuation NotMatchesIn(string pattern, IEnumerable<string> values, int groupNumber, bool ignoreCase = false, string? culture = null) => LibraDexMultiKeyContinuation.From(inner.NotMatchesIn(pattern, values, groupNumber, ignoreCase, culture), orderedIndexes);
+
+    /// <summary>
+    /// Captures negated regex whole-match membership against the selected string index using set terminology.<br/>
+    /// </summary>
+    public LibraDexMultiKeyContinuation NotMatchesInSet(string pattern, IEnumerable<string> values, bool ignoreCase = false, string? culture = null) => LibraDexMultiKeyContinuation.From(inner.NotMatchesInSet(pattern, values, ignoreCase, culture), orderedIndexes);
+
+    /// <summary>
+    /// Captures negated regex numbered-group membership against the selected string index using set terminology.<br/>
+    /// </summary>
+    public LibraDexMultiKeyContinuation NotMatchesInSet(string pattern, IEnumerable<string> values, int groupNumber, bool ignoreCase = false, string? culture = null) => LibraDexMultiKeyContinuation.From(inner.NotMatchesInSet(pattern, values, groupNumber, ignoreCase, culture), orderedIndexes);
 
     /// <summary>
     /// Captures string membership from an enumerable value list.<br/>
@@ -1261,10 +1154,22 @@ public sealed class LibraDexMultiKeyGuidWhere
     public LibraDexMultiKeyContinuation MatchesPattern(string pattern) => LibraDexMultiKeyContinuation.From(inner.MatchesPattern(pattern), orderedIndexes);
 
     /// <summary>
+    /// Captures a canonical Guid text pattern condition using the short public spelling.<br/>
+    /// This is the preferred alias for <see cref="MatchesPattern(string)"/>.<br/>
+    /// </summary>
+    public LibraDexMultiKeyContinuation Matches(string pattern) => LibraDexMultiKeyContinuation.From(inner.Matches(pattern), orderedIndexes);
+
+    /// <summary>
     /// Captures a full stored-byte Guid pattern condition against the selected Guid index.<br/>
     /// The byte order is the same order produced by `Guid.TryWriteBytes`, and every nibble is compared.<br/>
     /// </summary>
     public LibraDexMultiKeyContinuation MatchesPattern(byte[] pattern) => LibraDexMultiKeyContinuation.From(inner.MatchesPattern(pattern), orderedIndexes);
+
+    /// <summary>
+    /// Captures a full stored-byte Guid pattern condition using the short public spelling.<br/>
+    /// This is the preferred alias for <see cref="MatchesPattern(byte[])"/>.<br/>
+    /// </summary>
+    public LibraDexMultiKeyContinuation Matches(byte[] pattern) => LibraDexMultiKeyContinuation.From(inner.Matches(pattern), orderedIndexes);
 }
 
 /// <summary>
@@ -1288,9 +1193,33 @@ public sealed class LibraDexMultiKeyBinaryWhere
     public LibraDexMultiKeyContinuation EqualTo(byte[] value) => LibraDexMultiKeyContinuation.From(inner.EqualTo(value), orderedIndexes);
 
     /// <summary>
+    /// Captures binary equality against an explicit null or empty key state.<br/>
+    /// This forwards to the selected binary operator so group-level and ordered multikey syntax share the same null/empty sentinel semantics.<br/>
+    /// </summary>
+    public LibraDexMultiKeyContinuation EqualTo(NullKey keyState) => LibraDexMultiKeyContinuation.From(inner.EqualTo(keyState), orderedIndexes);
+
+    /// <summary>
+    /// Captures binary equality against the stored null-key sentinel from <see cref="DBNull.Value"/>.<br/>
+    /// This forwards to <see cref="NullKey.Null"/> instead of treating `DBNull` as a byte-array operand.<br/>
+    /// </summary>
+    public LibraDexMultiKeyContinuation EqualTo(DBNull value) => LibraDexMultiKeyContinuation.From(inner.EqualTo(value), orderedIndexes);
+
+    /// <summary>
     /// Captures byte-array inequality against the selected binary index.<br/>
     /// </summary>
     public LibraDexMultiKeyContinuation NotEqualTo(byte[] value) => LibraDexMultiKeyContinuation.From(inner.NotEqualTo(value), orderedIndexes);
+
+    /// <summary>
+    /// Captures binary inequality against an explicit null or empty key state.<br/>
+    /// This forwards to the selected binary operator so group-level and ordered multikey syntax share the same null/empty sentinel semantics.<br/>
+    /// </summary>
+    public LibraDexMultiKeyContinuation NotEqualTo(NullKey keyState) => LibraDexMultiKeyContinuation.From(inner.NotEqualTo(keyState), orderedIndexes);
+
+    /// <summary>
+    /// Captures binary inequality against the stored null-key sentinel from <see cref="DBNull.Value"/>.<br/>
+    /// This forwards to <see cref="NullKey.Null"/> instead of treating `DBNull` as a byte-array operand.<br/>
+    /// </summary>
+    public LibraDexMultiKeyContinuation NotEqualTo(DBNull value) => LibraDexMultiKeyContinuation.From(inner.NotEqualTo(value), orderedIndexes);
 
     /// <summary>
     /// Captures a raw byte-prefix condition against the selected binary index.<br/>
@@ -1328,6 +1257,12 @@ public sealed class LibraDexMultiKeyBinaryWhere
     /// Captures a full fixed-key byte pattern from a readable hexadecimal pattern.<br/>
     /// </summary>
     public LibraDexMultiKeyContinuation MatchesHexPattern(string hexPattern) => LibraDexMultiKeyContinuation.From(inner.MatchesHexPattern(hexPattern), orderedIndexes);
+
+    /// <summary>
+    /// Captures a full fixed-key byte pattern from a readable hexadecimal pattern using the short public spelling.<br/>
+    /// This is the preferred alias for <see cref="MatchesHexPattern(string)"/>.<br/>
+    /// </summary>
+    public LibraDexMultiKeyContinuation Matches(string hexPattern) => LibraDexMultiKeyContinuation.From(inner.Matches(hexPattern), orderedIndexes);
 
     /// <summary>
     /// Captures equality for a fixed raw byte slice inside the selected binary index key.<br/>
@@ -1440,8 +1375,25 @@ public sealed class LibraDexOrderedMultiKeyBuilder
     }
 
     /// <summary>
-    /// Starts a condition builder whose ordinal selectors map to the ordered indexes supplied to `MultiKey(...)`.<br/>
+    /// Starts a condition builder by selecting an ordered multi-key participant by ordinal.<br/>
+    /// Key typing and projection intent are chosen after the ordinal through members such as `.AsString`, `.AsGuid`, and `.AsInt64`, matching catalog-group index-first condition syntax.<br/>
     /// The resulting predicates normalize to the same identity-group condition tree as manually composed opened-index expressions.<br/>
     /// </summary>
-    public LibraDexMultiKeyWhere Where => new(group, LibraDexCondition.ForGroup(group), indexes);
+    /// <param name="ordinal">The zero-based participant ordinal supplied to `MultiKey(...)`.</param>
+    /// <returns>A value-family selector for the selected participant.</returns>
+    public LibraDexMultiKeyValueTypeSelector Where(int ordinal)
+    {
+        return SelectOrdinal(LibraDexCondition.ForGroup(group), ordinal);
+    }
+
+    private LibraDexMultiKeyValueTypeSelector SelectOrdinal(LibraDexConditionClause clause, int ordinal)
+    {
+        if ((uint)ordinal >= (uint)indexes.Length)
+        {
+            throw new ArgumentOutOfRangeException(nameof(ordinal), "The multi-key ordinal is outside the participant list.");
+        }
+
+        IIndex index = indexes[ordinal];
+        return new LibraDexMultiKeyValueTypeSelector(clause.Index(index.Name), index, indexes);
+    }
 }

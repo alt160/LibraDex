@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.RegularExpressions;
 
 namespace LibraDex;
 
@@ -344,7 +345,13 @@ public enum LibraDexCriteriaKind
     /// The descriptor represents a condition-derived bitmask predicate over a scalar key.<br/>
     /// This kind is intentionally scan-backed in the first implementation because arbitrary bitmask predicates are not generally contiguous in ordered key space.<br/>
     /// </summary>
-    Bitmask = 20
+    Bitmask = 20,
+
+    /// <summary>
+    /// The descriptor represents scalar null presence over the metadata-backed null route.<br/>
+    /// `ScalarNull.Null` reads the compact identity-only route, while `ScalarNull.NonNull` reads ordinary value routes and excludes scalar nulls.<br/>
+    /// </summary>
+    ScalarNull = 21
 }
 
 internal enum LibraDexStringPatternMode
@@ -362,7 +369,11 @@ internal enum LibraDexStringPatternMode
     Between = 10,
     NotBetween = 11,
     InSet = 12,
-    NotInSet = 13
+    NotInSet = 13,
+    MatchesWith = 14,
+    NotMatchesWith = 15,
+    MatchesInSet = 16,
+    NotMatchesInSet = 17
 }
 
 internal enum LibraDexBitmaskComparisonMode
@@ -485,6 +496,7 @@ internal sealed class LibraDexStringPatternPredicate
     private readonly IReadOnlyCollection<string>? setValues;
     private readonly ISet<string>? membershipSet;
     private readonly LibraDexStringComparisonPolicy policy;
+    private readonly int? matchGroupNumber;
 
     private LibraDexStringPatternPredicate(
         LibraDexStringPatternMode mode,
@@ -492,7 +504,8 @@ internal sealed class LibraDexStringPatternPredicate
         string? upperValue,
         IReadOnlyCollection<string>? setValues,
         ISet<string>? membershipSet,
-        LibraDexStringComparisonPolicy policy)
+        LibraDexStringComparisonPolicy policy,
+        int? matchGroupNumber)
     {
         this.mode = mode;
         this.value = value;
@@ -500,6 +513,7 @@ internal sealed class LibraDexStringPatternPredicate
         this.setValues = setValues;
         this.membershipSet = membershipSet;
         this.policy = policy ?? throw new ArgumentNullException(nameof(policy));
+        this.matchGroupNumber = matchGroupNumber;
     }
 
     internal static LibraDexStringPatternPredicate Create(LibraDexStringPatternMode mode, string value, bool ignoreCase, string? culture)
@@ -510,7 +524,7 @@ internal sealed class LibraDexStringPatternPredicate
     internal static LibraDexStringPatternPredicate Create(LibraDexStringPatternMode mode, string value, LibraDexStringComparisonPolicy policy)
     {
         ArgumentNullException.ThrowIfNull(value);
-        return new LibraDexStringPatternPredicate(mode, value, null, null, null, policy);
+        return new LibraDexStringPatternPredicate(mode, value, null, null, null, policy, matchGroupNumber: null);
     }
 
     /// <summary>
@@ -532,7 +546,66 @@ internal sealed class LibraDexStringPatternPredicate
     {
         ArgumentNullException.ThrowIfNull(value);
         ArgumentNullException.ThrowIfNull(upperValue);
-        return new LibraDexStringPatternPredicate(mode, value, upperValue, null, null, policy);
+        return new LibraDexStringPatternPredicate(mode, value, upperValue, null, null, policy, matchGroupNumber: null);
+    }
+
+    /// <summary>
+    /// Creates a regex capture predicate that compares the selected regex match text or numbered capture group to one expected value.<br/>
+    /// Group zero is the whole match and matches the behavior of <see cref="Match.Value"/>; positive group numbers compare <see cref="Group.Value"/> for that group.<br/>
+    /// </summary>
+    /// <param name="mode">Whether the comparison is positive or negated.</param>
+    /// <param name="pattern">The regular expression pattern.</param>
+    /// <param name="expectedValue">The expected match or group value.</param>
+    /// <param name="groupNumber">The optional group number; null and zero both mean the whole match.</param>
+    /// <param name="policy">The string comparison policy for comparing captured text to the expected value.</param>
+    /// <returns>A compiled string predicate descriptor for the exact-index executor.</returns>
+    internal static LibraDexStringPatternPredicate CreateRegexCapture(
+        LibraDexStringPatternMode mode,
+        string pattern,
+        string expectedValue,
+        int? groupNumber,
+        LibraDexStringComparisonPolicy policy)
+    {
+        ArgumentNullException.ThrowIfNull(pattern);
+        ArgumentNullException.ThrowIfNull(expectedValue);
+        ValidateRegexGroupNumber(groupNumber);
+        return new LibraDexStringPatternPredicate(mode, pattern, expectedValue, null, null, policy, groupNumber);
+    }
+
+    /// <summary>
+    /// Creates a regex capture predicate that compares the selected regex match text or numbered capture group to a value set.<br/>
+    /// Group zero is the whole match and matches the behavior of <see cref="Match.Value"/>; positive group numbers compare <see cref="Group.Value"/> for that group.<br/>
+    /// </summary>
+    /// <param name="mode">Whether the comparison is positive or negated.</param>
+    /// <param name="pattern">The regular expression pattern.</param>
+    /// <param name="expectedValues">The expected match or group values.</param>
+    /// <param name="groupNumber">The optional group number; null and zero both mean the whole match.</param>
+    /// <param name="policy">The string comparison policy for comparing captured text to the expected values.</param>
+    /// <returns>A compiled string predicate descriptor for the exact-index executor.</returns>
+    internal static LibraDexStringPatternPredicate CreateRegexCaptureSet(
+        LibraDexStringPatternMode mode,
+        string pattern,
+        IEnumerable<string> expectedValues,
+        int? groupNumber,
+        LibraDexStringComparisonPolicy policy)
+    {
+        ArgumentNullException.ThrowIfNull(pattern);
+        ArgumentNullException.ThrowIfNull(expectedValues);
+        ArgumentNullException.ThrowIfNull(policy);
+        ValidateRegexGroupNumber(groupNumber);
+        HashSet<string> prepared = new(policy.EqualityComparer);
+        foreach (string expectedValue in expectedValues)
+        {
+            ArgumentNullException.ThrowIfNull(expectedValue);
+            prepared.Add(expectedValue);
+        }
+
+        if (prepared.Count == 0)
+        {
+            throw new ArgumentException("Regex capture membership predicates require at least one expected value.", nameof(expectedValues));
+        }
+
+        return new LibraDexStringPatternPredicate(mode, pattern, null, prepared, prepared, policy, groupNumber);
     }
 
     /// <summary>
@@ -578,7 +651,7 @@ internal sealed class LibraDexStringPatternPredicate
             throw new ArgumentException("String membership predicates require at least one value.", nameof(values));
         }
 
-        return new LibraDexStringPatternPredicate(mode, captured.First(), null, captured, membershipSet, policy);
+        return new LibraDexStringPatternPredicate(mode, captured.First(), null, captured, membershipSet, policy, matchGroupNumber: null);
     }
 
     internal IReadOnlyList<(string Lower, string Upper)> CreateCandidateRanges()
@@ -655,8 +728,62 @@ internal sealed class LibraDexStringPatternPredicate
                 Compare(candidate, RequireUpperValue(), compareInfo, options) > 0,
             LibraDexStringPatternMode.InSet => MatchesSet(candidate, RequireMembershipSet()),
             LibraDexStringPatternMode.NotInSet => !MatchesSet(candidate, RequireMembershipSet()),
+            LibraDexStringPatternMode.MatchesWith => MatchesRegexCapture(candidate, compareInfo, options, RequireUpperValue()),
+            LibraDexStringPatternMode.NotMatchesWith => !MatchesRegexCapture(candidate, compareInfo, options, RequireUpperValue()),
+            LibraDexStringPatternMode.MatchesInSet => MatchesRegexCapture(candidate, RequireMembershipSet()),
+            LibraDexStringPatternMode.NotMatchesInSet => !MatchesRegexCapture(candidate, RequireMembershipSet()),
             _ => false
         };
+    }
+
+    private bool MatchesRegexCapture(string candidate, CompareInfo compareInfo, CompareOptions options, string expectedValue)
+    {
+        Match match = Regex.Match(candidate, value, CreateRegexOptions(options));
+        if (!match.Success)
+        {
+            return false;
+        }
+
+        string captured = SelectRegexCapture(match);
+        return Compare(captured, expectedValue, compareInfo, options) == 0;
+    }
+
+    private bool MatchesRegexCapture(string candidate, ISet<string> expectedValues)
+    {
+        Match match = Regex.Match(candidate, value, CreateRegexOptions(policy.CompareOptions));
+        return match.Success && expectedValues.Contains(SelectRegexCapture(match));
+    }
+
+    private string SelectRegexCapture(Match match)
+    {
+        int groupNumber = matchGroupNumber.GetValueOrDefault(0);
+        if (groupNumber == 0)
+        {
+            return match.Value;
+        }
+
+        return groupNumber < match.Groups.Count && match.Groups[groupNumber].Success
+            ? match.Groups[groupNumber].Value
+            : string.Empty;
+    }
+
+    private static RegexOptions CreateRegexOptions(CompareOptions options)
+    {
+        RegexOptions regexOptions = RegexOptions.CultureInvariant;
+        if ((options & CompareOptions.IgnoreCase) != 0)
+        {
+            regexOptions |= RegexOptions.IgnoreCase;
+        }
+
+        return regexOptions;
+    }
+
+    private static void ValidateRegexGroupNumber(int? groupNumber)
+    {
+        if (groupNumber.HasValue && groupNumber.Value < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(groupNumber), groupNumber, "Regex capture group number cannot be negative.");
+        }
     }
 
     /// <summary>

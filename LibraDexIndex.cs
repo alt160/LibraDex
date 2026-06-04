@@ -299,10 +299,10 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     }
 
     /// <summary>
-    /// Materializes identities for a condition rooted at this index.<br/>
-    /// This convenience is intentionally single-index scoped: composed cross-index expressions should be executed from the owning identity group so every referenced index can be resolved by name.<br/>
+    /// Materializes identities for a completed condition rooted at this index.<br/>
+    /// This convenience is intentionally single-index scoped: composed cross-index conditions should be executed from the owning identity group so every referenced index can be resolved by name.<br/>
     /// </summary>
-    /// <param name="condition">The condition expression to execute.</param>
+    /// <param name="condition">The completed condition to execute.</param>
     /// <param name="ordering">The requested identity ordering contract.</param>
     /// <param name="deduplication">The requested duplicate identity policy.</param>
     /// <param name="skip">The number of matching identities to skip.</param>
@@ -310,7 +310,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     /// <param name="bookmark">The optional continuation bookmark.</param>
     /// <returns>A typed list of matching identities.</returns>
     public IReadOnlyList<TIdentity> GetIdentities(
-        LibraDexConditionExpression<TIdentity> condition,
+        LibraDexConditionEndCondition condition,
         IdentityResultOrdering ordering = IdentityResultOrdering.PlanNatural,
         IdentityDeduplication deduplication = IdentityDeduplication.Distinct,
         int skip = 0,
@@ -318,7 +318,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
         LibraDexBookmark? bookmark = null)
     {
         ArgumentNullException.ThrowIfNull(condition);
-        IIdentityCriterion criterion = condition.Condition.MaterializeWithProjectionBridge(
+        IIdentityCriterion criterion = condition.MaterializeWithProjectionBridge(
             ResolveOwnIndex,
             ResolveOwnProjectionIndex);
         return criterion.IDsWith(ordering, deduplication, skip, take, bookmark).ToList<TIdentity>();
@@ -487,6 +487,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
             LibraDexCriteriaKind.BinaryPattern => MaterializeBinaryPatternIdentityObjects(request.Values, request.TakeLimit),
             LibraDexCriteriaKind.BinaryTypedSlice => MaterializeBinaryTypedSliceIdentityObjects(request.Values, request.TakeLimit),
             LibraDexCriteriaKind.Bitmask => MaterializeBitmaskIdentityObjects(request.Values, request.TakeLimit),
+            LibraDexCriteriaKind.ScalarNull => MaterializeScalarNullIdentityObjects(request.Values, request.TakeLimit),
             _ => throw new NotSupportedException($"{request.CriteriaKind} identity execution is not connected to physical readers yet.")
         };
     }
@@ -606,6 +607,13 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
                 }
 
                 yield break;
+            case LibraDexCriteriaKind.ScalarNull:
+                foreach (object identity in IterateScalarNullIdentityObjects(request.Values, request.TakeLimit))
+                {
+                    yield return identity;
+                }
+
+                yield break;
             default:
                 throw new NotSupportedException($"{request.CriteriaKind} identity iteration is not connected to physical readers yet.");
         }
@@ -692,6 +700,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
             LibraDexCriteriaKind.BinaryPattern => CountBinaryPatternIdentityObjects(request.Values),
             LibraDexCriteriaKind.BinaryTypedSlice => CountBinaryTypedSliceIdentityObjects(request.Values),
             LibraDexCriteriaKind.Bitmask => CountBitmaskIdentityObjects(request.Values),
+            LibraDexCriteriaKind.ScalarNull => CountScalarNullIdentityObjects(request.Values),
             _ => throw new NotSupportedException($"{request.CriteriaKind} identity count is not connected to physical readers yet.")
         };
     }
@@ -1787,6 +1796,132 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
         {
             return reader.Count;
         }
+    }
+
+    /// <summary>
+    /// Materializes identities for a scalar-null presence primitive.<br/>
+    /// `ScalarNull.Null` reads the compact metadata-backed null route, while `ScalarNull.NonNull` reads the ordinary value-router range and therefore excludes scalar nulls.<br/>
+    /// The take limit is applied during route enumeration so callers such as paged condition terminals do not decode more null-route identities than requested.<br/>
+    /// </summary>
+    /// <param name="values">The condition primitive operands; operand zero must be <see cref="ScalarNull"/>.</param>
+    /// <param name="takeLimit">The optional maximum number of identities to materialize.</param>
+    /// <returns>The decoded identities selected by the scalar-null state.</returns>
+    private IReadOnlyList<object> MaterializeScalarNullIdentityObjects(IReadOnlyList<object?> values, int? takeLimit = null)
+    {
+        return IterateScalarNullIdentityObjects(values, takeLimit).ToList();
+    }
+
+    /// <summary>
+    /// Streams identities for a scalar-null presence primitive without first materializing the whole route.<br/>
+    /// Null-route identities are stored as encoded identities only, so this method decodes scalar-8 and scalar-16 identity lanes directly from the compact route shelf.<br/>
+    /// Non-null scalar state intentionally falls through to the normal all-range reader instead of synthesizing a complement against the null route.<br/>
+    /// </summary>
+    /// <param name="values">The condition primitive operands; operand zero must be <see cref="ScalarNull"/>.</param>
+    /// <param name="takeLimit">The optional maximum number of identities to yield.</param>
+    /// <returns>A forward-only sequence of decoded identities.</returns>
+    private IEnumerable<object> IterateScalarNullIdentityObjects(IReadOnlyList<object?> values, int? takeLimit = null)
+    {
+        if (takeLimit is < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(takeLimit), takeLimit, "Take cannot be negative.");
+        }
+
+        ScalarNull state = RequireScalarNullState(values);
+        if (state == ScalarNull.NonNull)
+        {
+            foreach (object identity in IterateIdentityObjects(OpenAllRangeReader(), takeLimit))
+            {
+                yield return identity;
+            }
+
+            yield break;
+        }
+
+        if (takeLimit == 0)
+        {
+            yield break;
+        }
+
+        switch (shape)
+        {
+            case LibraDexGenericScalarShape.SS88:
+            case LibraDexGenericScalarShape.SS168:
+            case LibraDexGenericScalarShape.FS328:
+                int returned8 = 0;
+                ulong[] encodedIdentities = session.ReadScalar8KeyStateIdentities(SlotIndex, KeyStateRoute.Null);
+                for (int i = 0; i < encodedIdentities.Length; i++)
+                {
+                    yield return LibraDexGenericScalarCodec<TIdentity>.Decode8(encodedIdentities[i])!;
+                    returned8++;
+                    if (takeLimit is not null && returned8 >= takeLimit.Value)
+                    {
+                        yield break;
+                    }
+                }
+
+                yield break;
+            case LibraDexGenericScalarShape.SS816:
+            case LibraDexGenericScalarShape.SS1616:
+            case LibraDexGenericScalarShape.FS3216:
+                int returned16 = 0;
+                (ulong[] highs, ulong[] lows) = session.ReadScalar16KeyStateIdentities(SlotIndex, KeyStateRoute.Null);
+                for (int i = 0; i < highs.Length; i++)
+                {
+                    yield return LibraDexGenericScalarCodec<TIdentity>.Decode16(highs[i], lows[i])!;
+                    returned16++;
+                    if (takeLimit is not null && returned16 >= takeLimit.Value)
+                    {
+                        yield break;
+                    }
+                }
+
+                yield break;
+            default:
+                throw new NotSupportedException($"Scalar null routes do not support resolved shape {shape}.");
+        }
+    }
+
+    /// <summary>
+    /// Counts identities for a scalar-null presence primitive.<br/>
+    /// `ScalarNull.NonNull` delegates to the normal all-range count, while `ScalarNull.Null` counts the compact null-route identity shelf for the selected identity width.<br/>
+    /// This keeps null-only counts on the fast identity-only route rather than scanning ordinary key shelves.<br/>
+    /// </summary>
+    /// <param name="values">The condition primitive operands; operand zero must be <see cref="ScalarNull"/>.</param>
+    /// <returns>The selected identity count.</returns>
+    private long CountScalarNullIdentityObjects(IReadOnlyList<object?> values)
+    {
+        ScalarNull state = RequireScalarNullState(values);
+        if (state == ScalarNull.NonNull)
+        {
+            return CountIdentityObjects(OpenAllRangeReader());
+        }
+
+        return shape switch
+        {
+            LibraDexGenericScalarShape.SS88 or
+            LibraDexGenericScalarShape.SS168 or
+            LibraDexGenericScalarShape.FS328 => session.ReadScalar8KeyStateIdentities(SlotIndex, KeyStateRoute.Null).LongLength,
+            LibraDexGenericScalarShape.SS816 or
+            LibraDexGenericScalarShape.SS1616 or
+            LibraDexGenericScalarShape.FS3216 => session.ReadScalar16KeyStateIdentities(SlotIndex, KeyStateRoute.Null).Highs.LongLength,
+            _ => throw new NotSupportedException($"Scalar null routes do not support resolved shape {shape}.")
+        };
+    }
+
+    /// <summary>
+    /// Reads the scalar-null state operand from a normalized condition primitive.<br/>
+    /// The condition builder validates this before creating the primitive, but the executor keeps its own guard so manually created internal criteria fail clearly.<br/>
+    /// </summary>
+    /// <param name="values">The primitive operand values.</param>
+    /// <returns>The requested scalar-null state.</returns>
+    private static ScalarNull RequireScalarNullState(IReadOnlyList<object?> values)
+    {
+        if (values.Count == 0 || values[0] is not ScalarNull state)
+        {
+            throw new InvalidOperationException("Scalar null criteria require a ScalarNull operand.");
+        }
+
+        return state;
     }
 
     private IReadOnlyList<object> MaterializeMembershipIdentityObjects(IReadOnlyList<object?> values, int? takeLimit = null)

@@ -411,11 +411,34 @@ public sealed class CatalogIdentityGroupIndexes
     public CatalogIdentityGroupBatchManager Batch { get; }
 
     /// <summary>
-    /// Starts a low-friction condition builder for indexes inside this identity group.<br/>
-    /// Selector methods such as `Guid(indexName)`, `String(indexName)`, and `Int64(indexName)` identify the index; subsequent operator calls provide the condition value.<br/>
-    /// The built condition remains descriptor-shaped until passed to a terminal read, delete, or mutation method.<br/>
+    /// Starts a low-friction condition builder by selecting an index name inside this identity group.<br/>
+    /// Key typing and projection intent are selected after the index through members such as `.AsString`, `.AsGuid`, and `.AsInt64`, keeping the public grammar index-first instead of type-first.<br/>
+    /// The selected index name remains descriptor-shaped until the condition is materialized, so reusable conditions can still be built before indexes are opened.<br/>
     /// </summary>
-    public LibraDexMultiKeyWhere Where => new(Group);
+    /// <param name="indexName">The index name inside this identity group.</param>
+    /// <returns>A value-family selector for the chosen index.</returns>
+    public LibraDexConditionValueTypeSelector Where(string indexName)
+    {
+        return LibraDexCondition.ForGroup(Group).Index(indexName);
+    }
+
+    /// <summary>
+    /// Starts a low-friction condition builder from an already opened index instance in this identity group.<br/>
+    /// The handle supplies the index name and verifies the identity group immediately; key-type compatibility is still checked when the selected `.As...` family is materialized against the index.<br/>
+    /// This keeps instance-based conditions concise without making callers repeat the index name.<br/>
+    /// </summary>
+    /// <param name="index">The opened index instance to select.</param>
+    /// <returns>A value-family selector for the chosen index.</returns>
+    public LibraDexConditionValueTypeSelector Where(IIndex index)
+    {
+        ArgumentNullException.ThrowIfNull(index);
+        if (!string.Equals(index.Group, Group, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("The supplied index handle belongs to a different LibraDex identity group.");
+        }
+
+        return Where(index.Name);
+    }
 
     /// <summary>
     /// Gets a name-first builder for an index inside this identity group.<br/>
@@ -462,11 +485,11 @@ public sealed class CatalogIdentityGroupIndexes
     }
 
     /// <summary>
-    /// Materializes identities for a condition expression over this identity group.<br/>
-    /// Index names referenced by the expression are resolved from the group metadata at materialization time, preserving deferred selector binding without making callers build resolver dictionaries by hand.<br/>
+    /// Materializes identities for a completed condition over this identity group.<br/>
+    /// Index names referenced by the condition are resolved from the group metadata at materialization time, preserving deferred selector binding without making callers build resolver dictionaries by hand.<br/>
     /// </summary>
-    /// <typeparam name="TIdentity">The identity type expected by the condition expression.</typeparam>
-    /// <param name="condition">The condition expression to execute.</param>
+    /// <typeparam name="TIdentity">The identity type expected by the terminal action.</typeparam>
+    /// <param name="condition">The completed condition to execute.</param>
     /// <param name="ordering">The requested identity ordering contract.</param>
     /// <param name="deduplication">The requested duplicate identity policy.</param>
     /// <param name="skip">The number of matching identities to skip.</param>
@@ -474,7 +497,7 @@ public sealed class CatalogIdentityGroupIndexes
     /// <param name="bookmark">The optional continuation bookmark.</param>
     /// <returns>A typed list of matching identities.</returns>
     public IReadOnlyList<TIdentity> GetIdentities<TIdentity>(
-        LibraDexConditionExpression<TIdentity> condition,
+        LibraDexConditionEndCondition condition,
         IdentityResultOrdering ordering = IdentityResultOrdering.PlanNatural,
         IdentityDeduplication deduplication = IdentityDeduplication.Distinct,
         int skip = 0,
@@ -487,34 +510,10 @@ public sealed class CatalogIdentityGroupIndexes
             throw new InvalidOperationException("The supplied condition belongs to a different LibraDex identity group.");
         }
 
-        IIdentityCriterion criterion = condition.Condition.MaterializeWithProjectionBridge(
+        IIdentityCriterion criterion = condition.MaterializeWithProjectionBridge(
             name => this[name].Open(),
             ResolveProjectionIndex);
         return criterion.IDsWith(ordering, deduplication, skip, take, bookmark).ToList<TIdentity>();
-    }
-
-    /// <summary>
-    /// Materializes identities for a non-generic group condition over this identity group.<br/>
-    /// This overload is the terminal companion for `Where.Guid(indexName)` and `MultiKey(...).Where.Guid(ordinal)` style builders when the condition was not started from a typed opened index handle.<br/>
-    /// </summary>
-    /// <typeparam name="TIdentity">The identity type expected by the condition expression.</typeparam>
-    /// <param name="condition">The condition expression to execute.</param>
-    /// <param name="ordering">The requested identity ordering contract.</param>
-    /// <param name="deduplication">The requested duplicate identity policy.</param>
-    /// <param name="skip">The number of matching identities to skip.</param>
-    /// <param name="take">The optional maximum number of identities to return.</param>
-    /// <param name="bookmark">The optional continuation bookmark.</param>
-    /// <returns>A typed list of matching identities.</returns>
-    public IReadOnlyList<TIdentity> GetIdentities<TIdentity>(
-        LibraDexGroupCondition condition,
-        IdentityResultOrdering ordering = IdentityResultOrdering.PlanNatural,
-        IdentityDeduplication deduplication = IdentityDeduplication.Distinct,
-        int skip = 0,
-        int? take = null,
-        LibraDexBookmark? bookmark = null)
-    {
-        ArgumentNullException.ThrowIfNull(condition);
-        return GetIdentities(condition.As<TIdentity>(), ordering, deduplication, skip, take, bookmark);
     }
 
     /// <summary>
@@ -600,7 +599,8 @@ public sealed class CatalogIdentityGroupIndexes
 
     /// <summary>
     /// Starts an ordered multi-key condition builder for already opened indexes in this identity group.<br/>
-    /// Ordinal selectors such as `Where.Guid(0)` and `Where.String(1)` bind to this participant list, which is convenient for generated code and caller-owned index arrays.<br/>
+    /// Ordinal selectors such as `Where(0).AsGuid` and `Where(1).AsString` bind to this participant list, which is convenient for generated code and caller-owned index arrays.<br/>
+    /// Name and handle selectors use the ordinary group surface through `Where(indexName)` or `Where(indexInstance)` so handwritten code remains index-first.<br/>
     /// </summary>
     /// <param name="indexes">The ordered indexes that participate in the condition.</param>
     /// <returns>An ordered multi-key condition builder.</returns>
