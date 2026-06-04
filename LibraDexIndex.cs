@@ -299,6 +299,47 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     }
 
     /// <summary>
+    /// Inserts one identity onto this scalar index's metadata-backed null-key route.<br/>
+    /// This is the typed public write spelling for scalar key families where null is a key state rather than a CLR scalar value.<br/>
+    /// Use <see cref="ScalarNull.Null"/> as the only accepted state; <see cref="ScalarNull.NonNull"/> is a predicate state and should be written with a concrete scalar key through <see cref="Insert(TKey, TIdentity)"/>.<br/>
+    /// </summary>
+    /// <param name="keyState">The scalar key state to write; only <see cref="ScalarNull.Null"/> is accepted.</param>
+    /// <param name="identity">The typed identity value associated with the null key state.</param>
+    /// <returns>The insert result plus commit telemetry when available.</returns>
+    public LibraDexGenericInsertResult Insert(ScalarNull keyState, TIdentity identity)
+    {
+        ThrowIfDisposed();
+        if (keyState != ScalarNull.Null)
+        {
+            throw new ArgumentOutOfRangeException(nameof(keyState), keyState, "Only ScalarNull.Null is a concrete scalar key state for insertion.");
+        }
+
+        if (catalog?.TryGetActiveIdentityGroupBatch(Group, out _) == true)
+        {
+            throw new NotSupportedException("Scalar null route inserts are not connected to identity-group batch publication yet.");
+        }
+
+        if (BatchManager.IsEnabled)
+        {
+            throw new NotSupportedException("Scalar null route inserts are not connected to index batch publication yet.");
+        }
+
+        return InsertScalarNullIdentity(identity);
+    }
+
+    /// <summary>
+    /// Adds one identity onto this scalar index's metadata-backed null-key route.<br/>
+    /// This is the short spelling counterpart to <see cref="Insert(ScalarNull, TIdentity)"/> and preserves the same route semantics.<br/>
+    /// </summary>
+    /// <param name="keyState">The scalar key state to write; only <see cref="ScalarNull.Null"/> is accepted.</param>
+    /// <param name="identity">The typed identity value associated with the null key state.</param>
+    /// <returns>The insert result plus commit telemetry when available.</returns>
+    public LibraDexGenericInsertResult Add(ScalarNull keyState, TIdentity identity)
+    {
+        return Insert(keyState, identity);
+    }
+
+    /// <summary>
     /// Materializes identities for a completed condition rooted at this index.<br/>
     /// This convenience is intentionally single-index scoped: composed cross-index conditions should be executed from the owning identity group so every referenced index can be resolved by name.<br/>
     /// </summary>
@@ -331,8 +372,13 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     /// <param name="key">The runtime key value to insert.</param>
     /// <param name="identity">The runtime identity value to associate with the key.</param>
     /// <returns>The insert result plus any route-create and insert commit telemetry.</returns>
-    LibraDexGenericInsertResult IIndex.Insert(object key, object identity)
+    LibraDexGenericInsertResult IIndex.Insert(object? key, object identity)
     {
+        if (key is null || key == DBNull.Value)
+        {
+            return Insert(ScalarNull.Null, RequireObjectIdentity(identity, nameof(identity)));
+        }
+
         return Insert(RequireObjectKey(key, nameof(key)), RequireObjectIdentity(identity, nameof(identity)));
     }
 
@@ -468,7 +514,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
         ThrowIfDisposed();
         return request.CriteriaKind switch
         {
-            LibraDexCriteriaKind.All => MaterializeIdentityObjects(OpenAllRangeReader(), request.TakeLimit),
+            LibraDexCriteriaKind.All => MaterializeAllIdentityObjects(request.TakeLimit),
             LibraDexCriteriaKind.Find => MaterializeIdentityObjects(OpenRangeReader(
                 RequireObjectKey(RequireCriterionValue(request.Values, 0), nameof(request.Values)),
                 RequireObjectKey(RequireCriterionValue(request.Values, 0), nameof(request.Values))), request.TakeLimit),
@@ -505,7 +551,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
         switch (request.CriteriaKind)
         {
             case LibraDexCriteriaKind.All:
-                foreach (object identity in IterateIdentityObjects(OpenAllRangeReader(), request.TakeLimit))
+                foreach (object identity in IterateAllIdentityObjects(request.TakeLimit))
                 {
                     yield return identity;
                 }
@@ -622,7 +668,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     IReadOnlyList<object> IIdentityPrimitiveExecutor.ExecuteAllIdentities()
     {
         ThrowIfDisposed();
-        return MaterializeIdentityObjects(OpenAllRangeReader());
+        return MaterializeAllIdentityObjects();
     }
 
     IEnumerable<object> IIdentityPrimitiveExecutor.IterateIdentityUniverse()
@@ -681,7 +727,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
         ThrowIfDisposed();
         return request.CriteriaKind switch
         {
-            LibraDexCriteriaKind.All => CountIdentityObjects(OpenAllRangeReader()),
+            LibraDexCriteriaKind.All => CountAllIdentityObjects(),
             LibraDexCriteriaKind.Find => CountIdentityObjects(OpenRangeReader(
                 RequireObjectKey(RequireCriterionValue(request.Values, 0), nameof(request.Values)),
                 RequireObjectKey(RequireCriterionValue(request.Values, 0), nameof(request.Values)))),
@@ -1799,6 +1845,72 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     }
 
     /// <summary>
+    /// Materializes every identity visible through this index in LibraDex index-natural order.<br/>
+    /// Scalar null-route identities are emitted before ordinary value-route identities so the public all-scan order matches the key-state route contract.<br/>
+    /// </summary>
+    /// <param name="takeLimit">The optional maximum number of identities to materialize.</param>
+    /// <returns>The decoded identities in plan-natural order.</returns>
+    private IReadOnlyList<object> MaterializeAllIdentityObjects(int? takeLimit = null)
+    {
+        return IterateAllIdentityObjects(takeLimit).ToList();
+    }
+
+    /// <summary>
+    /// Streams every identity visible through this index in LibraDex index-natural order.<br/>
+    /// The stream reads the scalar null route first, then falls through to the ordinary value router while preserving the caller's optional take limit across both route classes.<br/>
+    /// </summary>
+    /// <param name="takeLimit">The optional maximum number of identities to yield.</param>
+    /// <returns>A forward-only sequence of decoded identities.</returns>
+    private IEnumerable<object> IterateAllIdentityObjects(int? takeLimit = null)
+    {
+        if (takeLimit is < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(takeLimit), takeLimit, "Take cannot be negative.");
+        }
+
+        if (takeLimit == 0)
+        {
+            yield break;
+        }
+
+        int returned = 0;
+        if (SupportsScalarNullKeyRoute())
+        {
+            foreach (object identity in IterateScalarNullRouteIdentityObjects(takeLimit))
+            {
+                yield return identity;
+                returned++;
+                if (takeLimit is not null && returned >= takeLimit.Value)
+                {
+                    yield break;
+                }
+            }
+        }
+
+        int? remaining = takeLimit is null ? null : takeLimit.Value - returned;
+        foreach (object identity in IterateIdentityObjects(OpenAllRangeReader(), remaining))
+        {
+            yield return identity;
+        }
+    }
+
+    /// <summary>
+    /// Counts every identity visible through this index, including the scalar null route before ordinary value routes.<br/>
+    /// This keeps `All().Count(...)` consistent with `All().ToList(...)` without forcing an identity materialization pass.<br/>
+    /// </summary>
+    /// <returns>The total identity count.</returns>
+    private long CountAllIdentityObjects()
+    {
+        long count = CountIdentityObjects(OpenAllRangeReader());
+        if (SupportsScalarNullKeyRoute())
+        {
+            count += CountScalarNullRouteIdentityObjects();
+        }
+
+        return count;
+    }
+
+    /// <summary>
     /// Materializes identities for a scalar-null presence primitive.<br/>
     /// `ScalarNull.Null` reads the compact metadata-backed null route, while `ScalarNull.NonNull` reads the ordinary value-router range and therefore excludes scalar nulls.<br/>
     /// The take limit is applied during route enumeration so callers such as paged condition terminals do not decode more null-route identities than requested.<br/>
@@ -1837,6 +1949,116 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
             yield break;
         }
 
+        foreach (object identity in IterateScalarNullRouteIdentityObjects(takeLimit))
+        {
+            yield return identity;
+        }
+    }
+
+    /// <summary>
+    /// Counts identities for a scalar-null presence primitive.<br/>
+    /// `ScalarNull.NonNull` delegates to the normal all-range count, while `ScalarNull.Null` counts the compact null-route identity shelf for the selected identity width.<br/>
+    /// This keeps null-only counts on the fast identity-only route rather than scanning ordinary key shelves.<br/>
+    /// </summary>
+    /// <param name="values">The condition primitive operands; operand zero must be <see cref="ScalarNull"/>.</param>
+    /// <returns>The selected identity count.</returns>
+    private long CountScalarNullIdentityObjects(IReadOnlyList<object?> values)
+    {
+        ScalarNull state = RequireScalarNullState(values);
+        if (state == ScalarNull.NonNull)
+        {
+            return CountIdentityObjects(OpenAllRangeReader());
+        }
+
+        return CountScalarNullRouteIdentityObjects();
+    }
+
+    /// <summary>
+    /// Reads the scalar-null state operand from a normalized condition primitive.<br/>
+    /// The condition builder validates this before creating the primitive, but the executor keeps its own guard so manually created internal criteria fail clearly.<br/>
+    /// </summary>
+    /// <param name="values">The primitive operand values.</param>
+    /// <returns>The requested scalar-null state.</returns>
+    private static ScalarNull RequireScalarNullState(IReadOnlyList<object?> values)
+    {
+        if (values.Count == 0 || values[0] is not ScalarNull state)
+        {
+            throw new InvalidOperationException("Scalar null criteria require a ScalarNull operand.");
+        }
+
+        return state;
+    }
+
+    /// <summary>
+    /// Inserts one identity into this index's scalar null route.<br/>
+    /// The route is keyed by encoded identity, so duplicate identity writes are no-ops and unique-key indexes reject a second different identity on the null key state.<br/>
+    /// </summary>
+    /// <param name="identity">The public identity value to associate with the scalar null key state.</param>
+    /// <returns>The insert result reported through the generic public result contract.</returns>
+    private LibraDexGenericInsertResult InsertScalarNullIdentity(TIdentity identity)
+    {
+        EnsureScalarNullKeyRouteSupported();
+        bool inserted = shape switch
+        {
+            LibraDexGenericScalarShape.SS88 or
+            LibraDexGenericScalarShape.SS168 or
+            LibraDexGenericScalarShape.FS328 => InsertScalar8NullRouteIdentity(identity),
+            LibraDexGenericScalarShape.SS816 or
+            LibraDexGenericScalarShape.SS1616 or
+            LibraDexGenericScalarShape.FS3216 => InsertScalar16NullRouteIdentity(identity),
+            _ => throw new NotSupportedException($"Scalar null route inserts do not support resolved shape {shape}.")
+        };
+
+        LibraDexGenericInsertResult result = new(inserted, false, default, default);
+        Stats.RecordInsert(result);
+        Catalog?.Stats.RecordInsert(result);
+        return result;
+    }
+
+    private bool InsertScalar8NullRouteIdentity(TIdentity identity)
+    {
+        ulong encodedIdentity = LibraDexGenericScalarCodec<TIdentity>.Encode8(identity);
+        if (keyContract == IndexKeys.Unique)
+        {
+            ulong[] existing = session.ReadScalar8KeyStateIdentities(SlotIndex, KeyStateRoute.Null);
+            if (existing.Length != 0 && !session.ContainsScalar8KeyStateIdentity(SlotIndex, KeyStateRoute.Null, encodedIdentity))
+            {
+                return false;
+            }
+        }
+
+        return session.InsertScalar8KeyStateIdentity(SlotIndex, KeyStateRoute.Null, encodedIdentity);
+    }
+
+    private bool InsertScalar16NullRouteIdentity(TIdentity identity)
+    {
+        LibraDexGenericScalarCodec<TIdentity>.Encode16(identity, out ulong identityHigh, out ulong identityLow);
+        if (keyContract == IndexKeys.Unique)
+        {
+            (ulong[] highs, _) = session.ReadScalar16KeyStateIdentities(SlotIndex, KeyStateRoute.Null);
+            if (highs.Length != 0 && !session.ContainsScalar16KeyStateIdentity(SlotIndex, KeyStateRoute.Null, identityHigh, identityLow))
+            {
+                return false;
+            }
+        }
+
+        return session.InsertScalar16KeyStateIdentity(SlotIndex, KeyStateRoute.Null, identityHigh, identityLow);
+    }
+
+    /// <summary>
+    /// Streams decoded identities from the scalar null route only.<br/>
+    /// Missing routes return no identities, while present routes preserve encoded identity order from the route root.<br/>
+    /// </summary>
+    /// <param name="takeLimit">The optional maximum number of identities to yield.</param>
+    /// <returns>A forward-only sequence of decoded scalar-null identities.</returns>
+    private IEnumerable<object> IterateScalarNullRouteIdentityObjects(int? takeLimit = null)
+    {
+        if (takeLimit is < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(takeLimit), takeLimit, "Take cannot be negative.");
+        }
+
+        EnsureScalarNullKeyRouteSupported();
         if (takeLimit == 0)
         {
             yield break;
@@ -1882,20 +2104,13 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     }
 
     /// <summary>
-    /// Counts identities for a scalar-null presence primitive.<br/>
-    /// `ScalarNull.NonNull` delegates to the normal all-range count, while `ScalarNull.Null` counts the compact null-route identity shelf for the selected identity width.<br/>
-    /// This keeps null-only counts on the fast identity-only route rather than scanning ordinary key shelves.<br/>
+    /// Counts decoded identities from the scalar null route only.<br/>
+    /// The count reads route metadata directly and does not enumerate ordinary value routes.<br/>
     /// </summary>
-    /// <param name="values">The condition primitive operands; operand zero must be <see cref="ScalarNull"/>.</param>
-    /// <returns>The selected identity count.</returns>
-    private long CountScalarNullIdentityObjects(IReadOnlyList<object?> values)
+    /// <returns>The number of identities on the scalar null route.</returns>
+    private long CountScalarNullRouteIdentityObjects()
     {
-        ScalarNull state = RequireScalarNullState(values);
-        if (state == ScalarNull.NonNull)
-        {
-            return CountIdentityObjects(OpenAllRangeReader());
-        }
-
+        EnsureScalarNullKeyRouteSupported();
         return shape switch
         {
             LibraDexGenericScalarShape.SS88 or
@@ -1908,20 +2123,17 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
         };
     }
 
-    /// <summary>
-    /// Reads the scalar-null state operand from a normalized condition primitive.<br/>
-    /// The condition builder validates this before creating the primitive, but the executor keeps its own guard so manually created internal criteria fail clearly.<br/>
-    /// </summary>
-    /// <param name="values">The primitive operand values.</param>
-    /// <returns>The requested scalar-null state.</returns>
-    private static ScalarNull RequireScalarNullState(IReadOnlyList<object?> values)
+    private static bool SupportsScalarNullKeyRoute()
     {
-        if (values.Count == 0 || values[0] is not ScalarNull state)
-        {
-            throw new InvalidOperationException("Scalar null criteria require a ScalarNull operand.");
-        }
+        return typeof(TKey) != typeof(byte[]);
+    }
 
-        return state;
+    private static void EnsureScalarNullKeyRouteSupported()
+    {
+        if (!SupportsScalarNullKeyRoute())
+        {
+            throw new NotSupportedException("ScalarNull routes are for scalar key families. Use NullKey for binary key states.");
+        }
     }
 
     private IReadOnlyList<object> MaterializeMembershipIdentityObjects(IReadOnlyList<object?> values, int? takeLimit = null)

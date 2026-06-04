@@ -2194,7 +2194,7 @@ public interface IIndex
     /// <param name="key">The runtime key value to insert.</param>
     /// <param name="identity">The runtime identity value to associate with the key.</param>
     /// <returns>The insert result plus any route-create and insert commit telemetry.</returns>
-    LibraDexGenericInsertResult Insert(object key, object identity);
+    LibraDexGenericInsertResult Insert(object? key, object identity);
 
     /// <summary>
     /// Deletes one runtime key/identity tuple after validating both values against this index's persisted CLR type contract.<br/>

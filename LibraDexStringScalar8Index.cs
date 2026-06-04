@@ -1182,7 +1182,7 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
 
         public LibraDexIndexShapeSpec? LogicalShape => null;
 
-        public LibraDexGenericInsertResult Insert(object key, object identity)
+        public LibraDexGenericInsertResult Insert(object? key, object identity)
         {
             return InsertProjected(
                 RequireStringKey(key, nameof(key)),
@@ -1281,7 +1281,7 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
 
         public LibraDexIndexShapeSpec? LogicalShape => null;
 
-        public LibraDexGenericInsertResult Insert(object key, object identity)
+        public LibraDexGenericInsertResult Insert(object? key, object identity)
         {
             return InsertProjected(
                 key as byte[] ?? throw new ArgumentException("Sort-key projection indexes require byte[] keys.", nameof(key)),

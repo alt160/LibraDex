@@ -12009,6 +12009,13 @@ internal static class RawHarness
                 throw new InvalidDataException("Key-state scalar-8 identity route did not support exact identity contains/delete.");
             }
 
+            if (!index.Insert(ScalarNull.Null, 777L).Inserted ||
+                !((IIndex)index).Insert(null, 999L).Inserted ||
+                index.Insert(ScalarNull.Null, 777L).Inserted)
+            {
+                throw new InvalidDataException("Public scalar-null insert paths did not report expected insert/no-op results.");
+            }
+
             IndexDirectorySlotSnapshot updatedSlot = FindSlot(catalog, slotIndex);
             if (!catalog.Session.TryReadKeyRouteOffsets(updatedSlot, out KeyRouteOffsets updatedOffsets) ||
                 updatedOffsets.Null <= 0 ||
@@ -12019,7 +12026,7 @@ internal static class RawHarness
 
             ulong[] nullIdentities = catalog.Session.ReadScalar8KeyStateIdentities(slotIndex, KeyStateRoute.Null);
             ulong[] emptyIdentities = catalog.Session.ReadScalar8KeyStateIdentities(slotIndex, KeyStateRoute.Empty);
-            if (!nullIdentities.SequenceEqual(new[] { encodedNull111, encodedNull333 }) ||
+            if (!nullIdentities.SequenceEqual(new[] { encodedNull111, encodedNull333, LibraDexGenericScalarCodec<long>.Encode8(777L), LibraDexGenericScalarCodec<long>.Encode8(999L) }) ||
                 !emptyIdentities.SequenceEqual(new[] { encodedEmpty222 }))
             {
                 throw new InvalidDataException("Key-state scalar-8 identity shelves did not preserve sorted route identities.");
@@ -12038,9 +12045,16 @@ internal static class RawHarness
                 .EndCondition;
             IReadOnlyList<long> scalarNullIds = scalarNullCondition.ToList<long>(routeResolver, deduplication: IdentityDeduplication.Preserve);
             IReadOnlyList<long> scalarNonNullIds = scalarNonNullCondition.ToList<long>(routeResolver, deduplication: IdentityDeduplication.Preserve);
-            if (!scalarNullIds.SequenceEqual(new[] { 111L, 333L }) ||
+            IReadOnlyList<long> scalarAllIds = LibraDexCondition
+                .ForGroup("routes")
+                .Index("value").AsInt64.All()
+                .EndCondition
+                .ToList<long>(routeResolver, deduplication: IdentityDeduplication.Preserve);
+            if (!scalarNullIds.SequenceEqual(new[] { 111L, 333L, 777L, 999L }) ||
                 !scalarNonNullIds.SequenceEqual(new[] { 444L }) ||
-                scalarNullCondition.Count(routeResolver, deduplication: IdentityDeduplication.Preserve) != 2 ||
+                !scalarAllIds.SequenceEqual(new[] { 111L, 333L, 777L, 999L, 444L }) ||
+                scalarNullCondition.Count(routeResolver, deduplication: IdentityDeduplication.Preserve) != 4 ||
+                LibraDexCondition.ForGroup("routes").Index("value").AsInt64.All().EndCondition.Count(routeResolver, deduplication: IdentityDeduplication.Preserve) != 5 ||
                 !scalarNullCondition.Exists(routeResolver, deduplication: IdentityDeduplication.Preserve))
             {
                 throw new InvalidDataException("ScalarNull condition materialization did not route through expected null/non-null identities.");
@@ -12095,7 +12109,7 @@ internal static class RawHarness
 
             ulong[] reopenedNullIdentities = reopened.Session.ReadScalar8KeyStateIdentities(slotIndex, KeyStateRoute.Null);
             ulong[] reopenedEmptyIdentities = reopened.Session.ReadScalar8KeyStateIdentities(slotIndex, KeyStateRoute.Empty);
-            if (!reopenedNullIdentities.SequenceEqual(new[] { LibraDexGenericScalarCodec<long>.Encode8(111L), LibraDexGenericScalarCodec<long>.Encode8(333L) }) ||
+            if (!reopenedNullIdentities.SequenceEqual(new[] { LibraDexGenericScalarCodec<long>.Encode8(111L), LibraDexGenericScalarCodec<long>.Encode8(333L), LibraDexGenericScalarCodec<long>.Encode8(777L), LibraDexGenericScalarCodec<long>.Encode8(999L) }) ||
                 !reopenedEmptyIdentities.SequenceEqual(new[] { LibraDexGenericScalarCodec<long>.Encode8(222L) }))
             {
                 throw new InvalidDataException("Key-state scalar-8 identity shelves did not survive reopen.");
@@ -12122,7 +12136,7 @@ internal static class RawHarness
                 .Index("value").AsInt64.EqualTo(ScalarNull.Null)
                 .EndCondition
                 .ToList<long>(reopenedRouteResolver, deduplication: IdentityDeduplication.Preserve);
-            if (!reopenedScalarNullIds.SequenceEqual(new[] { 111L, 333L }))
+            if (!reopenedScalarNullIds.SequenceEqual(new[] { 111L, 333L, 777L, 999L }))
             {
                 throw new InvalidDataException("ScalarNull condition route identities did not survive reopen.");
             }
@@ -13921,7 +13935,7 @@ internal static class RawHarness
 
         public LibraDexIndexShapeSpec? LogicalShape => shape;
 
-        public LibraDexGenericInsertResult Insert(object key, object identity)
+        public LibraDexGenericInsertResult Insert(object? key, object identity)
         {
             throw new NotSupportedException("Classification-only indexes do not insert.");
         }

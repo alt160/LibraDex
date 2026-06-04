@@ -219,7 +219,7 @@ public sealed class LibraDexBigIntScalar8Index<TIdentity> : IIndex, IIdentityPri
     /// <param name="key">The runtime key value; it must be a <see cref="BigInteger"/>.</param>
     /// <param name="identity">The runtime identity value; it must match <typeparamref name="TIdentity"/>.</param>
     /// <returns>The insert result plus any commit telemetry surfaced by the underlying routed storage.</returns>
-    public LibraDexGenericInsertResult Insert(object key, object identity)
+    public LibraDexGenericInsertResult Insert(object? key, object identity)
     {
         if (key is not BigInteger typedKey)
         {

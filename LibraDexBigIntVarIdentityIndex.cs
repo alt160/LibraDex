@@ -94,7 +94,7 @@ public sealed class LibraDexBigIntVarIdentityIndex : IIndex, IIdentityPrimitiveE
             commit);
     }
 
-    public LibraDexGenericInsertResult Insert(object key, object identity)
+    public LibraDexGenericInsertResult Insert(object? key, object identity)
     {
         if (key is not BigInteger typedKey)
         {
