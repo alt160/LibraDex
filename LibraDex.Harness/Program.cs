@@ -12105,6 +12105,43 @@ internal static class RawHarness
                 throw new InvalidDataException("Scalar all-condition delete did not remove null-route and ordinary identities.");
             }
 
+            LibraDexIndex<long, long> rekeyIndex = catalog.Indexes["routes"]["rekeyValue"].Int64Keys<long>().Create();
+            ValidateGenericInsert(rekeyIndex.Insert(ScalarNull.Null, 701L), "key-state rekey proof null 701 insert");
+            ValidateGenericInsert(rekeyIndex.Insert(20, 702L), "key-state rekey proof non-null 702 insert");
+            ValidateGenericInsert(rekeyIndex.Insert(ScalarNull.Null, 703L), "key-state rekey proof null 703 insert");
+            bool rekeyNullToValue = rekeyIndex.Rekey(701L, ScalarNull.Null, 30L);
+            bool rekeyValueToNull = rekeyIndex.Rekey(702L, 20L, ScalarNull.Null);
+            bool rekeyNonGenericNullToValue = ((IIndex)rekeyIndex).Rekey(703L, null, 40L);
+            bool rekeyInsert704 = rekeyIndex.Insert(ScalarNull.Null, 704L).Inserted;
+            long rekeyIdentityOnlyNullToValue = ((IIndex)rekeyIndex).Rekey(704L, 50L);
+            if (!rekeyNullToValue ||
+                !rekeyValueToNull ||
+                !rekeyNonGenericNullToValue ||
+                !rekeyInsert704 ||
+                rekeyIdentityOnlyNullToValue != 1)
+            {
+                throw new InvalidDataException($"Scalar-null rekey paths did not report expected changes. nullToValue={rekeyNullToValue} valueToNull={rekeyValueToNull} nonGenericNullToValue={rekeyNonGenericNullToValue} insert704={rekeyInsert704} identityOnly={rekeyIdentityOnlyNullToValue}");
+            }
+
+            Func<string, IIndex> rekeyResolver = indexName => string.Equals(indexName, "rekeyValue", StringComparison.Ordinal)
+                ? rekeyIndex
+                : throw new KeyNotFoundException(indexName);
+            IReadOnlyList<long> rekeyNullIds = LibraDexCondition
+                .ForGroup("routes")
+                .Index("rekeyValue").AsInt64.EqualTo(ScalarNull.Null)
+                .EndCondition
+                .ToList<long>(rekeyResolver, deduplication: IdentityDeduplication.Preserve);
+            IReadOnlyList<long> rekeyAllIds = LibraDexCondition
+                .ForGroup("routes")
+                .Index("rekeyValue").AsInt64.All()
+                .EndCondition
+                .ToList<long>(rekeyResolver, deduplication: IdentityDeduplication.Preserve);
+            if (!rekeyNullIds.SequenceEqual(new[] { 702L }) ||
+                !rekeyAllIds.SequenceEqual(new[] { 702L, 701L, 703L, 704L }))
+            {
+                throw new InvalidDataException("Scalar-null rekey paths did not leave expected null-first all-scan identities.");
+            }
+
             _ = scalar16Index;
             if (!catalog.Session.InsertScalar16KeyStateIdentity(scalar16SlotIndex, KeyStateRoute.Null, scalar16NullAHigh, scalar16NullALow) ||
                 !catalog.Session.InsertScalar16KeyStateIdentity(scalar16SlotIndex, KeyStateRoute.Null, scalar16NullBHigh, scalar16NullBLow) ||

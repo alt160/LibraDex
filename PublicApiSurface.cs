@@ -2216,7 +2216,7 @@ public interface IIndex
     /// <param name="oldKey">The current runtime key associated with the identity.</param>
     /// <param name="newKey">The replacement runtime key to associate with the identity.</param>
     /// <returns><see langword="true"/> when the old tuple existed and was removed after the replacement tuple was available.</returns>
-    bool Rekey(object identity, object oldKey, object newKey)
+    bool Rekey(object identity, object? oldKey, object? newKey)
     {
         throw new NotSupportedException($"Index '{Name}' does not expose non-generic exact tuple rekey.");
     }
@@ -2228,7 +2228,7 @@ public interface IIndex
     /// <param name="identity">The runtime identity to re-key.</param>
     /// <param name="newKey">The replacement runtime key to associate with the identity.</param>
     /// <returns>The number of old tuples removed after replacement tuples were available.</returns>
-    long Rekey(object identity, object newKey)
+    long Rekey(object identity, object? newKey)
     {
         throw new NotSupportedException($"Index '{Name}' does not expose non-generic identity rekey without an old key.");
     }

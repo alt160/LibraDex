@@ -318,7 +318,7 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
     /// <param name="oldKey">The current runtime key, which must be a <see cref="LibraDexCompositeKey"/>.</param>
     /// <param name="newKey">The replacement runtime key, which must be a <see cref="LibraDexCompositeKey"/>.</param>
     /// <returns><see langword="true"/> when the old tuple existed and was removed after the replacement tuple was available.</returns>
-    public bool Rekey(object identity, object oldKey, object newKey)
+    public bool Rekey(object identity, object? oldKey, object? newKey)
     {
         return Rekey(
             identity,
@@ -361,7 +361,7 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
     /// <param name="identity">The runtime identity to re-key.</param>
     /// <param name="newKey">The replacement runtime key, which must be a <see cref="LibraDexCompositeKey"/>.</param>
     /// <returns>The number of old tuples removed after replacement tuples were available.</returns>
-    public long Rekey(object identity, object newKey)
+    public long Rekey(object identity, object? newKey)
     {
         return Rekey(
             identity,

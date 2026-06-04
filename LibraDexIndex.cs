@@ -393,10 +393,25 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
         return DeleteExactTuple(RequireObjectKey(key, nameof(key)), RequireObjectIdentity(identity, nameof(identity)));
     }
 
-    bool IIndex.Rekey(object identity, object oldKey, object newKey)
+    bool IIndex.Rekey(object identity, object? oldKey, object? newKey)
     {
         ThrowIfDisposed();
         TIdentity typedIdentity = RequireObjectIdentity(identity, nameof(identity));
+        if (oldKey is null || oldKey == DBNull.Value)
+        {
+            if (newKey is null || newKey == DBNull.Value)
+            {
+                return false;
+            }
+
+            return Rekey(typedIdentity, ScalarNull.Null, RequireObjectKey(newKey, nameof(newKey)));
+        }
+
+        if (newKey is null || newKey == DBNull.Value)
+        {
+            return Rekey(typedIdentity, RequireObjectKey(oldKey, nameof(oldKey)), ScalarNull.Null);
+        }
+
         TKey typedOldKey = RequireObjectKey(oldKey, nameof(oldKey));
         TKey typedNewKey = RequireObjectKey(newKey, nameof(newKey));
         if (TupleComponentEquals(typedOldKey, typedNewKey))
@@ -427,10 +442,36 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
         return deleted;
     }
 
-    long IIndex.Rekey(object identity, object newKey)
+    long IIndex.Rekey(object identity, object? newKey)
     {
         ThrowIfDisposed();
         TIdentity typedIdentity = RequireObjectIdentity(identity, nameof(identity));
+        if (newKey is null || newKey == DBNull.Value)
+        {
+            long changedToNull = 0;
+            List<TKey> oldNonNullKeys = new();
+            using (LibraDexRangeReader<TKey, TIdentity> reader = OpenAllRangeReader())
+            {
+                while (reader.TryReadNext(out TKey key, out TIdentity currentIdentity))
+                {
+                    if (TupleComponentEquals(currentIdentity, typedIdentity))
+                    {
+                        oldNonNullKeys.Add(key);
+                    }
+                }
+            }
+
+            for (int i = 0; i < oldNonNullKeys.Count; i++)
+            {
+                if (Rekey(typedIdentity, oldNonNullKeys[i], ScalarNull.Null))
+                {
+                    changedToNull++;
+                }
+            }
+
+            return changedToNull;
+        }
+
         TKey typedNewKey = RequireObjectKey(newKey, nameof(newKey));
         List<TKey> oldKeys = new();
         using (LibraDexRangeReader<TKey, TIdentity> reader = OpenAllRangeReader())
@@ -451,6 +492,12 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
             {
                 changed++;
             }
+        }
+
+        if (ContainsScalarNullIdentity(typedIdentity) &&
+            Rekey(typedIdentity, ScalarNull.Null, typedNewKey))
+        {
+            changed++;
         }
 
         return changed;
@@ -1295,6 +1342,84 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     }
 
     /// <summary>
+    /// Re-keys one identity from the scalar null route to an ordinary scalar key.<br/>
+    /// The replacement value tuple is created before the null-route identity is removed so a failed replacement does not lose the original null-key association.<br/>
+    /// </summary>
+    /// <param name="identity">The identity to re-key.</param>
+    /// <param name="oldKeyState">The old scalar key state; only <see cref="ScalarNull.Null"/> is accepted.</param>
+    /// <param name="newKey">The replacement ordinary scalar key.</param>
+    /// <returns><see langword="true"/> when the null-route identity existed and was removed after the replacement tuple was available.</returns>
+    public bool Rekey(TIdentity identity, ScalarNull oldKeyState, TKey newKey)
+    {
+        ThrowIfDisposed();
+        if (oldKeyState != ScalarNull.Null)
+        {
+            throw new ArgumentOutOfRangeException(nameof(oldKeyState), oldKeyState, "Only ScalarNull.Null is a concrete scalar key state for rekey.");
+        }
+
+        if (!ContainsScalarNullIdentity(identity))
+        {
+            return false;
+        }
+
+        if (!ContainsExactTuple(newKey, identity))
+        {
+            LibraDexGenericInsertResult insert = Insert(newKey, identity);
+            if (!insert.Inserted && !ContainsExactTuple(newKey, identity))
+            {
+                throw new InvalidOperationException("Scalar-null rekey could not create the replacement tuple; the null-route identity was left unchanged.");
+            }
+        }
+
+        bool deleted = DeleteScalarNullIdentity(identity);
+        if (deleted)
+        {
+            RecordRekey();
+        }
+
+        return deleted;
+    }
+
+    /// <summary>
+    /// Re-keys one identity from an ordinary scalar key to the scalar null route.<br/>
+    /// The null-route identity is created before the old ordinary tuple is removed so a failed replacement does not lose the original key association.<br/>
+    /// </summary>
+    /// <param name="identity">The identity to re-key.</param>
+    /// <param name="oldKey">The old ordinary scalar key.</param>
+    /// <param name="newKeyState">The replacement scalar key state; only <see cref="ScalarNull.Null"/> is accepted.</param>
+    /// <returns><see langword="true"/> when the old ordinary tuple existed and was removed after the null-route identity was available.</returns>
+    public bool Rekey(TIdentity identity, TKey oldKey, ScalarNull newKeyState)
+    {
+        ThrowIfDisposed();
+        if (newKeyState != ScalarNull.Null)
+        {
+            throw new ArgumentOutOfRangeException(nameof(newKeyState), newKeyState, "Only ScalarNull.Null is a concrete scalar key state for rekey.");
+        }
+
+        if (!ContainsExactTuple(oldKey, identity))
+        {
+            return false;
+        }
+
+        if (!ContainsScalarNullIdentity(identity))
+        {
+            LibraDexGenericInsertResult insert = Insert(ScalarNull.Null, identity);
+            if (!insert.Inserted && !ContainsScalarNullIdentity(identity))
+            {
+                throw new InvalidOperationException("Scalar-null rekey could not create the null-route identity; the original tuple was left unchanged.");
+            }
+        }
+
+        bool deleted = DeleteExactTuple(oldKey, identity);
+        if (deleted)
+        {
+            RecordRekey();
+        }
+
+        return deleted;
+    }
+
+    /// <summary>
     /// Re-keys the exact tuple captured by a live range cursor.<br/>
     /// The range reader owns traversal state only; this method performs the durable mutation through the owning index so retained shelf snapshots are not rewritten after a replacement insert.<br/>
     /// A no-op is returned when the old tuple is already gone or when the requested key is equal to the current key.<br/>
@@ -1357,6 +1482,11 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
         for (int i = 0; i < oldKeys.Count; i++)
         {
             Rekey(identity, oldKeys[i], newKey);
+        }
+
+        if (ContainsScalarNullIdentity(identity))
+        {
+            _ = Rekey(identity, ScalarNull.Null, newKey);
         }
     }
 
@@ -2128,6 +2258,36 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     {
         LibraDexGenericScalarCodec<TIdentity>.Encode16(identity, out ulong identityHigh, out ulong identityLow);
         return session.DeleteScalar16KeyStateIdentity(SlotIndex, KeyStateRoute.Null, identityHigh, identityLow);
+    }
+
+    /// <summary>
+    /// Tests whether one identity is currently associated with this index's scalar null route.<br/>
+    /// The identity-keyed route answers exact membership without scanning ordinary value shelves.<br/>
+    /// </summary>
+    /// <param name="identity">The public identity value to test.</param>
+    /// <returns><see langword="true"/> when the identity is present on the scalar null route.</returns>
+    private bool ContainsScalarNullIdentity(TIdentity identity)
+    {
+        EnsureScalarNullKeyRouteSupported();
+        return shape switch
+        {
+            LibraDexGenericScalarShape.SS88 or
+            LibraDexGenericScalarShape.SS168 or
+            LibraDexGenericScalarShape.FS328 => session.ContainsScalar8KeyStateIdentity(
+                SlotIndex,
+                KeyStateRoute.Null,
+                LibraDexGenericScalarCodec<TIdentity>.Encode8(identity)),
+            LibraDexGenericScalarShape.SS816 or
+            LibraDexGenericScalarShape.SS1616 or
+            LibraDexGenericScalarShape.FS3216 => ContainsScalar16NullRouteIdentity(identity),
+            _ => throw new NotSupportedException($"Scalar null routes do not support resolved shape {shape}.")
+        };
+    }
+
+    private bool ContainsScalar16NullRouteIdentity(TIdentity identity)
+    {
+        LibraDexGenericScalarCodec<TIdentity>.Encode16(identity, out ulong identityHigh, out ulong identityLow);
+        return session.ContainsScalar16KeyStateIdentity(SlotIndex, KeyStateRoute.Null, identityHigh, identityLow);
     }
 
     /// <summary>
