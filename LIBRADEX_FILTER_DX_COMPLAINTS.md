@@ -12,17 +12,19 @@ This checklist tracks developer-friction complaints found while reviewing `artif
    - Temperature and pressure are likely numeric values unless the row explicitly says they are stored as sortable normalized text.
    - Audit similar corpus rows for accidental `.AsString` use where `.AsInt64`, decimal/fixed numeric, or another numeric/domain key family is more appropriate.
 
-2. [ ] Confirm all public string condition operators preserve optional case/culture parameters.
-
-   Current evidence:
-
-   - The main string condition operator already exposes optional `ignoreCase` and `culture` on equality, inequality, ordered comparisons, ranges, prefix/suffix/contains, pattern matching, and membership.
-   - `.Matches(...)` now forwards the same optional case/culture parameters as `.MatchesPattern(...)`.
-   - `.MatchesWith(...)`, `.MatchesIn(...)`, `.MatchesInSet(...)`, and negated variants now carry the same optional case/culture parameters.
-
 ## Resolved
 
-1. [x] Captured-match string operators needed a real capture grammar.
+1. [x] Public string condition operators needed consistent optional case/culture parameters.
+
+   Resolution:
+
+   - Root `.AsString` operators preserve optional `ignoreCase` and `culture` on equality, inequality, ordered comparisons, ranges, prefix/suffix/contains, wildcard pattern matching, membership, and non-membership.
+   - `.Matches(...)` forwards the same optional case/culture parameters as `.MatchesPattern(...)`.
+   - `.MatchesWith(...)`, `.MatchesIn(...)`, `.MatchesInSet(...)`, and negated variants carry the same optional case/culture parameters.
+   - Ordered multikey `.AsString` wrappers forward the same options.
+   - Opened composite named string-part and full-key string operators preserve the same options for their public string predicates.
+
+2. [x] Captured-match string operators needed a real capture grammar.
 
    Resolution:
 
@@ -32,14 +34,14 @@ This checklist tracks developer-friction complaints found while reviewing `artif
    - Routed the family through executable string-pattern predicates rather than whole-key wildcard aliases.
    - Added harness proof rows for whole-match comparison, numbered capture comparison, capture membership, and negation.
 
-2. [x] Public `.MatchesPattern(...)` examples were too verbose.
+3. [x] Public `.MatchesPattern(...)` examples were too verbose.
 
    Resolution:
 
    - Added `.Matches(...)` short aliases for string, Guid, binary hex, multikey, and composite string/full-key pattern surfaces.
    - Updated the filter-DX corpus and harness examples to advertise `.Matches(...)`.
 
-3. [x] Null/empty key condition DX needed explicit enum overloads and low-allocation aliases.
+4. [x] Null/empty key condition DX needed explicit enum overloads and low-allocation aliases.
 
    Resolution:
 
@@ -48,7 +50,7 @@ This checklist tracks developer-friction complaints found while reviewing `artif
    - Routed string `.EqualTo(null)` / `.NotEqualTo(null)` to `NullKey.Null`, and empty string to `NullKey.Empty`.
    - F026 now shows `NullKey.Null` for stored string null.
 
-4. [x] F001 catalog-group string-field syntax was type-first instead of index-first.
+5. [x] F001 catalog-group string-field syntax was type-first instead of index-first.
 
    Complaint:
 
