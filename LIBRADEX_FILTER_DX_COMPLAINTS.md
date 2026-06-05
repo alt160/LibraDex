@@ -92,3 +92,12 @@ No active complaints are currently listed.
    - Generic typed index handles now support `.Where(indexInstance).EqualTo(...)` / `.AndAlso(indexInstance).EqualTo(...)` / `.OrElse(indexInstance).EqualTo(...)` for base typed operators without repeating `.AsInt64`, `.AsBoolean`, and similar scalar-family selectors.
    - Opened string index facades now support `.Where(stringIndex).StartsWith(...)` and typed string continuations without repeating `.AsString`.
    - Ordered `MultiKey(...)` now supports `.Not` plus Boolean, date/time, TimeSpan, narrow/wide numeric, `char`, and `BigInteger` selector families, and also exposes name/handle `Where`, `AndAlso`, and `OrElse` bridges for mixed generated/manual condition assembly.
+
+9. [x] Conditions should stay filter descriptors while retrieval methods own stream/result shape.
+
+   Resolution:
+
+   - Added `CatalogIdentityGroupIndexes.GetReader<TIdentity>(condition, ...)` for identity-only streaming from a completed condition.
+   - Added `LibraDexIndex<TKey,TIdentity>.GetReader(condition, ...)` and `LibraDexStringScalar8Index.GetReader(condition, ...)` for target-index key/identity entry streaming.
+   - Added catalog-group target-index reader overloads so a condition can filter identities while a chosen index supplies `GetKey()`, `GetIdentity()`, and `GetEntry()` results.
+   - Direct same-index primitive leaves use the tuple primitive path; composed conditions currently filter target-index tuples through the existing identity projection, with a later optimization opportunity for fully streaming tuple joins.

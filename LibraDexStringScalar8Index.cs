@@ -312,6 +312,27 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         };
     }
 
+    /// <summary>
+    /// Opens a forward-only key/identity reader for a completed condition rooted at this logical string index.<br/>
+    /// The returned keys are exact string keys from this facade, even when the condition itself uses maintained folded, sort-key, or suffix projections to find matching identities.<br/>
+    /// </summary>
+    /// <param name="condition">The completed condition to execute.</param>
+    /// <param name="skip">The number of matching string-index entries to skip.</param>
+    /// <param name="take">The optional maximum number of string-index entries to return.</param>
+    /// <returns>A forward-only reader over exact string key and scalar identity entries.</returns>
+    public LibraDexIndexReader<string, ulong> GetReader(
+        LibraDexConditionEndCondition condition,
+        int skip = 0,
+        int? take = null)
+    {
+        ArgumentNullException.ThrowIfNull(condition);
+        IIdentityCriterion criterion = condition.MaterializeWithProjectionBridge(ResolveIndex, ResolveProjection);
+        return new LibraDexIndexReader<string, ulong>(
+            LibraDexConditionReaderExecutor.IterateTargetIndexTuples(criterion, this, skip, take),
+            skip,
+            take);
+    }
+
     IReadOnlyList<object> IIdentityPrimitiveExecutor.ExecuteIdentityPrimitive(LibraDexIdentityPrimitiveRequest request)
     {
         return IterateIdentityPrimitiveCore(request, exact, static value => value).ToArray();

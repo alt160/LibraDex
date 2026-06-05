@@ -11705,6 +11705,27 @@ internal static class RawHarness
         IReadOnlyList<long> rootNotGroupIds = catalog.Indexes["surface"].GetIdentities<long>(
             rootNotGroupCondition,
             deduplication: IdentityDeduplication.Preserve);
+        using LibraDexIdentityReader<long> surfaceIdentityReader = catalog.Indexes["surface"].GetReader<long>(
+            namedMultiKeyCondition,
+            deduplication: IdentityDeduplication.Preserve,
+            skip: 1,
+            take: 1);
+        bool surfaceIdentityReaderFirst = surfaceIdentityReader.Next();
+        long surfaceIdentityReaderValue = surfaceIdentityReaderFirst ? surfaceIdentityReader.GetIdentity() : -1;
+        bool surfaceIdentityReaderSecond = surfaceIdentityReader.Next();
+        using LibraDexIndexReader<long, long> directIndexReader = index.GetReader(index.Where.Between(10L, 12L).EndCondition, skip: 1, take: 1);
+        bool directIndexReaderFirst = directIndexReader.Next();
+        LibraDexReaderEntry<long, long> directIndexReaderEntry = directIndexReaderFirst
+            ? directIndexReader.GetEntry()
+            : default;
+        bool directIndexReaderSecond = directIndexReader.Next();
+        using LibraDexIndexReader<long, long> groupedTargetReader = catalog.Indexes["surface"].GetReader(index, clauseNotGroupCondition);
+        List<LibraDexReaderEntry<long, long>> groupedTargetEntries = new();
+        while (groupedTargetReader.Next())
+        {
+            groupedTargetEntries.Add(groupedTargetReader.GetEntry());
+        }
+
         if (rangeIds.Count != 3 ||
             rangeIds[0] != 1000 ||
             rangeIds[2] != 1200 ||
@@ -11801,6 +11822,18 @@ internal static class RawHarness
             rootNotGroupIds.Count != 2 ||
             rootNotGroupIds[0] != 1000 ||
             rootNotGroupIds[1] != 1100 ||
+            !surfaceIdentityReaderFirst ||
+            surfaceIdentityReaderValue != 1100 ||
+            surfaceIdentityReaderSecond ||
+            !directIndexReaderFirst ||
+            directIndexReaderEntry.Key != 11 ||
+            directIndexReaderEntry.Identity != 1100 ||
+            directIndexReaderSecond ||
+            groupedTargetEntries.Count != 2 ||
+            groupedTargetEntries[0].Key != 10 ||
+            groupedTargetEntries[0].Identity != 1000 ||
+            groupedTargetEntries[1].Key != 11 ||
+            groupedTargetEntries[1].Identity != 1100 ||
             preparedSet.KeyType != typeof(long) ||
             preparedSet.Values.Count != 2)
         {

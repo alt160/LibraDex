@@ -413,6 +413,29 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     }
 
     /// <summary>
+    /// Opens a forward-only key/identity reader for a completed condition rooted at this index.<br/>
+    /// This convenience remains single-index scoped: composed cross-index conditions should be executed from the owning identity group so every referenced index can be resolved by name.<br/>
+    /// </summary>
+    /// <param name="condition">The completed condition to execute.</param>
+    /// <param name="skip">The number of matching index entries to skip.</param>
+    /// <param name="take">The optional maximum number of index entries to return.</param>
+    /// <returns>A forward-only reader over this index's stored key/identity entries.</returns>
+    public LibraDexIndexReader<TKey, TIdentity> GetReader(
+        LibraDexConditionEndCondition condition,
+        int skip = 0,
+        int? take = null)
+    {
+        ArgumentNullException.ThrowIfNull(condition);
+        IIdentityCriterion criterion = condition.MaterializeWithProjectionBridge(
+            ResolveOwnIndex,
+            ResolveOwnProjectionIndex);
+        return new LibraDexIndexReader<TKey, TIdentity>(
+            LibraDexConditionReaderExecutor.IterateTargetIndexTuples(criterion, this, skip, take),
+            skip,
+            take);
+    }
+
+    /// <summary>
     /// Inserts one non-generic key/identity tuple after validating the runtime values against this index's persisted CLR type contract.<br/>
     /// The method then delegates to the typed insert path so batching, telemetry, duplicate-key behavior, and physical routing remain identical to `Insert(TKey, TIdentity)`.<br/>
     /// </summary>
