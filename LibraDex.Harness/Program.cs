@@ -11674,6 +11674,37 @@ internal static class RawHarness
         IReadOnlyList<long> orderedMultiKeyNotIds = catalog.Indexes["surface"].GetIdentities<long>(
             orderedMultiKeyNotCondition,
             deduplication: IdentityDeduplication.Preserve);
+        LibraDexConditionEndCondition twelveFragment = catalog.Indexes["surface"]
+            .Where(index).EqualTo(12L)
+            .EndCondition;
+        LibraDexConditionEndCondition clauseNotIndexCondition = catalog.Indexes["surface"]
+            .Where(index).GreaterOrEqual(10L)
+            .And.Not.Index("public-surface").AsInt64.EqualTo(12L)
+            .EndCondition;
+        IReadOnlyList<long> clauseNotIndexIds = catalog.Indexes["surface"].GetIdentities<long>(
+            clauseNotIndexCondition,
+            deduplication: IdentityDeduplication.Preserve);
+        LibraDexConditionEndCondition clauseGroupCondition = catalog.Indexes["surface"]
+            .Where(index).GreaterOrEqual(10L)
+            .And.Group(twelveFragment)
+            .EndCondition;
+        IReadOnlyList<long> clauseGroupIds = catalog.Indexes["surface"].GetIdentities<long>(
+            clauseGroupCondition,
+            deduplication: IdentityDeduplication.Preserve);
+        LibraDexConditionEndCondition clauseNotGroupCondition = catalog.Indexes["surface"]
+            .Where(index).GreaterOrEqual(10L)
+            .And.Not.Group(twelveFragment)
+            .EndCondition;
+        IReadOnlyList<long> clauseNotGroupIds = catalog.Indexes["surface"].GetIdentities<long>(
+            clauseNotGroupCondition,
+            deduplication: IdentityDeduplication.Preserve);
+        LibraDexConditionEndCondition rootNotGroupCondition = LibraDexCondition
+            .ForGroup("surface")
+            .Not.Group(twelveFragment)
+            .EndCondition;
+        IReadOnlyList<long> rootNotGroupIds = catalog.Indexes["surface"].GetIdentities<long>(
+            rootNotGroupCondition,
+            deduplication: IdentityDeduplication.Preserve);
         if (rangeIds.Count != 3 ||
             rangeIds[0] != 1000 ||
             rangeIds[2] != 1200 ||
@@ -11759,6 +11790,17 @@ internal static class RawHarness
             orderedMultiKeyNotIds.Count != 2 ||
             orderedMultiKeyNotIds[0] != 1000 ||
             orderedMultiKeyNotIds[1] != 1100 ||
+            clauseNotIndexIds.Count != 2 ||
+            clauseNotIndexIds[0] != 1000 ||
+            clauseNotIndexIds[1] != 1100 ||
+            clauseGroupIds.Count != 1 ||
+            clauseGroupIds[0] != 1200 ||
+            clauseNotGroupIds.Count != 2 ||
+            clauseNotGroupIds[0] != 1000 ||
+            clauseNotGroupIds[1] != 1100 ||
+            rootNotGroupIds.Count != 2 ||
+            rootNotGroupIds[0] != 1000 ||
+            rootNotGroupIds[1] != 1100 ||
             preparedSet.KeyType != typeof(long) ||
             preparedSet.Values.Count != 2)
         {

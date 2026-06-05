@@ -2733,11 +2733,19 @@ public sealed class LibraDexConditionGroupQuery<TKey, TIdentity>
 public sealed class LibraDexConditionClause
 {
     private readonly LibraDexConditionBuilder builder;
+    private readonly bool negateNext;
 
-    internal LibraDexConditionClause(LibraDexConditionBuilder builder)
+    internal LibraDexConditionClause(LibraDexConditionBuilder builder, bool negateNext = false)
     {
         this.builder = builder;
+        this.negateNext = negateNext;
     }
+
+    /// <summary>
+    /// Negates the next index or group clause selected from this condition clause.<br/>
+    /// This is the canonical condition-builder negation form, so `.AND.Not.Index("status").AsString.EqualTo("Archived")` and `.AND.Not.Group(fragment)` both record a negated next clause instead of requiring each operator family to expose separate negative method names.<br/>
+    /// </summary>
+    public LibraDexConditionClause Not => new(builder, !negateNext);
 
     /// <summary>
     /// Selects the LibraDex index that owns the next condition leaf.<br/>
@@ -2748,7 +2756,7 @@ public sealed class LibraDexConditionClause
     public LibraDexConditionValueTypeSelector Index(string indexName)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(indexName);
-        return new LibraDexConditionValueTypeSelector(builder, LibraDexConditionIndexSelector.Static(indexName));
+        return new LibraDexConditionValueTypeSelector(builder, LibraDexConditionIndexSelector.Static(indexName), negateNext);
     }
 
     /// <summary>
@@ -2760,7 +2768,7 @@ public sealed class LibraDexConditionClause
     /// <returns>A value-type selector for the chosen index.</returns>
     public LibraDexConditionValueTypeSelector Index(Func<string> indexNameFactory, string? name = null)
     {
-        return new LibraDexConditionValueTypeSelector(builder, LibraDexConditionIndexSelector.Deferred(indexNameFactory, name));
+        return new LibraDexConditionValueTypeSelector(builder, LibraDexConditionIndexSelector.Deferred(indexNameFactory, name), negateNext);
     }
 
     /// <summary>
@@ -2771,7 +2779,7 @@ public sealed class LibraDexConditionClause
     /// <returns>A value-type selector for the chosen index.</returns>
     public LibraDexConditionValueTypeSelector Index(LibraDexConditionIndexSelector indexSelector)
     {
-        return new LibraDexConditionValueTypeSelector(builder, indexSelector);
+        return new LibraDexConditionValueTypeSelector(builder, indexSelector, negateNext);
     }
 
     /// <summary>
@@ -2783,7 +2791,7 @@ public sealed class LibraDexConditionClause
     public LibraDexConditionContinueOrEnd Group(LibraDexConditionEndCondition groupCondition)
     {
         ArgumentNullException.ThrowIfNull(groupCondition);
-        return builder.AddGroup(groupCondition);
+        return builder.AddGroup(groupCondition, negateNext);
     }
 }
 
@@ -7777,6 +7785,12 @@ public sealed class LibraDexConditionContinueOrEnd
     }
 
     /// <summary>
+    /// Adds an intersection operator and starts the next clause using the canonical Pascal-case spelling.<br/>
+    /// This aliases <see cref="AND"/> so condition groups can read naturally as `.And.Group(...)` and `.And.Not.Group(...)` while preserving the older Abraxas-style uppercase member.<br/>
+    /// </summary>
+    public LibraDexConditionClause And => AND;
+
+    /// <summary>
     /// Adds an identity-set intersection and selects the next index by name.<br/>
     /// Key typing and projection intent are chosen after this selector through members such as `.AsString`, `.AsGuid`, and `.AsInt64`, preserving the index-first condition grammar across multi-index chains.<br/>
     /// The index name is resolved only when the completed condition is materialized.<br/>
@@ -7835,6 +7849,12 @@ public sealed class LibraDexConditionContinueOrEnd
             return new LibraDexConditionClause(builder);
         }
     }
+
+    /// <summary>
+    /// Adds a union operator and starts the next clause using the canonical Pascal-case spelling.<br/>
+    /// This aliases <see cref="OR"/> so condition groups can read naturally as `.Or.Group(...)` and `.Or.Not.Group(...)` while preserving the older Abraxas-style uppercase member.<br/>
+    /// </summary>
+    public LibraDexConditionClause Or => OR;
 
     /// <summary>
     /// Adds an identity-set union and selects the next index by name.<br/>
@@ -7910,6 +7930,7 @@ public sealed class LibraDexConditionContinueOrEnd
 internal enum LibraDexConditionNodeKind
 {
     Leaf,
+    Not,
     And,
     Or
 }
@@ -7933,19 +7954,20 @@ internal sealed class LibraDexConditionBuilder
         return AddNode(LibraDexConditionNode.Leaf(leaf));
     }
 
-    internal LibraDexConditionContinueOrEnd AddGroup(LibraDexConditionEndCondition groupCondition)
+    internal LibraDexConditionContinueOrEnd AddGroup(LibraDexConditionEndCondition groupCondition, bool negate = false)
     {
         if (!string.Equals(Group, groupCondition.Group, StringComparison.Ordinal))
         {
             throw new InvalidOperationException("A LibraDex condition group can only contain child groups from the same identity group.");
         }
 
-        return AddNode(groupCondition.GetRoot());
+        LibraDexConditionNode node = groupCondition.GetRoot();
+        return AddNode(negate ? LibraDexConditionNode.Not(node) : node);
     }
 
     internal void SetNextOperation(LibraDexConditionNodeKind operation)
     {
-        if (operation == LibraDexConditionNodeKind.Leaf)
+        if (operation is LibraDexConditionNodeKind.Leaf or LibraDexConditionNodeKind.Not)
         {
             throw new ArgumentOutOfRangeException(nameof(operation));
         }
@@ -8016,12 +8038,18 @@ internal sealed class LibraDexConditionNode
         return new LibraDexConditionNode(LibraDexConditionNodeKind.Leaf, leaf, left: null, right: null);
     }
 
+    internal static LibraDexConditionNode Not(LibraDexConditionNode child)
+    {
+        ArgumentNullException.ThrowIfNull(child);
+        return new LibraDexConditionNode(LibraDexConditionNodeKind.Not, leaf: null, left: child, right: null);
+    }
+
     internal static LibraDexConditionNode Compose(
         LibraDexConditionNodeKind kind,
         LibraDexConditionNode left,
         LibraDexConditionNode right)
     {
-        if (kind == LibraDexConditionNodeKind.Leaf)
+        if (kind is LibraDexConditionNodeKind.Leaf or LibraDexConditionNodeKind.Not)
         {
             throw new ArgumentOutOfRangeException(nameof(kind));
         }
@@ -8041,6 +8069,7 @@ internal sealed class LibraDexConditionNode
         return Kind switch
         {
             LibraDexConditionNodeKind.Leaf => Leaf(rewriteLeaf(RequireLeaf())),
+            LibraDexConditionNodeKind.Not => Not(RequireLeft().Rewrite(rewriteLeaf)),
             LibraDexConditionNodeKind.And => Compose(LibraDexConditionNodeKind.And, RequireLeft().Rewrite(rewriteLeaf), RequireRight().Rewrite(rewriteLeaf)),
             LibraDexConditionNodeKind.Or => Compose(LibraDexConditionNodeKind.Or, RequireLeft().Rewrite(rewriteLeaf), RequireRight().Rewrite(rewriteLeaf)),
             _ => throw new InvalidOperationException($"Unsupported condition node kind {Kind}.")
@@ -8055,6 +8084,7 @@ internal sealed class LibraDexConditionNode
         return Kind switch
         {
             LibraDexConditionNodeKind.Leaf => MaterializeLeaf(group, resolveIndex, resolveProjectionIndex),
+            LibraDexConditionNodeKind.Not => RequireLeft().Materialize(group, resolveIndex, resolveProjectionIndex).Not(),
             LibraDexConditionNodeKind.And => RequireLeft().Materialize(group, resolveIndex, resolveProjectionIndex).And(RequireRight().Materialize(group, resolveIndex, resolveProjectionIndex)),
             LibraDexConditionNodeKind.Or => RequireLeft().Materialize(group, resolveIndex, resolveProjectionIndex).Or(RequireRight().Materialize(group, resolveIndex, resolveProjectionIndex)),
             _ => throw new InvalidOperationException($"Unsupported condition node kind {Kind}.")
@@ -8070,7 +8100,10 @@ internal sealed class LibraDexConditionNode
         }
 
         RequireLeft().AddLeaves(leaves);
-        RequireRight().AddLeaves(leaves);
+        if (Kind != LibraDexConditionNodeKind.Not)
+        {
+            RequireRight().AddLeaves(leaves);
+        }
     }
 
     private IIdentityCriterion MaterializeLeaf(

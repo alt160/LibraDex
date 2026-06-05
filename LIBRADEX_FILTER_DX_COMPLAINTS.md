@@ -87,6 +87,8 @@ No active complaints are currently listed.
    Resolution:
 
    - Catalog/group selectors now support `.Not` before the value family, so both same-index and cross-index chains can express negative predicates without spelling the inverse method directly.
+   - Clause-level `.Not` now supports `.Not.Index(...)` and `.Not.Group(...)`, making `.And.Not.Group(fragment)` the canonical grouped negation form.
+   - `.And` and `.Or` aliases now mirror `.AND` and `.OR` so completed-condition grouping can use the lower-friction Abraxas-like `.And.Group(...)` shape.
    - Generic typed index handles now support `.Where(indexInstance).EqualTo(...)` / `.AndAlso(indexInstance).EqualTo(...)` / `.OrElse(indexInstance).EqualTo(...)` for base typed operators without repeating `.AsInt64`, `.AsBoolean`, and similar scalar-family selectors.
    - Opened string index facades now support `.Where(stringIndex).StartsWith(...)` and typed string continuations without repeating `.AsString`.
    - Ordered `MultiKey(...)` now supports `.Not` plus Boolean, date/time, TimeSpan, narrow/wide numeric, `char`, and `BigInteger` selector families, and also exposes name/handle `Where`, `AndAlso`, and `OrElse` bridges for mixed generated/manual condition assembly.
