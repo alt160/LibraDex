@@ -120,6 +120,7 @@ public sealed class LibraDexIdentityCursor<TIdentity> : IDisposable
 public sealed class LibraDexIndexCursor<TKey, TIdentity> : IDisposable
 {
     private readonly IEnumerator<LibraDexObjectTuple> enumerator;
+    private readonly IIndex? targetIndex;
     private readonly IIdentityExactTupleMutator? exactMutator;
     private readonly int skip;
     private readonly int? take;
@@ -131,6 +132,7 @@ public sealed class LibraDexIndexCursor<TKey, TIdentity> : IDisposable
 
     internal LibraDexIndexCursor(
         IEnumerable<LibraDexObjectTuple> tuples,
+        IIndex? targetIndex,
         IIdentityExactTupleMutator? exactMutator,
         int skip,
         int? take)
@@ -147,6 +149,7 @@ public sealed class LibraDexIndexCursor<TKey, TIdentity> : IDisposable
         }
 
         enumerator = tuples.GetEnumerator();
+        this.targetIndex = targetIndex;
         this.exactMutator = exactMutator;
         this.skip = skip;
         this.take = take;
@@ -273,6 +276,41 @@ public sealed class LibraDexIndexCursor<TKey, TIdentity> : IDisposable
     public void Delete()
     {
         _ = DeleteCurrent();
+    }
+
+    /// <summary>
+    /// Re-keys the current target-index identity from its current key to <paramref name="newKey"/> while preserving traversal over the original cursor stream.<br/>
+    /// The replacement tuple is verified before the old exact tuple is removed by the backing index, so a failed replacement does not lose the original entry.<br/>
+    /// Current key, identity, and entry access are invalidated after a successful re-key until the next successful move.<br/>
+    /// </summary>
+    /// <param name="newKey">The replacement key for the current cursor identity.</param>
+    /// <returns><see langword="true"/> when the current physical tuple was re-keyed.</returns>
+    public bool SetCurrentKey(TKey? newKey)
+    {
+        ThrowIfDisposed();
+        EnsureCurrent();
+        IIndex index = targetIndex
+            ?? throw new NotSupportedException("This LibraDex index cursor was not opened with cursor-local re-key support.");
+
+        bool rekeyed = index.Rekey(current.Identity, current.Key, newKey);
+        if (rekeyed)
+        {
+            hasCurrent = false;
+            current = default;
+        }
+
+        return rekeyed;
+    }
+
+    /// <summary>
+    /// Re-keys the current target-index identity from its current key to <paramref name="newKey"/> while preserving traversal over the original cursor stream.<br/>
+    /// This alias mirrors existing range-cursor mutation syntax for callers that prefer the shorter positioned key-update verb.<br/>
+    /// </summary>
+    /// <param name="newKey">The replacement key for the current cursor identity.</param>
+    /// <returns><see langword="true"/> when the current physical tuple was re-keyed.</returns>
+    public bool SetKey(TKey? newKey)
+    {
+        return SetCurrentKey(newKey);
     }
 
     /// <summary>

@@ -330,6 +330,7 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         return new LibraDexIndexCursor<string, ulong>(
             LibraDexConditionCursorExecutor.IterateTargetIndexTuples(criterion, this, skip, take),
             this,
+            this,
             skip,
             take);
     }

@@ -11732,6 +11732,13 @@ internal static class RawHarness
         bool cursorDeleteSecond;
         LibraDexCursorEntry<long, long> cursorDeleteSecondEntry;
         IReadOnlyList<long> cursorDeleteRemainingIds;
+        bool cursorSetKeyFirst;
+        bool cursorSetKeyRekeyed;
+        bool cursorSetKeyCurrentInvalidated;
+        bool cursorSetKeySecond;
+        LibraDexCursorEntry<long, long> cursorSetKeySecondEntry;
+        IReadOnlyList<long> cursorSetKeyOldRangeIds;
+        IReadOnlyList<long> cursorSetKeyNewKeyIds;
         using (Catalog cursorDeleteCatalog = Catalog.CreateMemory())
         {
             LibraDexIndex<long, long> cursorDeleteIndex = cursorDeleteCatalog.Indexes["cursor-delete"]["value"].Int64Keys<long>().Create(
@@ -11759,6 +11766,39 @@ internal static class RawHarness
                 : default;
             cursorDeleteRemainingIds = cursorDeleteIndex.GetIdentities(
                 cursorDeleteIndex.Where.Between(10L, 12L).EndCondition,
+                deduplication: IdentityDeduplication.Preserve);
+        }
+
+        using (Catalog cursorSetKeyCatalog = Catalog.CreateMemory())
+        {
+            LibraDexIndex<long, long> cursorSetKeyIndex = cursorSetKeyCatalog.Indexes["cursor-set-key"]["value"].Int64Keys<long>().Create(
+                keys: IndexKeys.NonUnique);
+            ValidateGenericInsert(cursorSetKeyIndex.Insert(10L, 1010L), "condition cursor set-key 10 insert");
+            ValidateGenericInsert(cursorSetKeyIndex.Insert(11L, 1111L), "condition cursor set-key 11 insert");
+            ValidateGenericInsert(cursorSetKeyIndex.Insert(12L, 1212L), "condition cursor set-key 12 insert");
+            using LibraDexIndexCursor<long, long> cursorSetKeyCursor = cursorSetKeyIndex.GetCursor(
+                cursorSetKeyIndex.Where.Between(10L, 12L).EndCondition);
+            cursorSetKeyFirst = cursorSetKeyCursor.Next();
+            cursorSetKeyRekeyed = cursorSetKeyCursor.SetCurrentKey(20L);
+            try
+            {
+                _ = cursorSetKeyCursor.GetIdentity();
+                cursorSetKeyCurrentInvalidated = false;
+            }
+            catch (InvalidOperationException)
+            {
+                cursorSetKeyCurrentInvalidated = true;
+            }
+
+            cursorSetKeySecond = cursorSetKeyCursor.Next();
+            cursorSetKeySecondEntry = cursorSetKeySecond
+                ? cursorSetKeyCursor.GetEntry()
+                : default;
+            cursorSetKeyOldRangeIds = cursorSetKeyIndex.GetIdentities(
+                cursorSetKeyIndex.Where.Between(10L, 12L).EndCondition,
+                deduplication: IdentityDeduplication.Preserve);
+            cursorSetKeyNewKeyIds = cursorSetKeyIndex.GetIdentities(
+                cursorSetKeyIndex.Where.EqualTo(20L).EndCondition,
                 deduplication: IdentityDeduplication.Preserve);
         }
 
@@ -11879,6 +11919,17 @@ internal static class RawHarness
             cursorDeleteRemainingIds.Count != 2 ||
             cursorDeleteRemainingIds[0] != 1111 ||
             cursorDeleteRemainingIds[1] != 1212 ||
+            !cursorSetKeyFirst ||
+            !cursorSetKeyRekeyed ||
+            !cursorSetKeyCurrentInvalidated ||
+            !cursorSetKeySecond ||
+            cursorSetKeySecondEntry.Key != 11 ||
+            cursorSetKeySecondEntry.Identity != 1111 ||
+            cursorSetKeyOldRangeIds.Count != 2 ||
+            cursorSetKeyOldRangeIds[0] != 1111 ||
+            cursorSetKeyOldRangeIds[1] != 1212 ||
+            cursorSetKeyNewKeyIds.Count != 1 ||
+            cursorSetKeyNewKeyIds[0] != 1010 ||
             preparedSet.KeyType != typeof(long) ||
             preparedSet.Values.Count != 2)
         {

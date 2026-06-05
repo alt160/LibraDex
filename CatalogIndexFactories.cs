@@ -635,6 +635,7 @@ public sealed class CatalogIdentityGroupIndexes
             ResolveProjectionIndex);
         return new LibraDexIndexCursor<TKey, TIdentity>(
             LibraDexConditionCursorExecutor.IterateTargetIndexTuples(criterion, targetIndex, skip, take),
+            targetIndex,
             targetIndex as IIdentityExactTupleMutator,
             skip,
             take);
