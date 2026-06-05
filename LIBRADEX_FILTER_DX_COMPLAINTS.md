@@ -100,4 +100,5 @@ No active complaints are currently listed.
    - Added `CatalogIdentityGroupIndexes.GetReader<TIdentity>(condition, ...)` for identity-only streaming from a completed condition.
    - Added `LibraDexIndex<TKey,TIdentity>.GetReader(condition, ...)` and `LibraDexStringScalar8Index.GetReader(condition, ...)` for target-index key/identity entry streaming.
    - Added catalog-group target-index reader overloads so a condition can filter identities while a chosen index supplies `GetKey()`, `GetIdentity()`, and `GetEntry()` results.
-   - Direct same-index primitive leaves use the tuple primitive path; composed conditions currently filter target-index tuples through the existing identity projection, with a later optimization opportunity for fully streaming tuple joins.
+   - Direct same-index primitive leaves stream through the existing physical range-reader spine for common all/range/boundary/membership/multirange tuple primitives.
+   - Composed conditions currently filter target-index tuples through the existing identity projection, with a later optimization opportunity for fully streaming tuple joins.

@@ -10,7 +10,7 @@ namespace LibraDex;
 /// </summary>
 /// <typeparam name="TKey">The public key type.</typeparam>
 /// <typeparam name="TIdentity">The public identity type.</typeparam>
-public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveExecutor, IIdentityPrimitiveMutator, IIdentityPrimitiveTupleExecutor, IIdentityExactTupleMutator, IDisposable
+public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveExecutor, IIdentityPrimitiveMutator, IIdentityPrimitiveTupleExecutor, IIdentityPrimitiveTupleStreamer, IIdentityExactTupleMutator, IDisposable
 {
     private readonly LibraDexFileSession session;
     private readonly LibraDexGenericScalarShape shape;
@@ -722,6 +722,11 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
         return ExecuteTuplePrimitive(request);
     }
 
+    IEnumerable<LibraDexObjectTuple> IIdentityPrimitiveTupleStreamer.IterateTuplePrimitive(LibraDexIdentityPrimitiveRequest request)
+    {
+        return IterateTuplePrimitive(request);
+    }
+
     bool IIdentityExactTupleMutator.ContainsExactTuple(object? key, object identity)
     {
         if (key is null || key == DBNull.Value)
@@ -1079,6 +1084,35 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
             LibraDexCriteriaKind.ScalarNull => MaterializeScalarNullTupleObjects(request.Values),
             LibraDexCriteriaKind.KeyState => MaterializeNullKeyTupleObjects(request.Values),
             _ => throw new NotSupportedException($"{request.CriteriaKind} tuple execution is not connected to physical readers yet.")
+        };
+    }
+
+    /// <summary>
+    /// Streams key/identity tuples matched by one normalized condition primitive through existing range readers.<br/>
+    /// This keeps condition-shaped public readers on the same physical cursor spine as direct `OpenRangeReader(...)` calls for simple range, boundary, membership, and multirange primitives.<br/>
+    /// Complex scan-backed primitives can still fall back to the materialized tuple executor until shape-specific streaming is connected for them.<br/>
+    /// </summary>
+    /// <param name="request">The normalized primitive request produced by the condition materializer.</param>
+    /// <returns>A forward-only tuple sequence.</returns>
+    private IEnumerable<LibraDexObjectTuple> IterateTuplePrimitive(LibraDexIdentityPrimitiveRequest request)
+    {
+        ThrowIfDisposed();
+        return request.CriteriaKind switch
+        {
+            LibraDexCriteriaKind.All => IterateTupleObjects(OpenAllRangeReader(), request.TakeLimit),
+            LibraDexCriteriaKind.Find => IterateTupleObjects(OpenRangeReader(
+                RequireObjectKey(RequireCriterionValue(request.Values, 0), nameof(request.Values)),
+                RequireObjectKey(RequireCriterionValue(request.Values, 0), nameof(request.Values))), request.TakeLimit),
+            LibraDexCriteriaKind.Between => IterateTupleObjects(OpenRangeReader(
+                RequireObjectKey(RequireCriterionValue(request.Values, 0), nameof(request.Values)),
+                RequireObjectKey(RequireCriterionValue(request.Values, 1), nameof(request.Values))), request.TakeLimit),
+            LibraDexCriteriaKind.Before => IterateTupleObjects(OpenBeforeRangeReader(RequireObjectKey(RequireCriterionValue(request.Values, 0), nameof(request.Values))), request.TakeLimit),
+            LibraDexCriteriaKind.AtOrBefore => IterateTupleObjects(OpenAtOrBeforeRangeReader(RequireObjectKey(RequireCriterionValue(request.Values, 0), nameof(request.Values))), request.TakeLimit),
+            LibraDexCriteriaKind.After => IterateTupleObjects(OpenAfterRangeReader(RequireObjectKey(RequireCriterionValue(request.Values, 0), nameof(request.Values))), request.TakeLimit),
+            LibraDexCriteriaKind.AtOrAfter => IterateTupleObjects(OpenAtOrAfterRangeReader(RequireObjectKey(RequireCriterionValue(request.Values, 0), nameof(request.Values))), request.TakeLimit),
+            LibraDexCriteriaKind.In or LibraDexCriteriaKind.InSet => IterateMembershipTupleObjects(request.Values, request.TakeLimit),
+            LibraDexCriteriaKind.MultiRange => IterateMultiRangeTupleObjects(request.Values, request.TakeLimit),
+            _ => ExecuteTuplePrimitive(request)
         };
     }
 
@@ -2394,16 +2428,42 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     /// <returns>The decoded tuples as object key/identity pairs.</returns>
     private static IReadOnlyList<LibraDexObjectTuple> MaterializeTupleObjects(LibraDexRangeReader<TKey, TIdentity> reader)
     {
-        List<LibraDexObjectTuple> tuples = new();
-        using (reader)
+        return IterateTupleObjects(reader).ToList();
+    }
+
+    /// <summary>
+    /// Streams decoded key/identity tuples from a generic range reader and disposes the reader after consumption.<br/>
+    /// The limit is applied while reading so condition-shaped readers can skip or stop without forcing a full tuple list first.<br/>
+    /// </summary>
+    /// <param name="reader">The range reader to consume.</param>
+    /// <param name="takeLimit">The optional maximum number of tuples to yield.</param>
+    /// <returns>A forward-only tuple sequence.</returns>
+    private static IEnumerable<LibraDexObjectTuple> IterateTupleObjects(LibraDexRangeReader<TKey, TIdentity> reader, int? takeLimit = null)
+    {
+        if (takeLimit is < 0)
         {
-            while (reader.TryReadNext(out TKey key, out TIdentity identity))
-            {
-                tuples.Add(new LibraDexObjectTuple(key!, identity!));
-            }
+            throw new ArgumentOutOfRangeException(nameof(takeLimit), takeLimit, "Take cannot be negative.");
         }
 
-        return tuples;
+        if (takeLimit == 0)
+        {
+            reader.Dispose();
+            yield break;
+        }
+
+        using (reader)
+        {
+            int returned = 0;
+            while (reader.TryReadNext(out TKey key, out TIdentity identity))
+            {
+                yield return new LibraDexObjectTuple(key!, identity!);
+                returned++;
+                if (takeLimit is not null && returned >= takeLimit.Value)
+                {
+                    yield break;
+                }
+            }
+        }
     }
 
     /// <summary>
@@ -3311,12 +3371,43 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     /// <returns>The matching key/identity tuples.</returns>
     private IReadOnlyList<LibraDexObjectTuple> MaterializeMembershipTupleObjects(IEnumerable<object?> keys)
     {
-        List<LibraDexObjectTuple> tuples = new();
+        return IterateMembershipTupleObjects(keys).ToList();
+    }
+
+    /// <summary>
+    /// Streams tuple rows for a non-generic membership primitive by opening one equality reader per key.<br/>
+    /// The method preserves supplied key order and leaves duplicate tuple handling to the caller because physical tuple streams may intentionally contain duplicate identities under different keys.<br/>
+    /// </summary>
+    /// <param name="keys">The membership keys to read.</param>
+    /// <param name="takeLimit">The optional maximum number of tuples to yield across all keys.</param>
+    /// <returns>A forward-only tuple sequence.</returns>
+    private IEnumerable<LibraDexObjectTuple> IterateMembershipTupleObjects(IEnumerable<object?> keys, int? takeLimit = null)
+    {
+        if (takeLimit is < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(takeLimit), takeLimit, "Take cannot be negative.");
+        }
+
+        if (takeLimit == 0)
+        {
+            yield break;
+        }
+
+        int returned = 0;
         foreach (object? keyValue in keys)
         {
             if (TryClassifyNullKeyRouteKey(keyValue, out NullKey keyState))
             {
-                tuples.AddRange(MaterializeNullKeyTupleObjects(new object?[] { keyState }));
+                foreach (LibraDexObjectTuple tuple in MaterializeNullKeyTupleObjects(new object?[] { keyState }))
+                {
+                    yield return tuple;
+                    returned++;
+                    if (takeLimit is not null && returned >= takeLimit.Value)
+                    {
+                        yield break;
+                    }
+                }
+
                 continue;
             }
 
@@ -3325,11 +3416,14 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
                 RequireObjectKey(keyValue!, nameof(keys)));
             while (reader.TryReadNext(out TKey key, out TIdentity identity))
             {
-                tuples.Add(new LibraDexObjectTuple(key!, identity!));
+                yield return new LibraDexObjectTuple(key!, identity!);
+                returned++;
+                if (takeLimit is not null && returned >= takeLimit.Value)
+                {
+                    yield break;
+                }
             }
         }
-
-        return tuples;
     }
 
     /// <summary>
@@ -3523,8 +3617,30 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
 
     private IReadOnlyList<LibraDexObjectTuple> MaterializeMultiRangeTupleObjects(IReadOnlyList<object?> values)
     {
+        return IterateMultiRangeTupleObjects(values).ToList();
+    }
+
+    /// <summary>
+    /// Streams tuples for a condition-derived multi-range primitive by opening one inclusive range reader per requested extent.<br/>
+    /// The primitive preserves exact range output semantics; duplicate handling remains above this layer.<br/>
+    /// </summary>
+    /// <param name="values">The primitive operand list containing one range array.</param>
+    /// <param name="takeLimit">The optional maximum number of tuples to yield across all ranges.</param>
+    /// <returns>A forward-only tuple sequence.</returns>
+    private IEnumerable<LibraDexObjectTuple> IterateMultiRangeTupleObjects(IReadOnlyList<object?> values, int? takeLimit = null)
+    {
+        if (takeLimit is < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(takeLimit), takeLimit, "Take cannot be negative.");
+        }
+
+        if (takeLimit == 0)
+        {
+            yield break;
+        }
+
         LibraDexIdentityKeyRange[] ranges = RequireIdentityKeyRanges(values);
-        List<LibraDexObjectTuple> tuples = new();
+        int returned = 0;
         for (int i = 0; i < ranges.Length; i++)
         {
             using LibraDexRangeReader<TKey, TIdentity> reader = OpenRangeReader(
@@ -3532,11 +3648,14 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
                 RequireObjectKey(ranges[i].UpperKey, nameof(values)));
             while (reader.TryReadNext(out TKey key, out TIdentity identity))
             {
-                tuples.Add(new LibraDexObjectTuple(key!, identity!));
+                yield return new LibraDexObjectTuple(key!, identity!);
+                returned++;
+                if (takeLimit is not null && returned >= takeLimit.Value)
+                {
+                    yield break;
+                }
             }
         }
-
-        return tuples;
     }
 
     /// <summary>

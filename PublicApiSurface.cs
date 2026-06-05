@@ -2488,6 +2488,18 @@ internal interface IIdentityPrimitiveTupleExecutor
     IReadOnlyList<LibraDexObjectTuple> ExecuteTuplePrimitive(LibraDexIdentityPrimitiveRequest request);
 }
 
+internal interface IIdentityPrimitiveTupleStreamer
+{
+    /// <summary>
+    /// Streams key/identity tuples matched by one normalized primitive request from this index.<br/>
+    /// Condition-reader adapters use this path so public cursor-shaped APIs can sit on the existing physical readers instead of materializing tuple lists first.<br/>
+    /// Mutation paths may still use <see cref="IIdentityPrimitiveTupleExecutor.ExecuteTuplePrimitive"/> when they need a stable captured tuple set before applying changes.<br/>
+    /// </summary>
+    /// <param name="request">The normalized primitive request to stream.</param>
+    /// <returns>A forward-only tuple sequence.</returns>
+    IEnumerable<LibraDexObjectTuple> IterateTuplePrimitive(LibraDexIdentityPrimitiveRequest request);
+}
+
 internal interface IIdentityExactTupleMutator
 {
     /// <summary>

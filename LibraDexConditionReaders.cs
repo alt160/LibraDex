@@ -321,7 +321,7 @@ internal static class LibraDexConditionReaderExecutor
             criterion.CriteriaKind is not null)
         {
             int? takeLimit = AddForTakeLimit(skip, take);
-            foreach (LibraDexObjectTuple tuple in ExecuteTuplePrimitive(
+            foreach (LibraDexObjectTuple tuple in IterateTuplePrimitive(
                 targetIndex,
                 criterion.CriteriaKind.Value,
                 criterion.Values,
@@ -344,7 +344,7 @@ internal static class LibraDexConditionReaderExecutor
             yield break;
         }
 
-        foreach (LibraDexObjectTuple tuple in ExecuteTuplePrimitive(
+        foreach (LibraDexObjectTuple tuple in IterateTuplePrimitive(
             targetIndex,
             LibraDexCriteriaKind.All,
             Array.Empty<object?>(),
@@ -357,18 +357,24 @@ internal static class LibraDexConditionReaderExecutor
         }
     }
 
-    private static IReadOnlyList<LibraDexObjectTuple> ExecuteTuplePrimitive(
+    private static IEnumerable<LibraDexObjectTuple> IterateTuplePrimitive(
         IIndex targetIndex,
         LibraDexCriteriaKind criteriaKind,
         IReadOnlyList<object?> values,
         int? takeLimit)
     {
+        LibraDexIdentityPrimitiveRequest request = new(criteriaKind, values, takeLimit);
+        if (targetIndex is IIdentityPrimitiveTupleStreamer tupleStreamer)
+        {
+            return tupleStreamer.IterateTuplePrimitive(request);
+        }
+
         if (targetIndex is not IIdentityPrimitiveTupleExecutor tupleExecutor)
         {
             throw new NotSupportedException("The target index does not expose the internal tuple reader required for condition-filtered index reading.");
         }
 
-        return tupleExecutor.ExecuteTuplePrimitive(new LibraDexIdentityPrimitiveRequest(criteriaKind, values, takeLimit));
+        return tupleExecutor.ExecuteTuplePrimitive(request);
     }
 
     private static int? AddForTakeLimit(int skip, int? take)
