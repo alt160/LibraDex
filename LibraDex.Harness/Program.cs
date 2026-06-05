@@ -11726,6 +11726,42 @@ internal static class RawHarness
             groupedTargetEntries.Add(groupedTargetCursor.GetEntry());
         }
 
+        bool cursorDeleteFirst;
+        bool cursorDeleteDeleted;
+        bool cursorDeleteCurrentInvalidated;
+        bool cursorDeleteSecond;
+        LibraDexCursorEntry<long, long> cursorDeleteSecondEntry;
+        IReadOnlyList<long> cursorDeleteRemainingIds;
+        using (Catalog cursorDeleteCatalog = Catalog.CreateMemory())
+        {
+            LibraDexIndex<long, long> cursorDeleteIndex = cursorDeleteCatalog.Indexes["cursor-delete"]["value"].Int64Keys<long>().Create(
+                keys: IndexKeys.NonUnique);
+            ValidateGenericInsert(cursorDeleteIndex.Insert(10L, 1010L), "condition cursor delete 10 insert");
+            ValidateGenericInsert(cursorDeleteIndex.Insert(11L, 1111L), "condition cursor delete 11 insert");
+            ValidateGenericInsert(cursorDeleteIndex.Insert(12L, 1212L), "condition cursor delete 12 insert");
+            using LibraDexIndexCursor<long, long> cursorDeleteCursor = cursorDeleteIndex.GetCursor(
+                cursorDeleteIndex.Where.Between(10L, 12L).EndCondition);
+            cursorDeleteFirst = cursorDeleteCursor.Next();
+            cursorDeleteDeleted = cursorDeleteCursor.DeleteCurrent();
+            try
+            {
+                _ = cursorDeleteCursor.GetIdentity();
+                cursorDeleteCurrentInvalidated = false;
+            }
+            catch (InvalidOperationException)
+            {
+                cursorDeleteCurrentInvalidated = true;
+            }
+
+            cursorDeleteSecond = cursorDeleteCursor.Next();
+            cursorDeleteSecondEntry = cursorDeleteSecond
+                ? cursorDeleteCursor.GetEntry()
+                : default;
+            cursorDeleteRemainingIds = cursorDeleteIndex.GetIdentities(
+                cursorDeleteIndex.Where.Between(10L, 12L).EndCondition,
+                deduplication: IdentityDeduplication.Preserve);
+        }
+
         if (rangeIds.Count != 3 ||
             rangeIds[0] != 1000 ||
             rangeIds[2] != 1200 ||
@@ -11834,6 +11870,15 @@ internal static class RawHarness
             groupedTargetEntries[0].Identity != 1000 ||
             groupedTargetEntries[1].Key != 11 ||
             groupedTargetEntries[1].Identity != 1100 ||
+            !cursorDeleteFirst ||
+            !cursorDeleteDeleted ||
+            !cursorDeleteCurrentInvalidated ||
+            !cursorDeleteSecond ||
+            cursorDeleteSecondEntry.Key != 11 ||
+            cursorDeleteSecondEntry.Identity != 1111 ||
+            cursorDeleteRemainingIds.Count != 2 ||
+            cursorDeleteRemainingIds[0] != 1111 ||
+            cursorDeleteRemainingIds[1] != 1212 ||
             preparedSet.KeyType != typeof(long) ||
             preparedSet.Values.Count != 2)
         {

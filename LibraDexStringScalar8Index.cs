@@ -329,6 +329,7 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         IIdentityCriterion criterion = condition.MaterializeWithProjectionBridge(ResolveIndex, ResolveProjection);
         return new LibraDexIndexCursor<string, ulong>(
             LibraDexConditionCursorExecutor.IterateTargetIndexTuples(criterion, this, skip, take),
+            this,
             skip,
             take);
     }

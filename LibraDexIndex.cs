@@ -431,6 +431,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
             ResolveOwnProjectionIndex);
         return new LibraDexIndexCursor<TKey, TIdentity>(
             LibraDexConditionCursorExecutor.IterateTargetIndexTuples(criterion, this, skip, take),
+            this,
             skip,
             take);
     }

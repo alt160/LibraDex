@@ -120,6 +120,7 @@ public sealed class LibraDexIdentityCursor<TIdentity> : IDisposable
 public sealed class LibraDexIndexCursor<TKey, TIdentity> : IDisposable
 {
     private readonly IEnumerator<LibraDexObjectTuple> enumerator;
+    private readonly IIdentityExactTupleMutator? exactMutator;
     private readonly int skip;
     private readonly int? take;
     private LibraDexObjectTuple current;
@@ -128,7 +129,11 @@ public sealed class LibraDexIndexCursor<TKey, TIdentity> : IDisposable
     private int skipped;
     private int returned;
 
-    internal LibraDexIndexCursor(IEnumerable<LibraDexObjectTuple> tuples, int skip, int? take)
+    internal LibraDexIndexCursor(
+        IEnumerable<LibraDexObjectTuple> tuples,
+        IIdentityExactTupleMutator? exactMutator,
+        int skip,
+        int? take)
     {
         ArgumentNullException.ThrowIfNull(tuples);
         if (skip < 0)
@@ -142,6 +147,7 @@ public sealed class LibraDexIndexCursor<TKey, TIdentity> : IDisposable
         }
 
         enumerator = tuples.GetEnumerator();
+        this.exactMutator = exactMutator;
         this.skip = skip;
         this.take = take;
         Ordinal = -1;
@@ -235,6 +241,38 @@ public sealed class LibraDexIndexCursor<TKey, TIdentity> : IDisposable
     public LibraDexCursorEntry<TKey, TIdentity> GetEntry()
     {
         return new LibraDexCursorEntry<TKey, TIdentity>(GetKey(), GetIdentity());
+    }
+
+    /// <summary>
+    /// Deletes the current target-index key/identity entry while preserving traversal over the original cursor stream.<br/>
+    /// Call this only after <see cref="Next"/> returns <see langword="true"/>; current key, identity, and entry access are invalidated after a successful delete until the next successful move.<br/>
+    /// The following <see cref="Next"/> continues from the cursor's underlying stream rather than re-resolving the condition, so mutation does not revisit the deleted tuple.<br/>
+    /// </summary>
+    /// <returns><see langword="true"/> when the current physical tuple was deleted.</returns>
+    public bool DeleteCurrent()
+    {
+        ThrowIfDisposed();
+        EnsureCurrent();
+        IIdentityExactTupleMutator mutator = exactMutator
+            ?? throw new NotSupportedException("This LibraDex index cursor was not opened with cursor-local delete support.");
+
+        bool deleted = mutator.DeleteExactTuple(current.Key, current.Identity);
+        if (deleted)
+        {
+            hasCurrent = false;
+            current = default;
+        }
+
+        return deleted;
+    }
+
+    /// <summary>
+    /// Deletes the current target-index key/identity entry while preserving traversal over the original cursor stream.<br/>
+    /// This alias mirrors existing range-cursor mutation syntax for callers that prefer command-style cursor operations.<br/>
+    /// </summary>
+    public void Delete()
+    {
+        _ = DeleteCurrent();
     }
 
     /// <summary>
