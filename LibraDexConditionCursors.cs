@@ -279,6 +279,42 @@ public sealed class LibraDexIndexCursor<TKey, TIdentity> : IDisposable
     }
 
     /// <summary>
+    /// Deletes the current target-index entry when positioned, then deletes every later entry still reachable from this forward-only cursor.<br/>
+    /// Entries already advanced past by earlier cursor movement are not revisited; this method preserves the cursor's original stream semantics rather than re-running the condition.<br/>
+    /// Current key, identity, and entry access are invalidated when the current entry is deleted, and the cursor is exhausted when the method returns.<br/>
+    /// </summary>
+    /// <returns>The number of physical tuples deleted.</returns>
+    public long DeleteRemaining()
+    {
+        ThrowIfDisposed();
+        long deleted = 0;
+        if (hasCurrent && DeleteCurrent())
+        {
+            deleted++;
+        }
+
+        while (Next())
+        {
+            if (DeleteCurrent())
+            {
+                deleted++;
+            }
+        }
+
+        return deleted;
+    }
+
+    /// <summary>
+    /// Deletes every target-index entry still reachable from this forward-only cursor.<br/>
+    /// On a fresh cursor this deletes every entry matched by the cursor stream; after prior movement, entries already advanced past are intentionally out of scope.<br/>
+    /// </summary>
+    /// <returns>The number of physical tuples deleted.</returns>
+    public long DeleteAll()
+    {
+        return DeleteRemaining();
+    }
+
+    /// <summary>
     /// Re-keys the current target-index identity from its current key to <paramref name="newKey"/> while preserving traversal over the original cursor stream.<br/>
     /// The replacement tuple is verified before the old exact tuple is removed by the backing index, so a failed replacement does not lose the original entry.<br/>
     /// Current key, identity, and entry access are invalidated after a successful re-key until the next successful move.<br/>
