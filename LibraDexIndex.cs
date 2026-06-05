@@ -413,14 +413,14 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     }
 
     /// <summary>
-    /// Opens a forward-only key/identity reader for a completed condition rooted at this index.<br/>
+    /// Opens a forward-only key/identity cursor for a completed condition rooted at this index.<br/>
     /// This convenience remains single-index scoped: composed cross-index conditions should be executed from the owning identity group so every referenced index can be resolved by name.<br/>
     /// </summary>
     /// <param name="condition">The completed condition to execute.</param>
     /// <param name="skip">The number of matching index entries to skip.</param>
     /// <param name="take">The optional maximum number of index entries to return.</param>
-    /// <returns>A forward-only reader over this index's stored key/identity entries.</returns>
-    public LibraDexIndexReader<TKey, TIdentity> GetReader(
+    /// <returns>A forward-only cursor over this index's stored key/identity entries.</returns>
+    public LibraDexIndexCursor<TKey, TIdentity> GetCursor(
         LibraDexConditionEndCondition condition,
         int skip = 0,
         int? take = null)
@@ -429,8 +429,8 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
         IIdentityCriterion criterion = condition.MaterializeWithProjectionBridge(
             ResolveOwnIndex,
             ResolveOwnProjectionIndex);
-        return new LibraDexIndexReader<TKey, TIdentity>(
-            LibraDexConditionReaderExecutor.IterateTargetIndexTuples(criterion, this, skip, take),
+        return new LibraDexIndexCursor<TKey, TIdentity>(
+            LibraDexConditionCursorExecutor.IterateTargetIndexTuples(criterion, this, skip, take),
             skip,
             take);
     }
@@ -1089,7 +1089,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
 
     /// <summary>
     /// Streams key/identity tuples matched by one normalized condition primitive through existing range readers.<br/>
-    /// This keeps condition-shaped public readers on the same physical cursor spine as direct `OpenRangeReader(...)` calls for simple range, boundary, membership, and multirange primitives.<br/>
+    /// This keeps condition-shaped public cursors on the same physical cursor spine as direct `OpenRangeReader(...)` calls for simple range, boundary, membership, and multirange primitives.<br/>
     /// Complex scan-backed primitives can still fall back to the materialized tuple executor until shape-specific streaming is connected for them.<br/>
     /// </summary>
     /// <param name="request">The normalized primitive request produced by the condition materializer.</param>
@@ -2433,7 +2433,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
 
     /// <summary>
     /// Streams decoded key/identity tuples from a generic range reader and disposes the reader after consumption.<br/>
-    /// The limit is applied while reading so condition-shaped readers can skip or stop without forcing a full tuple list first.<br/>
+    /// The limit is applied while reading so condition-shaped cursors can skip or stop without forcing a full tuple list first.<br/>
     /// </summary>
     /// <param name="reader">The range reader to consume.</param>
     /// <param name="takeLimit">The optional maximum number of tuples to yield.</param>

@@ -11705,25 +11705,25 @@ internal static class RawHarness
         IReadOnlyList<long> rootNotGroupIds = catalog.Indexes["surface"].GetIdentities<long>(
             rootNotGroupCondition,
             deduplication: IdentityDeduplication.Preserve);
-        using LibraDexIdentityReader<long> surfaceIdentityReader = catalog.Indexes["surface"].GetReader<long>(
+        using LibraDexIdentityCursor<long> surfaceIdentityCursor = catalog.Indexes["surface"].GetCursor<long>(
             namedMultiKeyCondition,
             deduplication: IdentityDeduplication.Preserve,
             skip: 1,
             take: 1);
-        bool surfaceIdentityReaderFirst = surfaceIdentityReader.Next();
-        long surfaceIdentityReaderValue = surfaceIdentityReaderFirst ? surfaceIdentityReader.GetIdentity() : -1;
-        bool surfaceIdentityReaderSecond = surfaceIdentityReader.Next();
-        using LibraDexIndexReader<long, long> directIndexReader = index.GetReader(index.Where.Between(10L, 12L).EndCondition, skip: 1, take: 1);
-        bool directIndexReaderFirst = directIndexReader.Next();
-        LibraDexReaderEntry<long, long> directIndexReaderEntry = directIndexReaderFirst
-            ? directIndexReader.GetEntry()
+        bool surfaceIdentityCursorFirst = surfaceIdentityCursor.Next();
+        long surfaceIdentityCursorValue = surfaceIdentityCursorFirst ? surfaceIdentityCursor.GetIdentity() : -1;
+        bool surfaceIdentityCursorSecond = surfaceIdentityCursor.Next();
+        using LibraDexIndexCursor<long, long> directIndexCursor = index.GetCursor(index.Where.Between(10L, 12L).EndCondition, skip: 1, take: 1);
+        bool directIndexCursorFirst = directIndexCursor.Next();
+        LibraDexCursorEntry<long, long> directIndexCursorEntry = directIndexCursorFirst
+            ? directIndexCursor.GetEntry()
             : default;
-        bool directIndexReaderSecond = directIndexReader.Next();
-        using LibraDexIndexReader<long, long> groupedTargetReader = catalog.Indexes["surface"].GetReader(index, clauseNotGroupCondition);
-        List<LibraDexReaderEntry<long, long>> groupedTargetEntries = new();
-        while (groupedTargetReader.Next())
+        bool directIndexCursorSecond = directIndexCursor.Next();
+        using LibraDexIndexCursor<long, long> groupedTargetCursor = catalog.Indexes["surface"].GetCursor(index, clauseNotGroupCondition);
+        List<LibraDexCursorEntry<long, long>> groupedTargetEntries = new();
+        while (groupedTargetCursor.Next())
         {
-            groupedTargetEntries.Add(groupedTargetReader.GetEntry());
+            groupedTargetEntries.Add(groupedTargetCursor.GetEntry());
         }
 
         if (rangeIds.Count != 3 ||
@@ -11822,13 +11822,13 @@ internal static class RawHarness
             rootNotGroupIds.Count != 2 ||
             rootNotGroupIds[0] != 1000 ||
             rootNotGroupIds[1] != 1100 ||
-            !surfaceIdentityReaderFirst ||
-            surfaceIdentityReaderValue != 1100 ||
-            surfaceIdentityReaderSecond ||
-            !directIndexReaderFirst ||
-            directIndexReaderEntry.Key != 11 ||
-            directIndexReaderEntry.Identity != 1100 ||
-            directIndexReaderSecond ||
+            !surfaceIdentityCursorFirst ||
+            surfaceIdentityCursorValue != 1100 ||
+            surfaceIdentityCursorSecond ||
+            !directIndexCursorFirst ||
+            directIndexCursorEntry.Key != 11 ||
+            directIndexCursorEntry.Identity != 1100 ||
+            directIndexCursorSecond ||
             groupedTargetEntries.Count != 2 ||
             groupedTargetEntries[0].Key != 10 ||
             groupedTargetEntries[0].Identity != 1000 ||

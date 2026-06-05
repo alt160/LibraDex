@@ -541,18 +541,18 @@ public sealed class CatalogIdentityGroupIndexes
     }
 
     /// <summary>
-    /// Opens a forward-only identity reader for a completed condition over this identity group.<br/>
+    /// Opens a forward-only identity cursor for a completed condition over this identity group.<br/>
     /// Conditions remain filter descriptors; this method owns the materialization shape when callers want identity values without constructing a list.<br/>
     /// </summary>
-    /// <typeparam name="TIdentity">The identity type expected by the reader.</typeparam>
+    /// <typeparam name="TIdentity">The identity type expected by the cursor.</typeparam>
     /// <param name="condition">The completed condition to execute.</param>
     /// <param name="ordering">The requested identity ordering contract.</param>
     /// <param name="deduplication">The requested duplicate identity policy.</param>
     /// <param name="skip">The number of matching identities to skip.</param>
     /// <param name="take">The optional maximum number of identities to return.</param>
     /// <param name="bookmark">The optional continuation bookmark.</param>
-    /// <returns>A forward-only reader over matching identities.</returns>
-    public LibraDexIdentityReader<TIdentity> GetReader<TIdentity>(
+    /// <returns>A forward-only cursor over matching identities.</returns>
+    public LibraDexIdentityCursor<TIdentity> GetCursor<TIdentity>(
         LibraDexConditionEndCondition condition,
         IdentityResultOrdering ordering = IdentityResultOrdering.PlanNatural,
         IdentityDeduplication deduplication = IdentityDeduplication.Distinct,
@@ -569,12 +569,12 @@ public sealed class CatalogIdentityGroupIndexes
         IIdentityCriterion criterion = condition.MaterializeWithProjectionBridge(
             name => this[name].Open(),
             ResolveProjectionIndex);
-        return new LibraDexIdentityReader<TIdentity>(
+        return new LibraDexIdentityCursor<TIdentity>(
             criterion.IDsWith(ordering, deduplication, skip, take, bookmark).Iterate<TIdentity>());
     }
 
     /// <summary>
-    /// Opens a forward-only target-index reader for a completed condition over this identity group.<br/>
+    /// Opens a forward-only target-index cursor for a completed condition over this identity group.<br/>
     /// The condition filters identities, while the target index owns the result shape and returns its stored key values directly.<br/>
     /// </summary>
     /// <typeparam name="TKey">The public key type exposed by the target index.</typeparam>
@@ -583,37 +583,37 @@ public sealed class CatalogIdentityGroupIndexes
     /// <param name="condition">The completed condition to execute.</param>
     /// <param name="skip">The number of matching target-index entries to skip.</param>
     /// <param name="take">The optional maximum number of target-index entries to return.</param>
-    /// <returns>A forward-only reader over matching target-index entries.</returns>
-    public LibraDexIndexReader<TKey, TIdentity> GetReader<TKey, TIdentity>(
+    /// <returns>A forward-only cursor over matching target-index entries.</returns>
+    public LibraDexIndexCursor<TKey, TIdentity> GetCursor<TKey, TIdentity>(
         LibraDexIndex<TKey, TIdentity> targetIndex,
         LibraDexConditionEndCondition condition,
         int skip = 0,
         int? take = null)
     {
         ArgumentNullException.ThrowIfNull(targetIndex);
-        return GetTargetReader<TKey, TIdentity>(targetIndex, condition, skip, take);
+        return GetTargetCursor<TKey, TIdentity>(targetIndex, condition, skip, take);
     }
 
     /// <summary>
-    /// Opens a forward-only string target-index reader for a completed condition over this identity group.<br/>
+    /// Opens a forward-only string target-index cursor for a completed condition over this identity group.<br/>
     /// The condition filters identities, while the string target index owns the result shape and returns exact string keys directly.<br/>
     /// </summary>
     /// <param name="targetIndex">The string index whose key/identity entries should be streamed.</param>
     /// <param name="condition">The completed condition to execute.</param>
     /// <param name="skip">The number of matching target-index entries to skip.</param>
     /// <param name="take">The optional maximum number of target-index entries to return.</param>
-    /// <returns>A forward-only reader over matching string-index entries.</returns>
-    public LibraDexIndexReader<string, ulong> GetReader(
+    /// <returns>A forward-only cursor over matching string-index entries.</returns>
+    public LibraDexIndexCursor<string, ulong> GetCursor(
         LibraDexStringScalar8Index targetIndex,
         LibraDexConditionEndCondition condition,
         int skip = 0,
         int? take = null)
     {
         ArgumentNullException.ThrowIfNull(targetIndex);
-        return GetTargetReader<string, ulong>(targetIndex, condition, skip, take);
+        return GetTargetCursor<string, ulong>(targetIndex, condition, skip, take);
     }
 
-    private LibraDexIndexReader<TKey, TIdentity> GetTargetReader<TKey, TIdentity>(
+    private LibraDexIndexCursor<TKey, TIdentity> GetTargetCursor<TKey, TIdentity>(
         IIndex targetIndex,
         LibraDexConditionEndCondition condition,
         int skip,
@@ -633,8 +633,8 @@ public sealed class CatalogIdentityGroupIndexes
         IIdentityCriterion criterion = condition.MaterializeWithProjectionBridge(
             name => this[name].Open(),
             ResolveProjectionIndex);
-        return new LibraDexIndexReader<TKey, TIdentity>(
-            LibraDexConditionReaderExecutor.IterateTargetIndexTuples(criterion, targetIndex, skip, take),
+        return new LibraDexIndexCursor<TKey, TIdentity>(
+            LibraDexConditionCursorExecutor.IterateTargetIndexTuples(criterion, targetIndex, skip, take),
             skip,
             take);
     }

@@ -1,28 +1,28 @@
 namespace LibraDex;
 
 /// <summary>
-/// Represents one key/identity entry returned by a condition-filtered LibraDex index reader.<br/>
+/// Represents one key/identity entry returned by a condition-filtered LibraDex index cursor.<br/>
 /// The key side is the indexed value stored in the target index; the identity side is the catalog identity associated with that key.<br/>
 /// </summary>
 /// <typeparam name="TKey">The public key type exposed by the target index.</typeparam>
 /// <typeparam name="TIdentity">The public identity type exposed by the target index.</typeparam>
 /// <param name="Key">The indexed key value for the current entry.</param>
 /// <param name="Identity">The identity value for the current entry.</param>
-public readonly record struct LibraDexReaderEntry<TKey, TIdentity>(TKey? Key, TIdentity Identity);
+public readonly record struct LibraDexCursorEntry<TKey, TIdentity>(TKey? Key, TIdentity Identity);
 
 /// <summary>
-/// Provides a forward-only reader over identity values produced by a completed LibraDex condition.<br/>
-/// Conditions remain filter descriptors; this reader is the materialization boundary used when callers only need identities.<br/>
+/// Provides a forward-only cursor over identity values produced by a completed LibraDex condition.<br/>
+/// Conditions remain filter descriptors; this cursor is the materialization boundary used when callers only need identities.<br/>
 /// </summary>
-/// <typeparam name="TIdentity">The public identity type returned by the reader.</typeparam>
-public sealed class LibraDexIdentityReader<TIdentity> : IDisposable
+/// <typeparam name="TIdentity">The public identity type returned by the cursor.</typeparam>
+public sealed class LibraDexIdentityCursor<TIdentity> : IDisposable
 {
     private readonly IEnumerator<TIdentity> enumerator;
     private TIdentity? current;
     private bool hasCurrent;
     private bool disposed;
 
-    internal LibraDexIdentityReader(IEnumerable<TIdentity> identities)
+    internal LibraDexIdentityCursor(IEnumerable<TIdentity> identities)
     {
         ArgumentNullException.ThrowIfNull(identities);
         enumerator = identities.GetEnumerator();
@@ -36,7 +36,7 @@ public sealed class LibraDexIdentityReader<TIdentity> : IDisposable
     public long Ordinal { get; private set; }
 
     /// <summary>
-    /// Advances the reader to the next identity.<br/>
+    /// Advances the cursor to the next identity.<br/>
     /// This method returns <see langword="false"/> when the condition stream is exhausted.<br/>
     /// </summary>
     /// <returns><see langword="true"/> when an identity is available through <see cref="GetIdentity"/>.</returns>
@@ -57,8 +57,8 @@ public sealed class LibraDexIdentityReader<TIdentity> : IDisposable
     }
 
     /// <summary>
-    /// Advances the reader to the next identity.<br/>
-    /// This alias keeps the reader compatible with standard .NET cursor naming while <see cref="Next"/> remains the low-friction LibraDex spelling.<br/>
+    /// Advances the cursor to the next identity.<br/>
+    /// This alias keeps the cursor compatible with standard .NET cursor naming while <see cref="Next"/> remains the low-friction LibraDex spelling.<br/>
     /// </summary>
     /// <returns><see langword="true"/> when an identity is available through <see cref="GetIdentity"/>.</returns>
     public bool MoveNext()
@@ -76,7 +76,7 @@ public sealed class LibraDexIdentityReader<TIdentity> : IDisposable
         ThrowIfDisposed();
         if (!hasCurrent)
         {
-            throw new InvalidOperationException("The reader is not positioned on an identity.");
+            throw new InvalidOperationException("The cursor is not positioned on an identity.");
         }
 
         return current!;
@@ -106,18 +106,18 @@ public sealed class LibraDexIdentityReader<TIdentity> : IDisposable
     {
         if (disposed)
         {
-            throw new ObjectDisposedException(nameof(LibraDexIdentityReader<TIdentity>));
+            throw new ObjectDisposedException(nameof(LibraDexIdentityCursor<TIdentity>));
         }
     }
 }
 
 /// <summary>
-/// Provides a forward-only reader over key/identity entries from one target LibraDex index after a completed condition has filtered the identity stream.<br/>
-/// The reader returns the target index's stored key values directly, so callers can enumerate indexed values without separate covering-index ceremony.<br/>
+/// Provides a forward-only cursor over key/identity entries from one target LibraDex index after a completed condition has filtered the identity stream.<br/>
+/// The cursor returns the target index's stored key values directly, so callers can enumerate indexed values without separate covering-index ceremony.<br/>
 /// </summary>
 /// <typeparam name="TKey">The public key type exposed by the target index.</typeparam>
 /// <typeparam name="TIdentity">The public identity type exposed by the target index.</typeparam>
-public sealed class LibraDexIndexReader<TKey, TIdentity> : IDisposable
+public sealed class LibraDexIndexCursor<TKey, TIdentity> : IDisposable
 {
     private readonly IEnumerator<LibraDexObjectTuple> enumerator;
     private readonly int skip;
@@ -128,7 +128,7 @@ public sealed class LibraDexIndexReader<TKey, TIdentity> : IDisposable
     private int skipped;
     private int returned;
 
-    internal LibraDexIndexReader(IEnumerable<LibraDexObjectTuple> tuples, int skip, int? take)
+    internal LibraDexIndexCursor(IEnumerable<LibraDexObjectTuple> tuples, int skip, int? take)
     {
         ArgumentNullException.ThrowIfNull(tuples);
         if (skip < 0)
@@ -154,7 +154,7 @@ public sealed class LibraDexIndexReader<TKey, TIdentity> : IDisposable
     public long Ordinal { get; private set; }
 
     /// <summary>
-    /// Advances the reader to the next target-index entry that survived condition filtering.<br/>
+    /// Advances the cursor to the next target-index entry that survived condition filtering.<br/>
     /// Skip and take are applied while advancing, so callers can discard rows without constructing entry objects for skipped rows.<br/>
     /// </summary>
     /// <returns><see langword="true"/> when an entry is available through <see cref="GetKey"/>, <see cref="GetIdentity"/>, or <see cref="GetEntry"/>.</returns>
@@ -189,8 +189,8 @@ public sealed class LibraDexIndexReader<TKey, TIdentity> : IDisposable
     }
 
     /// <summary>
-    /// Advances the reader to the next target-index entry that survived condition filtering.<br/>
-    /// This alias keeps the reader compatible with standard .NET cursor naming while <see cref="Next"/> remains the low-friction LibraDex spelling.<br/>
+    /// Advances the cursor to the next target-index entry that survived condition filtering.<br/>
+    /// This alias keeps the cursor compatible with standard .NET cursor naming while <see cref="Next"/> remains the low-friction LibraDex spelling.<br/>
     /// </summary>
     /// <returns><see langword="true"/> when an entry is available through <see cref="GetEntry"/>.</returns>
     public bool MoveNext()
@@ -232,9 +232,9 @@ public sealed class LibraDexIndexReader<TKey, TIdentity> : IDisposable
     /// This is a convenience wrapper over <see cref="GetKey"/> and <see cref="GetIdentity"/> for callers that want a single value object.<br/>
     /// </summary>
     /// <returns>The current key/identity entry.</returns>
-    public LibraDexReaderEntry<TKey, TIdentity> GetEntry()
+    public LibraDexCursorEntry<TKey, TIdentity> GetEntry()
     {
-        return new LibraDexReaderEntry<TKey, TIdentity>(GetKey(), GetIdentity());
+        return new LibraDexCursorEntry<TKey, TIdentity>(GetKey(), GetIdentity());
     }
 
     /// <summary>
@@ -253,7 +253,7 @@ public sealed class LibraDexIndexReader<TKey, TIdentity> : IDisposable
     /// Gets the current target-index entry.<br/>
     /// This property is equivalent to <see cref="GetEntry"/> and exists for callers that prefer property-style cursor access.<br/>
     /// </summary>
-    public LibraDexReaderEntry<TKey, TIdentity> CurrentEntry => GetEntry();
+    public LibraDexCursorEntry<TKey, TIdentity> CurrentEntry => GetEntry();
 
     /// <summary>
     /// Releases the underlying tuple enumerator.<br/>
@@ -278,7 +278,7 @@ public sealed class LibraDexIndexReader<TKey, TIdentity> : IDisposable
                 return default;
             }
 
-            throw new InvalidCastException($"Null key at the current reader position cannot be returned as non-nullable {typeof(TKey).FullName}.");
+            throw new InvalidCastException($"Null key at the current cursor position cannot be returned as non-nullable {typeof(TKey).FullName}.");
         }
 
         if (value is TKey key)
@@ -286,14 +286,14 @@ public sealed class LibraDexIndexReader<TKey, TIdentity> : IDisposable
             return key;
         }
 
-        throw new InvalidCastException($"Key at the current reader position is {value.GetType().FullName}, not {typeof(TKey).FullName}.");
+        throw new InvalidCastException($"Key at the current cursor position is {value.GetType().FullName}, not {typeof(TKey).FullName}.");
     }
 
     private void EnsureCurrent()
     {
         if (!hasCurrent)
         {
-            throw new InvalidOperationException("The reader is not positioned on an index entry.");
+            throw new InvalidOperationException("The cursor is not positioned on an index entry.");
         }
     }
 
@@ -301,12 +301,12 @@ public sealed class LibraDexIndexReader<TKey, TIdentity> : IDisposable
     {
         if (disposed)
         {
-            throw new ObjectDisposedException(nameof(LibraDexIndexReader<TKey, TIdentity>));
+            throw new ObjectDisposedException(nameof(LibraDexIndexCursor<TKey, TIdentity>));
         }
     }
 }
 
-internal static class LibraDexConditionReaderExecutor
+internal static class LibraDexConditionCursorExecutor
 {
     internal static IEnumerable<LibraDexObjectTuple> IterateTargetIndexTuples(
         IIdentityCriterion criterion,
@@ -371,7 +371,7 @@ internal static class LibraDexConditionReaderExecutor
 
         if (targetIndex is not IIdentityPrimitiveTupleExecutor tupleExecutor)
         {
-            throw new NotSupportedException("The target index does not expose the internal tuple reader required for condition-filtered index reading.");
+            throw new NotSupportedException("The target index does not expose the internal tuple stream required for condition-filtered index cursors.");
         }
 
         return tupleExecutor.ExecuteTuplePrimitive(request);
