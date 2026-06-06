@@ -2803,7 +2803,7 @@ public sealed class LibraDexConditionClause
     public LibraDexConditionContinueOrEnd External(Func<object, bool> filter)
     {
         ArgumentNullException.ThrowIfNull(filter);
-        return ExternalContext(context => filter(context.Identity));
+        return External(context => filter(context.Identity));
     }
 
     /// <summary>
@@ -2815,7 +2815,7 @@ public sealed class LibraDexConditionClause
     public LibraDexConditionContinueOrEnd External(Func<object, long, bool, bool> filter)
     {
         ArgumentNullException.ThrowIfNull(filter);
-        return ExternalContext(context => filter(context.Identity, context.Ordinal, context.IsFirst));
+        return External(context => filter(context.Identity, context.Ordinal, context.IsFirst));
     }
 
     /// <summary>
@@ -2824,7 +2824,7 @@ public sealed class LibraDexConditionClause
     /// </summary>
     /// <param name="filter">Predicate that receives candidate identity context and returns whether the identity should remain in the result stream.<br/></param>
     /// <returns>A continuation for adding more clauses or ending the condition.</returns>
-    public LibraDexConditionContinueOrEnd ExternalContext(Func<LibraDexExternalIdentityContext, bool> filter)
+    public LibraDexConditionContinueOrEnd External(Func<LibraDexExternalIdentityContext, bool> filter)
     {
         ArgumentNullException.ThrowIfNull(filter);
         Func<LibraDexExternalIdentityContext, bool> effectiveFilter = negateNext
@@ -2835,15 +2835,15 @@ public sealed class LibraDexConditionClause
 
     /// <summary>
     /// Adds caller-supplied identities as an external source clause.<br/>
-    /// Unlike `.External(...)`, this node defines its own identity stream and can stand alone or compose through `Or`, `And`, and other identity-set operations.<br/>
+    /// This node defines its own identity stream and can stand alone or compose through `Or`, `And`, and other identity-set operations.<br/>
     /// </summary>
     /// <typeparam name="TIdentity">The identity value type supplied by caller code.<br/></typeparam>
     /// <param name="identities">The identities to expose as an external source stream.<br/></param>
     /// <returns>A continuation for adding more clauses or ending the condition.</returns>
-    public LibraDexConditionContinueOrEnd ExternalIds<TIdentity>(IEnumerable<TIdentity> identities)
+    public LibraDexConditionContinueOrEnd External<TIdentity>(IEnumerable<TIdentity> identities)
     {
         ArgumentNullException.ThrowIfNull(identities);
-        return ExternalIds(() => identities);
+        return External(() => identities);
     }
 
     /// <summary>
@@ -2853,7 +2853,7 @@ public sealed class LibraDexConditionClause
     /// <typeparam name="TIdentity">The identity value type supplied by caller code.<br/></typeparam>
     /// <param name="identityFactory">Factory that returns the identities to expose as an external source stream.<br/></param>
     /// <returns>A continuation for adding more clauses or ending the condition.</returns>
-    public LibraDexConditionContinueOrEnd ExternalIds<TIdentity>(Func<IEnumerable<TIdentity>> identityFactory)
+    public LibraDexConditionContinueOrEnd External<TIdentity>(Func<IEnumerable<TIdentity>> identityFactory)
     {
         ArgumentNullException.ThrowIfNull(identityFactory);
         if (negateNext)
@@ -2862,6 +2862,45 @@ public sealed class LibraDexConditionClause
         }
 
         return builder.AddExternalSource(() => BoxExternalIdentities(identityFactory()));
+    }
+
+    /// <summary>
+    /// Adds caller-supplied external key/identity entries and selects key operators for the external branch.<br/>
+    /// The selected key operators filter the external entries before their identities are composed with the rest of the condition tree.<br/>
+    /// </summary>
+    /// <typeparam name="TKey">The external branch key type.<br/></typeparam>
+    /// <param name="entries">The external key/identity entries to expose as a runtime index-like branch.<br/></param>
+    /// <returns>A typed external condition operator for the supplied key type.</returns>
+    public LibraDexExternalConditionOperator<TKey> External<TKey>(IEnumerable<LibraDexExternalEntry<TKey>> entries)
+    {
+        ArgumentNullException.ThrowIfNull(entries);
+        return External<TKey>(() => entries);
+    }
+
+    /// <summary>
+    /// Adds a caller-supplied external key/identity entry source and selects key operators for the external branch.<br/>
+    /// This is the runtime-index form: caller code supplies entries, LibraDex applies the selected external key predicate, and matching identities participate in normal condition composition.<br/>
+    /// </summary>
+    /// <typeparam name="TKey">The external branch key type.<br/></typeparam>
+    /// <param name="entryFactory">Factory that returns external key/identity entries.<br/></param>
+    /// <returns>A typed external condition operator for the supplied key type.</returns>
+    public LibraDexExternalConditionOperator<TKey> External<TKey>(Func<IEnumerable<LibraDexExternalEntry<TKey>>> entryFactory)
+    {
+        ArgumentNullException.ThrowIfNull(entryFactory);
+        return new LibraDexExternalConditionOperator<TKey>(builder, negateNext, entryFactory, candidateKeyFactory: null);
+    }
+
+    /// <summary>
+    /// Adds a correlated caller-supplied external key source and selects key operators for the external branch.<br/>
+    /// The factory receives each candidate identity from the indexed sibling branch and returns external keys for that identity; the selected key predicate decides whether the identity remains matched.<br/>
+    /// </summary>
+    /// <typeparam name="TKey">The external branch key type.<br/></typeparam>
+    /// <param name="candidateKeyFactory">Factory that returns external keys for one candidate identity.<br/></param>
+    /// <returns>A typed external condition operator for the supplied key type.</returns>
+    public LibraDexExternalConditionOperator<TKey> External<TKey>(Func<object, IEnumerable<TKey>> candidateKeyFactory)
+    {
+        ArgumentNullException.ThrowIfNull(candidateKeyFactory);
+        return new LibraDexExternalConditionOperator<TKey>(builder, negateNext, entryFactory: null, candidateKeyFactory);
     }
 
     /// <summary>
@@ -2879,6 +2918,220 @@ public sealed class LibraDexConditionClause
             object? boxed = identity;
             yield return boxed ?? throw new InvalidOperationException("External identity sources cannot yield null identities.");
         }
+    }
+}
+
+/// <summary>
+/// Captures typed key predicates for one external runtime condition branch.<br/>
+/// External source branches filter caller-supplied key/identity entries into identities; correlated branches filter the current indexed candidate identity by asking caller code for that identity's external keys.<br/>
+/// </summary>
+/// <typeparam name="TKey">The external branch key type.<br/></typeparam>
+public sealed class LibraDexExternalConditionOperator<TKey>
+{
+    private readonly LibraDexConditionBuilder builder;
+    private readonly bool negate;
+    private readonly Func<IEnumerable<LibraDexExternalEntry<TKey>>>? entryFactory;
+    private readonly Func<object, IEnumerable<TKey>>? candidateKeyFactory;
+
+    internal LibraDexExternalConditionOperator(
+        LibraDexConditionBuilder builder,
+        bool negate,
+        Func<IEnumerable<LibraDexExternalEntry<TKey>>>? entryFactory,
+        Func<object, IEnumerable<TKey>>? candidateKeyFactory)
+    {
+        this.builder = builder;
+        this.negate = negate;
+        this.entryFactory = entryFactory;
+        this.candidateKeyFactory = candidateKeyFactory;
+    }
+
+    /// <summary>
+    /// Negates the next external key predicate.<br/>
+    /// The negation is applied inside the external branch before identities are composed with the surrounding condition.<br/>
+    /// </summary>
+    public LibraDexExternalConditionOperator<TKey> Not => new(builder, !negate, entryFactory, candidateKeyFactory);
+
+    /// <summary>
+    /// Captures external keys equal to <paramref name="value"/>.<br/>
+    /// </summary>
+    /// <param name="value">The key value to match.<br/></param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd EqualTo(TKey value)
+    {
+        return Add(key => LibraDexKeyEquality<TKey>.Comparer.Equals(key, value));
+    }
+
+    /// <summary>
+    /// Captures external keys not equal to <paramref name="value"/>.<br/>
+    /// </summary>
+    /// <param name="value">The key value to exclude.<br/></param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd NotEqualTo(TKey value)
+    {
+        return Not.EqualTo(value);
+    }
+
+    /// <summary>
+    /// Captures external keys greater than <paramref name="value"/>.<br/>
+    /// </summary>
+    /// <param name="value">The exclusive lower key boundary.<br/></param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd GreaterThan(TKey value)
+    {
+        return Add(key => Compare(key, value) > 0);
+    }
+
+    /// <summary>
+    /// Captures external keys greater than or equal to <paramref name="value"/>.<br/>
+    /// </summary>
+    /// <param name="value">The inclusive lower key boundary.<br/></param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd GreaterOrEqual(TKey value)
+    {
+        return Add(key => Compare(key, value) >= 0);
+    }
+
+    /// <summary>
+    /// Captures external keys less than <paramref name="value"/>.<br/>
+    /// </summary>
+    /// <param name="value">The exclusive upper key boundary.<br/></param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd LessThan(TKey value)
+    {
+        return Add(key => Compare(key, value) < 0);
+    }
+
+    /// <summary>
+    /// Captures external keys less than or equal to <paramref name="value"/>.<br/>
+    /// </summary>
+    /// <param name="value">The inclusive upper key boundary.<br/></param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd LessOrEqual(TKey value)
+    {
+        return Add(key => Compare(key, value) <= 0);
+    }
+
+    /// <summary>
+    /// Captures external keys within the inclusive <paramref name="lower"/> to <paramref name="upper"/> range.<br/>
+    /// </summary>
+    /// <param name="lower">The inclusive lower key boundary.<br/></param>
+    /// <param name="upper">The inclusive upper key boundary.<br/></param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd Between(TKey lower, TKey upper)
+    {
+        return Add(key => Compare(key, lower) >= 0 && Compare(key, upper) <= 0);
+    }
+
+    /// <summary>
+    /// Captures external keys outside the inclusive <paramref name="lower"/> to <paramref name="upper"/> range.<br/>
+    /// </summary>
+    /// <param name="lower">The inclusive lower key boundary.<br/></param>
+    /// <param name="upper">The inclusive upper key boundary.<br/></param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd NotBetween(TKey lower, TKey upper)
+    {
+        return Not.Between(lower, upper);
+    }
+
+    /// <summary>
+    /// Captures external keys contained in <paramref name="values"/>.<br/>
+    /// </summary>
+    /// <param name="values">The external key membership set.<br/></param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd InSet(IEnumerable<TKey> values)
+    {
+        ArgumentNullException.ThrowIfNull(values);
+        HashSet<TKey> set = new(values, LibraDexKeyEquality<TKey>.Comparer);
+        return Add(set.Contains);
+    }
+
+    /// <summary>
+    /// Captures external keys not contained in <paramref name="values"/>.<br/>
+    /// </summary>
+    /// <param name="values">The external key membership set.<br/></param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd NotInSet(IEnumerable<TKey> values)
+    {
+        return Not.InSet(values);
+    }
+
+    /// <summary>
+    /// Captures one compiled external key predicate as either an identity source or an identity filter.<br/>
+    /// Runtime-entry branches emit identities for entries whose keys satisfy the predicate; correlated branches test candidate identities from an indexed sibling stream.<br/>
+    /// </summary>
+    /// <param name="predicate">The external key predicate to apply before identity composition.<br/></param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    private LibraDexConditionContinueOrEnd Add(Func<TKey, bool> predicate)
+    {
+        ArgumentNullException.ThrowIfNull(predicate);
+        Func<TKey, bool> effectivePredicate = negate
+            ? key => !predicate(key)
+            : predicate;
+        if (entryFactory is not null)
+        {
+            return builder.AddExternalSource(() => FilterEntries(entryFactory(), effectivePredicate));
+        }
+
+        Func<object, IEnumerable<TKey>> keyFactory = candidateKeyFactory
+            ?? throw new InvalidOperationException("External key predicate is missing its source.");
+        return builder.AddExternal(context => MatchesAny(keyFactory(context.Identity), effectivePredicate));
+    }
+
+    /// <summary>
+    /// Filters caller-supplied external entries by key and yields only their identities.<br/>
+    /// This keeps external branch keys local to the branch while the condition tree continues to compose identity streams.<br/>
+    /// </summary>
+    /// <param name="entries">The external key/identity entries supplied by caller code.<br/></param>
+    /// <param name="predicate">The external key predicate selected by the fluent operator.<br/></param>
+    /// <returns>Identities whose external entries satisfy the predicate.<br/></returns>
+    private static IEnumerable<object> FilterEntries(IEnumerable<LibraDexExternalEntry<TKey>> entries, Func<TKey, bool> predicate)
+    {
+        ArgumentNullException.ThrowIfNull(entries);
+        foreach (LibraDexExternalEntry<TKey> entry in entries)
+        {
+            if (entry.Identity is null)
+            {
+                throw new InvalidOperationException("External entries cannot yield null identities.");
+            }
+
+            if (predicate(entry.Key))
+            {
+                yield return entry.Identity;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Tests whether any caller-supplied external key for one candidate identity satisfies the selected predicate.<br/>
+    /// The method short-circuits on the first match so correlated branches can avoid enumerating unnecessary side-data keys.<br/>
+    /// </summary>
+    /// <param name="keys">The external keys associated with one candidate identity.<br/></param>
+    /// <param name="predicate">The selected external key predicate.<br/></param>
+    /// <returns><see langword="true"/> when any key satisfies the predicate.<br/></returns>
+    private static bool MatchesAny(IEnumerable<TKey> keys, Func<TKey, bool> predicate)
+    {
+        ArgumentNullException.ThrowIfNull(keys);
+        foreach (TKey key in keys)
+        {
+            if (predicate(key))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Compares two external keys using the default comparer for the selected key type.<br/>
+    /// External ordered predicates require caller-supplied key types to support this comparer, matching ordinary in-memory .NET range semantics.<br/>
+    /// </summary>
+    /// <param name="left">The left key value.<br/></param>
+    /// <param name="right">The right key value.<br/></param>
+    /// <returns>The comparer result for the two key values.<br/></returns>
+    private static int Compare(TKey left, TKey right)
+    {
+        return Comparer<TKey>.Default.Compare(left, right);
     }
 }
 

@@ -2057,6 +2057,15 @@ public enum LibraDexIdentityCriterionNodeKind
 public readonly record struct LibraDexExternalIdentityContext(object Identity, long Ordinal, bool IsFirst);
 
 /// <summary>
+/// Represents one caller-supplied external key/identity entry for an inline external condition branch.<br/>
+/// The key is local to the external branch's predicates, while the identity is composed with LibraDex identity streams and later retrieval still decides whether callers receive identities, keys, or entries.<br/>
+/// </summary>
+/// <typeparam name="TKey">The external branch key type.<br/></typeparam>
+/// <param name="Key">The external key value used by operators such as `Between`, `EqualTo`, and `InSet`.<br/></param>
+/// <param name="Identity">The LibraDex identity value associated with the external key.<br/></param>
+public readonly record struct LibraDexExternalEntry<TKey>(TKey Key, object Identity);
+
+/// <summary>
 /// Represents one public key/identity tuple returned by a LibraDex index.<br/>
 /// The left side is the indexed key and the right side is the identity associated with that key.<br/>
 /// </summary>
@@ -3362,7 +3371,7 @@ internal static class LibraDexIdentityExecutionPlanner
     private static IEnumerable<object> IterateExternal(IIdentityCriterion criterion)
     {
         Func<IEnumerable<object>> source = criterion.ExternalIdentitySource
-            ?? throw new NotSupportedException("External identity filters must be composed with an indexed sibling using And; use ExternalIds for standalone or Or-shaped external identity sources.");
+            ?? throw new NotSupportedException("External identity filters must be composed with an indexed sibling using And; use External(() => ids) for standalone or Or-shaped external identity sources.");
         return source();
     }
 
