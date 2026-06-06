@@ -537,6 +537,21 @@ internal static class LibraDexConditionCursorExecutor
             out IIdentityCriterion? filterCriterion,
             out bool includeMatches))
         {
+            if (filterCriterion.NodeKind == LibraDexIdentityCriterionNodeKind.External)
+            {
+                if (!includeMatches)
+                {
+                    throw new NotSupportedException("External identity filters are supported for target cursor intersections, not exclusions.");
+                }
+
+                foreach (LibraDexObjectTuple tuple in IterateExternalFilteredTargetTuples(targetIndex, targetLeaf, filterCriterion))
+                {
+                    yield return tuple;
+                }
+
+                yield break;
+            }
+
             IReadOnlyList<object> filterIdentities = filterCriterion.IDsWith(
                 IdentityResultOrdering.PlanNatural,
                 IdentityDeduplication.Distinct,
@@ -588,6 +603,37 @@ internal static class LibraDexConditionCursorExecutor
             takeLimit: null))
         {
             if (ContainsIdentity(matchedIdentities, tuple.Identity))
+            {
+                yield return tuple;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Streams target-index tuples through an external identity predicate without materializing an intermediate identity set.<br/>
+    /// The external ordinal is counted over the target primitive candidate stream before filtering, matching identity projection semantics.<br/>
+    /// </summary>
+    /// <param name="targetIndex">The target index whose tuples are exposed by the cursor.<br/></param>
+    /// <param name="targetLeaf">The direct target-index primitive leaf to stream.<br/></param>
+    /// <param name="externalCriterion">The external identity-filter criterion.<br/></param>
+    /// <returns>Target-index tuples accepted by the external identity filter.</returns>
+    private static IEnumerable<LibraDexObjectTuple> IterateExternalFilteredTargetTuples(
+        IIndex targetIndex,
+        IIdentityCriterion targetLeaf,
+        IIdentityCriterion externalCriterion)
+    {
+        Func<LibraDexExternalIdentityContext, bool> filter = externalCriterion.ExternalIdentityFilter
+            ?? throw new InvalidOperationException("External identity criterion is missing its filter delegate.");
+        long ordinal = 0;
+        foreach (LibraDexObjectTuple tuple in IterateTuplePrimitive(
+            targetIndex,
+            targetLeaf.CriteriaKind!.Value,
+            targetLeaf.Values,
+            takeLimit: null))
+        {
+            LibraDexExternalIdentityContext context = new(tuple.Identity, ordinal, ordinal == 0);
+            ordinal++;
+            if (filter(context))
             {
                 yield return tuple;
             }

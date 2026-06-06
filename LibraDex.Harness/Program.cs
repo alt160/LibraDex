@@ -11512,6 +11512,7 @@ internal static class RawHarness
         Func<string, IIndex> surfaceResolver = indexName => indexName switch
         {
             "value" => index,
+            "public-surface" => index,
             "alternate" => alternateIndex,
             _ => throw new KeyNotFoundException(indexName)
         };
@@ -11705,6 +11706,55 @@ internal static class RawHarness
         IReadOnlyList<long> rootNotGroupIds = catalog.Indexes["surface"].GetIdentities<long>(
             rootNotGroupCondition,
             deduplication: IdentityDeduplication.Preserve);
+        Dictionary<long, int> externalAges = new()
+        {
+            [1000L] = 17,
+            [1100L] = 18,
+            [1200L] = 21
+        };
+        List<LibraDexExternalIdentityContext> externalContexts = new();
+        LibraDexConditionEndCondition externalIdentityCondition = LibraDexCondition
+            .ForGroup("surface")
+            .Index(index.Name).AsInt64.Between(10L, 12L)
+            .And.External((identity, ordinal, isFirst) =>
+            {
+                externalContexts.Add(new LibraDexExternalIdentityContext(identity, ordinal, isFirst));
+                return externalAges[(long)identity] > 18;
+            })
+            .EndCondition;
+        IReadOnlyList<long> externalIdentityIds = catalog.Indexes["surface"].GetIdentities<long>(
+            externalIdentityCondition,
+            deduplication: IdentityDeduplication.Preserve);
+        LibraDexIdentityExecutionPlan externalIdentityPlan = externalIdentityCondition
+            .Materialize(surfaceResolver)
+            .IDs
+            .Plan();
+        LibraDexConditionEndCondition externalNotCondition = LibraDexCondition
+            .ForGroup("surface")
+            .Index(index.Name).AsInt64.Between(10L, 12L)
+            .And.Not.External(identity => externalAges[(long)identity] <= 18)
+            .EndCondition;
+        IReadOnlyList<long> externalNotIds = catalog.Indexes["surface"].GetIdentities<long>(
+            externalNotCondition,
+            deduplication: IdentityDeduplication.Preserve);
+        List<LibraDexCursorEntry<long, long>> externalCursorEntries = new();
+        List<LibraDexExternalIdentityContext> externalCursorContexts = new();
+        LibraDexConditionEndCondition externalCursorCondition = LibraDexCondition
+            .ForGroup("surface")
+            .Index(index.Name).AsInt64.Between(10L, 12L)
+            .And.ExternalContext(context =>
+            {
+                externalCursorContexts.Add(context);
+                return externalAges[(long)context.Identity] >= 18;
+            })
+            .EndCondition;
+        using (LibraDexIndexCursor<long, long> externalCursor = catalog.Indexes["surface"].GetCursor(index, externalCursorCondition))
+        {
+            while (externalCursor.Next())
+            {
+                externalCursorEntries.Add(externalCursor.GetEntry());
+            }
+        }
         using LibraDexIdentityCursor<long> surfaceIdentityCursor = catalog.Indexes["surface"].GetCursor<long>(
             namedMultiKeyCondition,
             deduplication: IdentityDeduplication.Preserve,
@@ -11978,6 +12028,27 @@ internal static class RawHarness
             rootNotGroupIds.Count != 2 ||
             rootNotGroupIds[0] != 1000 ||
             rootNotGroupIds[1] != 1100 ||
+            externalIdentityIds.Count != 1 ||
+            externalIdentityIds[0] != 1200 ||
+            externalContexts.Count != 3 ||
+            (long)externalContexts[0].Identity != 1000 ||
+            externalContexts[0].Ordinal != 0 ||
+            !externalContexts[0].IsFirst ||
+            externalContexts[1].Ordinal != 1 ||
+            externalContexts[1].IsFirst ||
+            externalIdentityPlan.Kind != LibraDexIdentityPlanKind.Intersection ||
+            externalIdentityPlan.Children.Count != 2 ||
+            externalIdentityPlan.Children[1].Kind != LibraDexIdentityPlanKind.ExternalFilter ||
+            externalNotIds.Count != 1 ||
+            externalNotIds[0] != 1200 ||
+            externalCursorEntries.Count != 2 ||
+            externalCursorEntries[0].Key != 11 ||
+            externalCursorEntries[0].Identity != 1100 ||
+            externalCursorEntries[1].Key != 12 ||
+            externalCursorEntries[1].Identity != 1200 ||
+            externalCursorContexts.Count != 3 ||
+            externalCursorContexts[0].IsFirst != true ||
+            externalCursorContexts[2].Ordinal != 2 ||
             !surfaceIdentityCursorFirst ||
             surfaceIdentityCursorValue != 1100 ||
             surfaceIdentityCursorSecond ||

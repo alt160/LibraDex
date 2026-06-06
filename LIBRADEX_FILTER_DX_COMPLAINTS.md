@@ -107,4 +107,6 @@ No active complaints are currently listed.
    - Added positioned `LibraDexIndexCursor<TKey,TIdentity>.SetCurrentKey(newKey)` plus `SetKey(newKey)` alias for current target-index entry re-key; successful re-key invalidates current access and the next move continues through the original cursor stream.
    - Direct same-index primitive leaves stream through the existing physical range-reader spine for common all/range/boundary/membership/multirange tuple primitives.
    - Composed `And` / left-target `Except` cursor conditions now stream an order-preserving direct target-index primitive leaf and filter against the opposite identity set instead of scanning every target tuple after identity projection.
+   - Added identity-side `.External(id => ...)`, `.External((id, ordinal, isFirst) => ...)`, and `.ExternalContext(ctx => ...)` filters for indexed `And` conditions so caller-owned non-indexed predicates can participate after LibraDex narrows candidates.
+   - External identity filters also work through target-index cursors when the target branch supplies the candidate stream; standalone and `Or` external filters intentionally fail until a caller-supplied universe/source contract exists.
    - Remaining composed cursor opportunities include full streaming tuple joins and `Or` planning where target tuple ordering must be preserved across branches.

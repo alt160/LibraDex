@@ -163,7 +163,12 @@ public enum LibraDexIdentityPlanKind
     /// <summary>
     /// The plan contains mixed boolean operators and should be executed by its child plan tree.<br/>
     /// </summary>
-    Composite = 5
+    Composite = 5,
+
+    /// <summary>
+    /// The plan applies a caller-supplied identity predicate to identities produced by an indexed sibling branch.<br/>
+    /// </summary>
+    ExternalFilter = 6
 }
 
 /// <summary>
@@ -2029,8 +2034,22 @@ public enum LibraDexIdentityCriterionNodeKind
     /// <summary>
     /// The node returns identities present in the left child and not present in the right child.<br/>
     /// </summary>
-    Except = 4
+    Except = 4,
+
+    /// <summary>
+    /// The node filters identities with a caller-supplied predicate during composition with an indexed sibling.<br/>
+    /// </summary>
+    External = 5
 }
+
+/// <summary>
+/// Carries one identity-side external filter invocation from LibraDex to caller code.<br/>
+/// The context is intentionally identity-only: source-object loading stays caller-owned, while LibraDex supplies stream position metadata that can help callers cache or batch their own side data.<br/>
+/// </summary>
+/// <param name="Identity">The identity value currently being considered by the filter.<br/></param>
+/// <param name="Ordinal">The zero-based ordinal within the indexed candidate stream being filtered.<br/></param>
+/// <param name="IsFirst"><see langword="true"/> when <paramref name="Identity"/> is the first candidate identity presented to the external filter.<br/></param>
+public readonly record struct LibraDexExternalIdentityContext(object Identity, long Ordinal, bool IsFirst);
 
 /// <summary>
 /// Represents one public key/identity tuple returned by a LibraDex index.<br/>
@@ -2280,6 +2299,12 @@ public interface IIdentityCriterion
     /// Composite criteria return an empty list because their operands are child criteria.<br/>
     /// </summary>
     IReadOnlyList<object?> Values { get; }
+
+    /// <summary>
+    /// Gets the caller-supplied identity predicate for an external-filter criterion, or null for ordinary index-backed and composite criteria.<br/>
+    /// External criteria are filters over an indexed sibling stream; they do not define an identity universe by themselves.<br/>
+    /// </summary>
+    Func<LibraDexExternalIdentityContext, bool>? ExternalIdentityFilter { get; }
 
     /// <summary>
     /// Gets the left child for composite criteria, or null for leaf criteria.<br/>
@@ -2532,6 +2557,7 @@ internal sealed class LibraDexIdentityCriterion : IIdentityCriterion
         IIndex? index,
         LibraDexCriteriaKind? criteriaKind,
         IReadOnlyList<object?> values,
+        Func<LibraDexExternalIdentityContext, bool>? externalIdentityFilter,
         IIdentityCriterion? left,
         IIdentityCriterion? right,
         LibraDexQueryDiagnostics diagnostics)
@@ -2541,6 +2567,7 @@ internal sealed class LibraDexIdentityCriterion : IIdentityCriterion
         Index = index;
         CriteriaKind = criteriaKind;
         Values = values;
+        ExternalIdentityFilter = externalIdentityFilter;
         Left = left;
         Right = right;
         Diagnostics = diagnostics;
@@ -2557,6 +2584,8 @@ internal sealed class LibraDexIdentityCriterion : IIdentityCriterion
     public LibraDexCriteriaKind? CriteriaKind { get; }
 
     public IReadOnlyList<object?> Values { get; }
+
+    public Func<LibraDexExternalIdentityContext, bool>? ExternalIdentityFilter { get; }
 
     public IIdentityCriterion? Left { get; }
 
@@ -2594,6 +2623,7 @@ internal sealed class LibraDexIdentityCriterion : IIdentityCriterion
             index,
             criteriaKind,
             Array.AsReadOnly(values),
+            externalIdentityFilter: null,
             left: null,
             right: null,
             diagnostics);
@@ -2624,9 +2654,33 @@ internal sealed class LibraDexIdentityCriterion : IIdentityCriterion
             index,
             criteriaKind,
             Array.AsReadOnly(values),
+            externalIdentityFilter: null,
             left: null,
             right: null,
             diagnostics);
+    }
+
+    /// <summary>
+    /// Creates an external identity-filter criterion for a logical identity group.<br/>
+    /// The criterion is intentionally not index-backed and must be composed with an indexed sibling so execution has a candidate identity stream to pass through the caller predicate.<br/>
+    /// </summary>
+    /// <param name="group">The logical identity group for the owning condition.<br/></param>
+    /// <param name="filter">The caller-supplied identity filter.<br/></param>
+    /// <returns>An external identity-filter criterion.</returns>
+    internal static IIdentityCriterion External(string group, Func<LibraDexExternalIdentityContext, bool> filter)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(group);
+        ArgumentNullException.ThrowIfNull(filter);
+        return new LibraDexIdentityCriterion(
+            group,
+            LibraDexIdentityCriterionNodeKind.External,
+            index: null,
+            criteriaKind: null,
+            Array.Empty<object?>(),
+            filter,
+            left: null,
+            right: null,
+            new LibraDexQueryDiagnostics(LibraDexExecutionKind.Projection));
     }
 
     public IIdentityCriterion And(IIdentityCriterion other)
@@ -2652,6 +2706,7 @@ internal sealed class LibraDexIdentityCriterion : IIdentityCriterion
             index: null,
             criteriaKind: null,
             Array.Empty<object?>(),
+            externalIdentityFilter: null,
             left: this,
             right: null,
             new LibraDexQueryDiagnostics(LibraDexExecutionKind.Projection));
@@ -2677,6 +2732,7 @@ internal sealed class LibraDexIdentityCriterion : IIdentityCriterion
             index: null,
             criteriaKind: null,
             Array.Empty<object?>(),
+            externalIdentityFilter: null,
             left,
             right,
             new LibraDexQueryDiagnostics(LibraDexExecutionKind.Projection));
@@ -3111,6 +3167,7 @@ internal static class LibraDexIdentityExecutionPlanner
         return criterion.NodeKind switch
         {
             LibraDexIdentityCriterionNodeKind.Leaf => ExecuteLeafWithStats(criterion),
+            LibraDexIdentityCriterionNodeKind.External => throw new NotSupportedException("External identity filters must be composed with an indexed sibling using And."),
             LibraDexIdentityCriterionNodeKind.And => ExecuteIntersectionWithStats(RequireLeft(criterion), RequireRight(criterion)),
             LibraDexIdentityCriterionNodeKind.Or => ExecuteUnionWithStats(RequireLeft(criterion), RequireRight(criterion)),
             LibraDexIdentityCriterionNodeKind.Except => ExecuteDifferenceWithStats(RequireLeft(criterion), RequireRight(criterion)),
@@ -3124,7 +3181,8 @@ internal static class LibraDexIdentityExecutionPlanner
         return criterion.NodeKind switch
         {
             LibraDexIdentityCriterionNodeKind.Leaf => IterateLeaf(criterion),
-            LibraDexIdentityCriterionNodeKind.And => IntersectIterator(IterateNode(RequireLeft(criterion)), ExecuteNode(RequireRight(criterion))),
+            LibraDexIdentityCriterionNodeKind.External => throw new NotSupportedException("External identity filters must be composed with an indexed sibling using And."),
+            LibraDexIdentityCriterionNodeKind.And => IterateIntersection(RequireLeft(criterion), RequireRight(criterion)),
             LibraDexIdentityCriterionNodeKind.Or => UnionIterator(IterateNode(RequireLeft(criterion)), IterateNode(RequireRight(criterion))),
             LibraDexIdentityCriterionNodeKind.Except => ExceptIterator(IterateNode(RequireLeft(criterion)), ExecuteNode(RequireRight(criterion))),
             LibraDexIdentityCriterionNodeKind.Not => ComplementIterator(criterion, ExecuteNode(RequireLeft(criterion))),
@@ -3146,6 +3204,7 @@ internal static class LibraDexIdentityExecutionPlanner
             LibraDexIdentityCriterionNodeKind.Leaf => TryLeafExists(criterion, out bool leafExists)
                 ? leafExists
                 : IterateNode(criterion).Take(1).Any(),
+            LibraDexIdentityCriterionNodeKind.External => throw new NotSupportedException("External identity filters must be composed with an indexed sibling using And."),
             LibraDexIdentityCriterionNodeKind.And => ExistsIntersection(RequireLeft(criterion), RequireRight(criterion)),
             LibraDexIdentityCriterionNodeKind.Or => ExistsNode(RequireLeft(criterion)) || ExistsNode(RequireRight(criterion)),
             LibraDexIdentityCriterionNodeKind.Except => ExistsDifference(RequireLeft(criterion), RequireRight(criterion)),
@@ -3156,6 +3215,11 @@ internal static class LibraDexIdentityExecutionPlanner
 
     private static bool ExistsIntersection(IIdentityCriterion left, IIdentityCriterion right)
     {
+        if (TryGetExternalFilterPair(left, right, out IIdentityCriterion? source, out Func<LibraDexExternalIdentityContext, bool>? filter))
+        {
+            return FilterExternalIdentityIterator(IterateNode(source), filter).Take(1).Any();
+        }
+
         List<object> rightIdentities = ExecuteNode(right);
         if (rightIdentities.Count == 0)
         {
@@ -3259,11 +3323,101 @@ internal static class LibraDexIdentityExecutionPlanner
 
     private static LibraDexIdentityNodeExecution ExecuteIntersectionWithStats(IIdentityCriterion leftCriterion, IIdentityCriterion rightCriterion)
     {
+        if (TryGetExternalFilterPair(leftCriterion, rightCriterion, out IIdentityCriterion? source, out Func<LibraDexExternalIdentityContext, bool>? filter))
+        {
+            LibraDexIdentityNodeExecution sourceExecution = ExecuteNodeWithStats(source);
+            List<object> filtered = FilterExternalIdentityIterator(sourceExecution.Identities, filter).ToList();
+            return new LibraDexIdentityNodeExecution(filtered, sourceExecution.RowsScanned);
+        }
+
         LibraDexIdentityNodeExecution left = ExecuteNodeWithStats(leftCriterion);
         LibraDexIdentityNodeExecution right = ExecuteNodeWithStats(rightCriterion);
         return new LibraDexIdentityNodeExecution(
             Intersect(left.Identities, right.Identities),
             left.RowsScanned + right.RowsScanned);
+    }
+
+    /// <summary>
+    /// Streams an intersection, using external identity filtering when either side is an external predicate.<br/>
+    /// External predicates are filters over the opposite indexed stream; they do not enumerate identities independently.<br/>
+    /// </summary>
+    /// <param name="leftCriterion">The left intersection child.<br/></param>
+    /// <param name="rightCriterion">The right intersection child.<br/></param>
+    /// <returns>A plan-natural identity stream.</returns>
+    private static IEnumerable<object> IterateIntersection(IIdentityCriterion leftCriterion, IIdentityCriterion rightCriterion)
+    {
+        if (TryGetExternalFilterPair(leftCriterion, rightCriterion, out IIdentityCriterion? source, out Func<LibraDexExternalIdentityContext, bool>? filter))
+        {
+            return FilterExternalIdentityIterator(IterateNode(source), filter);
+        }
+
+        return IntersectIterator(IterateNode(leftCriterion), ExecuteNode(rightCriterion));
+    }
+
+    /// <summary>
+    /// Resolves whether one side of an intersection is an external identity filter and the other side is the source identity stream.<br/>
+    /// This keeps external predicates as candidate filters instead of treating them as independent identity universes.<br/>
+    /// </summary>
+    /// <param name="leftCriterion">The left intersection child.<br/></param>
+    /// <param name="rightCriterion">The right intersection child.<br/></param>
+    /// <param name="source">Receives the non-external source criterion when the shape is supported.<br/></param>
+    /// <param name="filter">Receives the external identity filter when the shape is supported.<br/></param>
+    /// <returns><see langword="true"/> when the intersection can execute as source identities filtered by caller code.<br/></returns>
+    private static bool TryGetExternalFilterPair(
+        IIdentityCriterion leftCriterion,
+        IIdentityCriterion rightCriterion,
+        [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out IIdentityCriterion? source,
+        [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out Func<LibraDexExternalIdentityContext, bool>? filter)
+    {
+        if (leftCriterion.NodeKind == LibraDexIdentityCriterionNodeKind.External)
+        {
+            source = rightCriterion;
+            filter = RequireExternalFilter(leftCriterion);
+            return true;
+        }
+
+        if (rightCriterion.NodeKind == LibraDexIdentityCriterionNodeKind.External)
+        {
+            source = leftCriterion;
+            filter = RequireExternalFilter(rightCriterion);
+            return true;
+        }
+
+        source = null;
+        filter = null;
+        return false;
+    }
+
+    /// <summary>
+    /// Applies one external identity filter to an indexed source stream while supplying stable per-candidate context.<br/>
+    /// Ordinal is counted over the candidate stream before filtering, so callers can use it for first-call setup and deterministic cache decisions.<br/>
+    /// </summary>
+    /// <param name="source">The indexed candidate identity stream.<br/></param>
+    /// <param name="filter">The caller-supplied identity filter.<br/></param>
+    /// <returns>The identities accepted by the external filter.</returns>
+    private static IEnumerable<object> FilterExternalIdentityIterator(IEnumerable<object> source, Func<LibraDexExternalIdentityContext, bool> filter)
+    {
+        long ordinal = 0;
+        foreach (object identity in source)
+        {
+            LibraDexExternalIdentityContext context = new(identity, ordinal, ordinal == 0);
+            ordinal++;
+            if (filter(context))
+            {
+                yield return identity;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Gets the external predicate stored on one external criterion node.<br/>
+    /// A missing predicate indicates a malformed criterion tree and is treated as an execution-time invariant failure.<br/>
+    /// </summary>
+    /// <param name="criterion">The external criterion node.<br/></param>
+    /// <returns>The external identity predicate.</returns>
+    private static Func<LibraDexExternalIdentityContext, bool> RequireExternalFilter(IIdentityCriterion criterion)
+    {
+        return criterion.ExternalIdentityFilter ?? throw new InvalidOperationException("External identity criterion is missing its filter delegate.");
     }
 
     private static LibraDexIdentityNodeExecution ExecuteUnionWithStats(IIdentityCriterion leftCriterion, IIdentityCriterion rightCriterion)
@@ -3776,6 +3930,21 @@ internal static class LibraDexIdentityExecutionPlanner
                     leafCount: 1,
                     depth: 1,
                     criterion.Index is null ? Array.Empty<IIndex>() : new[] { criterion.Index },
+                    Array.Empty<LibraDexIdentityExecutionPlan>());
+
+            case LibraDexIdentityCriterionNodeKind.External:
+                return new LibraDexIdentityExecutionPlan(
+                    criterion,
+                    options,
+                    LibraDexIdentityPlanKind.ExternalFilter,
+                    LibraDexIdentityPlanMaterialization.IdentitySet,
+                    requiresDistinct: false,
+                    requiresOrdering: false,
+                    requiresPaging: false,
+                    containsNegation: false,
+                    leafCount: 0,
+                    depth: 1,
+                    Array.Empty<IIndex>(),
                     Array.Empty<LibraDexIdentityExecutionPlan>());
 
             case LibraDexIdentityCriterionNodeKind.Not:

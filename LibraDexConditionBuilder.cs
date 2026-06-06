@@ -2793,6 +2793,45 @@ public sealed class LibraDexConditionClause
         ArgumentNullException.ThrowIfNull(groupCondition);
         return builder.AddGroup(groupCondition, negateNext);
     }
+
+    /// <summary>
+    /// Adds a caller-supplied identity filter as the next condition clause.<br/>
+    /// External filters are evaluated against identities produced by an indexed sibling branch, so use this with `.And.External(...)` or another intersection shape that supplies candidate identities.<br/>
+    /// </summary>
+    /// <param name="filter">Predicate that receives each candidate identity and returns whether it should remain in the result stream.<br/></param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd External(Func<object, bool> filter)
+    {
+        ArgumentNullException.ThrowIfNull(filter);
+        return ExternalContext(context => filter(context.Identity));
+    }
+
+    /// <summary>
+    /// Adds a caller-supplied identity filter with stream-position values as the next condition clause.<br/>
+    /// The ordinal and `isFirst` values let callers initialize or reuse their own side-data caches at the start of filtering without requiring LibraDex to load source objects.<br/>
+    /// </summary>
+    /// <param name="filter">Predicate that receives candidate identity, zero-based candidate ordinal, and first-candidate flag, then returns whether the identity should remain in the result stream.<br/></param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd External(Func<object, long, bool, bool> filter)
+    {
+        ArgumentNullException.ThrowIfNull(filter);
+        return ExternalContext(context => filter(context.Identity, context.Ordinal, context.IsFirst));
+    }
+
+    /// <summary>
+    /// Adds a caller-supplied identity filter with a single context value as the next condition clause.<br/>
+    /// This form is useful for named delegates and generated code that prefers one strongly named parameter over a multi-argument lambda.<br/>
+    /// </summary>
+    /// <param name="filter">Predicate that receives candidate identity context and returns whether the identity should remain in the result stream.<br/></param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd ExternalContext(Func<LibraDexExternalIdentityContext, bool> filter)
+    {
+        ArgumentNullException.ThrowIfNull(filter);
+        Func<LibraDexExternalIdentityContext, bool> effectiveFilter = negateNext
+            ? context => !filter(context)
+            : filter;
+        return builder.AddExternal(effectiveFilter);
+    }
 }
 
 /// <summary>
@@ -7930,6 +7969,7 @@ public sealed class LibraDexConditionContinueOrEnd
 internal enum LibraDexConditionNodeKind
 {
     Leaf,
+    External,
     Not,
     And,
     Or
@@ -7952,6 +7992,12 @@ internal sealed class LibraDexConditionBuilder
     {
         ArgumentNullException.ThrowIfNull(leaf);
         return AddNode(LibraDexConditionNode.Leaf(leaf));
+    }
+
+    internal LibraDexConditionContinueOrEnd AddExternal(Func<LibraDexExternalIdentityContext, bool> filter)
+    {
+        ArgumentNullException.ThrowIfNull(filter);
+        return AddNode(LibraDexConditionNode.External(filter));
     }
 
     internal LibraDexConditionContinueOrEnd AddGroup(LibraDexConditionEndCondition groupCondition, bool negate = false)
@@ -8016,17 +8062,20 @@ internal sealed class LibraDexConditionBuilder
 internal sealed class LibraDexConditionNode
 {
     private readonly LibraDexConditionLeafDescriptor? leaf;
+    private readonly Func<LibraDexExternalIdentityContext, bool>? externalIdentityFilter;
     private readonly LibraDexConditionNode? left;
     private readonly LibraDexConditionNode? right;
 
     private LibraDexConditionNode(
         LibraDexConditionNodeKind kind,
         LibraDexConditionLeafDescriptor? leaf,
+        Func<LibraDexExternalIdentityContext, bool>? externalIdentityFilter,
         LibraDexConditionNode? left,
         LibraDexConditionNode? right)
     {
         Kind = kind;
         this.leaf = leaf;
+        this.externalIdentityFilter = externalIdentityFilter;
         this.left = left;
         this.right = right;
     }
@@ -8035,13 +8084,19 @@ internal sealed class LibraDexConditionNode
 
     internal static LibraDexConditionNode Leaf(LibraDexConditionLeafDescriptor leaf)
     {
-        return new LibraDexConditionNode(LibraDexConditionNodeKind.Leaf, leaf, left: null, right: null);
+        return new LibraDexConditionNode(LibraDexConditionNodeKind.Leaf, leaf, externalIdentityFilter: null, left: null, right: null);
+    }
+
+    internal static LibraDexConditionNode External(Func<LibraDexExternalIdentityContext, bool> filter)
+    {
+        ArgumentNullException.ThrowIfNull(filter);
+        return new LibraDexConditionNode(LibraDexConditionNodeKind.External, leaf: null, filter, left: null, right: null);
     }
 
     internal static LibraDexConditionNode Not(LibraDexConditionNode child)
     {
         ArgumentNullException.ThrowIfNull(child);
-        return new LibraDexConditionNode(LibraDexConditionNodeKind.Not, leaf: null, left: child, right: null);
+        return new LibraDexConditionNode(LibraDexConditionNodeKind.Not, leaf: null, externalIdentityFilter: null, left: child, right: null);
     }
 
     internal static LibraDexConditionNode Compose(
@@ -8049,12 +8104,12 @@ internal sealed class LibraDexConditionNode
         LibraDexConditionNode left,
         LibraDexConditionNode right)
     {
-        if (kind is LibraDexConditionNodeKind.Leaf or LibraDexConditionNodeKind.Not)
+        if (kind is LibraDexConditionNodeKind.Leaf or LibraDexConditionNodeKind.External or LibraDexConditionNodeKind.Not)
         {
             throw new ArgumentOutOfRangeException(nameof(kind));
         }
 
-        return new LibraDexConditionNode(kind, leaf: null, left, right);
+        return new LibraDexConditionNode(kind, leaf: null, externalIdentityFilter: null, left, right);
     }
 
     internal IReadOnlyList<LibraDexConditionLeafDescriptor> GetLeaves()
@@ -8069,6 +8124,7 @@ internal sealed class LibraDexConditionNode
         return Kind switch
         {
             LibraDexConditionNodeKind.Leaf => Leaf(rewriteLeaf(RequireLeaf())),
+            LibraDexConditionNodeKind.External => External(RequireExternalIdentityFilter()),
             LibraDexConditionNodeKind.Not => Not(RequireLeft().Rewrite(rewriteLeaf)),
             LibraDexConditionNodeKind.And => Compose(LibraDexConditionNodeKind.And, RequireLeft().Rewrite(rewriteLeaf), RequireRight().Rewrite(rewriteLeaf)),
             LibraDexConditionNodeKind.Or => Compose(LibraDexConditionNodeKind.Or, RequireLeft().Rewrite(rewriteLeaf), RequireRight().Rewrite(rewriteLeaf)),
@@ -8084,6 +8140,7 @@ internal sealed class LibraDexConditionNode
         return Kind switch
         {
             LibraDexConditionNodeKind.Leaf => MaterializeLeaf(group, resolveIndex, resolveProjectionIndex),
+            LibraDexConditionNodeKind.External => LibraDexIdentityCriterion.External(group, RequireExternalIdentityFilter()),
             LibraDexConditionNodeKind.Not => RequireLeft().Materialize(group, resolveIndex, resolveProjectionIndex).Not(),
             LibraDexConditionNodeKind.And => RequireLeft().Materialize(group, resolveIndex, resolveProjectionIndex).And(RequireRight().Materialize(group, resolveIndex, resolveProjectionIndex)),
             LibraDexConditionNodeKind.Or => RequireLeft().Materialize(group, resolveIndex, resolveProjectionIndex).Or(RequireRight().Materialize(group, resolveIndex, resolveProjectionIndex)),
@@ -8096,6 +8153,11 @@ internal sealed class LibraDexConditionNode
         if (Kind == LibraDexConditionNodeKind.Leaf)
         {
             leaves.Add(RequireLeaf());
+            return;
+        }
+
+        if (Kind == LibraDexConditionNodeKind.External)
+        {
             return;
         }
 
@@ -10872,6 +10934,11 @@ internal sealed class LibraDexConditionNode
     private LibraDexConditionLeafDescriptor RequireLeaf()
     {
         return leaf ?? throw new InvalidOperationException("Condition node is not a leaf.");
+    }
+
+    private Func<LibraDexExternalIdentityContext, bool> RequireExternalIdentityFilter()
+    {
+        return externalIdentityFilter ?? throw new InvalidOperationException("Condition node is not an external identity filter.");
     }
 
     private LibraDexConditionNode RequireLeft()
