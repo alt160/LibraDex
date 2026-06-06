@@ -109,4 +109,5 @@ No active complaints are currently listed.
    - Composed `And` / left-target `Except` cursor conditions now stream an order-preserving direct target-index primitive leaf and filter against the opposite identity set instead of scanning every target tuple after identity projection.
    - Added identity-side `.External(id => ...)`, `.External((id, ordinal, isFirst) => ...)`, and `.ExternalContext(ctx => ...)` filters for indexed `And` conditions so caller-owned non-indexed predicates can participate after LibraDex narrows candidates.
    - External identity filters also work through target-index cursors when the target branch supplies the candidate stream; standalone and `Or` external filters intentionally fail until a caller-supplied universe/source contract exists.
+   - Added identity-source `.ExternalIds(ids)` / `.ExternalIds(() => ids)` conditions so caller-provided identity streams can stand alone and participate in `Or`, `And`, and cursor composition without an indexed predicate anchor.
    - Remaining composed cursor opportunities include full streaming tuple joins and `Or` planning where target tuple ordering must be preserved across branches.

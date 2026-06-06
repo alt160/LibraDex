@@ -2832,6 +2832,54 @@ public sealed class LibraDexConditionClause
             : filter;
         return builder.AddExternal(effectiveFilter);
     }
+
+    /// <summary>
+    /// Adds caller-supplied identities as an external source clause.<br/>
+    /// Unlike `.External(...)`, this node defines its own identity stream and can stand alone or compose through `Or`, `And`, and other identity-set operations.<br/>
+    /// </summary>
+    /// <typeparam name="TIdentity">The identity value type supplied by caller code.<br/></typeparam>
+    /// <param name="identities">The identities to expose as an external source stream.<br/></param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd ExternalIds<TIdentity>(IEnumerable<TIdentity> identities)
+    {
+        ArgumentNullException.ThrowIfNull(identities);
+        return ExternalIds(() => identities);
+    }
+
+    /// <summary>
+    /// Adds a caller-supplied identity source factory as an external source clause.<br/>
+    /// The factory is invoked when the condition executes, allowing callers to use request-time caches, precomputed lists, or another storage engine as the identity source.<br/>
+    /// </summary>
+    /// <typeparam name="TIdentity">The identity value type supplied by caller code.<br/></typeparam>
+    /// <param name="identityFactory">Factory that returns the identities to expose as an external source stream.<br/></param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd ExternalIds<TIdentity>(Func<IEnumerable<TIdentity>> identityFactory)
+    {
+        ArgumentNullException.ThrowIfNull(identityFactory);
+        if (negateNext)
+        {
+            throw new NotSupportedException("External identity sources cannot be negated without an indexed universe; compose with an indexed condition and use Except-style semantics when that surface is available.");
+        }
+
+        return builder.AddExternalSource(() => BoxExternalIdentities(identityFactory()));
+    }
+
+    /// <summary>
+    /// Boxes one caller-supplied identity stream into the non-generic execution stream used by condition composition.<br/>
+    /// The source is enumerated lazily so caller-owned streams do not materialize before LibraDex begins executing the condition.<br/>
+    /// </summary>
+    /// <typeparam name="TIdentity">The caller identity type.<br/></typeparam>
+    /// <param name="identities">The caller identity stream.<br/></param>
+    /// <returns>A boxed identity stream.</returns>
+    private static IEnumerable<object> BoxExternalIdentities<TIdentity>(IEnumerable<TIdentity> identities)
+    {
+        ArgumentNullException.ThrowIfNull(identities);
+        foreach (TIdentity identity in identities)
+        {
+            object? boxed = identity;
+            yield return boxed ?? throw new InvalidOperationException("External identity sources cannot yield null identities.");
+        }
+    }
 }
 
 /// <summary>
@@ -8000,6 +8048,12 @@ internal sealed class LibraDexConditionBuilder
         return AddNode(LibraDexConditionNode.External(filter));
     }
 
+    internal LibraDexConditionContinueOrEnd AddExternalSource(Func<IEnumerable<object>> source)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        return AddNode(LibraDexConditionNode.ExternalSource(source));
+    }
+
     internal LibraDexConditionContinueOrEnd AddGroup(LibraDexConditionEndCondition groupCondition, bool negate = false)
     {
         if (!string.Equals(Group, groupCondition.Group, StringComparison.Ordinal))
@@ -8063,6 +8117,7 @@ internal sealed class LibraDexConditionNode
 {
     private readonly LibraDexConditionLeafDescriptor? leaf;
     private readonly Func<LibraDexExternalIdentityContext, bool>? externalIdentityFilter;
+    private readonly Func<IEnumerable<object>>? externalIdentitySource;
     private readonly LibraDexConditionNode? left;
     private readonly LibraDexConditionNode? right;
 
@@ -8070,12 +8125,14 @@ internal sealed class LibraDexConditionNode
         LibraDexConditionNodeKind kind,
         LibraDexConditionLeafDescriptor? leaf,
         Func<LibraDexExternalIdentityContext, bool>? externalIdentityFilter,
+        Func<IEnumerable<object>>? externalIdentitySource,
         LibraDexConditionNode? left,
         LibraDexConditionNode? right)
     {
         Kind = kind;
         this.leaf = leaf;
         this.externalIdentityFilter = externalIdentityFilter;
+        this.externalIdentitySource = externalIdentitySource;
         this.left = left;
         this.right = right;
     }
@@ -8084,19 +8141,25 @@ internal sealed class LibraDexConditionNode
 
     internal static LibraDexConditionNode Leaf(LibraDexConditionLeafDescriptor leaf)
     {
-        return new LibraDexConditionNode(LibraDexConditionNodeKind.Leaf, leaf, externalIdentityFilter: null, left: null, right: null);
+        return new LibraDexConditionNode(LibraDexConditionNodeKind.Leaf, leaf, externalIdentityFilter: null, externalIdentitySource: null, left: null, right: null);
     }
 
     internal static LibraDexConditionNode External(Func<LibraDexExternalIdentityContext, bool> filter)
     {
         ArgumentNullException.ThrowIfNull(filter);
-        return new LibraDexConditionNode(LibraDexConditionNodeKind.External, leaf: null, filter, left: null, right: null);
+        return new LibraDexConditionNode(LibraDexConditionNodeKind.External, leaf: null, filter, externalIdentitySource: null, left: null, right: null);
+    }
+
+    internal static LibraDexConditionNode ExternalSource(Func<IEnumerable<object>> source)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        return new LibraDexConditionNode(LibraDexConditionNodeKind.External, leaf: null, externalIdentityFilter: null, source, left: null, right: null);
     }
 
     internal static LibraDexConditionNode Not(LibraDexConditionNode child)
     {
         ArgumentNullException.ThrowIfNull(child);
-        return new LibraDexConditionNode(LibraDexConditionNodeKind.Not, leaf: null, externalIdentityFilter: null, left: child, right: null);
+        return new LibraDexConditionNode(LibraDexConditionNodeKind.Not, leaf: null, externalIdentityFilter: null, externalIdentitySource: null, left: child, right: null);
     }
 
     internal static LibraDexConditionNode Compose(
@@ -8109,7 +8172,7 @@ internal sealed class LibraDexConditionNode
             throw new ArgumentOutOfRangeException(nameof(kind));
         }
 
-        return new LibraDexConditionNode(kind, leaf: null, externalIdentityFilter: null, left, right);
+        return new LibraDexConditionNode(kind, leaf: null, externalIdentityFilter: null, externalIdentitySource: null, left, right);
     }
 
     internal IReadOnlyList<LibraDexConditionLeafDescriptor> GetLeaves()
@@ -8124,6 +8187,7 @@ internal sealed class LibraDexConditionNode
         return Kind switch
         {
             LibraDexConditionNodeKind.Leaf => Leaf(rewriteLeaf(RequireLeaf())),
+            LibraDexConditionNodeKind.External when externalIdentitySource is not null => ExternalSource(RequireExternalIdentitySource()),
             LibraDexConditionNodeKind.External => External(RequireExternalIdentityFilter()),
             LibraDexConditionNodeKind.Not => Not(RequireLeft().Rewrite(rewriteLeaf)),
             LibraDexConditionNodeKind.And => Compose(LibraDexConditionNodeKind.And, RequireLeft().Rewrite(rewriteLeaf), RequireRight().Rewrite(rewriteLeaf)),
@@ -8140,6 +8204,7 @@ internal sealed class LibraDexConditionNode
         return Kind switch
         {
             LibraDexConditionNodeKind.Leaf => MaterializeLeaf(group, resolveIndex, resolveProjectionIndex),
+            LibraDexConditionNodeKind.External when externalIdentitySource is not null => LibraDexIdentityCriterion.ExternalSource(group, RequireExternalIdentitySource()),
             LibraDexConditionNodeKind.External => LibraDexIdentityCriterion.External(group, RequireExternalIdentityFilter()),
             LibraDexConditionNodeKind.Not => RequireLeft().Materialize(group, resolveIndex, resolveProjectionIndex).Not(),
             LibraDexConditionNodeKind.And => RequireLeft().Materialize(group, resolveIndex, resolveProjectionIndex).And(RequireRight().Materialize(group, resolveIndex, resolveProjectionIndex)),
@@ -10939,6 +11004,11 @@ internal sealed class LibraDexConditionNode
     private Func<LibraDexExternalIdentityContext, bool> RequireExternalIdentityFilter()
     {
         return externalIdentityFilter ?? throw new InvalidOperationException("Condition node is not an external identity filter.");
+    }
+
+    private Func<IEnumerable<object>> RequireExternalIdentitySource()
+    {
+        return externalIdentitySource ?? throw new InvalidOperationException("Condition node is not an external identity source.");
     }
 
     private LibraDexConditionNode RequireLeft()

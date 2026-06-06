@@ -11755,6 +11755,46 @@ internal static class RawHarness
                 externalCursorEntries.Add(externalCursor.GetEntry());
             }
         }
+        int externalSourceFactoryCalls = 0;
+        LibraDexConditionEndCondition externalSourceCondition = LibraDexCondition
+            .ForGroup("surface")
+            .ExternalIds(() =>
+            {
+                externalSourceFactoryCalls++;
+                return new[] { 1100L, 1200L };
+            })
+            .EndCondition;
+        IReadOnlyList<long> externalSourceIds = externalSourceCondition.ToList<long>(
+            surfaceResolver,
+            deduplication: IdentityDeduplication.Preserve);
+        LibraDexIdentityExecutionPlan externalSourcePlan = externalSourceCondition
+            .Materialize(surfaceResolver)
+            .IDs
+            .Plan();
+        LibraDexConditionEndCondition externalSourceOrCondition = LibraDexCondition
+            .ForGroup("surface")
+            .Index(index.Name).AsInt64.EqualTo(10L)
+            .Or.ExternalIds(new[] { 1200L })
+            .EndCondition;
+        IReadOnlyList<long> externalSourceOrIds = catalog.Indexes["surface"].GetIdentities<long>(
+            externalSourceOrCondition,
+            deduplication: IdentityDeduplication.Preserve);
+        LibraDexConditionEndCondition externalSourceAndCondition = LibraDexCondition
+            .ForGroup("surface")
+            .Index(index.Name).AsInt64.Between(10L, 12L)
+            .And.ExternalIds(new[] { 1100L, 9999L })
+            .EndCondition;
+        IReadOnlyList<long> externalSourceAndIds = catalog.Indexes["surface"].GetIdentities<long>(
+            externalSourceAndCondition,
+            deduplication: IdentityDeduplication.Preserve);
+        List<LibraDexCursorEntry<long, long>> externalSourceCursorEntries = new();
+        using (LibraDexIndexCursor<long, long> externalSourceCursor = catalog.Indexes["surface"].GetCursor(index, externalSourceAndCondition))
+        {
+            while (externalSourceCursor.Next())
+            {
+                externalSourceCursorEntries.Add(externalSourceCursor.GetEntry());
+            }
+        }
         using LibraDexIdentityCursor<long> surfaceIdentityCursor = catalog.Indexes["surface"].GetCursor<long>(
             namedMultiKeyCondition,
             deduplication: IdentityDeduplication.Preserve,
@@ -12049,6 +12089,19 @@ internal static class RawHarness
             externalCursorContexts.Count != 3 ||
             externalCursorContexts[0].IsFirst != true ||
             externalCursorContexts[2].Ordinal != 2 ||
+            externalSourceIds.Count != 2 ||
+            externalSourceIds[0] != 1100 ||
+            externalSourceIds[1] != 1200 ||
+            externalSourceFactoryCalls != 1 ||
+            externalSourcePlan.Kind != LibraDexIdentityPlanKind.ExternalSource ||
+            externalSourceOrIds.Count != 2 ||
+            externalSourceOrIds[0] != 1000 ||
+            externalSourceOrIds[1] != 1200 ||
+            externalSourceAndIds.Count != 1 ||
+            externalSourceAndIds[0] != 1100 ||
+            externalSourceCursorEntries.Count != 1 ||
+            externalSourceCursorEntries[0].Key != 11 ||
+            externalSourceCursorEntries[0].Identity != 1100 ||
             !surfaceIdentityCursorFirst ||
             surfaceIdentityCursorValue != 1100 ||
             surfaceIdentityCursorSecond ||

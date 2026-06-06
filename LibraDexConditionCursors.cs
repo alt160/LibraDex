@@ -537,7 +537,8 @@ internal static class LibraDexConditionCursorExecutor
             out IIdentityCriterion? filterCriterion,
             out bool includeMatches))
         {
-            if (filterCriterion.NodeKind == LibraDexIdentityCriterionNodeKind.External)
+            if (filterCriterion.NodeKind == LibraDexIdentityCriterionNodeKind.External &&
+                filterCriterion.ExternalIdentityFilter is not null)
             {
                 if (!includeMatches)
                 {
