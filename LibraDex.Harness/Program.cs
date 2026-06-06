@@ -11726,6 +11726,32 @@ internal static class RawHarness
             groupedTargetEntries.Add(groupedTargetCursor.GetEntry());
         }
 
+        List<LibraDexCursorEntry<long, long>> rightTargetComposedEntries;
+        using (Catalog rightTargetComposedCatalog = Catalog.CreateMemory())
+        {
+            LibraDexIndex<long, long> rightTargetValueIndex = rightTargetComposedCatalog.Indexes["right-target-composed"]["value"].Int64Keys<long>().Create(
+                keys: IndexKeys.NonUnique);
+            LibraDexIndex<long, long> rightTargetFlagIndex = rightTargetComposedCatalog.Indexes["right-target-composed"]["flag"].Int64Keys<long>().Create(
+                keys: IndexKeys.NonUnique);
+            ValidateGenericInsert(rightTargetValueIndex.Insert(10L, 1010L), "condition cursor right-target value 10 insert");
+            ValidateGenericInsert(rightTargetValueIndex.Insert(11L, 1111L), "condition cursor right-target value 11 insert");
+            ValidateGenericInsert(rightTargetValueIndex.Insert(12L, 1212L), "condition cursor right-target value 12 insert");
+            ValidateGenericInsert(rightTargetFlagIndex.Insert(1L, 1111L), "condition cursor right-target flag 1111 insert");
+            ValidateGenericInsert(rightTargetFlagIndex.Insert(1L, 1212L), "condition cursor right-target flag 1212 insert");
+            LibraDexConditionEndCondition rightTargetComposedCondition = rightTargetComposedCatalog.Indexes["right-target-composed"]
+                .Where(rightTargetFlagIndex).EqualTo(1L)
+                .AndAlso(rightTargetValueIndex).Between(10L, 12L)
+                .EndCondition;
+            using LibraDexIndexCursor<long, long> rightTargetComposedCursor = rightTargetComposedCatalog.Indexes["right-target-composed"].GetCursor(
+                rightTargetValueIndex,
+                rightTargetComposedCondition);
+            rightTargetComposedEntries = new List<LibraDexCursorEntry<long, long>>();
+            while (rightTargetComposedCursor.Next())
+            {
+                rightTargetComposedEntries.Add(rightTargetComposedCursor.GetEntry());
+            }
+        }
+
         bool cursorDeleteFirst;
         bool cursorDeleteDeleted;
         bool cursorDeleteCurrentInvalidated;
@@ -11964,6 +11990,11 @@ internal static class RawHarness
             groupedTargetEntries[0].Identity != 1000 ||
             groupedTargetEntries[1].Key != 11 ||
             groupedTargetEntries[1].Identity != 1100 ||
+            rightTargetComposedEntries.Count != 2 ||
+            rightTargetComposedEntries[0].Key != 11 ||
+            rightTargetComposedEntries[0].Identity != 1111 ||
+            rightTargetComposedEntries[1].Key != 12 ||
+            rightTargetComposedEntries[1].Identity != 1212 ||
             !cursorDeleteFirst ||
             !cursorDeleteDeleted ||
             !cursorDeleteCurrentInvalidated ||

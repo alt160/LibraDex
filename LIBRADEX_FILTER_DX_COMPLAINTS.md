@@ -106,4 +106,5 @@ No active complaints are currently listed.
    - Optimized `DeleteRemaining()` / `DeleteAll()` for direct, unpaged, same-index primitive cursor leaves by routing the whole delete through the existing primitive mutation path; skipped, paged, composed, or already-advanced streams keep the exact tuple fallback.
    - Added positioned `LibraDexIndexCursor<TKey,TIdentity>.SetCurrentKey(newKey)` plus `SetKey(newKey)` alias for current target-index entry re-key; successful re-key invalidates current access and the next move continues through the original cursor stream.
    - Direct same-index primitive leaves stream through the existing physical range-reader spine for common all/range/boundary/membership/multirange tuple primitives.
-   - Composed conditions currently filter target-index tuples through the existing identity projection, with a later optimization opportunity for fully streaming tuple joins.
+   - Composed `And` / left-target `Except` cursor conditions now stream an order-preserving direct target-index primitive leaf and filter against the opposite identity set instead of scanning every target tuple after identity projection.
+   - Remaining composed cursor opportunities include full streaming tuple joins and `Or` planning where target tuple ordering must be preserved across branches.

@@ -530,6 +530,46 @@ internal static class LibraDexConditionCursorExecutor
             yield break;
         }
 
+        if (TryCreateComposedTargetTuplePlan(
+            criterion,
+            targetIndex,
+            out IIdentityCriterion? targetLeaf,
+            out IIdentityCriterion? filterCriterion,
+            out bool includeMatches))
+        {
+            IReadOnlyList<object> filterIdentities = filterCriterion.IDsWith(
+                IdentityResultOrdering.PlanNatural,
+                IdentityDeduplication.Distinct,
+                skip: 0,
+                take: null,
+                bookmark: null).ToList();
+            if (filterIdentities.Count == 0)
+            {
+                if (includeMatches)
+                {
+                    yield break;
+                }
+            }
+
+            HashSet<object>? filterIdentitySet = CanUseDefaultIdentityHashSet(filterIdentities)
+                ? new HashSet<object>(filterIdentities)
+                : null;
+            foreach (LibraDexObjectTuple tuple in IterateTuplePrimitive(
+                targetIndex,
+                targetLeaf.CriteriaKind!.Value,
+                targetLeaf.Values,
+                takeLimit: null))
+            {
+                bool matches = ContainsIdentity(filterIdentities, filterIdentitySet, tuple.Identity);
+                if (matches == includeMatches)
+                {
+                    yield return tuple;
+                }
+            }
+
+            yield break;
+        }
+
         IReadOnlyList<object> matchedIdentities = criterion.IDsWith(
             IdentityResultOrdering.PlanNatural,
             IdentityDeduplication.Distinct,
@@ -552,6 +592,104 @@ internal static class LibraDexConditionCursorExecutor
                 yield return tuple;
             }
         }
+    }
+
+    /// <summary>
+    /// Selects a composed target-index tuple plan for simple intersection and exclusion nodes.<br/>
+    /// `And` can stream either direct target-index leaf and test identities from the opposite side; `Except` can stream its left direct target-index leaf and exclude identities from the right side.<br/>
+    /// </summary>
+    /// <param name="criterion">The composed criterion to inspect.<br/></param>
+    /// <param name="targetIndex">The index whose tuples the cursor exposes.<br/></param>
+    /// <param name="targetLeaf">Receives the direct target-index leaf that can supply tuple order.<br/></param>
+    /// <param name="filterCriterion">Receives the opposite criterion whose identities are used as a membership filter.<br/></param>
+    /// <param name="includeMatches">Receives <see langword="true"/> for intersection and <see langword="false"/> for exclusion.<br/></param>
+    /// <returns><see langword="true"/> when the composed criterion has a safe target-leaf tuple stream.<br/></returns>
+    private static bool TryCreateComposedTargetTuplePlan(
+        IIdentityCriterion criterion,
+        IIndex targetIndex,
+        [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out IIdentityCriterion? targetLeaf,
+        [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out IIdentityCriterion? filterCriterion,
+        out bool includeMatches)
+    {
+        targetLeaf = null;
+        filterCriterion = null;
+        includeMatches = true;
+        if (criterion.NodeKind == LibraDexIdentityCriterionNodeKind.And)
+        {
+            IIdentityCriterion left = RequireLeft(criterion);
+            IIdentityCriterion right = RequireRight(criterion);
+            if (IsDirectTargetLeaf(left, targetIndex))
+            {
+                targetLeaf = left;
+                filterCriterion = right;
+                includeMatches = true;
+                return true;
+            }
+
+            if (IsDirectTargetLeaf(right, targetIndex))
+            {
+                targetLeaf = right;
+                filterCriterion = left;
+                includeMatches = true;
+                return true;
+            }
+        }
+
+        if (criterion.NodeKind == LibraDexIdentityCriterionNodeKind.Except)
+        {
+            IIdentityCriterion left = RequireLeft(criterion);
+            if (IsDirectTargetLeaf(left, targetIndex))
+            {
+                targetLeaf = left;
+                filterCriterion = RequireRight(criterion);
+                includeMatches = false;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Tests whether a criterion is one executable, order-preserving primitive leaf for the cursor's target index.<br/>
+    /// Reference equality is intentional because condition materialization binds fluent index handles to the concrete physical index used for tuple streaming.<br/>
+    /// </summary>
+    /// <param name="criterion">The criterion to inspect.<br/></param>
+    /// <param name="targetIndex">The cursor target index.<br/></param>
+    /// <returns><see langword="true"/> when the criterion can stream target-index tuples directly.<br/></returns>
+    private static bool IsDirectTargetLeaf(IIdentityCriterion criterion, IIndex targetIndex)
+    {
+        return criterion.NodeKind == LibraDexIdentityCriterionNodeKind.Leaf &&
+            ReferenceEquals(criterion.Index, targetIndex) &&
+            criterion.CriteriaKind is LibraDexCriteriaKind.All or
+                LibraDexCriteriaKind.Find or
+                LibraDexCriteriaKind.Between or
+                LibraDexCriteriaKind.Before or
+                LibraDexCriteriaKind.AtOrBefore or
+                LibraDexCriteriaKind.After or
+                LibraDexCriteriaKind.AtOrAfter;
+    }
+
+    /// <summary>
+    /// Gets the required left child from a composed criterion.<br/>
+    /// This keeps cursor planning failures explicit if a malformed criterion tree reaches execution.<br/>
+    /// </summary>
+    /// <param name="criterion">The composed criterion node.<br/></param>
+    /// <returns>The non-null left child criterion.<br/></returns>
+    private static IIdentityCriterion RequireLeft(IIdentityCriterion criterion)
+    {
+        return criterion.Left ?? throw new InvalidOperationException("Identity criterion node is missing its left child.");
+    }
+
+    /// <summary>
+    /// Gets the required right child from a composed criterion.<br/>
+    /// This keeps cursor planning failures explicit if a malformed criterion tree reaches execution.<br/>
+    /// </summary>
+    /// <param name="criterion">The composed criterion node.<br/></param>
+    /// <returns>The non-null right child criterion.<br/></returns>
+    private static IIdentityCriterion RequireRight(IIdentityCriterion criterion)
+    {
+        return criterion.Right ?? throw new InvalidOperationException("Identity criterion node is missing its right child.");
     }
 
     private static IEnumerable<LibraDexObjectTuple> IterateTuplePrimitive(
@@ -605,5 +743,39 @@ internal static class LibraDexConditionCursorExecutor
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// Tests a candidate identity against either a default-equality hash set or the structural fallback list.<br/>
+    /// The hash set is used only when identity values do not require LibraDex's custom byte-array or composite equality semantics.<br/>
+    /// </summary>
+    /// <param name="identities">The materialized identity list used by the structural fallback.<br/></param>
+    /// <param name="identitySet">The optional default-equality identity set.<br/></param>
+    /// <param name="candidate">The candidate tuple identity.<br/></param>
+    /// <returns><see langword="true"/> when the candidate identity is present.<br/></returns>
+    private static bool ContainsIdentity(IReadOnlyList<object> identities, HashSet<object>? identitySet, object candidate)
+    {
+        return identitySet is not null
+            ? identitySet.Contains(candidate)
+            : ContainsIdentity(identities, candidate);
+    }
+
+    /// <summary>
+    /// Determines whether identity membership can use default object hashing without changing LibraDex structural equality semantics.<br/>
+    /// Byte-array and composite identities keep the linear fallback because their logical equality can differ from default object hashing.<br/>
+    /// </summary>
+    /// <param name="identities">The candidate identity list to inspect.<br/></param>
+    /// <returns><see langword="true"/> when default hash-set membership is safe for every identity value.<br/></returns>
+    private static bool CanUseDefaultIdentityHashSet(IReadOnlyList<object> identities)
+    {
+        for (int i = 0; i < identities.Count; i++)
+        {
+            if (identities[i] is byte[] or LibraDexCompositeKey)
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 }
