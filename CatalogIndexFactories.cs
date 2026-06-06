@@ -633,10 +633,19 @@ public sealed class CatalogIdentityGroupIndexes
         IIdentityCriterion criterion = condition.MaterializeWithProjectionBridge(
             name => this[name].Open(),
             ResolveProjectionIndex);
+        _ = LibraDexConditionCursorExecutor.TryCreateDirectPrimitiveDeletePlan(
+            criterion,
+            targetIndex,
+            skip,
+            take,
+            out IIdentityPrimitiveMutator? primitiveMutator,
+            out LibraDexIdentityPrimitiveRequest? primitiveDeleteRequest);
         return new LibraDexIndexCursor<TKey, TIdentity>(
             LibraDexConditionCursorExecutor.IterateTargetIndexTuples(criterion, targetIndex, skip, take),
             targetIndex,
             targetIndex as IIdentityExactTupleMutator,
+            primitiveMutator,
+            primitiveDeleteRequest,
             skip,
             take);
     }

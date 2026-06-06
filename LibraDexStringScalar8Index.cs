@@ -327,10 +327,19 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
     {
         ArgumentNullException.ThrowIfNull(condition);
         IIdentityCriterion criterion = condition.MaterializeWithProjectionBridge(ResolveIndex, ResolveProjection);
+        _ = LibraDexConditionCursorExecutor.TryCreateDirectPrimitiveDeletePlan(
+            criterion,
+            this,
+            skip,
+            take,
+            out IIdentityPrimitiveMutator? primitiveMutator,
+            out LibraDexIdentityPrimitiveRequest? primitiveDeleteRequest);
         return new LibraDexIndexCursor<string, ulong>(
             LibraDexConditionCursorExecutor.IterateTargetIndexTuples(criterion, this, skip, take),
             this,
             this,
+            primitiveMutator,
+            primitiveDeleteRequest,
             skip,
             take);
     }

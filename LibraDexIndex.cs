@@ -429,10 +429,19 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
         IIdentityCriterion criterion = condition.MaterializeWithProjectionBridge(
             ResolveOwnIndex,
             ResolveOwnProjectionIndex);
+        _ = LibraDexConditionCursorExecutor.TryCreateDirectPrimitiveDeletePlan(
+            criterion,
+            this,
+            skip,
+            take,
+            out IIdentityPrimitiveMutator? primitiveMutator,
+            out LibraDexIdentityPrimitiveRequest? primitiveDeleteRequest);
         return new LibraDexIndexCursor<TKey, TIdentity>(
             LibraDexConditionCursorExecutor.IterateTargetIndexTuples(criterion, this, skip, take),
             this,
             this,
+            primitiveMutator,
+            primitiveDeleteRequest,
             skip,
             take);
     }

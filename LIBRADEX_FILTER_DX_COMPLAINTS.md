@@ -103,6 +103,7 @@ No active complaints are currently listed.
    - Chose `GetCursor(...)` rather than `GetReader(...)` so the positioned stream can later grow per-entry and whole-cursor delete/mutate operations without contradicting the API noun.
    - Added positioned `LibraDexIndexCursor<TKey,TIdentity>.DeleteCurrent()` for current target-index entry deletion; successful deletion invalidates current access and the next move continues through the original cursor stream.
    - Added `DeleteRemaining()` and `DeleteAll()` over the forward-only cursor stream; both delete the current entry when positioned, then every later reachable entry, while entries already advanced past are intentionally not revisited.
+   - Optimized `DeleteRemaining()` / `DeleteAll()` for direct, unpaged, same-index primitive cursor leaves by routing the whole delete through the existing primitive mutation path; skipped, paged, composed, or already-advanced streams keep the exact tuple fallback.
    - Added positioned `LibraDexIndexCursor<TKey,TIdentity>.SetCurrentKey(newKey)` plus `SetKey(newKey)` alias for current target-index entry re-key; successful re-key invalidates current access and the next move continues through the original cursor stream.
    - Direct same-index primitive leaves stream through the existing physical range-reader spine for common all/range/boundary/membership/multirange tuple primitives.
    - Composed conditions currently filter target-index tuples through the existing identity projection, with a later optimization opportunity for fully streaming tuple joins.

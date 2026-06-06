@@ -122,11 +122,14 @@ public sealed class LibraDexIndexCursor<TKey, TIdentity> : IDisposable
     private readonly IEnumerator<LibraDexObjectTuple> enumerator;
     private readonly IIndex? targetIndex;
     private readonly IIdentityExactTupleMutator? exactMutator;
+    private readonly IIdentityPrimitiveMutator? primitiveMutator;
+    private readonly LibraDexIdentityPrimitiveRequest? primitiveDeleteRequest;
     private readonly int skip;
     private readonly int? take;
     private LibraDexObjectTuple current;
     private bool hasCurrent;
     private bool disposed;
+    private bool exhausted;
     private int skipped;
     private int returned;
 
@@ -134,6 +137,8 @@ public sealed class LibraDexIndexCursor<TKey, TIdentity> : IDisposable
         IEnumerable<LibraDexObjectTuple> tuples,
         IIndex? targetIndex,
         IIdentityExactTupleMutator? exactMutator,
+        IIdentityPrimitiveMutator? primitiveMutator,
+        LibraDexIdentityPrimitiveRequest? primitiveDeleteRequest,
         int skip,
         int? take)
     {
@@ -151,6 +156,8 @@ public sealed class LibraDexIndexCursor<TKey, TIdentity> : IDisposable
         enumerator = tuples.GetEnumerator();
         this.targetIndex = targetIndex;
         this.exactMutator = exactMutator;
+        this.primitiveMutator = primitiveMutator;
+        this.primitiveDeleteRequest = primitiveDeleteRequest;
         this.skip = skip;
         this.take = take;
         Ordinal = -1;
@@ -170,6 +177,13 @@ public sealed class LibraDexIndexCursor<TKey, TIdentity> : IDisposable
     public bool Next()
     {
         ThrowIfDisposed();
+        if (exhausted)
+        {
+            hasCurrent = false;
+            current = default;
+            return false;
+        }
+
         if (take is not null && returned >= take.Value)
         {
             hasCurrent = false;
@@ -287,6 +301,11 @@ public sealed class LibraDexIndexCursor<TKey, TIdentity> : IDisposable
     public long DeleteRemaining()
     {
         ThrowIfDisposed();
+        if (TryDeleteRemainingFast(out long fastDeleted))
+        {
+            return fastDeleted;
+        }
+
         long deleted = 0;
         if (hasCurrent && DeleteCurrent())
         {
@@ -312,6 +331,36 @@ public sealed class LibraDexIndexCursor<TKey, TIdentity> : IDisposable
     public long DeleteAll()
     {
         return DeleteRemaining();
+    }
+
+    /// <summary>
+    /// Attempts to delete the whole still-reachable cursor stream by replaying the direct same-index primitive through the index mutation path.<br/>
+    /// The fast path is limited to fresh cursors or cursors positioned on their first returned entry so forward-only semantics cannot delete entries that were already advanced past.<br/>
+    /// </summary>
+    /// <param name="deleted">Receives the number of physical tuples deleted when the direct primitive mutation path is used.<br/></param>
+    /// <returns><see langword="true"/> when the cursor was handled by the primitive mutation path; otherwise <see langword="false"/> so the caller can use exact tuple fallback deletion.<br/></returns>
+    private bool TryDeleteRemainingFast(out long deleted)
+    {
+        deleted = 0;
+        if (primitiveMutator is null ||
+            primitiveDeleteRequest is null ||
+            skip != 0 ||
+            take is not null)
+        {
+            return false;
+        }
+
+        if (returned != 0 && !(hasCurrent && returned == 1))
+        {
+            return false;
+        }
+
+        LibraDexIdentityMutationResult result = primitiveMutator.DeleteIdentityPrimitive(primitiveDeleteRequest.Value);
+        deleted = result.ChangedCount;
+        hasCurrent = false;
+        current = default;
+        exhausted = true;
+        return true;
     }
 
     /// <summary>
@@ -420,6 +469,42 @@ public sealed class LibraDexIndexCursor<TKey, TIdentity> : IDisposable
 
 internal static class LibraDexConditionCursorExecutor
 {
+    /// <summary>
+    /// Creates a whole-cursor primitive delete plan when a cursor condition is a direct, unpaged, same-index leaf.<br/>
+    /// The returned mutator and request let positioned cursor delete APIs reuse the index's existing route/shelf primitive mutation code instead of deleting one materialized tuple at a time.<br/>
+    /// </summary>
+    /// <param name="criterion">The materialized condition criterion that defines the cursor stream.<br/></param>
+    /// <param name="targetIndex">The index whose key/identity tuples the cursor exposes.<br/></param>
+    /// <param name="skip">The cursor skip count requested by the caller.<br/></param>
+    /// <param name="take">The optional cursor take limit requested by the caller.<br/></param>
+    /// <param name="primitiveMutator">Receives the same-index primitive mutator when the plan is eligible.<br/></param>
+    /// <param name="primitiveRequest">Receives the primitive request to replay through the mutation path when the plan is eligible.<br/></param>
+    /// <returns><see langword="true"/> when the criterion can be deleted as a direct primitive; otherwise <see langword="false"/>.<br/></returns>
+    internal static bool TryCreateDirectPrimitiveDeletePlan(
+        IIdentityCriterion criterion,
+        IIndex targetIndex,
+        int skip,
+        int? take,
+        out IIdentityPrimitiveMutator? primitiveMutator,
+        out LibraDexIdentityPrimitiveRequest? primitiveRequest)
+    {
+        primitiveMutator = null;
+        primitiveRequest = null;
+        if (skip != 0 ||
+            take is not null ||
+            criterion.NodeKind != LibraDexIdentityCriterionNodeKind.Leaf ||
+            !ReferenceEquals(criterion.Index, targetIndex) ||
+            criterion.CriteriaKind is null ||
+            targetIndex is not IIdentityPrimitiveMutator mutator)
+        {
+            return false;
+        }
+
+        primitiveMutator = mutator;
+        primitiveRequest = new LibraDexIdentityPrimitiveRequest(criterion.CriteriaKind.Value, criterion.Values);
+        return true;
+    }
+
     internal static IEnumerable<LibraDexObjectTuple> IterateTargetIndexTuples(
         IIdentityCriterion criterion,
         IIndex targetIndex,
