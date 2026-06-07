@@ -22,6 +22,13 @@ Use this as the gating map before regenerating or refreshing `artifacts/filter-d
 - Abraxas examples should use the inspected builder shape, such as `store.Where.PropPath(".Email").AsString.EqualTo(value).EndCondition`, with `.AND` / `.OR` / `.Group(...)` composition before the single final `.EndCondition`.
 - Abraxas whole binary equality and typed binary slices are available, but do not generate whole-blob `AsBinary.StartsWith`, `AsBinary.Contains`, or `AsBinary.EndsWith` examples unless those operators are added to Abraxas.
 
+## Regeneration Bias Guardrail
+
+- Rebuild corpus rows from natural-language query intent and the currently inspected public API surface, not by preserving old syntax columns as the starting point.
+- Treat existing rows as topic coverage only. If an old row uses a stale pattern, replace the syntax rather than supplementing it with a second legacy-compatible spelling.
+- Add query statements for newly supported semantics before rescoring, especially clause-level `.Not`, grouped composition, typed index handles that skip redundant `.As...`, ordered `MultiKey(...)` ordinal selectors, `NullKey`/`ScalarNull` key-state routing, capture-match string operators, and canonical `.External(...)` caller-owned data bridges.
+- Identity typing under `catalog["group"].Identities.*` is intentionally named, including date/time standouts, because date/time identity families do not share an `INumber`-style abstraction and arbitrary custom identity types should not imply optimized LibraDex serialization.
+
 ## Current Value Semantics
 
 - String varlen keys distinguish null, empty, and non-empty values with ordered sentinels.
@@ -42,8 +49,8 @@ Use this as the gating map before regenerating or refreshing `artifacts/filter-d
 ## Post-Refresh Validation Checks
 
 - Boolean examples should use `.AsBoolean.EqualTo(true|false)`; no `Where.Boolean(...)` type-first examples.
-- No catalog `.Condition` or `.Condition.As<TIdentity>()` examples; use `.EndCondition` as the single final terminator.
-- No catalog-group `.As<TIdentity>()` examples and no arbitrary generic identity selector examples; identity typing belongs under named `catalog["group"].Identities.*` members, while `.As...` remains key-family vocabulary after an index selection.
+- No catalog `.Condition` examples or generic catalog typed-view examples; use `.EndCondition` as the single final terminator.
+- No catalog-group generic typed-view examples and no arbitrary generic identity selector examples; identity typing belongs under named `catalog["group"].Identities.*` members, including explicit date/time family names, while `.As...` remains key-family vocabulary after an index selection.
 - No opened-index cross-index fragments such as `email.Where.EqualTo(...).AND.Index(...)`; use raw descriptors, catalog typed continuers, `MultiKey(...)`, or close reusable fragments explicitly where the API supports it.
 - No `.ExternalIds(...)`, `.ExternalContext(...)`, `.FilterIdentity(...)`, or `.ExternalKeys(...)` examples; all caller-owned condition participation should use the single `.External(...)` family.
 - External identity predicates must be anchored by an indexed sibling branch unless they are explicit identity sources through `.External(ids)` or `.External(() => ids)`.

@@ -145,10 +145,18 @@ No active complaints are currently listed.
    - Added `CatalogIdentityGroupIndexes<TIdentity>` via identity-family stubs such as `catalog["group"].Identities.Int64` so catalog-group `.External<TKey>(...)` can preserve the group identity type at compile time.
    - Kept object boxing behind the internal condition descriptor boundary only, after the public API has already enforced typed external identities.
 
-14. [x] The temporary catalog-group `.As<TIdentity>()` typed-view vocabulary was wrong for LibraDex.
+14. [x] The temporary catalog-group generic typed-view vocabulary was wrong for LibraDex.
 
    Resolution:
 
-   - Removed catalog-group `.As<TIdentity>()` so `.As...` remains key-family vocabulary used only after index selection.
+   - Removed the catalog-group generic typed-view so `.As...` remains key-family vocabulary used only after index selection.
    - Added named `catalog["group"].Identities.*` identity-family selectors for scalar, GUID, string, byte-array, and date/time identity views, without a public arbitrary generic identity selector.
    - Updated corpus and harness examples to use `catalog["users"].Identities.Int64.External<int>(...)` for typed external runtime entries.
+
+15. [x] Identity-family selectors needed to document why date/time names remain explicit standouts.
+
+   Resolution:
+
+   - Kept date/time identity selectors as named members because .NET has no broad `INumber`-style interface that safely covers `DateTime`, `DateOnly`, `TimeOnly`, and `TimeSpan`.
+   - Rejected arbitrary generic identity selection from the catalog group surface so framework/custom identity types do not imply unsupported or suboptimal LibraDex serialization.
+   - Regeneration notes now require fresh corpus work to start from natural-language query intent plus the current inspected API surface, not from preserving syntaxes that happened to exist in the old CSV rows.
