@@ -112,3 +112,11 @@ No active complaints are currently listed.
    - Collapsed external identity sources to `.External(ids)` / `.External(() => ids)` so caller-provided identity streams can stand alone and participate in `Or`, `And`, and cursor composition without an indexed predicate anchor.
    - Added runtime-index style `.External<TKey>(() => entries).Between(...)` and correlated `.External<TKey>(id => keys).Between(...)` branches so caller-owned non-indexed key data can participate inline while conditions still compose identities.
    - Remaining composed cursor opportunities include full streaming tuple joins and `Or` planning where target tuple ordering must be preserved across branches.
+
+10. [x] Corpus examples and regeneration notes needed to recognize `.External(...)` as one canonical caller-owned data bridge.
+
+   Resolution:
+
+   - Updated `artifacts/filter-dx-corpus-regeneration-capabilities.md` to reject stale `.ExternalIds(...)`, `.ExternalContext(...)`, `.FilterIdentity(...)`, and `.ExternalKeys(...)` spellings.
+   - Added corpus rows for anchored external identity predicates, `ordinal`/`isFirst` cache-friendly predicates, standalone external identity sources, runtime key/identity entry sources, and correlated external keys.
+   - Scored the new external rows as first-class LibraDex coverage because caller-owned data can now participate inline without pretending it is a stored index.
