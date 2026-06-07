@@ -756,6 +756,107 @@ public sealed class CatalogIdentityGroupIndexes
     }
 
     /// <summary>
+    /// Starts a low-friction condition builder with a caller-supplied anchored identity filter for this identity group.<br/>
+    /// This is the catalog-group stub for `LibraDexCondition.ForGroup(Group).External(filter)`, preserving the same group context as `.Where(...)` while avoiding the more verbose explicit builder root.<br/>
+    /// The predicate-only external form still needs composition with an indexed sibling before execution can supply candidate identities.<br/>
+    /// </summary>
+    /// <param name="filter">Predicate that receives each candidate identity and returns whether it should remain in the result stream.<br/></param>
+    /// <returns>A continuation for adding more clauses or ending the condition.<br/></returns>
+    public LibraDexConditionContinueOrEnd External(Func<object, bool> filter)
+    {
+        return LibraDexCondition.ForGroup(Group).External(filter);
+    }
+
+    /// <summary>
+    /// Starts a low-friction condition builder with a caller-supplied anchored identity filter and candidate-stream metadata for this identity group.<br/>
+    /// This is the catalog-group stub for `LibraDexCondition.ForGroup(Group).External(filter)`, preserving group context while exposing candidate identity, ordinal, and first-candidate state to caller code.<br/>
+    /// The predicate-only external form still needs composition with an indexed sibling before execution can supply candidate identities.<br/>
+    /// </summary>
+    /// <param name="filter">Predicate that receives candidate identity, zero-based candidate ordinal, and first-candidate flag, then returns whether the identity should remain in the result stream.<br/></param>
+    /// <returns>A continuation for adding more clauses or ending the condition.<br/></returns>
+    public LibraDexConditionContinueOrEnd External(Func<object, long, bool, bool> filter)
+    {
+        return LibraDexCondition.ForGroup(Group).External(filter);
+    }
+
+    /// <summary>
+    /// Starts a low-friction condition builder with a caller-supplied anchored identity filter context for this identity group.<br/>
+    /// This is the catalog-group stub for `LibraDexCondition.ForGroup(Group).External(filter)`, keeping generated or named-delegate code on the same contextual surface as `.Where(...)`.<br/>
+    /// The predicate-only external form still needs composition with an indexed sibling before execution can supply candidate identities.<br/>
+    /// </summary>
+    /// <param name="filter">Predicate that receives candidate identity context and returns whether the identity should remain in the result stream.<br/></param>
+    /// <returns>A continuation for adding more clauses or ending the condition.<br/></returns>
+    public LibraDexConditionContinueOrEnd External(Func<LibraDexExternalIdentityContext, bool> filter)
+    {
+        return LibraDexCondition.ForGroup(Group).External(filter);
+    }
+
+    /// <summary>
+    /// Starts a low-friction condition builder with caller-supplied identities as an external source for this identity group.<br/>
+    /// This is the catalog-group stub for `LibraDexCondition.ForGroup(Group).External(identities)`, preserving group context while letting caller-owned identity streams stand alone or compose with indexed criteria.<br/>
+    /// Use this form when caller code already has identities, not runtime keys.<br/>
+    /// </summary>
+    /// <typeparam name="TIdentity">The identity value type supplied by caller code.<br/></typeparam>
+    /// <param name="identities">The identities to expose as an external source stream.<br/></param>
+    /// <returns>A continuation for adding more clauses or ending the condition.<br/></returns>
+    public LibraDexConditionContinueOrEnd External<TIdentity>(IEnumerable<TIdentity> identities)
+    {
+        return LibraDexCondition.ForGroup(Group).External(identities);
+    }
+
+    /// <summary>
+    /// Starts a low-friction condition builder with a caller-supplied identity source factory for this identity group.<br/>
+    /// This is the catalog-group stub for `LibraDexCondition.ForGroup(Group).External(identityFactory)`, preserving group context while evaluating the identity source at execution time.<br/>
+    /// Use this form for request-time identity lists, precomputed identity caches, or identities supplied by another storage engine.<br/>
+    /// </summary>
+    /// <typeparam name="TIdentity">The identity value type supplied by caller code.<br/></typeparam>
+    /// <param name="identityFactory">Factory that returns the identities to expose as an external source stream.<br/></param>
+    /// <returns>A continuation for adding more clauses or ending the condition.<br/></returns>
+    public LibraDexConditionContinueOrEnd External<TIdentity>(Func<IEnumerable<TIdentity>> identityFactory)
+    {
+        return LibraDexCondition.ForGroup(Group).External(identityFactory);
+    }
+
+    /// <summary>
+    /// Starts a low-friction condition builder with caller-supplied runtime key/identity entries for this identity group.<br/>
+    /// This is the catalog-group stub for `LibraDexCondition.ForGroup(Group).External(entries)`, allowing caller-owned key/identity pairs to behave like a temporary condition branch without creating a stored index.<br/>
+    /// The returned operator applies typed key predicates before composing matching identities with the rest of the condition tree.<br/>
+    /// </summary>
+    /// <typeparam name="TKey">The external branch key type.<br/></typeparam>
+    /// <param name="entries">The external key/identity entries to expose as a runtime index-like branch.<br/></param>
+    /// <returns>A typed external condition operator for the supplied key type.<br/></returns>
+    public LibraDexExternalConditionOperator<TKey> External<TKey>(IEnumerable<LibraDexExternalEntry<TKey>> entries)
+    {
+        return LibraDexCondition.ForGroup(Group).External(entries);
+    }
+
+    /// <summary>
+    /// Starts a low-friction condition builder with a caller-supplied runtime key/identity entry source for this identity group.<br/>
+    /// This is the catalog-group stub for `LibraDexCondition.ForGroup(Group).External(entryFactory)`, preserving group context while evaluating caller-owned key/identity entries at execution time.<br/>
+    /// Use this form when caller-owned data behaves like a request-local or externally backed index.<br/>
+    /// </summary>
+    /// <typeparam name="TKey">The external branch key type.<br/></typeparam>
+    /// <param name="entryFactory">Factory that returns external key/identity entries.<br/></param>
+    /// <returns>A typed external condition operator for the supplied key type.<br/></returns>
+    public LibraDexExternalConditionOperator<TKey> External<TKey>(Func<IEnumerable<LibraDexExternalEntry<TKey>>> entryFactory)
+    {
+        return LibraDexCondition.ForGroup(Group).External(entryFactory);
+    }
+
+    /// <summary>
+    /// Starts a low-friction condition builder with a correlated caller-supplied external key source for this identity group.<br/>
+    /// This is the catalog-group stub for `LibraDexCondition.ForGroup(Group).External(candidateKeyFactory)`, preserving group context while deriving caller-owned keys from each indexed candidate identity.<br/>
+    /// The correlated form still needs composition with an indexed sibling before execution can supply candidate identities.<br/>
+    /// </summary>
+    /// <typeparam name="TKey">The external branch key type.<br/></typeparam>
+    /// <param name="candidateKeyFactory">Factory that returns external keys for one candidate identity.<br/></param>
+    /// <returns>A typed external condition operator for the supplied key type.<br/></returns>
+    public LibraDexExternalConditionOperator<TKey> External<TKey>(Func<object, IEnumerable<TKey>> candidateKeyFactory)
+    {
+        return LibraDexCondition.ForGroup(Group).External(candidateKeyFactory);
+    }
+
+    /// <summary>
     /// Describes a composite-key index inside this identity group without creating or opening physical storage.<br/>
     /// The returned builder is lazy: only its terminal lifecycle methods mutate or inspect catalog storage.<br/>
     /// </summary>

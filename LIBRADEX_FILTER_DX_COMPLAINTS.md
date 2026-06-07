@@ -128,3 +128,11 @@ No active complaints are currently listed.
    - Expanded XML comments for anchored identity filters, standalone identity sources, runtime key/identity entries, and correlated external keys.
    - Clarified that `LibraDexExternalIdentityContext.Ordinal` and `IsFirst` are scoped to the candidate stream being filtered, not later result materialization.
    - Added a compact harness comment grouping the four canonical `.External(...)` example shapes.
+
+12. [x] Catalog group condition stubs needed to mirror `.External(...)` roots, not only stored-index `.Where(...)` roots.
+
+   Resolution:
+
+   - Added `CatalogIdentityGroupIndexes.External(...)` overloads that forward to `LibraDexCondition.ForGroup(Group).External(...)` while preserving the opened group context.
+   - Covered anchored identity filters, identity sources, runtime key/identity entry sources, and correlated external key sources from the catalog group root.
+   - Updated corpus/regeneration notes so `catalog["users"].External(...)` is treated as the low-friction contextual form rather than an invalid root.

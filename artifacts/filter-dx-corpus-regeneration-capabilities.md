@@ -15,6 +15,7 @@ Use this as the gating map before regenerating or refreshing `artifacts/filter-d
 - Ordered `MultiKey(...)` supports ordinal selectors for string, binary, Boolean, GUID, date/time, TimeSpan, narrow/wide numeric, `char`, and `BigInteger` key families, plus `.Not` before the selected value family.
 - `.External(...)` is the canonical inline bridge for caller-owned data that is not stored in a LibraDex index.
 - Anchored external identity filters use `.And.External(id => ...)`, `.And.External((id, ordinal, isFirst) => ...)`, or `.And.External(ctx => ...)` after an indexed branch supplies candidate identities.
+- Catalog group condition stubs mirror raw descriptor roots: prefer `catalog["users"].External(...)` when an opened catalog group already carries the group context, and use `LibraDexCondition.ForGroup("users").External(...)` when building without an opened catalog instance.
 - Standalone or `Or`-shaped caller-owned identity streams use `.External(ids)` or `.External(() => ids)`.
 - Runtime-index style caller-owned key data uses `.External<TKey>(() => entries).Between(...)` where each entry is a `LibraDexExternalEntry<TKey>` with a key and identity.
 - Correlated caller-owned key data over candidate identities uses `.And.External<TKey>(id => keys).Between(...)` or another typed key predicate.
@@ -46,6 +47,7 @@ Use this as the gating map before regenerating or refreshing `artifacts/filter-d
 - No `.ExternalIds(...)`, `.ExternalContext(...)`, `.FilterIdentity(...)`, or `.ExternalKeys(...)` examples; all caller-owned condition participation should use the single `.External(...)` family.
 - External identity predicates must be anchored by an indexed sibling branch unless they are explicit identity sources through `.External(ids)` or `.External(() => ids)`.
 - External key predicates must make their source contract visible: use `LibraDexExternalEntry<TKey>` when the caller provides key/identity pairs, and use `Func<object, IEnumerable<TKey>>` when the caller derives keys from candidate identities.
+- Catalog-group external examples should use `catalog["group"].External(...)` when group context is already available; do not imply that catalog group shorthand is limited to stored-index roots.
 - No Abraxas whole-binary prefix/contains/suffix method calls unless the Abraxas builder grows those methods; use typed slices, projections, or custom predicate notes instead.
 - Rows containing `missing`, `null`, `empty`, `blank`, `optional`, or `nullable` must say which semantic bucket they mean: stored null, stored empty, null-or-empty, scalar null route, absent tuple, or normalized/domain blank.
 - Rows using `presence` must explain why the requested value cannot be represented by the searched key itself.
