@@ -150,5 +150,5 @@ No active complaints are currently listed.
    Resolution:
 
    - Removed catalog-group `.As<TIdentity>()` so `.As...` remains key-family vocabulary used only after index selection.
-   - Added `catalog["group"].Identities.*` identity-family selectors for scalar, GUID, string, byte-array, and date/time identity views.
+   - Added named `catalog["group"].Identities.*` identity-family selectors for scalar, GUID, string, byte-array, and date/time identity views, without a public arbitrary generic identity selector.
    - Updated corpus and harness examples to use `catalog["users"].Identities.Int64.External<int>(...)` for typed external runtime entries.

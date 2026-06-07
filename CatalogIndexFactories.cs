@@ -1097,77 +1097,77 @@ public sealed class CatalogIdentityGroupIdentityTypeSelector
     /// <summary>
     /// Gets a typed condition-building view for `int` identities.<br/>
     /// </summary>
-    public CatalogIdentityGroupIndexes<int> Int32 => Scalar<int>();
+    public CatalogIdentityGroupIndexes<int> Int32 => Create<int>();
 
     /// <summary>
     /// Gets a typed condition-building view for `uint` identities.<br/>
     /// </summary>
-    public CatalogIdentityGroupIndexes<uint> UInt32 => Scalar<uint>();
+    public CatalogIdentityGroupIndexes<uint> UInt32 => Create<uint>();
 
     /// <summary>
     /// Gets a typed condition-building view for `long` identities.<br/>
     /// </summary>
-    public CatalogIdentityGroupIndexes<long> Int64 => Scalar<long>();
+    public CatalogIdentityGroupIndexes<long> Int64 => Create<long>();
 
     /// <summary>
     /// Gets a typed condition-building view for `ulong` identities.<br/>
     /// </summary>
-    public CatalogIdentityGroupIndexes<ulong> UInt64 => Scalar<ulong>();
+    public CatalogIdentityGroupIndexes<ulong> UInt64 => Create<ulong>();
 
     /// <summary>
     /// Gets a typed condition-building view for `short` identities.<br/>
     /// </summary>
-    public CatalogIdentityGroupIndexes<short> Int16 => Scalar<short>();
+    public CatalogIdentityGroupIndexes<short> Int16 => Create<short>();
 
     /// <summary>
     /// Gets a typed condition-building view for `ushort` identities.<br/>
     /// </summary>
-    public CatalogIdentityGroupIndexes<ushort> UInt16 => Scalar<ushort>();
+    public CatalogIdentityGroupIndexes<ushort> UInt16 => Create<ushort>();
 
     /// <summary>
     /// Gets a typed condition-building view for `byte` identities.<br/>
     /// </summary>
-    public CatalogIdentityGroupIndexes<byte> UInt8 => Scalar<byte>();
+    public CatalogIdentityGroupIndexes<byte> UInt8 => Create<byte>();
 
     /// <summary>
     /// Gets a typed condition-building view for `sbyte` identities.<br/>
     /// </summary>
-    public CatalogIdentityGroupIndexes<sbyte> Int8 => Scalar<sbyte>();
+    public CatalogIdentityGroupIndexes<sbyte> Int8 => Create<sbyte>();
 
     /// <summary>
     /// Gets a typed condition-building view for `Int128` identities.<br/>
     /// </summary>
-    public CatalogIdentityGroupIndexes<Int128> Int128 => Scalar<Int128>();
+    public CatalogIdentityGroupIndexes<Int128> Int128 => Create<Int128>();
 
     /// <summary>
     /// Gets a typed condition-building view for `UInt128` identities.<br/>
     /// </summary>
-    public CatalogIdentityGroupIndexes<UInt128> UInt128 => Scalar<UInt128>();
+    public CatalogIdentityGroupIndexes<UInt128> UInt128 => Create<UInt128>();
 
     /// <summary>
     /// Gets a typed condition-building view for `Guid` identities.<br/>
     /// </summary>
-    public CatalogIdentityGroupIndexes<Guid> Guid => Scalar<Guid>();
+    public CatalogIdentityGroupIndexes<Guid> Guid => Create<Guid>();
 
     /// <summary>
     /// Gets a typed condition-building view for `DateTime` identities.<br/>
     /// </summary>
-    public CatalogIdentityGroupIndexes<DateTime> DateTime => Scalar<DateTime>();
+    public CatalogIdentityGroupIndexes<DateTime> DateTime => Create<DateTime>();
 
     /// <summary>
     /// Gets a typed condition-building view for `DateOnly` identities.<br/>
     /// </summary>
-    public CatalogIdentityGroupIndexes<DateOnly> DateOnly => Scalar<DateOnly>();
+    public CatalogIdentityGroupIndexes<DateOnly> DateOnly => Create<DateOnly>();
 
     /// <summary>
     /// Gets a typed condition-building view for `TimeOnly` identities.<br/>
     /// </summary>
-    public CatalogIdentityGroupIndexes<TimeOnly> TimeOnly => Scalar<TimeOnly>();
+    public CatalogIdentityGroupIndexes<TimeOnly> TimeOnly => Create<TimeOnly>();
 
     /// <summary>
     /// Gets a typed condition-building view for `TimeSpan` identities.<br/>
     /// </summary>
-    public CatalogIdentityGroupIndexes<TimeSpan> TimeSpan => Scalar<TimeSpan>();
+    public CatalogIdentityGroupIndexes<TimeSpan> TimeSpan => Create<TimeSpan>();
 
     /// <summary>
     /// Gets a typed condition-building view for `string` identities.<br/>
@@ -1179,13 +1179,7 @@ public sealed class CatalogIdentityGroupIdentityTypeSelector
     /// </summary>
     public CatalogIdentityGroupIndexes<byte[]> Bytes => new(group);
 
-    /// <summary>
-    /// Gets a typed condition-building view for a blittable scalar identity type.<br/>
-    /// This is the generic escape hatch for scalar identities that are intentionally supported by LibraDex codecs; callers should prefer named identity-family properties when one exists.<br/>
-    /// </summary>
-    /// <typeparam name="TIdentity">The scalar identity type shared by this identity group.<br/></typeparam>
-    /// <returns>A typed condition-building view over this identity group.<br/></returns>
-    public CatalogIdentityGroupIndexes<TIdentity> Scalar<TIdentity>()
+    private CatalogIdentityGroupIndexes<TIdentity> Create<TIdentity>()
     {
         return new CatalogIdentityGroupIndexes<TIdentity>(group);
     }

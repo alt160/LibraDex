@@ -43,7 +43,7 @@ Use this as the gating map before regenerating or refreshing `artifacts/filter-d
 
 - Boolean examples should use `.AsBoolean.EqualTo(true|false)`; no `Where.Boolean(...)` type-first examples.
 - No catalog `.Condition` or `.Condition.As<TIdentity>()` examples; use `.EndCondition` as the single final terminator.
-- No catalog-group `.As<TIdentity>()` examples; identity typing belongs under `catalog["group"].Identities.*`, while `.As...` remains key-family vocabulary after an index selection.
+- No catalog-group `.As<TIdentity>()` examples and no arbitrary generic identity selector examples; identity typing belongs under named `catalog["group"].Identities.*` members, while `.As...` remains key-family vocabulary after an index selection.
 - No opened-index cross-index fragments such as `email.Where.EqualTo(...).AND.Index(...)`; use raw descriptors, catalog typed continuers, `MultiKey(...)`, or close reusable fragments explicitly where the API supports it.
 - No `.ExternalIds(...)`, `.ExternalContext(...)`, `.FilterIdentity(...)`, or `.ExternalKeys(...)` examples; all caller-owned condition participation should use the single `.External(...)` family.
 - External identity predicates must be anchored by an indexed sibling branch unless they are explicit identity sources through `.External(ids)` or `.External(() => ids)`.
