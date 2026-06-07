@@ -120,3 +120,11 @@ No active complaints are currently listed.
    - Updated `artifacts/filter-dx-corpus-regeneration-capabilities.md` to reject stale `.ExternalIds(...)`, `.ExternalContext(...)`, `.FilterIdentity(...)`, and `.ExternalKeys(...)` spellings.
    - Added corpus rows for anchored external identity predicates, `ordinal`/`isFirst` cache-friendly predicates, standalone external identity sources, runtime key/identity entry sources, and correlated external keys.
    - Scored the new external rows as first-class LibraDex coverage because caller-owned data can now participate inline without pretending it is a stored index.
+
+11. [x] `.External(...)` public comments needed to explain the overload roles without forcing developers to infer them from tests.
+
+   Resolution:
+
+   - Expanded XML comments for anchored identity filters, standalone identity sources, runtime key/identity entries, and correlated external keys.
+   - Clarified that `LibraDexExternalIdentityContext.Ordinal` and `IsFirst` are scoped to the candidate stream being filtered, not later result materialization.
+   - Added a compact harness comment grouping the four canonical `.External(...)` example shapes.

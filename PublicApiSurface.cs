@@ -2050,6 +2050,7 @@ public enum LibraDexIdentityCriterionNodeKind
 /// <summary>
 /// Carries one identity-side external filter invocation from LibraDex to caller code.<br/>
 /// The context is intentionally identity-only: source-object loading stays caller-owned, while LibraDex supplies stream position metadata that can help callers cache or batch their own side data.<br/>
+/// `Ordinal` and `IsFirst` are scoped to the candidate stream being filtered; they are not global result positions after later set composition or retrieval shaping.<br/>
 /// </summary>
 /// <param name="Identity">The identity value currently being considered by the filter.<br/></param>
 /// <param name="Ordinal">The zero-based ordinal within the indexed candidate stream being filtered.<br/></param>
@@ -2059,6 +2060,7 @@ public readonly record struct LibraDexExternalIdentityContext(object Identity, l
 /// <summary>
 /// Represents one caller-supplied external key/identity entry for an inline external condition branch.<br/>
 /// The key is local to the external branch's predicates, while the identity is composed with LibraDex identity streams and later retrieval still decides whether callers receive identities, keys, or entries.<br/>
+/// This value is for runtime-index style `.External<TKey>(...)` branches; it does not create or mutate a stored LibraDex index.<br/>
 /// </summary>
 /// <typeparam name="TKey">The external branch key type.<br/></typeparam>
 /// <param name="Key">The external key value used by operators such as `Between`, `EqualTo`, and `InSet`.<br/></param>

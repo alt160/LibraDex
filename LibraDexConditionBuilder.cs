@@ -2796,10 +2796,12 @@ public sealed class LibraDexConditionClause
 
     /// <summary>
     /// Adds a caller-supplied identity filter as the next condition clause.<br/>
-    /// External filters are evaluated against identities produced by an indexed sibling branch, so use this with `.And.External(...)` or another intersection shape that supplies candidate identities.<br/>
+    /// This is the anchored identity-filter form: execution passes candidate identities from an indexed sibling branch into caller code and keeps only accepted identities.<br/>
+    /// Use this form in an intersection shape such as `.And.External(id => ...)`; use `.External(ids)` or `.External(() => ids)` when caller code already owns the full identity stream.<br/>
+    /// LibraDex does not load caller objects for this predicate; the identity remains the only value supplied by LibraDex.<br/>
     /// </summary>
     /// <param name="filter">Predicate that receives each candidate identity and returns whether it should remain in the result stream.<br/></param>
-    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    /// <returns>A continuation for adding more clauses or ending the condition.<br/></returns>
     public LibraDexConditionContinueOrEnd External(Func<object, bool> filter)
     {
         ArgumentNullException.ThrowIfNull(filter);
@@ -2808,10 +2810,12 @@ public sealed class LibraDexConditionClause
 
     /// <summary>
     /// Adds a caller-supplied identity filter with stream-position values as the next condition clause.<br/>
+    /// This is the anchored identity-filter form with lightweight stream metadata: execution passes candidate identities from an indexed sibling branch into caller code and keeps only accepted identities.<br/>
     /// The ordinal and `isFirst` values let callers initialize or reuse their own side-data caches at the start of filtering without requiring LibraDex to load source objects.<br/>
+    /// Use this overload when the predicate benefits from request-local cache setup, batching state, or telemetry tied to the candidate stream.<br/>
     /// </summary>
     /// <param name="filter">Predicate that receives candidate identity, zero-based candidate ordinal, and first-candidate flag, then returns whether the identity should remain in the result stream.<br/></param>
-    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    /// <returns>A continuation for adding more clauses or ending the condition.<br/></returns>
     public LibraDexConditionContinueOrEnd External(Func<object, long, bool, bool> filter)
     {
         ArgumentNullException.ThrowIfNull(filter);
@@ -2820,10 +2824,12 @@ public sealed class LibraDexConditionClause
 
     /// <summary>
     /// Adds a caller-supplied identity filter with a single context value as the next condition clause.<br/>
-    /// This form is useful for named delegates and generated code that prefers one strongly named parameter over a multi-argument lambda.<br/>
+    /// This is the anchored identity-filter form with a named context value instead of a multi-argument lambda.<br/>
+    /// The context exposes the candidate identity, zero-based ordinal, and `IsFirst` flag while keeping source-object loading caller-owned.<br/>
+    /// Use this form for named delegates, generated code, or predicates that prefer a single strongly named parameter.<br/>
     /// </summary>
     /// <param name="filter">Predicate that receives candidate identity context and returns whether the identity should remain in the result stream.<br/></param>
-    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    /// <returns>A continuation for adding more clauses or ending the condition.<br/></returns>
     public LibraDexConditionContinueOrEnd External(Func<LibraDexExternalIdentityContext, bool> filter)
     {
         ArgumentNullException.ThrowIfNull(filter);
@@ -2836,10 +2842,12 @@ public sealed class LibraDexConditionClause
     /// <summary>
     /// Adds caller-supplied identities as an external source clause.<br/>
     /// This node defines its own identity stream and can stand alone or compose through `Or`, `And`, and other identity-set operations.<br/>
+    /// Use this form when caller code already has identities, not keys, and LibraDex should compose those identities with indexed criteria.<br/>
+    /// This source form can execute without an indexed sibling; anchored predicate forms such as `.External(id => ...)` cannot.<br/>
     /// </summary>
     /// <typeparam name="TIdentity">The identity value type supplied by caller code.<br/></typeparam>
     /// <param name="identities">The identities to expose as an external source stream.<br/></param>
-    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    /// <returns>A continuation for adding more clauses or ending the condition.<br/></returns>
     public LibraDexConditionContinueOrEnd External<TIdentity>(IEnumerable<TIdentity> identities)
     {
         ArgumentNullException.ThrowIfNull(identities);
@@ -2849,10 +2857,12 @@ public sealed class LibraDexConditionClause
     /// <summary>
     /// Adds a caller-supplied identity source factory as an external source clause.<br/>
     /// The factory is invoked when the condition executes, allowing callers to use request-time caches, precomputed lists, or another storage engine as the identity source.<br/>
+    /// This source form can execute by itself and can also compose with indexed conditions through `And` and `Or` because it supplies its own identity universe.<br/>
+    /// The factory should return identities only; use `External<TKey>(...)` with `LibraDexExternalEntry<TKey>` when caller code needs LibraDex to apply key predicates to runtime key/identity pairs.<br/>
     /// </summary>
     /// <typeparam name="TIdentity">The identity value type supplied by caller code.<br/></typeparam>
     /// <param name="identityFactory">Factory that returns the identities to expose as an external source stream.<br/></param>
-    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    /// <returns>A continuation for adding more clauses or ending the condition.<br/></returns>
     public LibraDexConditionContinueOrEnd External<TIdentity>(Func<IEnumerable<TIdentity>> identityFactory)
     {
         ArgumentNullException.ThrowIfNull(identityFactory);
@@ -2867,10 +2877,12 @@ public sealed class LibraDexConditionClause
     /// <summary>
     /// Adds caller-supplied external key/identity entries and selects key operators for the external branch.<br/>
     /// The selected key operators filter the external entries before their identities are composed with the rest of the condition tree.<br/>
+    /// This is the runtime-index entry form: caller code supplies both keys and identities, and LibraDex applies operators such as `.EqualTo(...)`, `.Between(...)`, and `.InSet(...)` to the caller-owned keys.<br/>
+    /// Use this form when caller-owned data behaves like a temporary index for the current condition.<br/>
     /// </summary>
     /// <typeparam name="TKey">The external branch key type.<br/></typeparam>
     /// <param name="entries">The external key/identity entries to expose as a runtime index-like branch.<br/></param>
-    /// <returns>A typed external condition operator for the supplied key type.</returns>
+    /// <returns>A typed external condition operator for the supplied key type.<br/></returns>
     public LibraDexExternalConditionOperator<TKey> External<TKey>(IEnumerable<LibraDexExternalEntry<TKey>> entries)
     {
         ArgumentNullException.ThrowIfNull(entries);
@@ -2880,10 +2892,12 @@ public sealed class LibraDexConditionClause
     /// <summary>
     /// Adds a caller-supplied external key/identity entry source and selects key operators for the external branch.<br/>
     /// This is the runtime-index form: caller code supplies entries, LibraDex applies the selected external key predicate, and matching identities participate in normal condition composition.<br/>
+    /// The factory is invoked when the condition executes, which allows the runtime key/identity source to be request-local or backed by another storage engine.<br/>
+    /// Use `LibraDexExternalEntry<TKey>` entries here so the condition can materialize identities after filtering the caller-owned keys.<br/>
     /// </summary>
     /// <typeparam name="TKey">The external branch key type.<br/></typeparam>
     /// <param name="entryFactory">Factory that returns external key/identity entries.<br/></param>
-    /// <returns>A typed external condition operator for the supplied key type.</returns>
+    /// <returns>A typed external condition operator for the supplied key type.<br/></returns>
     public LibraDexExternalConditionOperator<TKey> External<TKey>(Func<IEnumerable<LibraDexExternalEntry<TKey>>> entryFactory)
     {
         ArgumentNullException.ThrowIfNull(entryFactory);
@@ -2893,10 +2907,12 @@ public sealed class LibraDexConditionClause
     /// <summary>
     /// Adds a correlated caller-supplied external key source and selects key operators for the external branch.<br/>
     /// The factory receives each candidate identity from the indexed sibling branch and returns external keys for that identity; the selected key predicate decides whether the identity remains matched.<br/>
+    /// This is the anchored correlated-key form: use it with an indexed sibling branch such as `.And.External<TKey>(id => keys).Between(...)` so LibraDex has candidate identities to ask about.<br/>
+    /// Use the runtime-index entry form instead when caller code already has key/identity pairs and does not need a candidate identity anchor.<br/>
     /// </summary>
     /// <typeparam name="TKey">The external branch key type.<br/></typeparam>
     /// <param name="candidateKeyFactory">Factory that returns external keys for one candidate identity.<br/></param>
-    /// <returns>A typed external condition operator for the supplied key type.</returns>
+    /// <returns>A typed external condition operator for the supplied key type.<br/></returns>
     public LibraDexExternalConditionOperator<TKey> External<TKey>(Func<object, IEnumerable<TKey>> candidateKeyFactory)
     {
         ArgumentNullException.ThrowIfNull(candidateKeyFactory);

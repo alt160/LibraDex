@@ -11712,6 +11712,12 @@ internal static class RawHarness
             [1100L] = 18,
             [1200L] = 21
         };
+
+        // Canonical External(...) condition examples:
+        // 1. anchored identity filters inspect candidate identities from an indexed sibling;
+        // 2. external identity sources provide their own identity stream for standalone, Or, and And composition;
+        // 3. runtime external entries provide caller-owned key/identity pairs that LibraDex filters like a temporary index;
+        // 4. correlated external keys derive caller-owned keys from each indexed candidate identity.
         List<LibraDexExternalIdentityContext> externalContexts = new();
         LibraDexConditionEndCondition externalIdentityCondition = LibraDexCondition
             .ForGroup("surface")
