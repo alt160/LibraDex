@@ -11851,7 +11851,7 @@ internal static class RawHarness
         IReadOnlyList<long> catalogExternalCorrelatedIds = catalog.Indexes["surface"].GetIdentities<long>(
             catalogExternalCorrelatedCondition,
             deduplication: IdentityDeduplication.Preserve);
-        CatalogIdentityGroupIndexes<long> typedSurface = catalog.Indexes["surface"].As<long>();
+        CatalogIdentityGroupIndexes<long> typedSurface = catalog.Indexes["surface"].Identities.Int64;
         LibraDexConditionEndCondition typedCatalogExternalEntryCondition = typedSurface
             .External<int>(() => externalAgeEntries).Between(18, 25)
             .EndCondition;

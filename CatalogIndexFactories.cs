@@ -411,15 +411,10 @@ public sealed class CatalogIdentityGroupIndexes
     public CatalogIdentityGroupBatchManager Batch { get; }
 
     /// <summary>
-    /// Creates a typed condition-building view over this identity group.<br/>
-    /// The typed view preserves the group identity type for caller-owned external sources while forwarding ordinary index-first condition roots to this group surface.<br/>
+    /// Gets identity-family condition stubs for this identity group.<br/>
+    /// Identity family selection is separate from `.As...` key-family selection so catalog-root external sources can carry identity type without looking like an index-key projection.<br/>
     /// </summary>
-    /// <typeparam name="TIdentity">The identity type shared by indexes in this identity group.<br/></typeparam>
-    /// <returns>A typed condition-building view over this identity group.<br/></returns>
-    public CatalogIdentityGroupIndexes<TIdentity> As<TIdentity>()
-    {
-        return new CatalogIdentityGroupIndexes<TIdentity>(this);
-    }
+    public CatalogIdentityGroupIdentityTypeSelector Identities => new(this);
 
     /// <summary>
     /// Starts a low-friction condition builder by selecting an index name inside this identity group.<br/>
@@ -1083,6 +1078,116 @@ public sealed class CatalogIdentityGroupIndexes<TIdentity>
     {
         ArgumentNullException.ThrowIfNull(candidateKeyFactory);
         return inner.External<TKey>(identity => candidateKeyFactory((TIdentity)identity));
+    }
+}
+
+/// <summary>
+/// Provides identity-family typed condition stubs for one catalog identity group.<br/>
+/// These selectors declare the identity value family for caller-owned external sources; key typing still belongs after an index selection through `.Where(...).As...` or typed index handles.<br/>
+/// </summary>
+public sealed class CatalogIdentityGroupIdentityTypeSelector
+{
+    private readonly CatalogIdentityGroupIndexes group;
+
+    internal CatalogIdentityGroupIdentityTypeSelector(CatalogIdentityGroupIndexes group)
+    {
+        this.group = group ?? throw new ArgumentNullException(nameof(group));
+    }
+
+    /// <summary>
+    /// Gets a typed condition-building view for `int` identities.<br/>
+    /// </summary>
+    public CatalogIdentityGroupIndexes<int> Int32 => Scalar<int>();
+
+    /// <summary>
+    /// Gets a typed condition-building view for `uint` identities.<br/>
+    /// </summary>
+    public CatalogIdentityGroupIndexes<uint> UInt32 => Scalar<uint>();
+
+    /// <summary>
+    /// Gets a typed condition-building view for `long` identities.<br/>
+    /// </summary>
+    public CatalogIdentityGroupIndexes<long> Int64 => Scalar<long>();
+
+    /// <summary>
+    /// Gets a typed condition-building view for `ulong` identities.<br/>
+    /// </summary>
+    public CatalogIdentityGroupIndexes<ulong> UInt64 => Scalar<ulong>();
+
+    /// <summary>
+    /// Gets a typed condition-building view for `short` identities.<br/>
+    /// </summary>
+    public CatalogIdentityGroupIndexes<short> Int16 => Scalar<short>();
+
+    /// <summary>
+    /// Gets a typed condition-building view for `ushort` identities.<br/>
+    /// </summary>
+    public CatalogIdentityGroupIndexes<ushort> UInt16 => Scalar<ushort>();
+
+    /// <summary>
+    /// Gets a typed condition-building view for `byte` identities.<br/>
+    /// </summary>
+    public CatalogIdentityGroupIndexes<byte> UInt8 => Scalar<byte>();
+
+    /// <summary>
+    /// Gets a typed condition-building view for `sbyte` identities.<br/>
+    /// </summary>
+    public CatalogIdentityGroupIndexes<sbyte> Int8 => Scalar<sbyte>();
+
+    /// <summary>
+    /// Gets a typed condition-building view for `Int128` identities.<br/>
+    /// </summary>
+    public CatalogIdentityGroupIndexes<Int128> Int128 => Scalar<Int128>();
+
+    /// <summary>
+    /// Gets a typed condition-building view for `UInt128` identities.<br/>
+    /// </summary>
+    public CatalogIdentityGroupIndexes<UInt128> UInt128 => Scalar<UInt128>();
+
+    /// <summary>
+    /// Gets a typed condition-building view for `Guid` identities.<br/>
+    /// </summary>
+    public CatalogIdentityGroupIndexes<Guid> Guid => Scalar<Guid>();
+
+    /// <summary>
+    /// Gets a typed condition-building view for `DateTime` identities.<br/>
+    /// </summary>
+    public CatalogIdentityGroupIndexes<DateTime> DateTime => Scalar<DateTime>();
+
+    /// <summary>
+    /// Gets a typed condition-building view for `DateOnly` identities.<br/>
+    /// </summary>
+    public CatalogIdentityGroupIndexes<DateOnly> DateOnly => Scalar<DateOnly>();
+
+    /// <summary>
+    /// Gets a typed condition-building view for `TimeOnly` identities.<br/>
+    /// </summary>
+    public CatalogIdentityGroupIndexes<TimeOnly> TimeOnly => Scalar<TimeOnly>();
+
+    /// <summary>
+    /// Gets a typed condition-building view for `TimeSpan` identities.<br/>
+    /// </summary>
+    public CatalogIdentityGroupIndexes<TimeSpan> TimeSpan => Scalar<TimeSpan>();
+
+    /// <summary>
+    /// Gets a typed condition-building view for `string` identities.<br/>
+    /// </summary>
+    public CatalogIdentityGroupIndexes<string> String => new(group);
+
+    /// <summary>
+    /// Gets a typed condition-building view for raw byte-array identities.<br/>
+    /// </summary>
+    public CatalogIdentityGroupIndexes<byte[]> Bytes => new(group);
+
+    /// <summary>
+    /// Gets a typed condition-building view for a blittable scalar identity type.<br/>
+    /// This is the generic escape hatch for scalar identities that are intentionally supported by LibraDex codecs; callers should prefer named identity-family properties when one exists.<br/>
+    /// </summary>
+    /// <typeparam name="TIdentity">The scalar identity type shared by this identity group.<br/></typeparam>
+    /// <returns>A typed condition-building view over this identity group.<br/></returns>
+    public CatalogIdentityGroupIndexes<TIdentity> Scalar<TIdentity>()
+    {
+        return new CatalogIdentityGroupIndexes<TIdentity>(group);
     }
 }
 

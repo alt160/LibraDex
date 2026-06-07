@@ -17,7 +17,7 @@ Use this as the gating map before regenerating or refreshing `artifacts/filter-d
 - Anchored external identity filters use `.And.External(id => ...)`, `.And.External((id, ordinal, isFirst) => ...)`, or `.And.External(ctx => ...)` after an indexed branch supplies candidate identities.
 - Catalog group condition stubs mirror raw descriptor roots: prefer `catalog["users"].External(...)` when an opened catalog group already carries the group context, and use `LibraDexCondition.ForGroup("users").External(...)` when building without an opened catalog instance.
 - Standalone or `Or`-shaped caller-owned identity streams use `.External(ids)` or `.External(() => ids)`.
-- Runtime-index style caller-owned key data uses `.External<TKey>(() => entries).Between(...)` from a typed catalog group where each entry is a `LibraDexExternalEntry<TKey, TIdentity>` or `KeyValuePair<TKey, TIdentity>` with a key and identity.
+- Runtime-index style caller-owned key data uses `.External<TKey>(() => entries).Between(...)` from a typed catalog group such as `catalog["users"].Identities.Int64`, where each entry is a `LibraDexExternalEntry<TKey, TIdentity>` or `KeyValuePair<TKey, TIdentity>` with a key and identity.
 - Correlated caller-owned key data over candidate identities uses `.And.External<TKey>(id => keys).Between(...)` or another typed key predicate.
 - Abraxas examples should use the inspected builder shape, such as `store.Where.PropPath(".Email").AsString.EqualTo(value).EndCondition`, with `.AND` / `.OR` / `.Group(...)` composition before the single final `.EndCondition`.
 - Abraxas whole binary equality and typed binary slices are available, but do not generate whole-blob `AsBinary.StartsWith`, `AsBinary.Contains`, or `AsBinary.EndsWith` examples unless those operators are added to Abraxas.
@@ -43,6 +43,7 @@ Use this as the gating map before regenerating or refreshing `artifacts/filter-d
 
 - Boolean examples should use `.AsBoolean.EqualTo(true|false)`; no `Where.Boolean(...)` type-first examples.
 - No catalog `.Condition` or `.Condition.As<TIdentity>()` examples; use `.EndCondition` as the single final terminator.
+- No catalog-group `.As<TIdentity>()` examples; identity typing belongs under `catalog["group"].Identities.*`, while `.As...` remains key-family vocabulary after an index selection.
 - No opened-index cross-index fragments such as `email.Where.EqualTo(...).AND.Index(...)`; use raw descriptors, catalog typed continuers, `MultiKey(...)`, or close reusable fragments explicitly where the API supports it.
 - No `.ExternalIds(...)`, `.ExternalContext(...)`, `.FilterIdentity(...)`, or `.ExternalKeys(...)` examples; all caller-owned condition participation should use the single `.External(...)` family.
 - External identity predicates must be anchored by an indexed sibling branch unless they are explicit identity sources through `.External(ids)` or `.External(() => ids)`.

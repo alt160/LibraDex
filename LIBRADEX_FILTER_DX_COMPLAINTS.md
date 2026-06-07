@@ -142,5 +142,13 @@ No active complaints are currently listed.
    Resolution:
 
    - Replaced public `LibraDexExternalEntry<TKey>` usage with `LibraDexExternalEntry<TKey, TIdentity>` and added `KeyValuePair<TKey, TIdentity>` overloads for caller-owned runtime key/identity pairs.
-   - Added `CatalogIdentityGroupIndexes<TIdentity>` via `catalog["group"].As<TIdentity>()` so catalog-group `.External<TKey>(...)` can preserve the group identity type at compile time.
+   - Added `CatalogIdentityGroupIndexes<TIdentity>` via identity-family stubs such as `catalog["group"].Identities.Int64` so catalog-group `.External<TKey>(...)` can preserve the group identity type at compile time.
    - Kept object boxing behind the internal condition descriptor boundary only, after the public API has already enforced typed external identities.
+
+14. [x] The temporary catalog-group `.As<TIdentity>()` typed-view vocabulary was wrong for LibraDex.
+
+   Resolution:
+
+   - Removed catalog-group `.As<TIdentity>()` so `.As...` remains key-family vocabulary used only after index selection.
+   - Added `catalog["group"].Identities.*` identity-family selectors for scalar, GUID, string, byte-array, and date/time identity views.
+   - Updated corpus and harness examples to use `catalog["users"].Identities.Int64.External<int>(...)` for typed external runtime entries.
