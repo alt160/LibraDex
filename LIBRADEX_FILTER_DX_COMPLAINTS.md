@@ -160,3 +160,12 @@ No active complaints are currently listed.
    - Kept date/time identity selectors as named members because .NET has no broad `INumber`-style interface that safely covers `DateTime`, `DateOnly`, `TimeOnly`, and `TimeSpan`.
    - Rejected arbitrary generic identity selection from the catalog group surface so framework/custom identity types do not imply unsupported or suboptimal LibraDex serialization.
    - Regeneration notes now require fresh corpus work to start from natural-language query intent plus the current inspected API surface, not from preserving syntaxes that happened to exist in the old CSV rows.
+
+16. [x] The corpus contained generated syntax that did not faithfully match several natural-language rows.
+
+   Resolution:
+
+   - Reset generated columns in `artifacts/filter-dx-natural-language-corpus.csv` and rebuilt them from the row id plus natural-language request text.
+   - Added `rebuild-filter-dx-corpus.ps1` so this pass is repeatable instead of depending on one-off CSV edits.
+   - Rows that cannot be faithfully expressed as C# condition syntax now receive score `0` with a reason instead of a plausible-looking but incorrect condition.
+   - F310 now maps both predicates: billing postal-code prefix and country equality.
