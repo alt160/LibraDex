@@ -411,6 +411,17 @@ public sealed class CatalogIdentityGroupIndexes
     public CatalogIdentityGroupBatchManager Batch { get; }
 
     /// <summary>
+    /// Creates a typed condition-building view over this identity group.<br/>
+    /// The typed view preserves the group identity type for caller-owned external sources while forwarding ordinary index-first condition roots to this group surface.<br/>
+    /// </summary>
+    /// <typeparam name="TIdentity">The identity type shared by indexes in this identity group.<br/></typeparam>
+    /// <returns>A typed condition-building view over this identity group.<br/></returns>
+    public CatalogIdentityGroupIndexes<TIdentity> As<TIdentity>()
+    {
+        return new CatalogIdentityGroupIndexes<TIdentity>(this);
+    }
+
+    /// <summary>
     /// Starts a low-friction condition builder by selecting an index name inside this identity group.<br/>
     /// Key typing and projection intent are selected after the index through members such as `.AsString`, `.AsGuid`, and `.AsInt64`, keeping the public grammar index-first instead of type-first.<br/>
     /// The selected index name remains descriptor-shaped until the condition is materialized, so reusable conditions can still be built before indexes are opened.<br/>
@@ -819,26 +830,56 @@ public sealed class CatalogIdentityGroupIndexes
 
     /// <summary>
     /// Starts a low-friction condition builder with caller-supplied runtime key/identity entries for this identity group.<br/>
-    /// This is the catalog-group stub for `LibraDexCondition.ForGroup(Group).External(entries)`, allowing caller-owned key/identity pairs to behave like a temporary condition branch without creating a stored index.<br/>
+    /// This is the catalog-group stub for `LibraDexCondition.ForGroup(Group).External(entries)`, allowing caller-owned typed key/identity pairs to behave like a temporary condition branch without creating a stored index.<br/>
     /// The returned operator applies typed key predicates before composing matching identities with the rest of the condition tree.<br/>
     /// </summary>
     /// <typeparam name="TKey">The external branch key type.<br/></typeparam>
+    /// <typeparam name="TIdentity">The identity type associated with the external entries.<br/></typeparam>
     /// <param name="entries">The external key/identity entries to expose as a runtime index-like branch.<br/></param>
     /// <returns>A typed external condition operator for the supplied key type.<br/></returns>
-    public LibraDexExternalConditionOperator<TKey> External<TKey>(IEnumerable<LibraDexExternalEntry<TKey>> entries)
+    public LibraDexExternalConditionOperator<TKey> External<TKey, TIdentity>(IEnumerable<LibraDexExternalEntry<TKey, TIdentity>> entries)
+    {
+        return LibraDexCondition.ForGroup(Group).External(entries);
+    }
+
+    /// <summary>
+    /// Starts a low-friction condition builder with caller-supplied runtime key/identity pairs for this identity group.<br/>
+    /// This overload accepts the standard .NET key/value pair shape and treats the pair value as the typed LibraDex identity for this group.<br/>
+    /// The returned operator applies typed key predicates before composing matching identities with the rest of the condition tree.<br/>
+    /// </summary>
+    /// <typeparam name="TKey">The external branch key type.<br/></typeparam>
+    /// <typeparam name="TIdentity">The identity type associated with the external pairs.<br/></typeparam>
+    /// <param name="entries">The external key/identity pairs to expose as a runtime index-like branch.<br/></param>
+    /// <returns>A typed external condition operator for the supplied key type.<br/></returns>
+    public LibraDexExternalConditionOperator<TKey> External<TKey, TIdentity>(IEnumerable<KeyValuePair<TKey, TIdentity>> entries)
     {
         return LibraDexCondition.ForGroup(Group).External(entries);
     }
 
     /// <summary>
     /// Starts a low-friction condition builder with a caller-supplied runtime key/identity entry source for this identity group.<br/>
-    /// This is the catalog-group stub for `LibraDexCondition.ForGroup(Group).External(entryFactory)`, preserving group context while evaluating caller-owned key/identity entries at execution time.<br/>
+    /// This is the catalog-group stub for `LibraDexCondition.ForGroup(Group).External(entryFactory)`, preserving group context while evaluating caller-owned typed key/identity entries at execution time.<br/>
     /// Use this form when caller-owned data behaves like a request-local or externally backed index.<br/>
     /// </summary>
     /// <typeparam name="TKey">The external branch key type.<br/></typeparam>
+    /// <typeparam name="TIdentity">The identity type associated with the external entries.<br/></typeparam>
     /// <param name="entryFactory">Factory that returns external key/identity entries.<br/></param>
     /// <returns>A typed external condition operator for the supplied key type.<br/></returns>
-    public LibraDexExternalConditionOperator<TKey> External<TKey>(Func<IEnumerable<LibraDexExternalEntry<TKey>>> entryFactory)
+    public LibraDexExternalConditionOperator<TKey> External<TKey, TIdentity>(Func<IEnumerable<LibraDexExternalEntry<TKey, TIdentity>>> entryFactory)
+    {
+        return LibraDexCondition.ForGroup(Group).External(entryFactory);
+    }
+
+    /// <summary>
+    /// Starts a low-friction condition builder with a caller-supplied runtime key/identity pair source for this identity group.<br/>
+    /// This overload accepts the standard .NET key/value pair shape and treats the pair value as the typed LibraDex identity for this group.<br/>
+    /// Use this form when caller-owned data behaves like a request-local or externally backed index.<br/>
+    /// </summary>
+    /// <typeparam name="TKey">The external branch key type.<br/></typeparam>
+    /// <typeparam name="TIdentity">The identity type associated with the external pairs.<br/></typeparam>
+    /// <param name="entryFactory">Factory that returns external key/identity pairs.<br/></param>
+    /// <returns>A typed external condition operator for the supplied key type.<br/></returns>
+    public LibraDexExternalConditionOperator<TKey> External<TKey, TIdentity>(Func<IEnumerable<KeyValuePair<TKey, TIdentity>>> entryFactory)
     {
         return LibraDexCondition.ForGroup(Group).External(entryFactory);
     }
@@ -870,6 +911,178 @@ public sealed class CatalogIdentityGroupIndexes
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         return new CatalogCompositeIndexBuilder<TIdentity>(owner, Group, name, parts);
+    }
+}
+
+/// <summary>
+/// Provides a typed condition-building view over one catalog identity group.<br/>
+/// The wrapper keeps the group identity type attached to caller-owned external entries while reusing the untyped catalog group for index discovery, materialization, and ordinary `.Where(...)` condition roots.<br/>
+/// </summary>
+/// <typeparam name="TIdentity">The identity type shared by indexes in this identity group.<br/></typeparam>
+public sealed class CatalogIdentityGroupIndexes<TIdentity>
+{
+    private readonly CatalogIdentityGroupIndexes inner;
+
+    internal CatalogIdentityGroupIndexes(CatalogIdentityGroupIndexes inner)
+    {
+        this.inner = inner ?? throw new ArgumentNullException(nameof(inner));
+    }
+
+    /// <summary>
+    /// Gets the identity group name represented by this typed scoped factory surface.<br/>
+    /// </summary>
+    public string Group => inner.Group;
+
+    /// <summary>
+    /// Gets the group-level durability batch manager for indexes that share this identity group.<br/>
+    /// </summary>
+    public CatalogIdentityGroupBatchManager Batch => inner.Batch;
+
+    /// <summary>
+    /// Starts a low-friction condition builder by selecting an index name inside this typed identity group.<br/>
+    /// This forwards to the untyped group condition stub; index key typing is still selected after the index name.<br/>
+    /// </summary>
+    /// <param name="indexName">The index name inside this identity group.<br/></param>
+    /// <returns>A value-family selector for the chosen index.<br/></returns>
+    public LibraDexConditionValueTypeSelector Where(string indexName)
+    {
+        return inner.Where(indexName);
+    }
+
+    /// <summary>
+    /// Starts a low-friction condition builder from an already opened index instance in this typed identity group.<br/>
+    /// </summary>
+    /// <param name="index">The opened index instance to select.<br/></param>
+    /// <returns>A value-family selector for the chosen index.<br/></returns>
+    public LibraDexConditionValueTypeSelector Where(IIndex index)
+    {
+        return inner.Where(index);
+    }
+
+    /// <summary>
+    /// Starts a low-friction condition builder from a generic typed index instance and selects the index key type automatically.<br/>
+    /// </summary>
+    /// <typeparam name="TKey">The key type carried by the opened index handle.<br/></typeparam>
+    /// <param name="index">The opened generic index instance to select.<br/></param>
+    /// <returns>A typed operator for the selected index key type.<br/></returns>
+    public LibraDexConditionOperator<TKey> Where<TKey>(LibraDexIndex<TKey, TIdentity> index)
+    {
+        return inner.Where(index);
+    }
+
+    /// <summary>
+    /// Starts a low-friction condition builder from a string index facade and selects string operators automatically.<br/>
+    /// </summary>
+    /// <param name="index">The opened string index instance to select.<br/></param>
+    /// <returns>String operators for the selected index.<br/></returns>
+    public LibraDexStringConditionOperator Where(LibraDexStringScalar8Index index)
+    {
+        return inner.Where(index);
+    }
+
+    /// <summary>
+    /// Starts a low-friction condition builder with a caller-supplied anchored identity filter for this typed identity group.<br/>
+    /// The predicate-only external form still needs composition with an indexed sibling before execution can supply candidate identities.<br/>
+    /// </summary>
+    /// <param name="filter">Predicate that receives each candidate identity and returns whether it should remain in the result stream.<br/></param>
+    /// <returns>A continuation for adding more clauses or ending the condition.<br/></returns>
+    public LibraDexConditionContinueOrEnd External(Func<TIdentity, bool> filter)
+    {
+        ArgumentNullException.ThrowIfNull(filter);
+        return inner.External(identity => filter((TIdentity)identity));
+    }
+
+    /// <summary>
+    /// Starts a low-friction condition builder with a caller-supplied anchored identity filter and candidate-stream metadata for this typed identity group.<br/>
+    /// The predicate-only external form still needs composition with an indexed sibling before execution can supply candidate identities.<br/>
+    /// </summary>
+    /// <param name="filter">Predicate that receives candidate identity, zero-based candidate ordinal, and first-candidate flag, then returns whether the identity should remain in the result stream.<br/></param>
+    /// <returns>A continuation for adding more clauses or ending the condition.<br/></returns>
+    public LibraDexConditionContinueOrEnd External(Func<TIdentity, long, bool, bool> filter)
+    {
+        ArgumentNullException.ThrowIfNull(filter);
+        return inner.External((identity, ordinal, isFirst) => filter((TIdentity)identity, ordinal, isFirst));
+    }
+
+    /// <summary>
+    /// Starts a low-friction condition builder with caller-supplied typed identities as an external source for this identity group.<br/>
+    /// </summary>
+    /// <param name="identities">The identities to expose as an external source stream.<br/></param>
+    /// <returns>A continuation for adding more clauses or ending the condition.<br/></returns>
+    public LibraDexConditionContinueOrEnd External(IEnumerable<TIdentity> identities)
+    {
+        return inner.External(identities);
+    }
+
+    /// <summary>
+    /// Starts a low-friction condition builder with a caller-supplied typed identity source factory for this identity group.<br/>
+    /// </summary>
+    /// <param name="identityFactory">Factory that returns the identities to expose as an external source stream.<br/></param>
+    /// <returns>A continuation for adding more clauses or ending the condition.<br/></returns>
+    public LibraDexConditionContinueOrEnd External(Func<IEnumerable<TIdentity>> identityFactory)
+    {
+        return inner.External(identityFactory);
+    }
+
+    /// <summary>
+    /// Starts a low-friction condition builder with caller-supplied runtime key/identity entries for this typed identity group.<br/>
+    /// The entry identity type is fixed to this group's <typeparamref name="TIdentity"/> so mismatched external entries fail at compile time.<br/>
+    /// </summary>
+    /// <typeparam name="TKey">The external branch key type.<br/></typeparam>
+    /// <param name="entries">The external key/identity entries to expose as a runtime index-like branch.<br/></param>
+    /// <returns>A typed external condition operator for the supplied key type.<br/></returns>
+    public LibraDexExternalConditionOperator<TKey> External<TKey>(IEnumerable<LibraDexExternalEntry<TKey, TIdentity>> entries)
+    {
+        return inner.External<TKey, TIdentity>(entries);
+    }
+
+    /// <summary>
+    /// Starts a low-friction condition builder with caller-supplied runtime key/identity pairs for this typed identity group.<br/>
+    /// The pair value type is fixed to this group's <typeparamref name="TIdentity"/> so mismatched external pairs fail at compile time.<br/>
+    /// </summary>
+    /// <typeparam name="TKey">The external branch key type.<br/></typeparam>
+    /// <param name="entries">The external key/identity pairs to expose as a runtime index-like branch.<br/></param>
+    /// <returns>A typed external condition operator for the supplied key type.<br/></returns>
+    public LibraDexExternalConditionOperator<TKey> External<TKey>(IEnumerable<KeyValuePair<TKey, TIdentity>> entries)
+    {
+        return inner.External<TKey, TIdentity>(entries);
+    }
+
+    /// <summary>
+    /// Starts a low-friction condition builder with a caller-supplied runtime key/identity entry source for this typed identity group.<br/>
+    /// The entry identity type is fixed to this group's <typeparamref name="TIdentity"/> so mismatched external entries fail at compile time.<br/>
+    /// </summary>
+    /// <typeparam name="TKey">The external branch key type.<br/></typeparam>
+    /// <param name="entryFactory">Factory that returns external key/identity entries.<br/></param>
+    /// <returns>A typed external condition operator for the supplied key type.<br/></returns>
+    public LibraDexExternalConditionOperator<TKey> External<TKey>(Func<IEnumerable<LibraDexExternalEntry<TKey, TIdentity>>> entryFactory)
+    {
+        return inner.External<TKey, TIdentity>(entryFactory);
+    }
+
+    /// <summary>
+    /// Starts a low-friction condition builder with a caller-supplied runtime key/identity pair source for this typed identity group.<br/>
+    /// The pair value type is fixed to this group's <typeparamref name="TIdentity"/> so mismatched external pairs fail at compile time.<br/>
+    /// </summary>
+    /// <typeparam name="TKey">The external branch key type.<br/></typeparam>
+    /// <param name="entryFactory">Factory that returns external key/identity pairs.<br/></param>
+    /// <returns>A typed external condition operator for the supplied key type.<br/></returns>
+    public LibraDexExternalConditionOperator<TKey> External<TKey>(Func<IEnumerable<KeyValuePair<TKey, TIdentity>>> entryFactory)
+    {
+        return inner.External<TKey, TIdentity>(entryFactory);
+    }
+
+    /// <summary>
+    /// Starts a low-friction condition builder with a correlated caller-supplied external key source for this typed identity group.<br/>
+    /// The candidate identity parameter is fixed to this group's <typeparamref name="TIdentity"/> so caller code does not need to cast from object.<br/>
+    /// </summary>
+    /// <typeparam name="TKey">The external branch key type.<br/></typeparam>
+    /// <param name="candidateKeyFactory">Factory that returns external keys for one candidate identity.<br/></param>
+    /// <returns>A typed external condition operator for the supplied key type.<br/></returns>
+    public LibraDexExternalConditionOperator<TKey> External<TKey>(Func<TIdentity, IEnumerable<TKey>> candidateKeyFactory)
+    {
+        ArgumentNullException.ThrowIfNull(candidateKeyFactory);
+        return inner.External<TKey>(identity => candidateKeyFactory((TIdentity)identity));
     }
 }
 

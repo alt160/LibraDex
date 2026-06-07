@@ -11801,7 +11801,7 @@ internal static class RawHarness
                 externalSourceCursorEntries.Add(externalSourceCursor.GetEntry());
             }
         }
-        LibraDexExternalEntry<int>[] externalAgeEntries =
+        LibraDexExternalEntry<int, long>[] externalAgeEntries =
         {
             new(17, 1000L),
             new(18, 1100L),
@@ -11811,7 +11811,7 @@ internal static class RawHarness
         LibraDexConditionEndCondition externalEntryCondition = LibraDexCondition
             .ForGroup("surface")
             .Index(index.Name).AsInt64.Between(10L, 12L)
-            .And.External<int>(() => externalAgeEntries).Between(18, 25)
+            .And.External<int, long>(() => externalAgeEntries).Between(18, 25)
             .EndCondition;
         IReadOnlyList<long> externalEntryIds = catalog.Indexes["surface"].GetIdentities<long>(
             externalEntryCondition,
@@ -11839,7 +11839,7 @@ internal static class RawHarness
             catalogExternalSourceCondition,
             deduplication: IdentityDeduplication.Preserve);
         LibraDexConditionEndCondition catalogExternalEntryCondition = catalog.Indexes["surface"]
-            .External<int>(() => externalAgeEntries).Between(18, 25)
+            .External<int, long>(() => externalAgeEntries).Between(18, 25)
             .EndCondition;
         IReadOnlyList<long> catalogExternalEntryIds = catalog.Indexes["surface"].GetIdentities<long>(
             catalogExternalEntryCondition,
@@ -11850,6 +11850,20 @@ internal static class RawHarness
             .EndCondition;
         IReadOnlyList<long> catalogExternalCorrelatedIds = catalog.Indexes["surface"].GetIdentities<long>(
             catalogExternalCorrelatedCondition,
+            deduplication: IdentityDeduplication.Preserve);
+        CatalogIdentityGroupIndexes<long> typedSurface = catalog.Indexes["surface"].As<long>();
+        LibraDexConditionEndCondition typedCatalogExternalEntryCondition = typedSurface
+            .External<int>(() => externalAgeEntries).Between(18, 25)
+            .EndCondition;
+        IReadOnlyList<long> typedCatalogExternalEntryIds = catalog.Indexes["surface"].GetIdentities<long>(
+            typedCatalogExternalEntryCondition,
+            deduplication: IdentityDeduplication.Preserve);
+        LibraDexConditionEndCondition typedCatalogExternalCorrelatedCondition = typedSurface
+            .External<int>(identity => new[] { externalAges[identity] }).Between(18, 25)
+            .And.Index(index.Name).AsInt64.Between(10L, 12L)
+            .EndCondition;
+        IReadOnlyList<long> typedCatalogExternalCorrelatedIds = catalog.Indexes["surface"].GetIdentities<long>(
+            typedCatalogExternalCorrelatedCondition,
             deduplication: IdentityDeduplication.Preserve);
         using LibraDexIdentityCursor<long> surfaceIdentityCursor = catalog.Indexes["surface"].GetCursor<long>(
             namedMultiKeyCondition,
@@ -12174,6 +12188,12 @@ internal static class RawHarness
             catalogExternalCorrelatedIds.Count != 2 ||
             catalogExternalCorrelatedIds[0] != 1100 ||
             catalogExternalCorrelatedIds[1] != 1200 ||
+            typedCatalogExternalEntryIds.Count != 2 ||
+            typedCatalogExternalEntryIds[0] != 1100 ||
+            typedCatalogExternalEntryIds[1] != 1200 ||
+            typedCatalogExternalCorrelatedIds.Count != 2 ||
+            typedCatalogExternalCorrelatedIds[0] != 1100 ||
+            typedCatalogExternalCorrelatedIds[1] != 1200 ||
             !surfaceIdentityCursorFirst ||
             surfaceIdentityCursorValue != 1100 ||
             surfaceIdentityCursorSecond ||

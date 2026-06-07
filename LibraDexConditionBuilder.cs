@@ -2858,7 +2858,7 @@ public sealed class LibraDexConditionClause
     /// Adds a caller-supplied identity source factory as an external source clause.<br/>
     /// The factory is invoked when the condition executes, allowing callers to use request-time caches, precomputed lists, or another storage engine as the identity source.<br/>
     /// This source form can execute by itself and can also compose with indexed conditions through `And` and `Or` because it supplies its own identity universe.<br/>
-    /// The factory should return identities only; use `External<TKey>(...)` with `LibraDexExternalEntry<TKey>` when caller code needs LibraDex to apply key predicates to runtime key/identity pairs.<br/>
+    /// The factory should return identities only; use `External<TKey, TIdentity>(...)` with `LibraDexExternalEntry<TKey, TIdentity>` when caller code needs LibraDex to apply key predicates to runtime key/identity pairs.<br/>
     /// </summary>
     /// <typeparam name="TIdentity">The identity value type supplied by caller code.<br/></typeparam>
     /// <param name="identityFactory">Factory that returns the identities to expose as an external source stream.<br/></param>
@@ -2881,27 +2881,59 @@ public sealed class LibraDexConditionClause
     /// Use this form when caller-owned data behaves like a temporary index for the current condition.<br/>
     /// </summary>
     /// <typeparam name="TKey">The external branch key type.<br/></typeparam>
+    /// <typeparam name="TIdentity">The identity type associated with the external entries.<br/></typeparam>
     /// <param name="entries">The external key/identity entries to expose as a runtime index-like branch.<br/></param>
     /// <returns>A typed external condition operator for the supplied key type.<br/></returns>
-    public LibraDexExternalConditionOperator<TKey> External<TKey>(IEnumerable<LibraDexExternalEntry<TKey>> entries)
+    public LibraDexExternalConditionOperator<TKey> External<TKey, TIdentity>(IEnumerable<LibraDexExternalEntry<TKey, TIdentity>> entries)
     {
         ArgumentNullException.ThrowIfNull(entries);
-        return External<TKey>(() => entries);
+        return External<TKey, TIdentity>(() => entries);
+    }
+
+    /// <summary>
+    /// Adds caller-supplied external key/identity pairs and selects key operators for the external branch.<br/>
+    /// This overload accepts the standard .NET key/value pair shape and treats the pair value as the typed LibraDex identity for the surrounding identity group.<br/>
+    /// The selected key operators filter the external pairs before their identities are composed with the rest of the condition tree.<br/>
+    /// </summary>
+    /// <typeparam name="TKey">The external branch key type.<br/></typeparam>
+    /// <typeparam name="TIdentity">The identity type associated with the external pairs.<br/></typeparam>
+    /// <param name="entries">The external key/identity pairs to expose as a runtime index-like branch.<br/></param>
+    /// <returns>A typed external condition operator for the supplied key type.<br/></returns>
+    public LibraDexExternalConditionOperator<TKey> External<TKey, TIdentity>(IEnumerable<KeyValuePair<TKey, TIdentity>> entries)
+    {
+        ArgumentNullException.ThrowIfNull(entries);
+        return External<TKey, TIdentity>(() => entries);
     }
 
     /// <summary>
     /// Adds a caller-supplied external key/identity entry source and selects key operators for the external branch.<br/>
     /// This is the runtime-index form: caller code supplies entries, LibraDex applies the selected external key predicate, and matching identities participate in normal condition composition.<br/>
     /// The factory is invoked when the condition executes, which allows the runtime key/identity source to be request-local or backed by another storage engine.<br/>
-    /// Use `LibraDexExternalEntry<TKey>` entries here so the condition can materialize identities after filtering the caller-owned keys.<br/>
+    /// Use `LibraDexExternalEntry<TKey, TIdentity>` entries here so the condition can materialize identities after filtering the caller-owned keys.<br/>
     /// </summary>
     /// <typeparam name="TKey">The external branch key type.<br/></typeparam>
+    /// <typeparam name="TIdentity">The identity type associated with the external entries.<br/></typeparam>
     /// <param name="entryFactory">Factory that returns external key/identity entries.<br/></param>
     /// <returns>A typed external condition operator for the supplied key type.<br/></returns>
-    public LibraDexExternalConditionOperator<TKey> External<TKey>(Func<IEnumerable<LibraDexExternalEntry<TKey>>> entryFactory)
+    public LibraDexExternalConditionOperator<TKey> External<TKey, TIdentity>(Func<IEnumerable<LibraDexExternalEntry<TKey, TIdentity>>> entryFactory)
     {
         ArgumentNullException.ThrowIfNull(entryFactory);
-        return new LibraDexExternalConditionOperator<TKey>(builder, negateNext, entryFactory, candidateKeyFactory: null);
+        return new LibraDexExternalConditionOperator<TKey>(builder, negateNext, () => BoxExternalEntries(entryFactory()), candidateKeyFactory: null);
+    }
+
+    /// <summary>
+    /// Adds a caller-supplied external key/identity pair source and selects key operators for the external branch.<br/>
+    /// This overload accepts the standard .NET key/value pair shape and treats the pair value as the typed LibraDex identity for the surrounding identity group.<br/>
+    /// The factory is invoked when the condition executes, allowing caller-owned runtime indexes to stay request-local.<br/>
+    /// </summary>
+    /// <typeparam name="TKey">The external branch key type.<br/></typeparam>
+    /// <typeparam name="TIdentity">The identity type associated with the external pairs.<br/></typeparam>
+    /// <param name="entryFactory">Factory that returns external key/identity pairs.<br/></param>
+    /// <returns>A typed external condition operator for the supplied key type.<br/></returns>
+    public LibraDexExternalConditionOperator<TKey> External<TKey, TIdentity>(Func<IEnumerable<KeyValuePair<TKey, TIdentity>>> entryFactory)
+    {
+        ArgumentNullException.ThrowIfNull(entryFactory);
+        return new LibraDexExternalConditionOperator<TKey>(builder, negateNext, () => BoxExternalPairs(entryFactory()), candidateKeyFactory: null);
     }
 
     /// <summary>
@@ -2935,7 +2967,54 @@ public sealed class LibraDexConditionClause
             yield return boxed ?? throw new InvalidOperationException("External identity sources cannot yield null identities.");
         }
     }
+
+    /// <summary>
+    /// Boxes one caller-supplied typed key/identity entry stream into the internal runtime-entry stream used by condition composition.<br/>
+    /// Public callers keep typed identity values, while the descriptor boundary stores identities as objects for mixed-condition execution.<br/>
+    /// </summary>
+    /// <typeparam name="TKey">The external branch key type.<br/></typeparam>
+    /// <typeparam name="TIdentity">The caller identity type.<br/></typeparam>
+    /// <param name="entries">The caller external key/identity entries.<br/></param>
+    /// <returns>An internal external entry stream.</returns>
+    private static IEnumerable<LibraDexExternalEntryInternal<TKey>> BoxExternalEntries<TKey, TIdentity>(IEnumerable<LibraDexExternalEntry<TKey, TIdentity>> entries)
+    {
+        ArgumentNullException.ThrowIfNull(entries);
+        foreach (LibraDexExternalEntry<TKey, TIdentity> entry in entries)
+        {
+            object? identity = entry.Identity;
+            yield return new LibraDexExternalEntryInternal<TKey>(
+                entry.Key,
+                identity ?? throw new InvalidOperationException("External entries cannot yield null identities."));
+        }
+    }
+
+    /// <summary>
+    /// Boxes one caller-supplied typed key/value pair stream into the internal runtime-entry stream used by condition composition.<br/>
+    /// Pair keys are external branch keys, and pair values are the typed LibraDex identities to compose after key filtering.<br/>
+    /// </summary>
+    /// <typeparam name="TKey">The external branch key type.<br/></typeparam>
+    /// <typeparam name="TIdentity">The caller identity type.<br/></typeparam>
+    /// <param name="entries">The caller external key/identity pairs.<br/></param>
+    /// <returns>An internal external entry stream.</returns>
+    private static IEnumerable<LibraDexExternalEntryInternal<TKey>> BoxExternalPairs<TKey, TIdentity>(IEnumerable<KeyValuePair<TKey, TIdentity>> entries)
+    {
+        ArgumentNullException.ThrowIfNull(entries);
+        foreach (KeyValuePair<TKey, TIdentity> entry in entries)
+        {
+            object? identity = entry.Value;
+            yield return new LibraDexExternalEntryInternal<TKey>(
+                entry.Key,
+                identity ?? throw new InvalidOperationException("External entries cannot yield null identities."));
+        }
+    }
 }
+
+/// <summary>
+/// Represents one internal external key/identity entry after public typed identities have crossed the descriptor boundary.<br/>
+/// Public APIs keep identity type safety; this internal shape lets the condition executor compose mixed identity streams through its existing object channel.<br/>
+/// </summary>
+/// <typeparam name="TKey">The external branch key type.<br/></typeparam>
+internal readonly record struct LibraDexExternalEntryInternal<TKey>(TKey Key, object Identity);
 
 /// <summary>
 /// Captures typed key predicates for one external runtime condition branch.<br/>
@@ -2946,13 +3025,13 @@ public sealed class LibraDexExternalConditionOperator<TKey>
 {
     private readonly LibraDexConditionBuilder builder;
     private readonly bool negate;
-    private readonly Func<IEnumerable<LibraDexExternalEntry<TKey>>>? entryFactory;
+    private readonly Func<IEnumerable<LibraDexExternalEntryInternal<TKey>>>? entryFactory;
     private readonly Func<object, IEnumerable<TKey>>? candidateKeyFactory;
 
     internal LibraDexExternalConditionOperator(
         LibraDexConditionBuilder builder,
         bool negate,
-        Func<IEnumerable<LibraDexExternalEntry<TKey>>>? entryFactory,
+        Func<IEnumerable<LibraDexExternalEntryInternal<TKey>>>? entryFactory,
         Func<object, IEnumerable<TKey>>? candidateKeyFactory)
     {
         this.builder = builder;
@@ -3100,10 +3179,10 @@ public sealed class LibraDexExternalConditionOperator<TKey>
     /// <param name="entries">The external key/identity entries supplied by caller code.<br/></param>
     /// <param name="predicate">The external key predicate selected by the fluent operator.<br/></param>
     /// <returns>Identities whose external entries satisfy the predicate.<br/></returns>
-    private static IEnumerable<object> FilterEntries(IEnumerable<LibraDexExternalEntry<TKey>> entries, Func<TKey, bool> predicate)
+    private static IEnumerable<object> FilterEntries(IEnumerable<LibraDexExternalEntryInternal<TKey>> entries, Func<TKey, bool> predicate)
     {
         ArgumentNullException.ThrowIfNull(entries);
-        foreach (LibraDexExternalEntry<TKey> entry in entries)
+        foreach (LibraDexExternalEntryInternal<TKey> entry in entries)
         {
             if (entry.Identity is null)
             {

@@ -136,3 +136,11 @@ No active complaints are currently listed.
    - Added `CatalogIdentityGroupIndexes.External(...)` overloads that forward to `LibraDexCondition.ForGroup(Group).External(...)` while preserving the opened group context.
    - Covered anchored identity filters, identity sources, runtime key/identity entry sources, and correlated external key sources from the catalog group root.
    - Updated corpus/regeneration notes so `catalog["users"].External(...)` is treated as the low-friction contextual form rather than an invalid root.
+
+13. [x] Runtime external entries needed typed identities instead of object identities.
+
+   Resolution:
+
+   - Replaced public `LibraDexExternalEntry<TKey>` usage with `LibraDexExternalEntry<TKey, TIdentity>` and added `KeyValuePair<TKey, TIdentity>` overloads for caller-owned runtime key/identity pairs.
+   - Added `CatalogIdentityGroupIndexes<TIdentity>` via `catalog["group"].As<TIdentity>()` so catalog-group `.External<TKey>(...)` can preserve the group identity type at compile time.
+   - Kept object boxing behind the internal condition descriptor boundary only, after the public API has already enforced typed external identities.

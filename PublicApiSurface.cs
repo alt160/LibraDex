@@ -2063,9 +2063,10 @@ public readonly record struct LibraDexExternalIdentityContext(object Identity, l
 /// This value is for runtime-index style `.External<TKey>(...)` branches; it does not create or mutate a stored LibraDex index.<br/>
 /// </summary>
 /// <typeparam name="TKey">The external branch key type.<br/></typeparam>
+/// <typeparam name="TIdentity">The identity type associated with the catalog group being filtered.<br/></typeparam>
 /// <param name="Key">The external key value used by operators such as `Between`, `EqualTo`, and `InSet`.<br/></param>
 /// <param name="Identity">The LibraDex identity value associated with the external key.<br/></param>
-public readonly record struct LibraDexExternalEntry<TKey>(TKey Key, object Identity);
+public readonly record struct LibraDexExternalEntry<TKey, TIdentity>(TKey Key, TIdentity Identity);
 
 /// <summary>
 /// Represents one public key/identity tuple returned by a LibraDex index.<br/>
