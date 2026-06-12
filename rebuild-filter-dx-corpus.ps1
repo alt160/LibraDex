@@ -2,10 +2,16 @@ param(
     [string]$Path = 'artifacts\filter-dx-natural-language-corpus.csv'
 )
 
+throw 'Deprecated: do not use this deterministic NL-to-builder generator. The filter DX corpus is now AI-authored from the natural-language rows; use explicit row-reviewed edits only.'
+
 $ErrorActionPreference = 'Stop'
 
 function ConvertTo-CamelName {
     param([string]$Phrase)
+
+    if ($Phrase -match '(?i)\border\s+number\b') { return 'orderNumber' }
+    if ($Phrase -match '(?i)\bversion\s+number\b') { return 'versionNumber' }
+    if ($Phrase -match '(?i)\bsequence\s+number\b') { return 'sequenceNumber' }
 
     $clean = $Phrase.ToLowerInvariant()
     $clean = $clean -replace '^\s*(the|a|an)\s+', ''
@@ -59,6 +65,9 @@ function Get-KeyFamily {
     param([string]$Field, [string]$Criterion)
 
     $text = ($Field + ' ' + $Criterion).ToLowerInvariant()
+    if ($Field -match '(?i)^(status|state|type|category|classification|country|extension)$|(?:Status|State|Type|Category|Classification|Country|Extension)$') { return 'String' }
+    if ($Field -match '(?i)(count|amount|price|quantity|percent|percentage|score|priority|shard|retry|sequence|version|code|mask|bucket|rating|size|risk|temperature|pressure|humidity|duration|balance|total|tax|line|attempt|threshold|duplicate|cpu|latitude|longitude)') { return 'Int64' }
+    if ($Field -match '(?i)(date|timestamp|expiration|activity|due|created|updated|retention|shipped|delivered|login|changed|effective|closed|retryTime|invoiceDate|orderDate|eventDate|startTime|endTime)') { return 'Date' }
     if ($text -match '\b(file size bytes|size bytes|length prefix)\b') { return 'Int64' }
     if ($text -match '\b(binary|byte array|byte prefix|byte suffix|hash|payload|header|footer|signature|checksum|marker|magic|blob)\b') { return 'Binary' }
     if ($text -match '\bguid\b|\b(tenant id|user id|owner id|folder id|document id|parent document id|customer id|supplier id|principal id|resource id|aggregate id|rule id|device id|correlation id)\b') { return 'Guid' }
@@ -94,6 +103,10 @@ function ConvertTo-Value {
         return $trim
     }
     if ($trim -match '^\d+\.\d+$') { return $trim }
+    if ($trim -match '^January\s+1\s+2026$') { return 'new DateTime(2026, 1, 1)' }
+    if ($trim -match '^the minimum date$') { return 'DateTime.MinValue' }
+    if ($trim -match '^a checkpoint instant$') { return 'checkpointInstant' }
+    if ($trim -match '^two UTC instants$') { return 'startUtc' }
     if ($trim -match 'guid') { return 'guid' }
     if ($trim -match 'today') { return 'today' }
     if ($trim -match 'tomorrow') { return 'tomorrow' }
@@ -154,6 +167,8 @@ function New-Predicate {
         }
         'bitset' { return ".Index(`"$Field`")$selector.BitAnd($Argument, $Argument)" }
         'bitclear' { return ".Index(`"$Field`")$selector.BitAnd($Argument, 0L)" }
+        'allbits' { return ".Index(`"$Field`")$selector.AllBitsSet($Argument)" }
+        'nobits' { return ".Index(`"$Field`")$selector.NoBitsSet($Argument)" }
         'weekend' { return ".Index(`"$Field`")$selector.IsWeekend()" }
         'weekday' { return ".Not.Index(`"$Field`")$selector.IsWeekend()" }
         'morning' { return ".Index(`"$Field`")$selector.IsMorning()" }
@@ -162,8 +177,11 @@ function New-Predicate {
         'night' { return ".Index(`"$Field`")$selector.IsNight()" }
         'year' { return ".Index(`"$Field`")$selector.YearEqualTo($Argument)" }
         'month' { return ".Index(`"$Field`")$selector.MonthEqualTo($Argument)" }
+        'dayrange' { return ".Index(`"$Field`")$selector.DayRange($Argument, $SecondArgument)" }
         'yearmonth' { return ".Index(`"$Field`")$selector.YearMonth($Argument, $SecondArgument)" }
         'quarter' { return ".Index(`"$Field`")$selector.YearQuarter($Argument, $SecondArgument)" }
+        'inquarter' { return ".Index(`"$Field`")$selector.InQuarter($Argument)" }
+        'lastofmonth' { return ".Index(`"$Field`")$selector.IsLastOfMonth()" }
     }
 }
 
@@ -261,6 +279,71 @@ function New-ManualSyntax {
     }
 }
 
+function Test-IdIn {
+    param([string]$Id, [string[]]$Ids)
+
+    return $Ids -contains $Id
+}
+
+function Get-CapabilityInventoryNote {
+    param([string]$Id)
+
+    $direct = @(
+        'F212', 'F275', 'F277', 'F280', 'F434', 'F435', 'F436', 'F437', 'F438', 'F439', 'F440',
+        'F451', 'F452', 'F453', 'F454', 'F456', 'F512', 'F513', 'F516', 'F519', 'F520', 'F522',
+        'F531', 'F533', 'F534', 'F543', 'F548', 'F582', 'F583', 'F588', 'F608', 'F621', 'F627'
+    )
+    $composition = @(
+        'F373', 'F374', 'F381', 'F382', 'F383', 'F384', 'F386', 'F387', 'F389', 'F390', 'F391',
+        'F394', 'F396', 'F397', 'F401', 'F403', 'F405', 'F408', 'F411', 'F412', 'F413', 'F415',
+        'F417', 'F418', 'F420', 'F422', 'F423', 'F424', 'F425', 'F426', 'F427', 'F428', 'F429',
+        'F430', 'F441', 'F442', 'F443', 'F450', 'F455', 'F457', 'F458', 'F459', 'F460', 'F461',
+        'F477', 'F478', 'F479', 'F480', 'F503', 'F505', 'F508', 'F517', 'F518', 'F537', 'F538',
+        'F539', 'F540', 'F546', 'F549', 'F561', 'F566', 'F568', 'F587', 'F611', 'F612', 'F613',
+        'F614', 'F615', 'F616', 'F617', 'F619', 'F635', 'F637', 'F638'
+    )
+    $projection = @(
+        'F098', 'F147', 'F159', 'F206', 'F225', 'F227', 'F228', 'F229', 'F244', 'F249', 'F270',
+        'F271', 'F272', 'F306', 'F447', 'F487', 'F490', 'F493', 'F494', 'F511', 'F526', 'F527',
+        'F528', 'F529', 'F530', 'F532', 'F535', 'F536', 'F547', 'F550', 'F551', 'F552', 'F554',
+        'F555', 'F556', 'F557', 'F558', 'F559', 'F560', 'F562', 'F563', 'F564', 'F565', 'F569', 'F570',
+        'F572', 'F573', 'F574', 'F575', 'F576', 'F580', 'F584', 'F585', 'F586', 'F589', 'F590',
+        'F591', 'F592', 'F593', 'F594', 'F595', 'F597', 'F598', 'F599', 'F600', 'F601', 'F602', 'F603',
+        'F604', 'F607', 'F609', 'F610', 'F630', 'F631', 'F632', 'F636', 'F640', 'F641'
+    )
+    $notConditionScope = @(
+        'F462', 'F463', 'F464', 'F465', 'F466', 'F467', 'F468', 'F469', 'F470', 'F471',
+        'F472', 'F473', 'F474', 'F475', 'F476'
+    )
+    $terminalWrapper = @('F484', 'F485', 'F486', 'F488', 'F489', 'F495')
+    $builderGap = @('F053', 'F060', 'F063', 'F070', 'F509', 'F510')
+    $needsDecision = @('F506', 'F507')
+
+    if (Test-IdIn $Id $direct) {
+        return 'Capability inventory: expressible with current fluent condition syntax; generator still needs a row-specific mapping before this should score 5.'
+    }
+    if (Test-IdIn $Id $composition) {
+        return 'Capability inventory: expressible through current composition syntax such as Group(...), KeyPart(...), FullKey(...), MultiKey(...), .Not, or .External(...); generator needs a non-flat mapping before this should score 5.'
+    }
+    if (Test-IdIn $Id $projection) {
+        return 'Capability inventory: not a condition-builder API gap; this needs a maintained projection, modeled index key, caller-owned External(...) data, or an explicit semantic rewrite.'
+    }
+    if (Test-IdIn $Id $notConditionScope) {
+        return 'Capability inventory: outside condition-builder scope; this is retrieval, result-shape, ordering, paging, cursor, or aggregation behavior.'
+    }
+    if (Test-IdIn $Id $terminalWrapper) {
+        return 'Capability inventory: predicate is expressible, but the row asks about a terminal delete, rekey, or update wrapper rather than condition syntax itself.'
+    }
+    if (Test-IdIn $Id $builderGap) {
+        return 'Capability inventory: likely requires new builder API if direct fluent syntax is desired, especially regex-existence, string normalization, or whitespace-policy predicates.'
+    }
+    if (Test-IdIn $Id $needsDecision) {
+        return 'Capability inventory: needs an explicit policy decision before scoring because the row describes missing-value ordering or range-participation semantics rather than syntax.'
+    }
+
+    return ''
+}
+
 function Split-Criteria {
     param([string]$Text)
 
@@ -270,6 +353,8 @@ function Split-Criteria {
     $protected = $criteria
     $protected = $protected -replace '(?i)greater than or equal to', 'greater than __LOCAL_OR__ equal to'
     $protected = $protected -replace '(?i)less than or equal to', 'less than __LOCAL_OR__ equal to'
+    $protected = $protected -replace '(?i)on or after', 'on __LOCAL_OR__ after'
+    $protected = $protected -replace '(?i)at or after', 'at __LOCAL_OR__ after'
     $protected = [regex]::Replace($protected, '(?i)(between\s+.+?)\s+and\s+(.+?)(?=\s+and\s+|\s+or\s+|$)', {
         param($m)
         $m.Groups[1].Value + ' __BETWEEN_AND__ ' + $m.Groups[2].Value
@@ -306,6 +391,11 @@ function Parse-Part {
         $field = ConvertTo-CamelName $Matches[1]
         return New-Predicate $field 'Binary' 'null' ''
     }
+    if ($p -match '(.+?)\s+is nonzero$') {
+        $field = ConvertTo-CamelName $Matches[1]
+        $family = Get-KeyFamily $field $p
+        return New-Predicate $field $family 'neq' '0L'
+    }
     if ($p -match '(.+?)\s+is present$' -or $p -match '(.+?)\s+has a real value$') {
         $field = ConvertTo-CamelName $Matches[1]
         $family = Get-KeyFamily $field $p
@@ -325,9 +415,13 @@ function Parse-Part {
         if ($family -notin @('String', 'Binary', 'Guid')) { $family = 'String' }
         return New-Predicate $field $family 'starts' (ConvertTo-Value $Matches[2] $family)
     }
-    if ($p -match '(.+?)\s+(starts with|begins with)\s+a known byte prefix$') {
+    if ($p -match '(.+?)\s+(starts with|begins with)\s+a (known )?byte prefix$') {
         $field = ConvertTo-CamelName $Matches[1]
         return New-Predicate $field 'Binary' 'starts' 'prefixBytes'
+    }
+    if ($p -match '(.+?)\s+(starts with|begins with)\s+a marker$') {
+        $field = ConvertTo-CamelName $Matches[1]
+        return New-Predicate $field 'Binary' 'starts' 'markerBytes'
     }
     if ($p -match '(.+?)\s+(starts with|begins with)\s+a known GUID prefix$') {
         $field = ConvertTo-CamelName $Matches[1]
@@ -346,6 +440,10 @@ function Parse-Part {
     if ($p -match '(.+?)\s+ends with\s+a known byte suffix$') {
         $field = ConvertTo-CamelName $Matches[1]
         return New-Predicate $field 'Binary' 'ends' 'suffixBytes'
+    }
+    if ($p -match '(.+?)\s+suffix is a known signature$') {
+        $field = ConvertTo-CamelName $Matches[1]
+        return New-Predicate $field 'Binary' 'ends' 'signatureBytes'
     }
     if ($p -match '(.+?)\s+does not contain\s+(".*?"|[A-Za-z0-9_.@-]+)$') {
         $field = ConvertTo-CamelName $Matches[1]
@@ -389,6 +487,10 @@ function Parse-Part {
         $field = ConvertTo-CamelName $Matches[1]
         return New-Predicate $field 'Binary' 'contains' 'protocolMarker'
     }
+    if ($p -match '(.+?)\s+contains\s+a UTF-8 field name$') {
+        $field = ConvertTo-CamelName $Matches[1]
+        return New-Predicate $field 'Binary' 'contains' 'utf8FieldNameBytes'
+    }
     if ($p -match '(.+?)\s+matches\s+(".*?"|\*.*)$') {
         $field = ConvertTo-CamelName $Matches[1]
         $family = Get-KeyFamily $field $p
@@ -415,6 +517,18 @@ function Parse-Part {
         $field = ConvertTo-CamelName $Matches[1]
         return ".Index(`"$field`").AsString.Contains($($Matches[2]), ignoreCase: true)"
     }
+    if ($p -match '(.+?)\s+is in June 2026$') {
+        $field = ConvertTo-CamelName $Matches[1]
+        return New-Predicate $field 'Date' 'yearmonth' '2026' '6'
+    }
+    if ($p -match '(.+?)\s+is in Q([1-4]) of 2026$') {
+        $field = ConvertTo-CamelName $Matches[1]
+        return New-Predicate $field 'Date' 'quarter' '2026' $Matches[2]
+    }
+    if ($p -match '(.+?)\s+is in Q([1-4])$') {
+        $field = ConvertTo-CamelName $Matches[1]
+        return New-Predicate $field 'Date' 'inquarter' $Matches[2]
+    }
     if ($p -match '(.+?)\s+is not in\s+(.+)$' -or $p -match '(.+?)\s+is not one of\s+(.+)$') {
         $field = ConvertTo-CamelName $Matches[1]
         $family = Get-KeyFamily $field $p
@@ -438,6 +552,18 @@ function Parse-Part {
         $field = ConvertTo-CamelName $Matches[1]
         $family = Get-KeyFamily $field $p
         return New-Predicate $field $family 'between' (ConvertTo-Value $Matches[2] $family) (ConvertTo-Value $Matches[3] $family)
+    }
+    if ($p -match '(.+?)\s+is not between two supplied dates$') {
+        $field = ConvertTo-CamelName $Matches[1]
+        return New-Predicate $field 'Date' 'notbetween' 'startDate' 'endDate'
+    }
+    if ($p -match '(.+?)\s+is between two supplied dates$') {
+        $field = ConvertTo-CamelName $Matches[1]
+        return New-Predicate $field 'Date' 'between' 'startDate' 'endDate'
+    }
+    if ($p -match '(.+?)\s+is between two UTC instants$') {
+        $field = ConvertTo-CamelName $Matches[1]
+        return New-Predicate $field 'Date' 'between' 'startUtc' 'endUtc'
     }
     if ($p -match '(.+?)\s+is between two GUID byte-order boundaries$') {
         $field = ConvertTo-CamelName $Matches[1]
@@ -468,6 +594,10 @@ function Parse-Part {
         $family = Get-KeyFamily $field $p
         return New-Predicate $field $family 'gt' (ConvertTo-Value $Matches[2] $family)
     }
+    if ($p -match '(.+?)\s+is on or after\s+(.+)$' -or $p -match '(.+?)\s+is at or after\s+(.+)$') {
+        $field = ConvertTo-CamelName $Matches[1]
+        return New-Predicate $field 'Date' 'gte' (ConvertTo-Value $Matches[2] 'Date')
+    }
     if ($p -match '(.+?)\s+is not\s+(".*?"|[A-Z][A-Za-z0-9_-]*)$' -or $p -match '(.+?)\s+is different from\s+(".*?"|[A-Z][A-Za-z0-9_-]*)$') {
         $field = ConvertTo-CamelName $Matches[1]
         $family = Get-KeyFamily $field $p
@@ -476,6 +606,10 @@ function Parse-Part {
     if ($p -match '(.+?)\s+is not\s+a specific GUID$') {
         $field = ConvertTo-CamelName $Matches[1]
         return New-Predicate $field 'Guid' 'neq' 'guid'
+    }
+    if ($p -match '(.+?)\s+(equals|equal to|is)\s+a GUID$') {
+        $field = ConvertTo-CamelName $Matches[1]
+        return New-Predicate $field 'Guid' 'eq' 'guid'
     }
     if ($p -match '(.+?)\s+is not Guid.Empty$') {
         $field = ConvertTo-CamelName $Matches[1]
@@ -535,13 +669,37 @@ function Parse-Part {
         $field = ConvertTo-CamelName $Matches[1]
         return New-Predicate $field 'Date' 'between' 'todayStart' 'todayEnd'
     }
+    if ($p -match '(.+?)\s+equals a specific calendar day regardless of time$') {
+        $field = ConvertTo-CamelName $Matches[1]
+        return New-Predicate $field 'Date' 'between' 'dayStart' 'dayEnd'
+    }
+    if ($p -match '(.+?)\s+is this month$') {
+        $field = ConvertTo-CamelName $Matches[1]
+        return New-Predicate $field 'Date' 'between' 'monthStart' 'monthEnd'
+    }
+    if ($p -match '(.+?)\s+is this quarter$') {
+        $field = ConvertTo-CamelName $Matches[1]
+        return New-Predicate $field 'Date' 'between' 'quarterStart' 'quarterEnd'
+    }
+    if ($p -match '(.+?)\s+is this year$') {
+        $field = ConvertTo-CamelName $Matches[1]
+        return New-Predicate $field 'Date' 'between' 'yearStart' 'yearEnd'
+    }
+    if ($p -match '(.+?)\s+is last month$') {
+        $field = ConvertTo-CamelName $Matches[1]
+        return New-Predicate $field 'Date' 'between' 'lastMonthStart' 'lastMonthEnd'
+    }
     if ($p -match '(.+?)\s+is tomorrow$') {
         $field = ConvertTo-CamelName $Matches[1]
         return New-Predicate $field 'Date' 'between' 'tomorrowStart' 'tomorrowEnd'
     }
-    if ($p -match '(.+?)\s+is in the last\s+(\d+)\s+(days|hours|minutes)$') {
+    if ($p -match '(.+?)\s+is (in|within) the last\s+(\d+)\s+(days|hours|minutes)$') {
         $field = ConvertTo-CamelName $Matches[1]
-        return New-Predicate $field 'Date' 'between' "now.Add$($Matches[3].Substring(0,1).ToUpperInvariant() + $Matches[3].Substring(1))(-$($Matches[2]))" 'now'
+        return New-Predicate $field 'Date' 'between' "now.Add$($Matches[4].Substring(0,1).ToUpperInvariant() + $Matches[4].Substring(1))(-$($Matches[3]))" 'now'
+    }
+    if ($p -match '(.+?)\s+is within the last hour$') {
+        $field = ConvertTo-CamelName $Matches[1]
+        return New-Predicate $field 'Date' 'between' 'now.AddHours(-1)' 'now'
     }
     if ($p -match '(.+?)\s+is in the next\s+(\d+)\s+days$') {
         $field = ConvertTo-CamelName $Matches[1]
@@ -555,9 +713,29 @@ function Parse-Part {
         $field = ConvertTo-CamelName $Matches[1]
         return New-Predicate $field 'Date' 'quarter' '2026' $Matches[2]
     }
+    if ($p -match '(.+?)\s+is in Q([1-4])$') {
+        $field = ConvertTo-CamelName $Matches[1]
+        return New-Predicate $field 'Date' 'inquarter' $Matches[2]
+    }
     if ($p -match '(.+?)\s+has day-of-month equal to\s+(\d+)$') {
         $field = ConvertTo-CamelName $Matches[1]
         return ".Index(`"$field`").AsDate.DayEqualTo($($Matches[2]))"
+    }
+    if ($p -match '(.+?)\s+has day-of-month between\s+(\d+)\s+and\s+(\d+)$') {
+        $field = ConvertTo-CamelName $Matches[1]
+        return New-Predicate $field 'Date' 'dayrange' $Matches[2] $Matches[3]
+    }
+    if ($p -match '(.+?)\s+is the same month every year$') {
+        $field = ConvertTo-CamelName $Matches[1]
+        return New-Predicate $field 'Date' 'month' 'month'
+    }
+    if ($p -match '(.+?)\s+is a leap day$') {
+        $field = ConvertTo-CamelName $Matches[1]
+        return ".Index(`"$field`").AsDate.MonthDay(2, 29)"
+    }
+    if ($p -match '(.+?)\s+is the last day of the month$') {
+        $field = ConvertTo-CamelName $Matches[1]
+        return New-Predicate $field 'Date' 'lastofmonth' ''
     }
     if ($p -match '(.+?)\s+has month equal to December$') {
         $field = ConvertTo-CamelName $Matches[1]
@@ -571,12 +749,24 @@ function Parse-Part {
         $field = ConvertTo-CamelName $Matches[1]
         return New-Predicate $field 'Boolean' 'eq' 'false'
     }
+    if ($p -match '(.+?)\s+has read set$') {
+        $field = ConvertTo-CamelName $Matches[1]
+        return New-Predicate $field 'Int64' 'allbits' 'readMask'
+    }
+    if ($p -match '(.+?)\s+has none of the reserved (header )?bits set$') {
+        $field = ConvertTo-CamelName $Matches[1]
+        return New-Predicate $field 'Int64' 'nobits' 'reservedMask'
+    }
+    if ($p -match '(.+?)\s+contains all required flags$' -or $p -match '(.+?)\s+has all required bits$') {
+        $field = ConvertTo-CamelName $Matches[1]
+        return New-Predicate $field 'Int64' 'allbits' 'requiredMask'
+    }
 
     return $null
 }
 
 function Complete-General {
-    param([string]$Request)
+    param([string]$Request, [string]$ExistingScore = '')
 
     $group = Get-GroupName $Request
     if ($Request -notmatch '^Find\s+.+?\s+where\s+(.+)$') {
@@ -584,6 +774,10 @@ function Complete-General {
     }
 
     $criteria = $Matches[1].Trim()
+    if ($ExistingScore -eq '0' -and $Request -match '\bcomposite\b|\broute key\b') {
+        return New-Unsupported 'Score 0: composite and route-key rows require explicit KeyPart(...), FullKey(...), Parts(...), Excluding(...), or ordered MultiKey(...) mapping; the general parser must not flatten them into ordinary index leaves.'
+    }
+
     $unsupportedPatterns = @(
         'before .+ and .+ before',
         'greater than .+ count',
@@ -680,8 +874,17 @@ function Complete-Manual {
         'F067' { return New-Supported 'logs' @((New-Predicate 'message' 'String' 'contains' '"timeout"'), (New-Predicate 'message' 'String' 'notcontains' '"retry succeeded"')) @('AND') }
         'F125' { return New-Supported 'events' @((New-Predicate 'versionNumber' 'Int64' 'bitset' 'versionBitMask')) @() }
         'F135' { return New-Supported 'records' @((New-Predicate 'public' 'Boolean' 'eq' 'true'), (New-Predicate 'shared' 'Boolean' 'eq' 'true')) @('OR') }
+        'F140' { return New-Supported 'records' @((New-Predicate 'approvalA' 'Boolean' 'eq' 'true'), (New-Predicate 'approvalB' 'Boolean' 'eq' 'true'), (New-Predicate 'approvalC' 'Boolean' 'eq' 'true')) @('AND', 'AND') 'The natural language names a fixed three-approval Boolean model; the condition keeps the three stored Boolean leaves explicit.' }
         'F144' { return New-Supported 'tasks' @((New-Predicate 'status' 'String' 'notin' 'new[] { "Closed", "Cancelled" }')) @() }
         'F150' { return New-Supported 'tasks' @((New-Predicate 'workflowState' 'String' 'null' ''), (New-Predicate 'workflowState' 'String' 'eq' '"Unknown"')) @('OR') }
+        'F153' { return New-Supported 'permissions' @((New-Predicate 'permissionMask' 'Int64' 'allbits' '(readMask | writeMask)')) @() 'The request is a stored bitmask predicate; `.AllBitsSet(...)` expresses both required bits without scanning caller policy.' }
+        'F158' { return New-Supported 'permissions' @((New-Predicate 'mask' 'Int64' 'allbits' 'requiredMask'), (New-Predicate 'mask' 'Int64' 'nobits' 'forbiddenMask')) @('AND') 'The request maps to one required-bits predicate and one forbidden-bits predicate over the same stored mask.' }
+        'F162' { return New-Supported 'flags' @((New-Predicate 'beta' 'Boolean' 'eq' 'true'), (New-Predicate 'preview' 'Boolean' 'eq' 'true')) @('OR') 'The local either/or over two stored Boolean flags is ordinary OR composition.' }
+        'F165' { return New-Supported 'flags' @((New-Predicate 'rolloutMask' 'Int64' 'nobits' 'rolloutMask')) @() 'The request is a stored bitmask predicate where none of the rollout bits may be set.' }
+        'F187' { return New-Supported 'rows' @((New-Predicate 'updatedTimestamp' 'Date' 'null' ''), (New-Predicate 'updatedTimestamp' 'Date' 'eq' 'DateTime.MinValue')) @('OR') 'The row asks for either the scalar null route or an explicit DateTime.MinValue sentinel value.' }
+        'F199' { return New-Supported 'rows' @((New-Predicate 'dueDate' 'Date' 'inquarter' '1'), (New-Predicate 'dueDate' 'Date' 'inquarter' '4')) @('OR') 'The local either/or over quarters is represented as two date-component leaves.' }
+        'F212' { return New-ManualSyntax 'ForGroup: LibraDexCondition.ForGroup("events").Index("eventDate").AsDate.MonthDay(month, day).EndCondition | catalog group: catalog["events"].Where("eventDate").AsDate.MonthDay(month, day).EndCondition' 'store.Where.PropPath(".EventDate").AsDate.MonthDay(month, day).EndCondition' 'The builder has direct month/day date component syntax for annual anniversary-style matching.' }
+        'F248' { return New-Supported 'documents' @((New-Predicate 'parentDocumentId' 'Guid' 'null' ''), (New-Predicate 'parentDocumentId' 'Guid' 'eq' 'Guid.Empty')) @('OR') 'The row asks for either the scalar null route or an explicit Guid.Empty sentinel value.' }
         'F201' { return New-Supported 'appointments' @((New-Predicate 'startTime' 'Date' 'morning' '')) @() }
         'F202' { return New-Supported 'appointments' @((New-Predicate 'startTime' 'Date' 'afternoon' '')) @() }
         'F203' { return New-Supported 'appointments' @((New-Predicate 'startTime' 'Date' 'evening' '')) @() }
@@ -695,6 +898,9 @@ function Complete-Manual {
         'F263' { return New-ManualSyntax 'ForGroup: LibraDexCondition.ForGroup("blobs").Index("payload").AsBinary.SlicedAsDateTime(offset).LessThan(cutoff).EndCondition | catalog group: catalog["blobs"].Where("payload").AsBinary.SlicedAsDateTime(offset).LessThan(cutoff).EndCondition' 'store.Where.PropPath(".Payload").AsBinary.SlicedAsDateTime(offset).LessThan(cutoff).EndCondition' 'Typed DateTime binary slice syntax matches the cutoff comparison.' }
         'F264' { return New-ManualSyntax 'ForGroup: LibraDexCondition.ForGroup("blobs").Index("payload").AsBinary.SlicedAsTimeSpan(offset).GreaterThan(TimeSpan.FromMinutes(5)).EndCondition | catalog group: catalog["blobs"].Where("payload").AsBinary.SlicedAsTimeSpan(offset).GreaterThan(TimeSpan.FromMinutes(5)).EndCondition' 'store.Where.PropPath(".Payload").AsBinary.SlicedAsTimeSpan(offset).GreaterThan(TimeSpan.FromMinutes(5)).EndCondition' 'Typed TimeSpan binary slice syntax matches the duration comparison.' }
         'F265' { return New-ManualSyntax 'ForGroup: LibraDexCondition.ForGroup("blobs").Index("payload").AsBinary.SlicedAsBigInteger(offset, byteLength).LessThan(BigInteger.Zero).EndCondition | catalog group: catalog["blobs"].Where("payload").AsBinary.SlicedAsBigInteger(offset, byteLength).LessThan(BigInteger.Zero).EndCondition' 'store.Where.PropPath(".Payload").AsBinary.SlicedAsBigInteger(offset, byteLength).LessThan(BigInteger.Zero).EndCondition' 'Typed BigInteger binary slice syntax matches the negative-value comparison.' }
+        'F275' { return New-ManualSyntax 'ForGroup: LibraDexCondition.ForGroup("files").Index("payload").AsBinary.SlicedAsUInt16(typeCodeOffset).Between(minTypeCode, maxTypeCode).EndCondition | catalog group: catalog["files"].Where("payload").AsBinary.SlicedAsUInt16(typeCodeOffset).Between(minTypeCode, maxTypeCode).EndCondition' 'store.Where.PropPath(".Payload").AsBinary.SlicedAsUInt16(typeCodeOffset).Between(minTypeCode, maxTypeCode).EndCondition' 'A two-byte type code is a typed binary slice, then an ordinary numeric range predicate.' }
+        'F277' { return New-ManualSyntax 'ForGroup: LibraDexCondition.ForGroup("files").Index("payload").AsBinary.SlicedAsUInt16(headerFlagsOffset).AllBitsSet(requiredBit).EndCondition | catalog group: catalog["files"].Where("payload").AsBinary.SlicedAsUInt16(headerFlagsOffset).AllBitsSet(requiredBit).EndCondition' 'store.Where.PropPath(".Payload").AsBinary.SlicedAsUInt16(headerFlagsOffset).AllBitsSet(requiredBit).EndCondition' 'A binary header flag is a typed numeric slice followed by a bitmask predicate.' }
+        'F280' { return New-Supported 'files' @((New-Predicate 'footer' 'Binary' 'ends' 'expectedTrailer')) @() 'The binary footer check maps to the varlen binary suffix predicate.' }
         'F281' { return New-Supported 'people' @((New-Predicate 'firstName' 'String' 'starts' '"Jo"'), (New-Predicate 'lastName' 'String' 'eq' '"Smith"')) @('AND') }
         'F282' { return New-Supported 'people' @((New-Predicate 'firstName' 'String' 'eq' '"John"'), (New-Predicate 'lastName' 'String' 'eq' '"Smith"')) @('AND') }
         'F283' { return New-Supported 'people' @((New-Predicate 'firstName' 'String' 'eq' '"John"'), (New-Predicate 'firstName' 'String' 'eq' '"Jon"')) @('OR') }
@@ -708,6 +914,18 @@ function Complete-Manual {
         'F312' { return New-Supported 'invoices' @((New-Predicate 'balanceDueCents' 'Int64' 'eq' '0L'), (New-Predicate 'paidAt' 'Date' 'notnull' '')) @('AND') }
         'F347' { return New-Supported 'logs' @((New-Predicate 'severity' 'String' 'in' 'new[] { "Error", "Critical" }'), (New-Predicate 'message' 'String' 'contains' '"timeout"')) @('AND') 'The natural language OR is local to severity values, so the condition uses severity membership plus message containment.' }
         'F421' { return New-Supported 'records' @((New-Predicate 'status' 'String' 'in' 'new[] { "Open", "Pending" }'), (New-Predicate 'priority' 'String' 'eq' '"High"')) @('AND') 'Grouped OR collapses to same-index membership plus priority equality.' }
+        'F434' { return New-Supported 'records' @((New-Predicate 'amount' 'Int64' 'gt' '100L'), (New-Predicate 'amount' 'Int64' 'lte' '500L')) @('AND') 'Two bounds over the same numeric index are represented as explicit lower and upper range leaves.' }
+        'F435' { return New-Supported 'records' @((New-Predicate 'date' 'Date' 'gte' 'startDate'), (New-Predicate 'date' 'Date' 'lt' 'endDate')) @('AND') 'The half-open date window uses an inclusive lower bound and exclusive upper bound.' }
+        'F436' { return New-Supported 'records' @((New-Predicate 'version' 'Int64' 'gt' 'minimumVersion'), (New-Predicate 'version' 'Int64' 'notin' 'deprecatedVersions')) @('AND') 'Runtime variables and set operands are ordinary deferred values for numeric predicates.' }
+        'F437' { return New-Supported 'records' @((New-Predicate 'flags' 'Int64' 'allbits' 'requiredBits'), (New-Predicate 'flags' 'Int64' 'nobits' 'forbiddenBits')) @('AND') 'The required and forbidden bit checks are both direct bitmask predicates over the stored flags key.' }
+        'F438' { return New-Supported 'records' @((New-Predicate 'binaryHeader' 'Binary' 'starts' 'prefixBytes'), (New-Predicate 'status' 'String' 'eq' '"Active"')) @('AND') 'Binary prefix and status equality compose as ordinary indexed leaves.' }
+        'F439' { return New-Supported 'records' @((New-Predicate 'guid' 'Guid' 'starts' 'guidPrefix'), (New-Predicate 'createdDate' 'Date' 'between' 'yearStart' 'yearEnd')) @('AND') 'Guid text-prefix matching can compose with a caller-supplied current-year date range.' }
+        'F440' { return New-Supported 'records' @((New-Predicate 'stringSuffix' 'String' 'ends' 'suffix'), (New-Predicate 'numericScore' 'Int64' 'gt' 'threshold')) @('AND') 'Suffix and threshold variables are ordinary runtime operands for existing string and numeric predicates.' }
+        'F451' { return New-Supported 'records' @((New-Predicate 'tenantId' 'Guid' 'eq' 'currentTenantId')) @() 'The caller tenant id is a runtime operand for a stored Guid key.' }
+        'F452' { return New-Supported 'records' @((New-Predicate 'userId' 'Guid' 'eq' 'currentUserId')) @() 'The caller user id is a runtime operand for a stored Guid key.' }
+        'F453' { return New-Supported 'records' @((New-Predicate 'value' 'Int64' 'gt' 'threshold')) @() 'A threshold comparison that uses a runtime variable is still an ordinary deferred numeric operand.' }
+        'F454' { return New-ManualSyntax 'ForGroup: LibraDexCondition.ForGroup("records").Index(selectedIndexName).AsString.EqualTo(searchValue).EndCondition | catalog group: catalog["records"].Where(selectedIndexName).AsString.EqualTo(searchValue).EndCondition' 'store.Where.PropPath(selectedPropertyPath).AsString.EqualTo(searchValue).EndCondition' 'Runtime index selection is supported by the string index-name overload; the caller still owns choosing a valid indexed field.' }
+        'F456' { return New-ManualSyntax 'ForGroup: var field = useCreatedDate ? "createdDate" : "updatedDate"; LibraDexCondition.ForGroup("records").Index(field).AsDate.LessThan(cutoff).EndCondition | catalog group: catalog["records"].Where(field).AsDate.LessThan(cutoff).EndCondition' 'store.Where.PropPath(useCreatedDate ? ".CreatedDate" : ".UpdatedDate").AsDate.LessThan(cutoff).EndCondition' 'The same cutoff can be applied to either indexed date field by selecting the indexed field before building the condition.' }
         'F496' { return New-Supported 'records' @((New-Predicate 'stringProperty' 'String' 'null' '')) @() }
         'F497' { return New-Supported 'records' @((New-Predicate 'stringProperty' 'String' 'empty' '')) @() }
         'F498' { return New-Supported 'records' @((New-Predicate 'stringProperty' 'String' 'nullorempty' '')) @() }
@@ -715,6 +933,23 @@ function Complete-Manual {
         'F500' { return New-Supported 'records' @((New-Predicate 'numericProperty' 'Int64' 'notnull' ''), (New-Predicate 'numericProperty' 'Int64' 'gt' '0L')) @('AND') }
         'F501' { return New-Supported 'records' @((New-Predicate 'dateProperty' 'Date' 'null' '')) @() }
         'F502' { return New-Supported 'records' @((New-Predicate 'dateProperty' 'Date' 'notnull' ''), (New-Predicate 'dateProperty' 'Date' 'lt' 'today')) @('AND') }
+        'F512' { return New-Supported 'records' @((New-Predicate 'phoneNumber' 'String' 'starts' 'countryCode')) @() 'A country-code prefix is an ordinary runtime string prefix operand.' }
+        'F513' { return New-Supported 'records' @((New-Predicate 'phoneNumber' 'String' 'ends' 'localExtension')) @() 'A local extension suffix is an ordinary runtime string suffix operand.' }
+        'F516' { return New-Supported 'records' @((New-Predicate 'geohash' 'String' 'starts' 'areaPrefix')) @() 'Geohash nearby-area narrowing is represented as a stored geohash-prefix predicate.' }
+        'F519' { return New-Supported 'records' @((New-Predicate 'latitudeBucket' 'Int64' 'between' 'minLatitudeBucket' 'maxLatitudeBucket')) @() 'The latitude bucket is already modeled as an indexed integer range key.' }
+        'F520' { return New-Supported 'records' @((New-Predicate 'longitudeBucket' 'Int64' 'between' 'minLongitudeBucket' 'maxLongitudeBucket')) @() 'The longitude bucket is already modeled as an indexed integer range key.' }
+        'F522' { return New-Supported 'records' @((New-Predicate 'currency' 'String' 'eq' '"EUR"'), (New-Predicate 'amount' 'Int64' 'between' 'minMinorUnits' 'maxMinorUnits')) @('AND') 'Currency equality composes with the indexed minor-unit amount range.' }
+        'F531' { return New-Supported 'records' @((New-Predicate 'ipAddress' 'String' 'eq' 'ipv4Address')) @() 'A specific IPv4 address is represented as the stored address key value.' }
+        'F533' { return New-Supported 'records' @((New-Predicate 'ipAddress' 'String' 'notbetween' 'denyRangeStart' 'denyRangeEnd')) @() 'A single denylisted range can be represented as the negation of a stored address-key range.' }
+        'F534' { return New-Supported 'records' @((New-Predicate 'ipv6Address' 'String' 'starts' 'networkPrefix')) @() 'An IPv6 network prefix is represented as a stored text-prefix predicate.' }
+        'F543' { return New-Supported 'records' @((New-Predicate 'created' 'Date' 'between' 'now.AddDays(-14)' 'now')) @() 'The row defines recent as a fixed rolling 14-day created-date window.' }
+        'F548' { return New-Supported 'records' @((New-Predicate 'tenantId' 'Guid' 'eq' 'currentTenantId')) @() 'Same-tenant semantics are direct when the row states the modeled key is tenant id.' }
+        'F582' { return New-Supported 'records' @((New-Predicate 'nullableDate' 'Date' 'eq' 'DateTime.MinValue')) @() 'The row explicitly uses DateTime.MinValue as the stored sentinel value.' }
+        'F583' { return New-Supported 'records' @((New-Predicate 'nullableGuid' 'Guid' 'eq' 'Guid.Empty')) @() 'The row explicitly uses Guid.Empty as the stored sentinel value.' }
+        'F588' { return New-Supported 'records' @((New-Predicate 'payload' 'Binary' 'empty' '')) @() 'The binary varlen key state can distinguish empty byte array from missing or null binary value.' }
+        'F608' { return New-Supported 'records' @((New-Predicate 'accessMask' 'Int64' 'allbits' 'requiredMask'), (New-Predicate 'accessMask' 'Int64' 'nobits' 'deniedMask')) @('AND') 'The access mask request maps to one required-bits predicate and one denied-bits predicate.' }
+        'F621' { return New-Supported 'records' @((New-Predicate 'payload' 'Binary' 'contains' 'jsonContentTypeMarkerBytes')) @() 'The requested JSON content-type marker is represented as a byte sequence within the binary payload key.' }
+        'F627' { return New-Supported 'records' @((New-Predicate 'payload' 'Binary' 'starts' 'payloadPrefix'), (New-Predicate 'tenantId' 'Guid' 'eq' 'tenantId')) @('AND') 'Binary payload prefix and tenant id equality compose as ordinary indexed leaves.' }
         'F642' { return New-Supported 'records' @((New-Predicate 'payload' 'Binary' 'null' '')) @() }
         'F643' { return New-Supported 'records' @((New-Predicate 'payload' 'Binary' 'empty' '')) @() }
         'F644' { return New-Supported 'records' @((New-Predicate 'payload' 'Binary' 'nullorempty' '')) @() }
@@ -722,7 +957,7 @@ function Complete-Manual {
         'F623' { return New-ManualSyntax 'ForGroup: LibraDexCondition.ForGroup("records").Index("payload").AsBinary.SlicedAsAsciiString(offset, length).EqualTo("OK").EndCondition | catalog group: catalog["records"].Where("payload").AsBinary.SlicedAsAsciiString(offset, length).EqualTo("OK").EndCondition' 'store.Where.PropPath(".Payload").AsBinary.SlicedAsAsciiString(offset, length).EqualTo("OK").EndCondition' 'Typed ASCII binary slice syntax matches the requested OK field.' }
         'F624' { return New-ManualSyntax 'ForGroup: LibraDexCondition.ForGroup("records").Index("payload").AsBinary.SlicedAsUInt16(offset).BitAnd(flagMask, flagMask).EndCondition | catalog group: catalog["records"].Where("payload").AsBinary.SlicedAsUInt16(offset).BitAnd(flagMask, flagMask).EndCondition' 'store.Where.PropPath(".Payload").AsBinary.SlicedAsUInt16(offset).BitAnd(flagMask, flagMask).EndCondition' 'Typed UInt16 binary slice syntax matches the requested flag-bit test.' }
         'F625' { return New-ManualSyntax 'ForGroup: LibraDexCondition.ForGroup("records").Index("payload").AsBinary.SlicedAsDateOnly(offset).EqualTo(today).EndCondition | catalog group: catalog["records"].Where("payload").AsBinary.SlicedAsDateOnly(offset).EqualTo(today).EndCondition' 'store.Where.PropPath(".Payload").AsBinary.SlicedAsDateOnly(offset).EqualTo(today).EndCondition' 'Typed DateOnly binary slice syntax matches the requested date equality.' }
-        'F626' { return New-ManualSyntax 'ForGroup: LibraDexCondition.ForGroup("records").Index("payload").AsBinary.SlicedAsDateTimeOffset(offset).LessThan(now).EndCondition | catalog group: catalog["records"].Where("payload").AsBinary.SlicedAsDateTimeOffset(offset).LessThan(now).EndCondition' 'store.Where.PropPath(".Payload").AsBinary.SlicedAsDateTimeOffset(offset).LessThan(now).EndCondition' 'Typed DateTimeOffset binary slice syntax matches the requested instant comparison.' }
+        'F626' { return New-ManualSyntax 'ForGroup: LibraDexCondition.ForGroup("records").Index("payload").AsBinary.SlicedAsDateTimeOffset(offset).LessThan(nowOffset).EndCondition | catalog group: catalog["records"].Where("payload").AsBinary.SlicedAsDateTimeOffset(offset).LessThan(nowOffset).EndCondition' 'store.Where.PropPath(".Payload").AsBinary.SlicedAsDateTimeOffset(offset).LessThan(nowOffset).EndCondition' 'Typed DateTimeOffset binary slice syntax matches the requested instant comparison; SlicedAsDateTime remains the explicit DateTime tick slice.' }
         'F646' { return [pscustomobject]@{ LibraDex='ForGroup: LibraDexCondition.ForGroup("users").Index("lastName").AsString.EqualTo("Smith").AND.Index("firstName").AsString.StartsWith("J").And.External(id => GetAge(id) > 18).EndCondition | catalog group: catalog["users"].Where("lastName").AsString.EqualTo("Smith").AndAlso("firstName").AsString.StartsWith("J").And.External(id => GetAge(id) > 18).EndCondition'; Abraxas='store.Where.PropPath(".LastName").AsString.EqualTo("Smith").AND.PropPath(".FirstName").AsString.StartsWith("J").AND.External(id => GetAge(id) > 18).EndCondition'; Score='5'; Notes='Anchored `.External(id => ...)` supplies the caller-owned age predicate after stored indexes narrow candidates.' } }
         'F650' { return [pscustomobject]@{ LibraDex='ForGroup: LibraDexCondition.ForGroup("users").External<int, long>(() => ageEntries).Between(18, 25).EndCondition where `ageEntries` yields `LibraDexExternalEntry<int, long>` or `KeyValuePair<int, long>` | typed catalog group: catalog["users"].Identities.Int64.External<int>(() => ageEntries).Between(18, 25).EndCondition'; Abraxas='store.Where.External<int>(() => ageEntries).Between(18, 25).EndCondition'; Score='5'; Notes='Runtime external entries behave as a caller-owned temporary index with typed key/identity pairs.' } }
         'F647' { return New-ManualSyntax 'ForGroup: LibraDexCondition.ForGroup("users").Index("firstName").AsString.StartsWith("Jo").And.External<int>(id => GetAges(id)).Between(18, 25).EndCondition | catalog group: catalog["users"].Where("firstName").AsString.StartsWith("Jo").And.External<int>(id => GetAges(id)).Between(18, 25).EndCondition' 'store.Where.PropPath(".FirstName").AsString.StartsWith("Jo").AND.External<int>(id => GetAges(id)).Between(18, 25).EndCondition' 'Correlated external key data uses candidate identities from the indexed first-name branch.' }
@@ -756,13 +991,19 @@ function Complete-Manual {
 $rows = Import-Csv $Path
 foreach ($row in $rows) {
     $manual = Complete-Manual $row.id
-    $result = if ($manual) { $manual } else { Complete-General $row.natural_request }
+    $result = if ($manual) { $manual } else { Complete-General $row.natural_request $row.'dx quality score' }
     $row.'libradex condition(s)' = $result.LibraDex
     $row.'abraxas condition(s)' = $result.Abraxas
     $row.'dx quality score' = $result.Score
-    $row.notes = $result.Notes
+    $inventoryNote = if ($result.Score -eq '0') { Get-CapabilityInventoryNote $row.id } else { '' }
+    $row.notes = if ($inventoryNote) { $inventoryNote } else { $result.Notes }
 }
 
 $rows | Export-Csv $Path -NoTypeInformation
+$resolvedPath = (Resolve-Path $Path).Path
+$csvText = [System.IO.File]::ReadAllText($resolvedPath)
+$csvText = $csvText -replace "`r`n", "`n"
+$utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+[System.IO.File]::WriteAllText($resolvedPath, $csvText, $utf8NoBom)
 $scoreGroups = $rows | Group-Object 'dx quality score' | Sort-Object Name
 $scoreGroups | ForEach-Object { "$($_.Name)=$($_.Count)" }

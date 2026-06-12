@@ -3,6 +3,8 @@ obj/
 .vs/
 .tmp/
 .tmp_*
+# Local generated output and archive space.
+# Durable review/restart docs belong under docs/.
 artifacts/
 *.user
 *.suo

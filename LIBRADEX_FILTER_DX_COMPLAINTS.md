@@ -1,6 +1,6 @@
 # LibraDex Filter DX Complaints
 
-This checklist tracks developer-friction complaints found while reviewing `artifacts/filter-dx-natural-language-corpus.csv`.
+This checklist tracks developer-friction complaints found while reviewing `docs/condition-builder/filter-dx-natural-language-corpus.csv`.
 
 ## Open
 
@@ -14,7 +14,7 @@ No active complaints are currently listed.
 
    - Recreated stale LibraDex examples around `.AsBoolean`, `NullKey`, `ScalarNull`, binary null/empty key state, case/culture string options, and index-first catalog syntax.
    - Rescored rows against current API support: direct boolean/null examples are now 5s, while the remaining 3s are true modeling-policy rows for absent tuples or whitespace normalization.
-   - Updated `artifacts/filter-dx-corpus-regeneration-capabilities.md` so future rebuilds do not preserve old boolean or nullable-scalar assumptions.
+   - Updated `docs/condition-builder/filter-dx-corpus-regeneration-capabilities.md` so future rebuilds do not preserve old boolean or nullable-scalar assumptions.
 
 2. [x] Corpus appeared to overuse `.AsString` for numeric/domain rows.
 
@@ -117,7 +117,7 @@ No active complaints are currently listed.
 
    Resolution:
 
-   - Updated `artifacts/filter-dx-corpus-regeneration-capabilities.md` to reject stale `.ExternalIds(...)`, `.ExternalContext(...)`, `.FilterIdentity(...)`, and `.ExternalKeys(...)` spellings.
+   - Updated `docs/condition-builder/filter-dx-corpus-regeneration-capabilities.md` to reject stale `.ExternalIds(...)`, `.ExternalContext(...)`, `.FilterIdentity(...)`, and `.ExternalKeys(...)` spellings.
    - Added corpus rows for anchored external identity predicates, `ordinal`/`isFirst` cache-friendly predicates, standalone external identity sources, runtime key/identity entry sources, and correlated external keys.
    - Scored the new external rows as first-class LibraDex coverage because caller-owned data can now participate inline without pretending it is a stored index.
 
@@ -165,7 +165,7 @@ No active complaints are currently listed.
 
    Resolution:
 
-   - Reset generated columns in `artifacts/filter-dx-natural-language-corpus.csv` and rebuilt them from the row id plus natural-language request text.
+   - Reset generated columns in `docs/condition-builder/filter-dx-natural-language-corpus.csv` and rebuilt them from the row id plus natural-language request text.
    - Added `rebuild-filter-dx-corpus.ps1` so this pass is repeatable instead of depending on one-off CSV edits.
    - Rows that cannot be faithfully expressed as C# condition syntax now receive score `0` with a reason instead of a plausible-looking but incorrect condition.
    - F310 now maps both predicates: billing postal-code prefix and country equality.
