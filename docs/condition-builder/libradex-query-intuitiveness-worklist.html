@@ -1,0 +1,1613 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; style-src 'unsafe-inline' blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; img-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; font-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; media-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; worker-src blob:; connect-src blob: data:; frame-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<title>LibraDex Query Intuitiveness Worklist</title>
+<style>:root{color-scheme:light dark;background:light-dark(rgb(255 255 255), rgb(24 24 24))}html,body{margin:0}body{box-sizing:border-box;padding:1rem;background:inherit}iframe{display:block;width:100%;max-width:none;height:calc(100vh - 2rem);margin:0 auto;border:0}</style>
+</head>
+<body>
+<iframe sandbox="allow-scripts" referrerpolicy="no-referrer" title="LibraDex Query Intuitiveness Worklist" srcdoc="&lt;!doctype html&gt;
+&lt;html lang=&quot;en&quot;&gt;
+&lt;head&gt;
+&lt;meta charset=&quot;utf-8&quot;&gt;
+&lt;meta name=&quot;viewport&quot; content=&quot;width=device-width, initial-scale=1&quot;&gt;
+&lt;meta name=&quot;referrer&quot; content=&quot;no-referrer&quot;&gt;
+&lt;meta http-equiv=&quot;Content-Security-Policy&quot; content=&quot;default-src &#x27;none&#x27;; script-src &#x27;unsafe-inline&#x27; &#x27;unsafe-eval&#x27; &#x27;wasm-unsafe-eval&#x27; blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; style-src &#x27;unsafe-inline&#x27; blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; img-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; font-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; media-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; worker-src blob:; connect-src blob: data:; frame-src &#x27;none&#x27;; object-src &#x27;none&#x27;; base-uri &#x27;none&#x27;; form-action &#x27;none&#x27;&quot;&gt;
+&lt;title&gt;Libradex Query Intuitiveness&lt;/title&gt;
+&lt;style&gt;:root {
+  color-scheme: light dark;
+  background-color: var(--background) !important;
+
+  /* Agent-facing contract; keep in sync with SKILL.md. */
+  --background: light-dark(rgb(255 255 255), rgb(24 24 24));
+  --foreground: light-dark(rgb(26 28 31), rgb(255 255 255));
+  --card: color-mix(in oklab, var(--foreground) 5%, transparent);
+  --card-foreground: var(--foreground);
+  --popover: light-dark(rgb(255 255 255), rgb(45 45 45));
+  --popover-foreground: var(--foreground);
+  --primary: light-dark(rgb(51 156 255), rgb(131 195 255));
+  --primary-foreground: light-dark(rgb(255 255 255), rgb(13 13 13));
+  --secondary: light-dark(rgb(255 255 255 / 96%), rgb(54 54 54 / 96%));
+  --secondary-foreground: var(--foreground);
+  --muted: color-mix(in srgb, var(--foreground) 10%, transparent);
+  --muted-foreground: light-dark(
+    rgb(26 28 31 / 49.4%),
+    rgb(255 255 255 / 49.8%)
+  );
+  --accent: light-dark(rgb(229 242 255), rgb(13 39 63));
+  --accent-foreground: var(--primary);
+  --destructive: light-dark(rgb(226 85 7), rgb(255 133 73));
+  --border: light-dark(rgb(26 28 31 / 8%), rgb(255 255 255 / 8.2%));
+  --input: light-dark(
+    rgb(26 28 31 / 11.8%),
+    color-mix(in oklab, rgb(0 0 0) 10%, transparent)
+  );
+  --ring: light-dark(rgb(51 156 255), rgb(131 195 255 / 76%));
+  --font-size-base: 14px;
+  --viz-series-1: var(--primary);
+  --viz-series-2: light-dark(rgb(243 136 59), rgb(245 154 86));
+  --viz-series-3: light-dark(rgb(93 201 119), rgb(116 213 139));
+  --viz-series-4: light-dark(rgb(235 119 177), rgb(240 143 192));
+  --viz-series-5: light-dark(rgb(155 121 236), rgb(170 145 239));
+  --viz-series-6: light-dark(rgb(58 185 177), rgb(90 203 194));
+
+  /* Internal implementation variables; not part of the agent contract. */
+  --font-sans: -apple-system, system-ui, &quot;Segoe UI&quot;, sans-serif;
+  --font-mono:
+    ui-monospace, SFMono-Regular, &quot;SF Mono&quot;, Menlo, Consolas, &quot;Liberation Mono&quot;,
+    monospace;
+  --font-size-normal: max(11px, var(--font-size-base));
+  --font-size-tooltip: calc(var(--font-size-base) - 1px);
+  --font-size-small: max(11px, calc(var(--font-size-base) - 2px));
+  --font-size-h1: calc(var(--font-size-normal) * 1.7142857143);
+  --font-size-h2: calc(var(--font-size-normal) * 1.4285714286);
+  --font-size-h3: calc(var(--font-size-normal) * 1.2857142857);
+  --font-weight-normal: 430;
+  --font-weight-medium: 500;
+  --line-height-normal: calc(var(--font-size-normal) * 1.5);
+  --line-height-tooltip: calc(var(--font-size-tooltip) * 1.4285714286);
+  --line-height-small: calc(var(--font-size-small) + 4px);
+  --radius: 12.5px;
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-2xl: calc(var(--radius) * 1.6);
+  --radius-full: 9999px;
+  --shadow-sm: 0 1px 2px -1px rgb(0 0 0 / 8%);
+  --checkmark-image: url(&quot;data:image/svg+xml,%3Csvg xmlns=&#x27;http://www.w3.org/2000/svg&#x27; viewBox=&#x27;0 0 17 17&#x27;%3E%3Cpath d=&#x27;M12.8961 3.64101C13.1297 3.41418 13.4984 3.37523 13.7779 3.56581C14.0571 3.75635 14.1554 4.11331 14.0299 4.41347L13.9615 4.53847L7.71151 13.7045C7.59411 13.8767 7.4063 13.9877 7.19881 14.0072C6.99136 14.0267 6.78564 13.9533 6.63826 13.806L2.88826 10.056L2.79842 9.9457C2.6192 9.67407 2.64927 9.30496 2.88826 9.06581C3.12738 8.82669 3.49647 8.79676 3.76815 8.97597L3.8785 9.06581L7.03084 12.2182L12.8053 3.74941L12.8961 3.64101Z&#x27;/%3E%3C/svg%3E&quot;);
+
+  /* Legacy aliases; not part of the current agent contract. */
+  --viz-bg: transparent;
+  --viz-panel: var(--card);
+  --viz-border: var(--border);
+  --viz-text: var(--foreground);
+  --viz-muted: var(--muted-foreground);
+  --viz-accent: var(--primary);
+  --viz-accent-text: var(--primary-foreground);
+  --viz-accent-bg: var(--accent);
+  --viz-font-size: var(--font-size-base);
+  --viz-warning: var(--destructive);
+  --color-background-primary: var(--background);
+  --color-text-primary: var(--foreground);
+  --color-border-secondary: var(--border);
+}
+
+:root[data-theme=&quot;light&quot;] {
+  color-scheme: light;
+}
+
+:root[data-theme=&quot;dark&quot;] {
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html &gt; body {
+  margin: 0;
+  padding: 5px;
+  color: var(--foreground);
+  background: transparent !important;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-normal);
+  font-weight: var(--font-weight-normal);
+  line-height: var(--line-height-normal);
+}
+
+a {
+  color: color-mix(in srgb, var(--viz-accent) 80%, var(--viz-text) 20%);
+  cursor: pointer;
+  font-weight: var(--viz-font-weight-medium);
+  text-decoration: none;
+  text-underline-offset: 2px;
+}
+
+a:is(:hover, :focus-visible) {
+  text-decoration-line: underline;
+  text-decoration-style: dashed;
+  text-decoration-thickness: 0.5px;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+p {
+  margin-block: 0;
+}
+
+h1 {
+  font-size: var(--font-size-h1);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.25;
+}
+
+h2 {
+  font-size: var(--font-size-h2);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.25;
+}
+
+h3,
+h4,
+h5,
+h6 {
+  font-size: var(--font-size-h3);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.3;
+}
+
+b,
+strong,
+th {
+  font-weight: var(--font-weight-medium);
+}
+
+code:not(pre code) {
+  display: inline;
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  corner-shape: superellipse(1.5);
+  background: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  overflow-wrap: anywhere;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+  word-break: break-word;
+}
+
+.table-responsive {
+  width: 100%;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  color: var(--foreground);
+  font: inherit;
+  text-align: start;
+}
+
+.table :is(th, td) {
+  padding-block: 10px;
+  padding-inline: 0 24px;
+  overflow-wrap: anywhere;
+  border-bottom: 1px solid var(--border);
+  text-align: start;
+  vertical-align: top;
+}
+
+.table-responsive &gt; .table :is(th, td) {
+  overflow-wrap: break-word;
+}
+
+.table :is(th, td):last-child {
+  padding-inline-end: 0;
+}
+
+.table :is(caption, thead th) {
+  font-weight: 600;
+}
+
+.table thead th {
+  padding-block: 8px;
+  border-bottom-color: color-mix(in srgb, var(--foreground) 16%, transparent);
+}
+
+.table tbody tr:last-child :is(th, td) {
+  border-bottom: 0;
+}
+
+.table.table-sm :is(th, td) {
+  padding-block: 6px;
+}
+
+.table.table-sm :is(th, td):not(:last-child) {
+  padding-inline-end: 16px;
+}
+
+.table :is(.text-end, [align=&quot;right&quot;]) {
+  text-align: end;
+  font-variant-numeric: tabular-nums;
+}
+
+.table :is(.text-center, [align=&quot;center&quot;]) {
+  text-align: center;
+}
+
+.table .text-nowrap {
+  white-space: nowrap;
+}
+
+#widget {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  padding: 0;
+  background: transparent !important;
+}
+
+.card {
+  min-width: 0;
+  padding: 12px;
+  overflow: hidden;
+  overflow-wrap: break-word;
+  border-radius: var(--radius-2xl);
+  corner-shape: superellipse(1.5);
+  color: var(--card-foreground);
+  background: var(--card);
+}
+
+#widget &gt; :not(.card) {
+  width: 100% !important;
+  max-width: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.tooltip {
+  position: fixed;
+  z-index: 50;
+  top: 0;
+  left: 0;
+  width: max-content;
+  max-width: min(
+    20rem,
+    var(--tooltip-available-width, calc(100vw - 10px)),
+    calc(100vw - 10px)
+  );
+  max-height: min(
+    var(--tooltip-available-height, calc(100vh - 10px)),
+    calc(100vh - 10px)
+  );
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  corner-shape: superellipse(1.5);
+  color: var(--popover-foreground);
+  background: var(--popover);
+  box-shadow: none;
+  font-size: var(--font-size-tooltip);
+  line-height: var(--line-height-tooltip);
+  overflow-wrap: break-word;
+  white-space: normal;
+  pointer-events: none;
+  user-select: none;
+}
+
+.viz-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(max(180px, 24%), 1fr));
+  gap: 10px;
+}
+
+.viz-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.viz-stat-value {
+  font-size: var(--font-size-h2);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.25;
+}
+
+.viz-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.viz-badge {
+  padding: 3px 8px;
+  border-radius: var(--radius-full);
+  color: var(--accent-foreground);
+  background: var(--accent);
+  font-weight: var(--font-weight-medium);
+}
+
+small,
+.text-small,
+.viz-badge {
+  font-size: var(--font-size-small);
+  line-height: var(--line-height-small);
+}
+
+.text-muted {
+  color: var(--muted-foreground);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.viz-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.viz-controls &gt; .form-label {
+  display: grid;
+  min-width: min(100%, 260px);
+  flex: 1 1 280px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 2px 12px;
+  margin-bottom: 0;
+}
+
+.viz-controls &gt; .form-label &gt; :is(.form-control, .form-range, .form-select) {
+  grid-column: 1 / -1;
+}
+
+.btn,
+.form-check-input,
+.form-control,
+.form-range,
+.form-select {
+  font: inherit;
+}
+
+.btn {
+  appearance: button;
+  display: inline-flex;
+  inline-size: fit-content;
+  max-inline-size: 100%;
+  min-height: 28px;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  margin: 0;
+  padding: 0 8px;
+  -webkit-app-region: no-drag;
+  border: 1px solid var(--input);
+  border-radius: var(--radius-lg);
+  corner-shape: superellipse(1.5);
+  color: var(--secondary-foreground);
+  background: var(--secondary);
+  cursor: var(--cursor-interaction, pointer);
+  text-align: center;
+  text-decoration: none;
+  white-space: nowrap;
+  user-select: none;
+  -webkit-font-smoothing: antialiased;
+}
+
+.btn:is(.btn-block, .viz-tile) {
+  inline-size: 100%;
+}
+
+.btn.viz-tile {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+a.btn {
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.btn:not(:disabled):hover {
+  background: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+}
+
+.btn-primary {
+  border-color: transparent;
+  color: var(--primary-foreground);
+  background: var(--foreground);
+  background-clip: padding-box;
+}
+
+.btn-primary .text-muted {
+  color: color-mix(in srgb, var(--primary-foreground) 50%, transparent);
+}
+
+.btn-primary:not(:disabled):hover {
+  background: color-mix(in srgb, var(--foreground) 80%, transparent);
+  background-clip: padding-box;
+}
+
+.btn-ghost {
+  border-color: transparent;
+  color: var(--muted-foreground);
+  background: transparent;
+}
+
+.btn-ghost:not(:disabled):hover {
+  color: var(--foreground);
+  background: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+}
+
+.btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+[data-lucide] {
+  stroke-width: 1.6;
+}
+
+.form-label {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--foreground);
+}
+
+.form-control {
+  display: block;
+  width: 100%;
+  min-height: 28px;
+  padding: 0 8px;
+  outline: none;
+  border: 1px solid var(--input);
+  border-radius: var(--radius-lg);
+  corner-shape: superellipse(1.5);
+  color: var(--foreground);
+  background: var(--secondary);
+}
+
+.form-control::placeholder {
+  color: var(--muted-foreground);
+}
+
+.form-control[type=&quot;file&quot;] {
+  padding: 0;
+  overflow: hidden;
+  cursor: var(--cursor-interaction, pointer);
+}
+
+.form-control[type=&quot;file&quot;]::file-selector-button {
+  min-height: 26px;
+  margin-right: 8px;
+  padding: 0 8px;
+  border: 0;
+  border-right: 1px solid var(--input);
+  color: var(--secondary-foreground);
+  background: var(--secondary);
+  cursor: inherit;
+  font: inherit;
+}
+
+.form-control[type=&quot;file&quot;]:not(:disabled):hover::file-selector-button {
+  background: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+}
+
+.form-control-color[type=&quot;color&quot;] {
+  width: 40px;
+  height: 28px;
+  padding: 3px;
+  cursor: var(--cursor-interaction, pointer);
+}
+
+.form-control-color[type=&quot;color&quot;]::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.form-control-color[type=&quot;color&quot;]::-webkit-color-swatch {
+  border: 0;
+  border-radius: calc(var(--radius-lg) - 4px);
+  corner-shape: superellipse(1.5);
+}
+
+textarea.form-control {
+  height: auto;
+  min-height: 72px;
+  padding: 8px 10px;
+  resize: vertical;
+}
+
+.form-control:focus-visible {
+  border-color: var(--ring);
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+
+.form-control:disabled,
+.form-select:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.form-select {
+  appearance: none;
+  display: block;
+  width: 100%;
+  min-height: 28px;
+  margin: 0;
+  padding: 0 32px 0 8px;
+  outline: none;
+  border: 1px solid var(--input);
+  border-radius: var(--radius-lg);
+  corner-shape: superellipse(1.5);
+  color: var(--foreground);
+  background-color: var(--secondary);
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--muted-foreground) 50%),
+    linear-gradient(135deg, var(--muted-foreground) 50%, transparent 50%);
+  background-position:
+    calc(100% - 14px) 50%,
+    calc(100% - 10px) 50%;
+  background-repeat: no-repeat;
+  background-size: 4px 4px;
+  cursor: var(--cursor-interaction, default);
+}
+
+.form-select:not(:disabled):hover {
+  background-color: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+}
+
+.form-select:focus-visible {
+  border-color: var(--ring);
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+
+.form-check {
+  display: flex;
+  min-height: 20px;
+  align-items: center;
+  gap: 6px;
+}
+
+.form-check-input {
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  margin: 0;
+  border: 1px solid var(--input);
+  color: var(--primary-foreground);
+  background-color: transparent;
+  cursor: var(--cursor-interaction, default);
+  transition:
+    background-color 150ms,
+    border-color 150ms,
+    box-shadow 150ms;
+}
+
+.form-check:not(.form-switch) .form-check-input[type=&quot;checkbox&quot;] {
+  border-color: var(--input);
+  border-radius: var(--radius-sm);
+  corner-shape: superellipse(1.5);
+  background-color: var(--secondary);
+  box-shadow: var(--shadow-sm);
+}
+
+.form-check:not(.form-switch)
+  .form-check-input:not(:disabled):not(:checked):hover {
+  background-color: var(--card);
+}
+
+.form-check:not(.form-switch) .form-check-input[type=&quot;checkbox&quot;]:checked {
+  border-color: var(--primary);
+  background-color: var(--primary);
+}
+
+.form-check:not(.form-switch)
+  .form-check-input[type=&quot;checkbox&quot;]:checked::before {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: var(--primary-foreground);
+  content: &quot;&quot;;
+  mask: var(--checkmark-image) center / 12px 12px no-repeat;
+}
+
+.form-check-input[type=&quot;radio&quot;] {
+  width: 14px;
+  height: 14px;
+  border-radius: var(--radius-full);
+}
+
+.form-check-input[type=&quot;radio&quot;]:checked {
+  border: 2px solid var(--primary);
+  background:
+    radial-gradient(circle, var(--primary-foreground) 0 2.5px, transparent 3px),
+    var(--primary);
+}
+
+.form-check:not(.form-switch) .form-check-input:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.form-check:not(.form-switch) .form-check-input:disabled {
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.form-check:not(.form-switch) .form-check-input:disabled + .form-check-label {
+  cursor: not-allowed;
+}
+
+.form-switch .form-check-input:disabled,
+.form-switch .form-check-input:disabled + .form-check-label {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.form-check-label {
+  color: var(--foreground);
+  cursor: var(--cursor-interaction, default);
+}
+
+.form-switch .form-check-input {
+  position: relative;
+  width: 32px;
+  height: 20px;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: var(--muted);
+  box-shadow: none;
+  transition: background-color 200ms cubic-bezier(0, 0, 0.2, 1);
+}
+
+.form-switch .form-check-input::before {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 16px;
+  height: 16px;
+  box-sizing: border-box;
+  border: 1px solid light-dark(var(--primary-foreground), var(--foreground));
+  border-radius: var(--radius-full);
+  background: light-dark(var(--primary-foreground), var(--foreground));
+  box-shadow: var(--shadow-sm);
+  content: &quot;&quot;;
+  transform: translate(2px, -50%);
+  transition: transform 200ms cubic-bezier(0, 0, 0.2, 1);
+}
+
+.form-switch .form-check-input:checked {
+  background: var(--primary);
+}
+
+.form-switch .form-check-input:checked::before {
+  transform: translate(14px, -50%);
+}
+
+.form-switch .form-check-input:focus-visible {
+  box-shadow: 0 0 0 2px var(--ring);
+}
+
+.form-range {
+  appearance: none;
+  display: block;
+  width: 100%;
+  height: 28px;
+  flex: 1;
+  margin: 0;
+  padding: 0;
+  outline: none;
+  border: 0;
+  accent-color: var(--primary);
+  background: linear-gradient(
+      color-mix(in srgb, var(--foreground) 7%, transparent),
+      color-mix(in srgb, var(--foreground) 7%, transparent)
+    )
+    center / 100% 2px no-repeat;
+}
+
+.form-range::-webkit-slider-runnable-track {
+  height: 28px;
+  background: transparent;
+}
+
+.form-range::-webkit-slider-thumb {
+  appearance: none;
+  width: 20px;
+  height: 20px;
+  margin-top: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  background: light-dark(var(--primary-foreground), var(--foreground));
+}
+
+.form-range:focus-visible::-webkit-slider-thumb {
+  border-color: var(--ring);
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+
+.form-range::-moz-range-track {
+  height: 28px;
+  background: transparent;
+}
+
+.form-range::-moz-range-thumb {
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  background: light-dark(var(--primary-foreground), var(--foreground));
+}
+
+.form-range:focus-visible::-moz-range-thumb {
+  border-color: var(--ring);
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+
+.form-range:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.btn:not(.btn-primary, .viz-tile):is(
+    [aria-pressed=&quot;true&quot;],
+    [aria-selected=&quot;true&quot;],
+    .is-selected
+  ) {
+  border-color: var(--primary);
+  color: var(--primary-foreground);
+  background: var(--primary);
+}
+
+.btn.viz-tile:is([aria-pressed=&quot;true&quot;], [aria-selected=&quot;true&quot;], .is-selected) {
+  border-color: var(--primary);
+  box-shadow: inset 0 0 0 1px var(--primary);
+}
+
+.btn:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+#widget &gt; svg {
+  width: 100%;
+}
+
+.text-warning,
+.text-destructive {
+  color: var(--destructive);
+}
+
+html&gt;body{padding:0}&lt;/style&gt;
+&lt;/head&gt;
+&lt;body&gt;
+&lt;div id=&quot;ldx-nl-tracker&quot;&gt;
+  &lt;style&gt;
+    #ldx-nl-tracker { color: var(--foreground); }
+    #ldx-nl-tracker .tracker-meta { display: flex; flex-wrap: wrap; gap: .5rem 1rem; align-items: center; margin-bottom: .75rem; color: var(--muted-foreground); }
+    #ldx-nl-tracker .tracker-scroll { max-height: 72vh; overflow: auto; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+    #ldx-nl-tracker table { table-layout: fixed; }
+    #ldx-nl-tracker th { position: sticky; top: 0; z-index: 2; background: var(--background); }
+    #ldx-nl-tracker th[draggable=&quot;true&quot;] { cursor: grab; }
+    #ldx-nl-tracker th.is-dragging { opacity: .55; }
+    #ldx-nl-tracker .sort-button { width: 100%; display: inline-flex; align-items: center; gap: .35rem; justify-content: flex-start; border: 0; padding: 0; color: inherit; background: transparent; font: inherit; font-weight: 500; text-align: left; cursor: pointer; }
+    #ldx-nl-tracker .sort-mark { color: var(--muted-foreground); }
+    #ldx-nl-tracker .resize-handle { position: absolute; top: 0; right: 0; width: 8px; height: 100%; border: 0; padding: 0; background: transparent; cursor: col-resize; touch-action: none; }
+    #ldx-nl-tracker .resize-handle::after { content: &quot;&quot;; position: absolute; top: 20%; bottom: 20%; right: 3px; width: 1px; background: var(--border); }
+    #ldx-nl-tracker td { vertical-align: top; }
+    #ldx-nl-tracker pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--foreground); }
+    #ldx-nl-tracker .score { text-align: center; font-variant-numeric: tabular-nums; font-weight: 500; }
+    #ldx-nl-tracker .blank { min-height: 1.25rem; }
+    @media (max-width: 736px) {
+      #ldx-nl-tracker .tracker-scroll { max-height: 68vh; }
+    }
+  &lt;/style&gt;
+  &lt;div class=&quot;tracker-meta text-small&quot; aria-label=&quot;Scoring key&quot;&gt;
+    &lt;span&gt;&lt;strong&gt;220 items&lt;/strong&gt;&lt;/span&gt;
+    &lt;span&gt;&lt;strong&gt;Post-result-shape review complete: 2026-07-20 (220/220)&lt;/strong&gt;&lt;/span&gt;
+    &lt;span&gt;Representations use the current public API, not aspirational syntax&lt;/span&gt;
+    &lt;span&gt;5 = direct natural match&lt;/span&gt;
+    &lt;span&gt;4 = minor fluent/API ceremony&lt;/span&gt;
+    &lt;span&gt;3 = meaningful modeling or projection ceremony&lt;/span&gt;
+    &lt;span&gt;2 = indirect workaround&lt;/span&gt;
+    &lt;span&gt;1 = no native query representation&lt;/span&gt;
+    &lt;span&gt;Drag headers to reorder; drag header edges to resize&lt;/span&gt;
+  &lt;/div&gt;
+  &lt;div class=&quot;table-responsive tracker-scroll&quot;&gt;
+    &lt;table class=&quot;table table-sm&quot; aria-label=&quot;LibraDex natural-language query intuitiveness tracker&quot;&gt;
+      &lt;colgroup id=&quot;ldx-nl-cols&quot;&gt;&lt;/colgroup&gt;
+      &lt;thead&gt;&lt;tr id=&quot;ldx-nl-head&quot;&gt;&lt;/tr&gt;&lt;/thead&gt;
+      &lt;tbody id=&quot;ldx-nl-body&quot;&gt;&lt;/tbody&gt;
+    &lt;/table&gt;
+  &lt;/div&gt;
+  &lt;script&gt;
+    (() =&gt; {
+      const root = document.getElementById(&#x27;ldx-nl-tracker&#x27;);
+      const rows = [
+        [1,&#x27;Signed Int32&#x27;,&#x27;Find all people where age is greater than 18.&#x27;,`catalog[&quot;people&quot;].Where(&quot;age&quot;).AsInt32.GreaterThan(18).EndCondition`,5],
+        [2,&#x27;Signed Int32&#x27;,&#x27;Find all people where age is between 18 and 65 inclusive.&#x27;,`catalog[&quot;people&quot;].Where(&quot;age&quot;).AsInt32.Between(18, 65).EndCondition`,5],
+        [3,&#x27;Signed Int32&#x27;,&#x27;Find all people where age is not between 13 and 19.&#x27;,`catalog[&quot;people&quot;].Where(&quot;age&quot;).AsInt32.NotBetween(13, 19).EndCondition`,5],
+        [4,&#x27;Signed Int32&#x27;,&#x27;Find all people where age is one of 18, 21, or 65.&#x27;,`catalog[&quot;people&quot;].Where(&quot;age&quot;).AsInt32.InSet([18, 21, 65]).EndCondition`,5],
+        [5,&#x27;Signed Int32&#x27;,&#x27;Find all people where age is not 32.&#x27;,`catalog[&quot;people&quot;].Where(&quot;age&quot;).AsInt32.NotEqualTo(32).EndCondition`,5],
+        [6,&#x27;Signed Int32&#x27;,&#x27;Find all people where score is below zero.&#x27;,`catalog[&quot;people&quot;].Where(&quot;score&quot;).AsInt32.LessThan(0).EndCondition`,5],
+        [7,&#x27;Signed Int32&#x27;,&#x27;Find all people where score is greater than or equal to zero.&#x27;,`catalog[&quot;people&quot;].Where(&quot;score&quot;).AsInt32.GreaterOrEqual(0).EndCondition`,5],
+        [8,&#x27;Signed Int32&#x27;,&#x27;Find all records where retry count is at most 3.&#x27;,`catalog[&quot;records&quot;].Where(&quot;retryCount&quot;).AsInt32.LessOrEqual(3).EndCondition`,5],
+        [9,&#x27;Signed Int32&#x27;,&#x27;Find all records where version is greater than the current runtime value.&#x27;,`catalog[&quot;records&quot;].Where(&quot;version&quot;).AsInt32.GreaterThan(() =&gt; currentVersion).EndCondition`,5],
+        [10,&#x27;Signed Int32&#x27;,&#x27;Find all records where rank is in a caller-supplied HashSet.&#x27;,`catalog[&quot;records&quot;].Where(&quot;rank&quot;).AsInt32.InSet(ranks).EndCondition`,5],
+        [11,&#x27;Signed Int64&#x27;,&#x27;Find all orders where amount in cents is greater than 100000.&#x27;,`catalog[&quot;orders&quot;].Where(&quot;amountCents&quot;).AsInt64.GreaterThan(100_000L).EndCondition`,5],
+        [12,&#x27;Signed Int64&#x27;,&#x27;Find all events where sequence number is between low and high runtime values.&#x27;,`catalog[&quot;events&quot;].Where(&quot;sequence&quot;).AsInt64.Between(() =&gt; low, () =&gt; high).EndCondition`,5],
+        [13,&#x27;Signed Int64&#x27;,&#x27;Find all ledger rows where balance cents is negative.&#x27;,`catalog[&quot;ledger&quot;].Where(&quot;balanceCents&quot;).AsInt64.LessThan(0L).EndCondition`,5],
+        [14,&#x27;Signed Int64&#x27;,&#x27;Find all rows where identity offset is greater than zero.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;identityOffset&quot;).AsInt64.GreaterThan(0L).EndCondition`,5],
+        [15,&#x27;Signed Int64&#x27;,&#x27;Find all records where tick count is not in the reserved negative range.&#x27;,`catalog[&quot;records&quot;].Where(&quot;tickCount&quot;).AsInt64.NotBetween(reservedMin, reservedMax).EndCondition`,5],
+        [16,&#x27;Signed Narrow&#x27;,&#x27;Find all rows where signed byte severity is less than zero.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;severity&quot;).AsSByte.LessThan((sbyte)0).EndCondition`,5],
+        [17,&#x27;Signed Narrow&#x27;,&#x27;Find all rows where Int16 temperature is below freezing.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;temperature&quot;).AsInt16.LessThan((short)0).EndCondition`,5],
+        [18,&#x27;Signed Narrow&#x27;,&#x27;Find all rows where Int16 value is between -10 and 10.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;value&quot;).AsInt16.Between((short)-10, (short)10).EndCondition`,5],
+        [19,&#x27;Signed Narrow&#x27;,&#x27;Find all rows where signed byte code is not -1.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;code&quot;).AsSByte.NotEqualTo((sbyte)-1).EndCondition`,5],
+        [20,&#x27;Signed Narrow&#x27;,&#x27;Find all rows where short status is in a supplied enum-backed set.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;status&quot;).AsInt16.InSet(statuses.Select(x =&gt; (short)x)).EndCondition`,4],
+        [21,&#x27;Unsigned Byte&#x27;,&#x27;Find all rows where byte severity is at least 200.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;severity&quot;).AsByte.GreaterOrEqual((byte)200).EndCondition`,5],
+        [22,&#x27;Unsigned Byte&#x27;,&#x27;Find all rows where byte value is greater than byte max.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;value&quot;).AsByte.GreaterThan(byte.MaxValue).EndCondition`,5],
+        [23,&#x27;Unsigned UInt16&#x27;,&#x27;Find all rows where port is between 1024 and 65535.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;port&quot;).AsUInt16.Between((ushort)1024, ushort.MaxValue).EndCondition`,5],
+        [24,&#x27;Unsigned UInt16&#x27;,&#x27;Find all rows where code is less than 10.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;code&quot;).AsUInt16.LessThan((ushort)10).EndCondition`,5],
+        [25,&#x27;Unsigned UInt32&#x27;,&#x27;Find all rows where IPv4 numeric address is in a subnet range.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;ipv4&quot;).AsUInt32.Between(subnetFirst, subnetLast).EndCondition`,5],
+        [26,&#x27;Unsigned UInt32&#x27;,&#x27;Find all rows where checksum is greater than 3000000000.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;checksum&quot;).AsUInt32.GreaterThan(3_000_000_000U).EndCondition`,5],
+        [27,&#x27;Unsigned UInt64&#x27;,&#x27;Find all rows where monotonically increasing id is above a checkpoint.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;id&quot;).AsUInt64.GreaterThan(checkpoint).EndCondition`,5],
+        [28,&#x27;Unsigned UInt64&#x27;,&#x27;Find all rows where feature value is zero.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;featureValue&quot;).AsUInt64.EqualTo(0UL).EndCondition`,5],
+        [29,&#x27;Unsigned UInt64&#x27;,&#x27;Find all rows where unsigned key is not in a supplied exclusion set.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;key&quot;).AsUInt64.NotInSet(excluded).EndCondition`,5],
+        [30,&#x27;Unsigned UInt64&#x27;,&#x27;Find all rows where unsigned key is less than a deferred watermark.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;key&quot;).AsUInt64.LessThan(() =&gt; watermark).EndCondition`,5],
+        [31,&#x27;Char&#x27;,&#x27;Find all rows where code unit equals K.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;codeUnit&quot;).AsChar.EqualTo(&#x27;K&#x27;).EndCondition`,5],
+        [32,&#x27;Char&#x27;,&#x27;Find all rows where code unit is between A and Z.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;codeUnit&quot;).AsChar.Between(&#x27;A&#x27;, &#x27;Z&#x27;).EndCondition`,5],
+        [33,&#x27;Char&#x27;,&#x27;Find all rows where code unit is not a digit.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;codeUnit&quot;).AsChar.NotBetween(&#x27;0&#x27;, &#x27;9&#x27;).EndCondition`,5],
+        [34,&#x27;Char&#x27;,&#x27;Find all rows where code unit is in a supplied set of separators.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;codeUnit&quot;).AsChar.InSet(separators).EndCondition`,5],
+        [35,&#x27;Bool&#x27;,&#x27;Find all rows where is active is true.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;isActive&quot;).AsBoolean.EqualTo(true).EndCondition`,5],
+        [36,&#x27;Bool&#x27;,&#x27;Find all rows where is deleted is false.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;isDeleted&quot;).AsBoolean.EqualTo(false).EndCondition`,5],
+        [37,&#x27;Bool&#x27;,&#x27;Find all rows where flag is not true.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;flag&quot;).AsBoolean.NotEqualTo(true).EndCondition`,5],
+        [38,&#x27;Bool&#x27;,&#x27;Find all rows where boolean key is greater than false.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;booleanKey&quot;).AsBoolean.GreaterThan(false).EndCondition`,5],
+        [39,&#x27;Decimal&#x27;,&#x27;Find all invoices where amount is greater than 100.25.&#x27;,`catalog[&quot;invoices&quot;].Where(&quot;amountMinorUnits&quot;).AsInt64.GreaterThan(10_025L).EndCondition`,3],
+        [40,&#x27;Decimal&#x27;,&#x27;Find all invoices where amount is between 10.01 and 10.99.&#x27;,`catalog[&quot;invoices&quot;].Where(&quot;amountMinorUnits&quot;).AsInt64.Between(1_001L, 1_099L).EndCondition`,3],
+        [41,&#x27;Decimal&#x27;,&#x27;Find all invoices where tax rate equals 0.0825.&#x27;,`catalog[&quot;invoices&quot;].Where(&quot;taxRateBasisPoints&quot;).AsInt32.EqualTo(825).EndCondition`,3],
+        [42,&#x27;Decimal&#x27;,&#x27;Find all balances where amount is negative.&#x27;,`catalog[&quot;balances&quot;].Where(&quot;amountMinorUnits&quot;).AsInt64.LessThan(0L).EndCondition`,3],
+        [43,&#x27;Decimal&#x27;,&#x27;Find all rows where decimal value has any of several exact fixed-point values.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;fixedPointValue&quot;).AsInt64.InSet(values.Select(codec.Encode)).EndCondition`,3],
+        [44,&#x27;Decimal&#x27;,&#x27;Find all rows where decimal is outside a tolerance band.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;fixedPointValue&quot;).AsInt64.NotBetween(codec.Encode(target - tolerance), codec.Encode(target + tolerance)).EndCondition`,3],
+        [45,&#x27;Single&#x27;,&#x27;Find all sensor rows where float reading is greater than 0.5.&#x27;,`catalog[&quot;sensors&quot;].Where(&quot;readingOrderKey&quot;).AsUInt32.GreaterThan(FloatOrder.Encode(0.5f)).EndCondition`,2],
+        [46,&#x27;Single&#x27;,&#x27;Find all sensor rows where float reading is between -1.0 and 1.0.&#x27;,`catalog[&quot;sensors&quot;].Where(&quot;readingOrderKey&quot;).AsUInt32.Between(FloatOrder.Encode(-1f), FloatOrder.Encode(1f)).EndCondition`,2],
+        [47,&#x27;Single&#x27;,&#x27;Find all sensor rows where float reading equals NaN.&#x27;,`catalog[&quot;sensors&quot;].Where(&quot;readingClass&quot;).AsString.EqualTo(&quot;NaN&quot;).EndCondition`,2],
+        [48,&#x27;Single&#x27;,&#x27;Find all sensor rows where float reading is positive infinity.&#x27;,`catalog[&quot;sensors&quot;].Where(&quot;readingClass&quot;).AsString.EqualTo(&quot;PositiveInfinity&quot;).EndCondition`,2],
+        [49,&#x27;Double&#x27;,&#x27;Find all score rows where double score is at least 0.95.&#x27;,`catalog[&quot;scores&quot;].Where(&quot;scoreOrderKey&quot;).AsUInt64.GreaterOrEqual(DoubleOrder.Encode(0.95)).EndCondition`,2],
+        [50,&#x27;Double&#x27;,&#x27;Find all rows where double value is not between low and high.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;valueOrderKey&quot;).AsUInt64.NotBetween(DoubleOrder.Encode(low), DoubleOrder.Encode(high)).EndCondition`,2],
+        [51,&#x27;Double&#x27;,&#x27;Find all rows where double value is NaN or Infinity.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;valueClass&quot;).AsString.InSet([&quot;NaN&quot;, &quot;PositiveInfinity&quot;, &quot;NegativeInfinity&quot;]).EndCondition`,2],
+        [52,&#x27;Double&#x27;,&#x27;Find all rows where double value is within epsilon of a target.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;valueOrderKey&quot;).AsUInt64.Between(DoubleOrder.Encode(target - epsilon), DoubleOrder.Encode(target + epsilon)).EndCondition`,2],
+        [53,&#x27;Int128&#x27;,&#x27;Find all rows where 128-bit counter is greater than a checkpoint.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;counter&quot;).AsInt128.GreaterThan(checkpoint).EndCondition`,5],
+        [54,&#x27;Int128&#x27;,&#x27;Find all rows where signed 128-bit value is negative.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;value&quot;).AsInt128.LessThan(Int128.Zero).EndCondition`,5],
+        [55,&#x27;UInt128&#x27;,&#x27;Find all rows where 128-bit unsigned id is in a supplied set.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;id&quot;).AsUInt128.InSet(ids).EndCondition`,5],
+        [56,&#x27;UInt128&#x27;,&#x27;Find all rows where 128-bit unsigned id is above UInt64 max.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;id&quot;).AsUInt128.GreaterThan((UInt128)ulong.MaxValue).EndCondition`,5],
+        [57,&#x27;BigInteger&#x27;,&#x27;Find all rows where arbitrary-size integer is greater than a runtime value.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;bigInteger&quot;).AsBigInteger.GreaterThan(() =&gt; runtimeValue).EndCondition`,5],
+        [58,&#x27;BigInteger&#x27;,&#x27;Find all rows where arbitrary-size integer has a specific exact value.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;bigInteger&quot;).AsBigInteger.EqualTo(value).EndCondition`,5],
+        [59,&#x27;BigInteger&#x27;,&#x27;Find all rows where arbitrary-size integer is in a supplied set.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;bigInteger&quot;).AsBigInteger.InSet(values).EndCondition`,5],
+        [60,&#x27;Fixed-Point Custom&#x27;,&#x27;Find all rows where custom fixed-point quantity is between two domain values.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;quantityKey&quot;).AsInt64.Between(codec.Encode(low), codec.Encode(high)).EndCondition`,3],
+        [61,&#x27;Enum&#x27;,&#x27;Find all rows where order status equals Shipped.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;orderStatus&quot;).AsInt32.EqualTo((int)OrderStatus.Shipped).EndCondition`,4],
+        [62,&#x27;Enum&#x27;,&#x27;Find all rows where order status is Pending, Paid, or Shipped.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;orderStatus&quot;).AsInt32.InSet([(int)OrderStatus.Pending, (int)OrderStatus.Paid, (int)OrderStatus.Shipped]).EndCondition`,4],
+        [63,&#x27;Enum&#x27;,&#x27;Find all rows where lifecycle status is not Deleted.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;lifecycleStatus&quot;).AsInt32.NotEqualTo((int)LifecycleStatus.Deleted).EndCondition`,4],
+        [64,&#x27;Enum&#x27;,&#x27;Find all rows where severity is at least Warning.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;severity&quot;).AsInt32.GreaterOrEqual((int)Severity.Warning).EndCondition`,4],
+        [65,&#x27;Enum&#x27;,&#x27;Find all rows where enum value is outside defined enum members.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;enumValue&quot;).AsInt32.NotInSet(Enum.GetValues&lt;RowKind&gt;().Select(x =&gt; (int)x)).EndCondition`,3],
+        [66,&#x27;Bitmask UInt32&#x27;,&#x27;Find all users where permissions include Read.&#x27;,`catalog[&quot;users&quot;].Where(&quot;permissions&quot;).AsUInt32.AllBitsSet((uint)Permission.Read).EndCondition`,5],
+        [67,&#x27;Bitmask UInt32&#x27;,&#x27;Find all users where permissions include Read and Write.&#x27;,`catalog[&quot;users&quot;].Where(&quot;permissions&quot;).AsUInt32.AllBitsSet((uint)(Permission.Read | Permission.Write)).EndCondition`,5],
+        [68,&#x27;Bitmask UInt32&#x27;,&#x27;Find all users where permissions include Read or Execute.&#x27;,`catalog[&quot;users&quot;].Where(&quot;permissions&quot;).AsUInt32.AnyBitsSet((uint)(Permission.Read | Permission.Execute)).EndCondition`,5],
+        [69,&#x27;Bitmask UInt32&#x27;,&#x27;Find all users where permissions include none of Disabled or Deleted.&#x27;,`catalog[&quot;users&quot;].Where(&quot;permissions&quot;).AsUInt32.NoBitsSet((uint)(Permission.Disabled | Permission.Deleted)).EndCondition`,5],
+        [70,&#x27;Bitmask UInt32&#x27;,&#x27;Find all users where permissions equal exactly Read plus Write.&#x27;,`catalog[&quot;users&quot;].Where(&quot;permissions&quot;).AsUInt32.EqualTo((uint)(Permission.Read | Permission.Write)).EndCondition`,5],
+        [71,&#x27;Bitmask UInt32&#x27;,&#x27;Find all users where masked role bits equal Admin.&#x27;,`catalog[&quot;users&quot;].Where(&quot;permissions&quot;).AsUInt32.BitAnd(RoleMask, (uint)Role.Admin).EndCondition`,5],
+        [72,&#x27;Bitmask UInt32&#x27;,&#x27;Find all users where any bit overlaps a runtime mask.&#x27;,`catalog[&quot;users&quot;].Where(&quot;permissions&quot;).AsUInt32.AnyBitsSet(() =&gt; runtimeMask).EndCondition`,5],
+        [73,&#x27;Bitmask UInt32&#x27;,&#x27;Find all users where all bits in a runtime mask are set.&#x27;,`catalog[&quot;users&quot;].Where(&quot;permissions&quot;).AsUInt32.AllBitsSet(() =&gt; runtimeMask).EndCondition`,5],
+        [74,&#x27;Bitmask UInt64&#x27;,&#x27;Find all devices where capability bit 42 is set.&#x27;,`catalog[&quot;devices&quot;].Where(&quot;capabilities&quot;).AsUInt64.AllBitsSet(1UL &lt;&lt; 42).EndCondition`,5],
+        [75,&#x27;Bitmask UInt64&#x27;,&#x27;Find all devices where capability bits do not overlap retired capabilities.&#x27;,`catalog[&quot;devices&quot;].Where(&quot;capabilities&quot;).AsUInt64.NoBitsSet(retiredCapabilities).EndCondition`,5],
+        [76,&#x27;Bitmask Byte&#x27;,&#x27;Find all rows where low byte has bit 3 set.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;lowByte&quot;).AsByte.AllBitsSet((byte)(1 &lt;&lt; 3)).EndCondition`,5],
+        [77,&#x27;Bitmask Byte&#x27;,&#x27;Find all rows where low nibble equals category 7.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;lowByte&quot;).AsByte.BitAnd(0x0F, 0x07).EndCondition`,5],
+        [78,&#x27;Bitmask Int32&#x27;,&#x27;Find all rows where signed flags include error bit.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;flags&quot;).AsInt32.AllBitsSet((int)Flags.Error).EndCondition`,5],
+        [79,&#x27;Bitmask Composite&#x27;,&#x27;Find all users in tenant T whose permissions include Write.&#x27;,`catalog[&quot;users&quot;].CompositeWhere(&quot;tenantPermissions&quot;).KeyPart(&quot;tenantId&quot;).AsGuid.EqualTo(T).And.KeyPart(&quot;permissions&quot;).AsScalar&lt;uint&gt;().AllBitsSet((uint)Permission.Write).EndCondition`,4],
+        [80,&#x27;Bitmask Text&#x27;,&#x27;Find all rows where feature flags include Beta and display name starts with A.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;featureFlags&quot;).AsUInt64.AllBitsSet((ulong)Feature.Beta).And.Where(&quot;displayName&quot;).AsString.StartsWith(&quot;A&quot;).EndCondition`,5],
+        [81,&#x27;DateTime Exact&#x27;,&#x27;Find all records created after Jan 1, 2026 UTC.&#x27;,`catalog[&quot;records&quot;].Where(&quot;createdUtc&quot;).AsDate.GreaterThan(new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)).EndCondition`,5],
+        [82,&#x27;DateTime Exact&#x27;,&#x27;Find all records created between two exact timestamps.&#x27;,`catalog[&quot;records&quot;].Where(&quot;createdUtc&quot;).AsDate.Between(startUtc, endUtc).EndCondition`,5],
+        [83,&#x27;DateTime Exact&#x27;,&#x27;Find all records created before a deferred cutoff.&#x27;,`catalog[&quot;records&quot;].Where(&quot;createdUtc&quot;).AsDate.LessThan(() =&gt; cutoffUtc).EndCondition`,5],
+        [84,&#x27;DateTime Relative&#x27;,&#x27;Find all records created today.&#x27;,`catalog[&quot;records&quot;].Where(&quot;createdUtc&quot;).AsDate.IsToday().EndCondition`,5],
+        [85,&#x27;DateTime Relative&#x27;,&#x27;Find all records created yesterday.&#x27;,`catalog[&quot;records&quot;].Where(&quot;createdUtc&quot;).AsDate.IsYesterday().EndCondition`,5],
+        [86,&#x27;DateTime Relative&#x27;,&#x27;Find all records created in the last 7 days.&#x27;,`catalog[&quot;records&quot;].Where(&quot;createdUtc&quot;).AsDate.IsInLastDays(7).EndCondition`,5],
+        [87,&#x27;DateTime Relative&#x27;,&#x27;Find all records updated in the last 24 hours.&#x27;,`catalog[&quot;records&quot;].Where(&quot;updatedUtc&quot;).AsDate.IsInLastHours(24).EndCondition`,5],
+        [88,&#x27;DateTime Relative&#x27;,&#x27;Find all events in the last 15 minutes.&#x27;,`catalog[&quot;events&quot;].Where(&quot;occurredUtc&quot;).AsDate.IsInLastMinutes(15).EndCondition`,5],
+        [89,&#x27;Structured Date&#x27;,&#x27;Find all records created in 2026.&#x27;,`catalog[&quot;records&quot;].Where(&quot;createdUtc&quot;).AsDate.YearEqual(2026).EndCondition`,5],
+        [90,&#x27;Structured Date&#x27;,&#x27;Find all records created in 2025 or 2026.&#x27;,`catalog[&quot;records&quot;].Where(&quot;createdUtc&quot;).AsDate.YearIn(2025, 2026).EndCondition`,5],
+        [91,&#x27;Structured Date&#x27;,&#x27;Find all records created in March of any year.&#x27;,`catalog[&quot;records&quot;].Where(&quot;createdUtc&quot;).AsDate.MonthEqual(3).EndCondition`,5],
+        [92,&#x27;Structured Date&#x27;,&#x27;Find all records created on the 15th day of any month.&#x27;,`catalog[&quot;records&quot;].Where(&quot;createdUtc&quot;).AsDate.DayEqual(15).EndCondition`,5],
+        [93,&#x27;Structured Date&#x27;,&#x27;Find all records created on March 15 of any year.&#x27;,`catalog[&quot;records&quot;].Where(&quot;createdUtc&quot;).AsDate.MonthDay(3, 15).EndCondition`,5],
+        [94,&#x27;Structured Date&#x27;,&#x27;Find all records created in Q4.&#x27;,`catalog[&quot;records&quot;].Where(&quot;createdUtc&quot;).AsDate.InQuarter(4).EndCondition`,5],
+        [95,&#x27;Structured Date&#x27;,&#x27;Find all records created in fiscal year 2026.&#x27;,`catalog[&quot;records&quot;].Where(&quot;fiscalYear&quot;).AsInt32.EqualTo(2026).EndCondition`,3],
+        [96,&#x27;Structured Date&#x27;,&#x27;Find all records created on weekends.&#x27;,`catalog[&quot;records&quot;].Where(&quot;createdUtc&quot;).AsDate.IsWeekend().EndCondition`,5],
+        [97,&#x27;Structured Date&#x27;,&#x27;Find all records created on weekdays.&#x27;,`catalog[&quot;records&quot;].Where(&quot;createdUtc&quot;).AsDate.IsWeekday().EndCondition`,5],
+        [98,&#x27;Structured Date&#x27;,&#x27;Find all records created on the first day of a month.&#x27;,`catalog[&quot;records&quot;].Where(&quot;createdUtc&quot;).AsDate.IsFirstOfMonth().EndCondition`,5],
+        [99,&#x27;Structured Date&#x27;,&#x27;Find all records created on the last day of a month.&#x27;,`catalog[&quot;records&quot;].Where(&quot;createdUtc&quot;).AsDate.IsLastOfMonth().EndCondition`,5],
+        [100,&#x27;Structured Date&#x27;,&#x27;Find all records created on a quarter end.&#x27;,`catalog[&quot;records&quot;].Where(&quot;createdUtc&quot;).AsDate.IsQuarterEnd().EndCondition`,5],
+        [101,&#x27;TimeOnly&#x27;,&#x27;Find all events between 09:00 and 17:00.&#x27;,`catalog[&quot;events&quot;].Where(&quot;timeOfDay&quot;).AsTimeOnly.Between(new TimeOnly(9, 0), new TimeOnly(17, 0)).EndCondition`,5],
+        [102,&#x27;TimeOnly&#x27;,&#x27;Find all events at night.&#x27;,`catalog[&quot;events&quot;].Where(&quot;timeOfDay&quot;).AsTimeOnly.IsNight().EndCondition`,5],
+        [103,&#x27;TimeOnly&#x27;,&#x27;Find all events in the morning.&#x27;,`catalog[&quot;events&quot;].Where(&quot;timeOfDay&quot;).AsTimeOnly.IsMorning().EndCondition`,5],
+        [104,&#x27;TimeOnly&#x27;,&#x27;Find all events before noon.&#x27;,`catalog[&quot;events&quot;].Where(&quot;timeOfDay&quot;).AsTimeOnly.LessThan(TimeOnly.FromTimeSpan(TimeSpan.FromHours(12))).EndCondition`,4],
+        [105,&#x27;TimeSpan&#x27;,&#x27;Find all jobs running longer than 5 minutes.&#x27;,`catalog[&quot;jobs&quot;].Where(&quot;duration&quot;).AsTimeSpan.GreaterThan(TimeSpan.FromMinutes(5)).EndCondition`,5],
+        [106,&#x27;TimeSpan&#x27;,&#x27;Find all jobs with duration between 1 and 2 hours.&#x27;,`catalog[&quot;jobs&quot;].Where(&quot;duration&quot;).AsTimeSpan.Between(TimeSpan.FromHours(1), TimeSpan.FromHours(2)).EndCondition`,5],
+        [107,&#x27;TimeSpan&#x27;,&#x27;Find all jobs with negative duration.&#x27;,`catalog[&quot;jobs&quot;].Where(&quot;duration&quot;).AsTimeSpan.LessThan(TimeSpan.Zero).EndCondition`,5],
+        [108,&#x27;DateOnly&#x27;,&#x27;Find all birthdays on May 1 regardless of year.&#x27;,`catalog[&quot;people&quot;].Where(&quot;birthday&quot;).AsDateOnly.MonthDay(5, 1).EndCondition`,5],
+        [109,&#x27;DateOnly&#x27;,&#x27;Find all policies effective in 2026.&#x27;,`catalog[&quot;policies&quot;].Where(&quot;effectiveDate&quot;).AsDateOnly.YearEqual(2026).EndCondition`,5],
+        [110,&#x27;DateTimeOffset&#x27;,&#x27;Find all records after a timestamp with offset.&#x27;,`catalog[&quot;records&quot;].Where(&quot;createdAt&quot;).AsDateTimeOffset.GreaterThan(timestampWithOffset).EndCondition`,5],
+        [111,&#x27;DateTimeOffset&#x27;,&#x27;Find all records created during local business hours.&#x27;,`catalog[&quot;records&quot;].Where(&quot;isLocalBusinessHour&quot;).AsBoolean.EqualTo(true).EndCondition`,2],
+        [112,&#x27;Guid Exact&#x27;,&#x27;Find all rows where external id equals a GUID.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;externalId&quot;).AsGuid.EqualTo(guid).EndCondition`,5],
+        [113,&#x27;Guid Exact&#x27;,&#x27;Find all rows where external id is in a provided GUID set.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;externalId&quot;).AsGuid.InSet(guids).EndCondition`,5],
+        [114,&#x27;Guid Text&#x27;,&#x27;Find all rows where GUID starts with a text segment.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;id&quot;).AsGuid.StartsWith(segment).EndCondition`,5],
+        [115,&#x27;Guid Text&#x27;,&#x27;Find all rows where GUID ends with a text segment.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;id&quot;).AsGuid.EndsWith(segment).EndCondition`,5],
+        [116,&#x27;Guid Text&#x27;,&#x27;Find all rows where GUID contains deadbeef.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;id&quot;).AsGuid.Contains(&quot;deadbeef&quot;).EndCondition`,5],
+        [117,&#x27;Guid Text&#x27;,&#x27;Find all rows where GUID matches a wildcard pattern.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;id&quot;).AsGuid.MatchesPattern(pattern).EndCondition`,5],
+        [118,&#x27;Guid Segment&#x27;,&#x27;Find all rows where the first GUID segment equals a value.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;id&quot;).AsGuid.StartsWith(firstSegmentText).EndCondition`,4],
+        [119,&#x27;Guid Segment&#x27;,&#x27;Find all rows where GUID version nibble equals 4.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;id&quot;).AsGuid.MatchesPattern(&quot;????????-????-4???-????-????????????&quot;).EndCondition`,3],
+        [120,&#x27;Guid Composite&#x27;,&#x27;Find all tenant rows where tenant GUID equals T and user GUID starts with segment S.&#x27;,`catalog[&quot;tenantRows&quot;].CompositeWhere(&quot;tenantUser&quot;).KeyPart(&quot;tenantId&quot;).AsGuid.EqualTo(T).And.KeyPart(&quot;userId&quot;).AsGuid.StartsWith(S, 4).EndCondition`,3],
+        [121,&#x27;Binary Exact&#x27;,&#x27;Find all rows where binary key equals a byte array.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;binaryKey&quot;).AsBinary.EqualTo(bytes).EndCondition`,5],
+        [122,&#x27;Binary Prefix&#x27;,&#x27;Find all rows where binary key starts with magic bytes.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;binaryKey&quot;).AsBinary.StartsWith(magic).EndCondition`,5],
+        [123,&#x27;Binary Suffix&#x27;,&#x27;Find all rows where binary key ends with trailer bytes.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;binaryKey&quot;).AsBinary.EndsWith(trailer).EndCondition`,5],
+        [124,&#x27;Binary Contains&#x27;,&#x27;Find all rows where binary key contains byte sequence.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;binaryKey&quot;).AsBinary.Contains(sequence).EndCondition`,5],
+        [125,&#x27;Binary Slice&#x27;,&#x27;Find all rows where bytes 4 through 7 equal a supplied value.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;binaryKey&quot;).AsBinary.SliceEqual(4, suppliedFourBytes).EndCondition`,5],
+        [126,&#x27;Binary Slice&#x27;,&#x27;Find all rows where byte at offset 2 has bit 7 set.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;binaryKey&quot;).AsBinary.SlicedAsByte(2).AllBitsSet(0x80).EndCondition`,5],
+        [127,&#x27;Binary Typed Slice&#x27;,&#x27;Find all rows where Int32 at byte offset 8 is greater than 100.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;binaryKey&quot;).AsBinary.SlicedAsInt32(8).GreaterThan(100).EndCondition`,5],
+        [128,&#x27;Binary Typed Slice&#x27;,&#x27;Find all rows where UInt64 at byte offset 16 is between two values.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;binaryKey&quot;).AsBinary.SlicedAsUInt64(16).Between(low, high).EndCondition`,5],
+        [129,&#x27;Binary Typed Slice&#x27;,&#x27;Find all rows where Decimal at byte offset 32 equals 10.25.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;binaryKey&quot;).AsBinary.SlicedAsDecimal(32).EqualTo(10.25m).EndCondition`,5],
+        [130,&#x27;Binary Typed Slice&#x27;,&#x27;Find all rows where GUID at byte offset 12 equals G.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;binaryKey&quot;).AsBinary.SlicedAsGuid(12).EqualTo(G).EndCondition`,5],
+        [131,&#x27;Binary Typed Slice&#x27;,&#x27;Find all rows where DateTime ticks at byte offset 20 are in 2026.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;binaryKey&quot;).AsBinary.SlicedAsDateTime(20).Between(startOf2026, endOf2026).EndCondition`,4],
+        [132,&#x27;Binary String Slice&#x27;,&#x27;Find all rows where UTF-8 text at offset 4 starts with ABC.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;binaryKey&quot;).AsBinary.SlicedAsUtf8String(4, textByteLength).StartsWith(&quot;ABC&quot;).EndCondition`,4],
+        [133,&#x27;Binary String Slice&#x27;,&#x27;Find all rows where UTF-16 text at offset 10 contains error.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;binaryKey&quot;).AsBinary.SlicedAsUtf16String(10, textByteLength).Contains(&quot;error&quot;).EndCondition`,4],
+        [134,&#x27;Binary String Slice&#x27;,&#x27;Find all rows where custom-encoded text slice equals a value using caller encoding.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;binaryKey&quot;).AsBinary.SlicedAsEncodedString(offset, byteLength, encoding).EqualTo(value).EndCondition`,5],
+        [135,&#x27;Binary Rune Slice&#x27;,&#x27;Find all rows where UTF-32 rune at offset 8 equals a symbol.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;binaryKey&quot;).AsBinary.SlicedAsRuneUtf32(8).EqualTo(symbol).EndCondition`,5],
+        [136,&#x27;String Exact&#x27;,&#x27;Find all users where username equals bob.&#x27;,`catalog[&quot;users&quot;].Where(&quot;username&quot;).AsString.EqualTo(&quot;bob&quot;).EndCondition`,5],
+        [137,&#x27;String Exact&#x27;,&#x27;Find all users where username equals Bob ignoring case.&#x27;,`catalog[&quot;users&quot;].Where(&quot;username&quot;).AsString.EqualTo(&quot;Bob&quot;, ignoreCase: true).EndCondition`,5],
+        [138,&#x27;String Prefix&#x27;,&#x27;Find all users where last name starts with Smith.&#x27;,`catalog[&quot;users&quot;].Where(&quot;lastName&quot;).AsString.StartsWith(&quot;Smith&quot;).EndCondition`,5],
+        [139,&#x27;String Prefix&#x27;,&#x27;Find all users where last name starts with smith ignoring case.&#x27;,`catalog[&quot;users&quot;].Where(&quot;lastName&quot;).AsString.StartsWith(&quot;smith&quot;, ignoreCase: true).EndCondition`,5],
+        [140,&#x27;String Suffix&#x27;,&#x27;Find all users where email ends with example.com.&#x27;,`catalog[&quot;users&quot;].Where(&quot;email&quot;).AsString.EndsWith(&quot;example.com&quot;).EndCondition`,5],
+        [141,&#x27;String Suffix&#x27;,&#x27;Find all users where email ends with EXAMPLE.COM ignoring case.&#x27;,`catalog[&quot;users&quot;].Where(&quot;email&quot;).AsString.EndsWith(&quot;EXAMPLE.COM&quot;, ignoreCase: true).EndCondition`,5],
+        [142,&#x27;String Contains&#x27;,&#x27;Find all products where description contains battery.&#x27;,`catalog[&quot;products&quot;].Where(&quot;description&quot;).AsString.Contains(&quot;battery&quot;).EndCondition`,5],
+        [143,&#x27;String Contains&#x27;,&#x27;Find all products where description contains battery ignoring case.&#x27;,`catalog[&quot;products&quot;].Where(&quot;description&quot;).AsString.Contains(&quot;battery&quot;, ignoreCase: true).EndCondition`,5],
+        [144,&#x27;String Pattern&#x27;,&#x27;Find all users where username matches admin*.&#x27;,`catalog[&quot;users&quot;].Where(&quot;username&quot;).AsString.Like(&quot;admin*&quot;).EndCondition`,5],
+        [145,&#x27;String Pattern&#x27;,&#x27;Find all codes matching ??-####.&#x27;,`catalog[&quot;codes&quot;].Where(&quot;code&quot;).AsString.Matches(new Regex(@&quot;^..-\\d{4}$&quot;)).EndCondition`,4],
+        [146,&#x27;String Culture&#x27;,&#x27;Find all names greater than M using en-US collation.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;name&quot;).AsString.GreaterThan(&quot;M&quot;, culture: &quot;en-US&quot;).EndCondition`,5],
+        [147,&#x27;String Culture&#x27;,&#x27;Find all names equal to I ignoring case using Turkish culture.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;name&quot;).AsString.EqualTo(&quot;I&quot;, ignoreCase: true, culture: &quot;tr-TR&quot;).EndCondition`,5],
+        [148,&#x27;String Membership&#x27;,&#x27;Find all users where country code is US, CA, or MX.&#x27;,`catalog[&quot;users&quot;].Where(&quot;countryCode&quot;).AsString.InSet([&quot;US&quot;, &quot;CA&quot;, &quot;MX&quot;]).EndCondition`,5],
+        [149,&#x27;String Membership&#x27;,&#x27;Find all users where tag is in a caller-supplied no-case HashSet.&#x27;,`catalog[&quot;users&quot;].Where(&quot;tag&quot;).AsString.InSet(tags, ignoreCase: true).EndCondition`,5],
+        [150,&#x27;String Empty&#x27;,&#x27;Find all rows where code equals empty string.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;code&quot;).AsString.EqualTo(&quot;&quot;).EndCondition`,5],
+        [151,&#x27;String Null-Like&#x27;,&#x27;Find all rows where optional code is missing.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;optionalCode&quot;).AsString.EqualTo(NullKey.Null).EndCondition`,4],
+        [152,&#x27;String Whitespace&#x27;,&#x27;Find all rows where trimmed code would be empty.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;code&quot;).AsString.Matches(new Regex(@&quot;^\\s*$&quot;)).EndCondition`,4],
+        [153,&#x27;Composite Exact&#x27;,&#x27;Find all rows where tenant id is T and username equals bob.&#x27;,`catalog[&quot;rows&quot;].CompositeWhere(&quot;tenantUser&quot;).KeyPart(&quot;tenantId&quot;).AsGuid.EqualTo(T).And.KeyPart(&quot;username&quot;).AsString.EqualTo(&quot;bob&quot;).EndCondition`,4],
+        [154,&#x27;Composite Prefix&#x27;,&#x27;Find all rows where tenant id is T and username starts with b.&#x27;,`catalog[&quot;rows&quot;].CompositeWhere(&quot;tenantUser&quot;).KeyPart(&quot;tenantId&quot;).AsGuid.EqualTo(T).And.KeyPart(&quot;username&quot;).AsString.StartsWith(&quot;b&quot;).EndCondition`,4],
+        [155,&#x27;Composite Range&#x27;,&#x27;Find all rows where account id is A and order number is between 1000 and 2000.&#x27;,`catalog[&quot;rows&quot;].CompositeWhere(&quot;accountOrder&quot;).KeyPart(&quot;accountId&quot;).AsGuid.EqualTo(A).And.KeyPart(&quot;orderNumber&quot;).AsScalar&lt;long&gt;().Between(1000, 2000).EndCondition`,4],
+        [156,&#x27;Composite Multi-Part&#x27;,&#x27;Find all rows where country is US, state is WA, and city starts with Sea.&#x27;,`catalog[&quot;rows&quot;].CompositeWhere(&quot;location&quot;).KeyPart(&quot;country&quot;).AsString.EqualTo(&quot;US&quot;).And.KeyPart(&quot;state&quot;).AsString.EqualTo(&quot;WA&quot;).And.KeyPart(&quot;city&quot;).AsString.StartsWith(&quot;Sea&quot;).EndCondition`,4],
+        [157,&#x27;Composite Missing Lead&#x27;,&#x27;Find all rows where city starts with Sea regardless of country/state.&#x27;,`catalog[&quot;rows&quot;].CompositeWhere(&quot;location&quot;).KeyPart(&quot;city&quot;).AsString.StartsWith(&quot;Sea&quot;).EndCondition`,5],
+        [158,&#x27;Composite Later Range&#x27;,&#x27;Find all rows where last name is Smith and first name starts with J.&#x27;,`catalog[&quot;rows&quot;].CompositeWhere(&quot;personName&quot;).KeyPart(&quot;lastName&quot;).AsString.EqualTo(&quot;Smith&quot;).And.KeyPart(&quot;firstName&quot;).AsString.StartsWith(&quot;J&quot;).EndCondition`,4],
+        [159,&#x27;Composite Any String&#x27;,&#x27;Find all composite keys where any string part contains admin.&#x27;,`catalog[&quot;rows&quot;].CompositeWhere(&quot;compositeKey&quot;).FullKey().AsString.Contains(&quot;admin&quot;).EndCondition`,2],
+        [160,&#x27;Composite Joined&#x27;,&#x27;Find all composite keys whose joined text contains Smith.&#x27;,`catalog[&quot;rows&quot;].CompositeWhere(&quot;compositeKey&quot;).FullKey().AsString.Contains(&quot;Smith&quot;).EndCondition`,4],
+        [161,&#x27;Composite Joined Delimited&#x27;,&#x27;Find all composite keys whose joined text with slash delimiter matches tenant/user pattern.&#x27;,`catalog[&quot;rows&quot;].CompositeWhere(&quot;compositeKey&quot;).FullKey(&quot;/&quot;).AsString.Matches(&quot;tenant/*/user/*&quot;).EndCondition`,4],
+        [162,&#x27;Composite Selected Parts&#x27;,&#x27;Find all composite keys whose joined first and last name contains John Smith.&#x27;,`catalog[&quot;rows&quot;].CompositeWhere(&quot;person&quot;).FullKey(&quot; &quot;).Parts(&quot;firstName&quot;, &quot;lastName&quot;).AsString.Contains(&quot;John Smith&quot;).EndCondition`,4],
+        [163,&#x27;Composite Excluding Parts&#x27;,&#x27;Find all composite keys whose joined text excluding tenant contains admin.&#x27;,`catalog[&quot;rows&quot;].CompositeWhere(&quot;compositeKey&quot;).FullKey().Excluding(&quot;tenant&quot;).AsString.Contains(&quot;admin&quot;).EndCondition`,4],
+        [164,&#x27;Composite Mixed Comparers&#x27;,&#x27;Find all rows where last name is no-case but first name is case-sensitive prefix.&#x27;,`catalog[&quot;rows&quot;].CompositeWhere(&quot;personName&quot;).KeyPart(&quot;lastName&quot;).AsString.EqualTo(lastName, ignoreCase: true).And.KeyPart(&quot;firstName&quot;).AsString.StartsWith(prefix).EndCondition`,4],
+        [165,&#x27;Composite GUID+Date&#x27;,&#x27;Find all rows where tenant GUID is T and created year is 2026.&#x27;,`catalog[&quot;rows&quot;].CompositeWhere(&quot;tenantCreated&quot;).KeyPart(&quot;tenantId&quot;).AsGuid.EqualTo(T).And.KeyPart(&quot;created&quot;).AsDate.YearEqual(2026).EndCondition`,4],
+        [166,&#x27;Composite Flags&#x27;,&#x27;Find all rows where tenant is T and permission mask includes Write.&#x27;,`catalog[&quot;rows&quot;].CompositeWhere(&quot;tenantPermissions&quot;).KeyPart(&quot;tenantId&quot;).AsGuid.EqualTo(T).And.KeyPart(&quot;permissions&quot;).AsScalar&lt;uint&gt;().AllBitsSet((uint)Permission.Write).EndCondition`,4],
+        [167,&#x27;Cross Index AND&#x27;,&#x27;Find all users where age &gt;= 18 and status is active.&#x27;,`catalog[&quot;users&quot;].Where(&quot;age&quot;).AsInt32.GreaterOrEqual(18).And.Where(&quot;status&quot;).AsString.EqualTo(&quot;active&quot;).EndCondition`,5],
+        [168,&#x27;Cross Index OR&#x27;,&#x27;Find all users where status is active or pending.&#x27;,`catalog[&quot;users&quot;].Where(&quot;status&quot;).AsString.InSet([&quot;active&quot;, &quot;pending&quot;]).EndCondition`,5],
+        [169,&#x27;Cross Index OR&#x27;,&#x27;Find all users where email starts with support or phone starts with 800.&#x27;,`catalog[&quot;users&quot;].Where(&quot;email&quot;).AsString.StartsWith(&quot;support&quot;).Or.Where(&quot;phone&quot;).AsString.StartsWith(&quot;800&quot;).EndCondition`,5],
+        [170,&#x27;Grouped Logic&#x27;,&#x27;Find all users where status is active and (role is admin or owner).&#x27;,`catalog[&quot;users&quot;].Where(&quot;status&quot;).AsString.EqualTo(&quot;active&quot;).And.Where(&quot;role&quot;).AsString.InSet([&quot;admin&quot;, &quot;owner&quot;]).EndCondition`,5],
+        [171,&#x27;Grouped Logic&#x27;,&#x27;Find all users where (country is US or CA) and age &gt;= 18.&#x27;,`catalog[&quot;users&quot;].Where(&quot;country&quot;).AsString.InSet([&quot;US&quot;, &quot;CA&quot;]).And.Where(&quot;age&quot;).AsInt32.GreaterOrEqual(18).EndCondition`,5],
+        [172,&#x27;Grouped Logic&#x27;,&#x27;Find all rows where not deleted and (created today or updated today).&#x27;,`var changedToday = catalog[&quot;rows&quot;].Where(&quot;created&quot;).AsDate.IsToday().Or.Where(&quot;updated&quot;).AsDate.IsToday().EndCondition;\ncatalog[&quot;rows&quot;].Where(&quot;deleted&quot;).AsBoolean.EqualTo(false).And.Group(changedToday).EndCondition`,4],
+        [173,&#x27;Grouped Logic&#x27;,&#x27;Find all invoices where type is invoice and (amount &gt; 1000 or overdue is true).&#x27;,`var largeOrOverdue = catalog[&quot;invoices&quot;].Where(&quot;amountMinorUnits&quot;).AsInt64.GreaterThan(100_000L).Or.Where(&quot;overdue&quot;).AsBoolean.EqualTo(true).EndCondition;\ncatalog[&quot;invoices&quot;].Where(&quot;type&quot;).AsString.EqualTo(&quot;invoice&quot;).And.Group(largeOrOverdue).EndCondition`,4],
+        [174,&#x27;Grouped Logic&#x27;,&#x27;Find all users where (last name starts with S and first name starts with J) or email starts with sj.&#x27;,`var initials = catalog[&quot;users&quot;].Where(&quot;lastName&quot;).AsString.StartsWith(&quot;S&quot;).And.Where(&quot;firstName&quot;).AsString.StartsWith(&quot;J&quot;).EndCondition;\ncatalog[&quot;users&quot;].Group(initials).Or.Where(&quot;email&quot;).AsString.StartsWith(&quot;sj&quot;).EndCondition`,4],
+        [175,&#x27;Grouped Logic&#x27;,&#x27;Find all users where tenant matches and (failed login count &gt; 5 or locked true).&#x27;,`var failedOrLocked = catalog[&quot;users&quot;].Where(&quot;failedLoginCount&quot;).AsInt32.GreaterThan(5).Or.Where(&quot;locked&quot;).AsBoolean.EqualTo(true).EndCondition;\ncatalog[&quot;users&quot;].Where(&quot;tenantId&quot;).AsGuid.EqualTo(tenantId).And.Group(failedOrLocked).EndCondition`,4],
+        [176,&#x27;Deferred Selector&#x27;,&#x27;Find all records where the selected runtime index has value greater than 10.&#x27;,`LibraDexCondition.Group(&quot;records&quot;).Where(() =&gt; selectedIndex, &quot;selectedIndex&quot;).AsInt32.GreaterThan(10).EndCondition`,4],
+        [177,&#x27;Deferred Selector&#x27;,&#x27;Find all records where selected date index is in 2026.&#x27;,`LibraDexCondition.Group(&quot;records&quot;).Where(() =&gt; selectedDateIndex, &quot;selectedDateIndex&quot;).AsDate.YearEqual(2026).EndCondition`,4],
+        [178,&#x27;Deferred Value&#x27;,&#x27;Find all records where score is greater than the current threshold.&#x27;,`catalog[&quot;records&quot;].Where(&quot;score&quot;).AsInt32.GreaterThan(() =&gt; threshold).EndCondition`,5],
+        [179,&#x27;Deferred Value&#x27;,&#x27;Find all records where code is in the current request\&#x27;s HashSet.&#x27;,`catalog[&quot;records&quot;].Where(&quot;code&quot;).AsString.InSet(() =&gt; request.Codes).EndCondition`,5],
+        [180,&#x27;Deferred Value&#x27;,&#x27;Find all records where date is between current start and current end.&#x27;,`catalog[&quot;records&quot;].Where(&quot;date&quot;).AsDate.Between(() =&gt; currentStart, () =&gt; currentEnd).EndCondition`,5],
+        [181,&#x27;Replacement&#x27;,&#x27;Find all records using a reusable condition template with later min age replacement.&#x27;,`var template = catalog[&quot;records&quot;].Where(&quot;age&quot;).AsInt32.GreaterOrEqual(0, &quot;minAge&quot;).EndCondition;\nvar query = template.WithValue(&quot;minAge&quot;, laterMinAge);`,4],
+        [182,&#x27;Replacement&#x27;,&#x27;Find all records using a reusable condition template with later index replacement.&#x27;,`var template = LibraDexCondition.Group(&quot;records&quot;).Where(() =&gt; &quot;age&quot;, &quot;selectedIndex&quot;).AsInt32.GreaterOrEqual(18).EndCondition;\nvar query = template.WithIndex(&quot;selectedIndex&quot;, laterIndex);`,3],
+        [183,&#x27;Null Policy&#x27;,&#x27;Find all rows where optional external id is missing.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;externalId&quot;).AsGuid.EqualTo(ScalarNull.Null).EndCondition`,4],
+        [184,&#x27;Null Policy&#x27;,&#x27;Find all rows where optional external id is present.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;externalId&quot;).AsGuid.EqualTo(ScalarNull.NonNull).EndCondition`,4],
+        [185,&#x27;Null Policy&#x27;,&#x27;Find all rows where nullable date has no value.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;date&quot;).AsDate.EqualTo(ScalarNull.Null).EndCondition`,4],
+        [186,&#x27;Sentinel&#x27;,&#x27;Find all rows where deleted date equals sentinel max date.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;deletedDate&quot;).AsDate.EqualTo(DateTime.MaxValue).EndCondition`,5],
+        [187,&#x27;Sentinel&#x27;,&#x27;Find all rows where numeric value is not the sentinel -1.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;value&quot;).AsInt32.NotEqualTo(-1).EndCondition`,5],
+        [188,&#x27;Sentinel&#x27;,&#x27;Find all rows where GUID is not empty GUID.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;id&quot;).AsGuid.NotEqualTo(Guid.Empty).EndCondition`,5],
+        [189,&#x27;Custom Codec&#x27;,&#x27;Find all rows where semantic version is greater than 1.2.3.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;semanticVersionKey&quot;).AsBinary.GreaterThan(versionCodec.Encode(new Version(1, 2, 3))).EndCondition`,3],
+        [190,&#x27;Custom Codec&#x27;,&#x27;Find all rows where IP address is inside CIDR block.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;ipAddress&quot;).AsUInt32.Between(cidr.FirstAddress, cidr.LastAddress).EndCondition`,4],
+        [191,&#x27;Custom Codec&#x27;,&#x27;Find all rows where geohash starts with prefix.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;geohash&quot;).AsString.StartsWith(prefix).EndCondition`,5],
+        [192,&#x27;Custom Codec&#x27;,&#x27;Find all rows where normalized phone equals caller input.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;normalizedPhone&quot;).AsString.EqualTo(phoneCodec.Normalize(input)).EndCondition`,4],
+        [193,&#x27;Custom Codec&#x27;,&#x27;Find all rows where money amount in currency-specific scale is greater than 10 USD.&#x27;,`catalog[&quot;rows&quot;].CompositeWhere(&quot;money&quot;).KeyPart(&quot;currency&quot;).AsString.EqualTo(&quot;USD&quot;).And.KeyPart(&quot;minorUnits&quot;).AsScalar&lt;long&gt;().GreaterThan(1_000L).EndCondition`,4],
+        [194,&#x27;Custom Comparer&#x27;,&#x27;Find all rows where custom string comparer treats value as equal.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;comparerKey&quot;).AsString.EqualTo(customComparer.Normalize(value)).EndCondition`,3],
+        [195,&#x27;Projection&#x27;,&#x27;Find all rows where folded text equals abc without case sensitivity.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;text&quot;).AsString.EqualTo(&quot;abc&quot;, ignoreCase: true).EndCondition`,5],
+        [196,&#x27;Projection&#x27;,&#x27;Find all rows where culture sort key is between two values.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;text&quot;).AsString.Between(low, high, culture: cultureName).EndCondition`,4],
+        [197,&#x27;Projection&#x27;,&#x27;Find all rows where reversed text starts with moc.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;reversedText&quot;).AsString.StartsWith(&quot;moc&quot;).EndCondition`,4],
+        [198,&#x27;Projection&#x27;,&#x27;Find all rows where projection is absent and fallback scan is allowed.&#x27;,`catalog[&quot;rows&quot;].Where(&quot;text&quot;).AsString.Contains(value).EndCondition`,4],
+        [199,&#x27;Paging&#x27;,&#x27;Find first 10 users where status is active.&#x27;,`var condition = catalog[&quot;users&quot;].Where(&quot;status&quot;).AsString.EqualTo(&quot;active&quot;).EndCondition;\nvar users = catalog[&quot;users&quot;].GetIdentities&lt;long&gt;(condition, take: 10);`,5],
+        [200,&#x27;Paging&#x27;,&#x27;Find next page of users where last name starts with S after bookmark.&#x27;,`var condition = catalog[&quot;users&quot;].Where(&quot;lastName&quot;).AsString.StartsWith(&quot;S&quot;).EndCondition;\nvar page = catalog[&quot;users&quot;].GetIdentities&lt;long&gt;(condition, take: pageSize, bookmark: bookmark);`,5],
+        [201,&#x27;Ordering&#x27;,&#x27;Find newest 25 orders for a customer.&#x27;,`var condition = catalog[&quot;orders&quot;]\n    .Where(&quot;customerId&quot;).AsGuid.EqualTo(customerId)\n    .Return&lt;long&gt;()\n    .OrderByDescending(&quot;createdAt&quot;)\n    .Top(25)\n    .EndCondition;\nvar newest = catalog[&quot;orders&quot;].Get(condition);`,5,&#x27;Implemented and LXL verified&#x27;,&#x27;&#x27;],
+        [202,&#x27;Ordering&#x27;,&#x27;Find oldest retry-needed jobs.&#x27;,`var condition = catalog[&quot;jobs&quot;]\n    .Where(&quot;retryNeeded&quot;).AsBoolean.EqualTo(true)\n    .Return&lt;long&gt;()\n    .OrderBy(&quot;createdAt&quot;)\n    .EndCondition;\nusing var oldest = catalog[&quot;jobs&quot;].OpenReader(condition);`,5,&#x27;Implemented and LXL verified&#x27;,&#x27;&#x27;],
+        [203,&#x27;Existence&#x27;,&#x27;Find whether any user has email X.&#x27;,`var condition = catalog[&quot;users&quot;]\n    .Where(&quot;email&quot;).AsString.EqualTo(email)\n    .EndCondition;\nbool exists = condition.Exists(name =&gt; catalog[&quot;users&quot;][name].Open());`,3],
+        [204,&#x27;Count&#x27;,&#x27;Count all active users.&#x27;,`var condition = catalog[&quot;users&quot;]\n    .Where(&quot;status&quot;).AsString.EqualTo(&quot;active&quot;)\n    .EndCondition;\nlong count = condition.Count(name =&gt; catalog[&quot;users&quot;][name].Open());`,3],
+        [205,&#x27;Count&#x27;,&#x27;Count active users per tenant.&#x27;,`var condition = catalog[&quot;users&quot;]\n    .Where(&quot;status&quot;).AsString.EqualTo(&quot;active&quot;)\n    .GroupBy(&quot;tenantId&quot;)\n    .Aggregate(AggType.Count)\n    .EndCondition;\nvar counts = catalog[&quot;users&quot;].Get(condition);`,5,&#x27;Implemented&#x27;,&#x27;&#x27;],
+        [206,&#x27;Grouping&#x27;,&#x27;Find duplicate emails.&#x27;,`var condition = catalog[&quot;users&quot;]\n    .GroupBy(&quot;email&quot;)\n    .Aggregate(AggType.Count)\n    .EndCondition;\nvar duplicates = catalog[&quot;users&quot;].Get(condition)\n    .Where(row =&gt; (long)row.AggregateValue! &gt; 1);`,2],
+        [207,&#x27;Grouping&#x27;,&#x27;Find singleton usernames.&#x27;,`var condition = catalog[&quot;users&quot;]\n    .GroupBy(&quot;username&quot;)\n    .Aggregate(AggType.Count)\n    .EndCondition;\nvar singletons = catalog[&quot;users&quot;].Get(condition)\n    .Where(row =&gt; (long)row.AggregateValue! == 1);`,2],
+        [208,&#x27;Grouping&#x27;,&#x27;Find first identity per customer id.&#x27;,`var condition = catalog[&quot;rows&quot;]\n    .GroupBy(&quot;customerId&quot;)\n    .Aggregate(&quot;customerId&quot;, AggType.Min)\n    .Return()\n    .EndCondition;\nvar first = catalog[&quot;rows&quot;].Get(condition);`,2],
+        [209,&#x27;Grouping&#x27;,&#x27;Find latest event per device id.&#x27;,`var condition = catalog[&quot;events&quot;]
+    .GroupBy(&quot;deviceId&quot;)
+    .Aggregate(&quot;timeStamp&quot;, AggType.Max)
+    .Return()
+    .EndCondition;
+var latestEventIds = catalog[&quot;events&quot;].Get(condition);`,5,&#x27;Implemented and LXL verified&#x27;,&#x27;&#x27;],
+        [210,&#x27;Grouping&#x27;,&#x27;Find top 10 categories by item count.&#x27;,`var condition = catalog[&quot;items&quot;]\n    .GroupBy(&quot;category&quot;)\n    .Aggregate(AggType.Count)\n    .OrderByDescending()\n    .Top(10)\n    .EndCondition;\nvar top = catalog[&quot;items&quot;].Get(condition);`,5,&#x27;Implemented and LXL verified&#x27;,&#x27;&#x27;],
+        [211,&#x27;Mutation Selection&#x27;,&#x27;Find all expired sessions to delete.&#x27;,`var condition = catalog[&quot;sessions&quot;].Where(&quot;expiresAt&quot;).AsDate.LessThan(() =&gt; DateTime.UtcNow).EndCondition;
+catalog[&quot;sessions&quot;][&quot;sessionPrimary&quot;].Delete(condition);`,5,&#x27;Implemented&#x27;,&#x27;&#x27;],
+        [212,&#x27;Mutation Selection&#x27;,&#x27;Find all inactive users older than two years to archive.&#x27;,`var query = catalog[&quot;users&quot;].Where(&quot;active&quot;).AsBoolean.EqualTo(false).And.Where(&quot;lastActive&quot;).AsDate.LessThan(twoYearsAgo).EndCondition;\nvar ids = catalog[&quot;users&quot;].GetIdentities&lt;long&gt;(query);`,3],
+        [213,&#x27;Mutation Selection&#x27;,&#x27;Find all records matching old email domain to rekey.&#x27;,`var condition = catalog[&quot;users&quot;].Where(&quot;email&quot;).AsString.EndsWith(oldDomain).EndCondition;
+catalog[&quot;users&quot;][&quot;email&quot;].SetKeyUsing(condition, old =&gt; ReplaceDomain((string)old, newDomain));`,5,&#x27;Implemented&#x27;,&#x27;&#x27;],
+        [214,&#x27;Mutation Selection&#x27;,&#x27;Find all pending jobs with retry count over 5 to mark failed.&#x27;,`var condition = catalog[&quot;jobs&quot;].Where(&quot;status&quot;).AsString.EqualTo(&quot;pending&quot;).And.Where(&quot;retryCount&quot;).AsInt32.GreaterThan(5).EndCondition;
+catalog[&quot;jobs&quot;][&quot;status&quot;].SetKey(condition, &quot;failed&quot;);`,5,&#x27;Implemented&#x27;,&#x27;&#x27;],
+        [215,&#x27;Mutation Selection&#x27;,&#x27;Find all products in discontinued category to remove from an index.&#x27;,`var condition = catalog[&quot;products&quot;].Where(&quot;category&quot;).AsString.EqualTo(&quot;discontinued&quot;).EndCondition;
+catalog[&quot;products&quot;][targetIndexName].Delete(condition);`,5,&#x27;Implemented&#x27;,&#x27;&#x27;],
+        [216,&#x27;Mutation Selection&#x27;,&#x27;Find all exact duplicate identities for a key to clean up.&#x27;,`var condition = catalog[&quot;rows&quot;]\n    .GroupBy(&quot;key&quot;)\n    .Aggregate(AggType.Count)\n    .EndCondition;\nvar duplicateGroups = catalog[&quot;rows&quot;].Get(condition)\n    .Where(row =&gt; (long)row.AggregateValue! &gt; 1);`,2],
+        [217,&#x27;Maintenance Selection&#x27;,&#x27;Find shelves with deleted payload over threshold.&#x27;,`var reclaimed = catalog.Stats.ReclaimedPayload; // no shelf-level LibraDex query surface`,1],
+        [218,&#x27;Maintenance Selection&#x27;,&#x27;Find indexes with stale projection metadata.&#x27;,`catalog.Indexes.List().Where(info =&gt; ProjectionMetadataIsStale(info))`,1],
+        [219,&#x27;Telemetry Selection&#x27;,&#x27;Find queries that used visible scan fallback.&#x27;,`query.Classify(resolveIndex).Where(x =&gt; x.ExecutionClass == LibraDexConditionExecutionClass.VisibleScanLike)`,2],
+        [220,&#x27;Telemetry Selection&#x27;,&#x27;Find indexes whose last query allocated above threshold.&#x27;,`No native LibraDex representation for per-index last-query allocation.`,1]
+      ];
+
+      const reasons = {
+        20: &#x27;The enum-backed values must be projected and cast to Int16, so the syntax exposes storage representation instead of remaining in the enum domain.&#x27;,
+        39: &#x27;LibraDex has no first-class indexed Decimal selector; the amount must be modeled as scaled Int64 minor units.&#x27;,
+        40: &#x27;LibraDex has no first-class indexed Decimal selector; both decimal bounds must be converted to scaled Int64 minor units.&#x27;,
+        41: &#x27;The decimal rate must be remodeled as integer basis points because there is no first-class indexed Decimal selector.&#x27;,
+        42: &#x27;The decimal amount must be modeled as scaled Int64 minor units before the otherwise-natural negative comparison is available.&#x27;,
+        43: &#x27;Each decimal value requires a caller-owned fixed-point codec and an Int64 projection before membership can be expressed.&#x27;,
+        44: &#x27;The tolerance endpoints require caller-side decimal arithmetic plus codec conversion into the indexed Int64 domain.&#x27;,
+        45: &#x27;There is no first-class indexed Single selector or declared float ordering policy; a caller-generated sortable UInt32 key is required.&#x27;,
+        46: &#x27;Both Single bounds must pass through a caller-defined sortable encoding because LibraDex has no first-class indexed Single range surface.&#x27;,
+        47: &#x27;NaN is represented through a separate caller-maintained classification index rather than a direct Single predicate.&#x27;,
+        48: &#x27;Positive infinity is represented through a separate caller-maintained classification index rather than a direct Single predicate.&#x27;,
+        49: &#x27;There is no first-class indexed Double selector or declared IEEE ordering policy; a caller-generated sortable UInt64 key is required.&#x27;,
+        50: &#x27;The Double range is indirect because both bounds must be converted through a caller-defined sortable UInt64 encoding.&#x27;,
+        51: &#x27;NaN and infinities require a separate caller-maintained classification index instead of direct Double predicates.&#x27;,
+        52: &#x27;The epsilon calculation is caller-side and both resulting Double bounds still require a sortable UInt64 encoding.&#x27;,
+        60: &#x27;The custom fixed-point values must be converted by a caller-owned codec into an indexed Int64 representation.&#x27;,
+        61: &#x27;The enum member must be cast to its Int32 storage value, exposing representation details in otherwise-direct syntax.&#x27;,
+        62: &#x27;Every enum member must be cast to its Int32 storage value before membership can be expressed.&#x27;,
+        63: &#x27;The enum member must be cast to its Int32 storage value, so the predicate does not stay fully in the enum domain.&#x27;,
+        64: &#x27;The ordered enum comparison depends on the underlying Int32 ordering and requires an explicit cast.&#x27;,
+        65: &#x27;The caller must enumerate every defined member, cast each to Int32, and negate membership; there is no defined-enum predicate.&#x27;,
+        79: &#x27;The intent is direct, but composite index selection, named key parts, and an explicit UInt32 part type add structural ceremony.&#x27;,
+        95: &#x27;Fiscal-year semantics are not intrinsic to DateTime; the caller must maintain and query a separate fiscalYear projection.&#x27;,
+        104: &#x27;There is no BeforeNoon alias, so noon must be constructed as a TimeOnly value and used in a lower-level comparison.&#x27;,
+        111: &#x27;Local business hours require timezone and calendar policy outside the stored DateTimeOffset; the example relies on a maintained Boolean projection.&#x27;,
+        118: &#x27;The first GUID segment is expressed as textual StartsWith rather than a segment-equality operator.&#x27;,
+        119: &#x27;The GUID version nibble is reached through a full textual wildcard pattern rather than a named GUID-version predicate.&#x27;,
+        120: &#x27;The composite path requires named parts, and the user GUID prefix must be supplied as a Guid plus byte count rather than as segment text.&#x27;,
+        131: &#x27;Typed binary DateTime slices expose comparisons but not structured YearEqual, so the year must be expanded into exact timestamp bounds.&#x27;,
+        132: &#x27;The UTF-8 slice requires an explicit storage byte length that is absent from the natural-language intent.&#x27;,
+        133: &#x27;The UTF-16 slice requires an explicit storage byte length that is absent from the natural-language intent.&#x27;,
+        145: &#x27;The friendly ??-#### pattern must be manually translated into a regular expression.&#x27;,
+        151: &#x27;The natural concept missing is expressed through the storage-specific NullKey.Null state.&#x27;,
+        152: &#x27;There is no TrimmedIsEmpty predicate; whitespace-only matching must be encoded as a regular expression.&#x27;,
+        153: &#x27;The predicate is direct, but selecting a composite index and spelling each named typed key part adds ceremony.&#x27;,
+        154: &#x27;The predicate is direct, but selecting a composite index and spelling each named typed key part adds ceremony.&#x27;,
+        155: &#x27;The predicate is direct, but composite index selection, named parts, and an explicit scalar part type add ceremony.&#x27;,
+        156: &#x27;The three simple predicates require a composite root plus repeated named-part and type selection.&#x27;,
+        158: &#x27;The two name predicates require a composite root plus repeated named-part and type selection.&#x27;,
+        159: &#x27;FullKey.Contains searches the joined composite representation; it cannot restrict matching specifically to any part whose declared type is string.&#x27;,
+        160: &#x27;The query depends on the composite FullKey joined representation rather than a domain-level joined-text abstraction.&#x27;,
+        161: &#x27;The delimiter and joined-key wildcard semantics must be supplied explicitly through FullKey and Matches.&#x27;,
+        162: &#x27;The caller must specify the delimiter and enumerate the selected part names before matching their joined text.&#x27;,
+        163: &#x27;The caller must explicitly select the full-key representation and enumerate the excluded part names.&#x27;,
+        164: &#x27;Per-part comparer intent is expressible, but only through repeated composite part selection and an ignoreCase flag.&#x27;,
+        165: &#x27;The direct predicates require a composite root, named typed parts, and a separate structured-date branch.&#x27;,
+        166: &#x27;The direct predicates require a composite root, named typed parts, and an explicit UInt32 part type.&#x27;,
+        172: &#x27;Preserving the parenthesized OR requires building a separate fragment and then attaching it with Group.&#x27;,
+        173: &#x27;Preserving the parenthesized OR requires building a separate fragment and then attaching it with Group.&#x27;,
+        174: &#x27;Preserving the parenthesized AND branch requires a separate fragment before it can be ORed with the email clause.&#x27;,
+        175: &#x27;Preserving the parenthesized OR requires building a separate fragment and then attaching it with Group.&#x27;,
+        176: &#x27;Deferred index selection drops to the descriptor-level LibraDexCondition root and requires a named selector factory.&#x27;,
+        177: &#x27;Deferred date-index selection drops to the descriptor-level LibraDexCondition root and requires a named selector factory.&#x27;,
+        181: &#x27;The reusable template needs a synthetic initial value, a replacement name, and a later WithValue call.&#x27;,
+        182: &#x27;Index replacement requires the descriptor-level root, a named deferred selector, and a later WithIndex rewrite.&#x27;,
+        183: &#x27;The natural concept missing is expressed through the storage-policy term ScalarNull.Null.&#x27;,
+        184: &#x27;The natural concept present is expressed through the storage-policy term ScalarNull.NonNull.&#x27;,
+        185: &#x27;The natural concept no value is expressed through the storage-policy term ScalarNull.Null.&#x27;,
+        189: &#x27;Semantic-version ordering depends on a caller-owned sortable codec and exposes encoded binary keys in the query.&#x27;,
+        190: &#x27;CIDR membership must be expanded by caller logic into first and last UInt32 address bounds.&#x27;,
+        192: &#x27;The caller must normalize the input explicitly and query a separately maintained normalized-phone index.&#x27;,
+        193: &#x27;The money value must be modeled as composite currency and scaled minor-unit parts rather than queried as a money domain value.&#x27;,
+        194: &#x27;Custom equality requires a caller-maintained normalized projection; the comparer itself is not accepted by the condition.&#x27;,
+        196: &#x27;The culture policy must be named explicitly and relies on a maintained culture sort-key projection.&#x27;,
+        197: &#x27;The caller queries a separately named reversedText projection instead of expressing reversal against the original text index.&#x27;,
+        198: &#x27;The predicate is readable, but the syntax does not express that missing-projection scan fallback is allowed; that policy lives elsewhere.&#x27;,
+        203: &#x27;Exists still hangs from the completed predicate and requires an explicit index resolver instead of being a catalog-bound result producer.&#x27;,
+        204: &#x27;Count still hangs from the completed predicate and requires an explicit index resolver instead of being a catalog-bound result producer.&#x27;,
+        206: &#x27;Group counting is condition-owned, but selecting only counts greater than one requires local post-materialization filtering because aggregate-result predicates are not yet exposed.&#x27;,
+        207: &#x27;Group counting is condition-owned, but selecting only count-equals-one groups requires local post-materialization filtering because aggregate-result predicates are not yet exposed.&#x27;,
+        208: &#x27;There is no direct first-identity-per-group result operator; using Min over the grouping key merely creates equal aggregate values so deterministic tie handling chooses the first identity.&#x27;,
+        212: &#x27;LibraDex can select the identities, but the archive operation itself belongs to the caller and is not represented by the condition syntax.&#x27;,
+        216: &#x27;Duplicates groups keys with multiple entries, but does not directly express repeated identical identities or perform the cleanup policy.&#x27;,
+        217: &#x27;Catalog stats expose aggregate reclaimed payload, not a queryable per-shelf deleted-payload worklist.&#x27;,
+        218: &#x27;LibraDex exposes index metadata but no built-in stale-projection predicate; the caller must define ProjectionMetadataIsStale.&#x27;,
+        219: &#x27;Classify reports the planned execution shape of a known condition; it is not historical telemetry over previously executed queries.&#x27;,
+        220: &#x27;LibraDex does not expose per-index allocation for the last query, so no native representation exists.&#x27;
+      };
+
+      let columns = [
+        { key: &#x27;id&#x27;, label: &#x27;ID&#x27;, width: 64 },
+        { key: &#x27;area&#x27;, label: &#x27;Semantic area&#x27;, width: 160 },
+        { key: &#x27;query&#x27;, label: &#x27;Natural-language query&#x27;, width: 448 },
+        { key: &#x27;expression&#x27;, label: &#x27;Best LibraDex representation&#x27;, width: 768 },
+        { key: &#x27;score&#x27;, label: &#x27;Intuitiveness score&#x27;, width: 128 },
+        { key: &#x27;status&#x27;, label: &#x27;Status&#x27;, width: 160 },
+        { key: &#x27;performance&#x27;, label: &#x27;Performance&#x27;, width: 176 },
+        { key: &#x27;notes&#x27;, label: &#x27;Notes&#x27;, width: 480 }
+      ];
+      let sortKey = &#x27;id&#x27;;
+      let sortDirection = 1;
+      const table = root.querySelector(&#x27;table&#x27;);
+      const colgroup = root.querySelector(&#x27;#ldx-nl-cols&#x27;);
+      const head = root.querySelector(&#x27;#ldx-nl-head&#x27;);
+      const body = root.querySelector(&#x27;#ldx-nl-body&#x27;);
+
+      const value = (row, key) =&gt; {
+        if (key === &#x27;id&#x27;) return row[0];
+        if (key === &#x27;area&#x27;) return row[1];
+        if (key === &#x27;query&#x27;) return row[2];
+        if (key === &#x27;expression&#x27;) return row[3];
+        if (key === &#x27;score&#x27;) return row[4];
+        if (key === &#x27;status&#x27;) return row[5] || &#x27;&#x27;;
+        if (key === &#x27;performance&#x27;) return row[6] || &#x27;&#x27;;
+        if (key === &#x27;notes&#x27;) return reasons[row[0]] || &#x27;&#x27;;
+        return &#x27;&#x27;;
+      };
+
+      const renderColumns = () =&gt; {
+        const fragment = document.createDocumentFragment();
+        let totalWidth = 0;
+        columns.forEach(column =&gt; {
+          const col = document.createElement(&#x27;col&#x27;);
+          col.style.width = `${column.width}px`;
+          fragment.append(col);
+          totalWidth += column.width;
+        });
+        colgroup.replaceChildren(fragment);
+        table.style.width = `${totalWidth}px`;
+        table.style.minWidth = `${totalWidth}px`;
+      };
+
+      const moveColumnBy = (key, delta) =&gt; {
+        const index = columns.findIndex(column =&gt; column.key === key);
+        const target = index + delta;
+        if (index &lt; 0 || target &lt; 0 || target &gt;= columns.length) return;
+        [columns[index], columns[target]] = [columns[target], columns[index]];
+        renderAll();
+      };
+
+      const moveColumnTo = (key, targetKey) =&gt; {
+        const from = columns.findIndex(column =&gt; column.key === key);
+        let to = columns.findIndex(column =&gt; column.key === targetKey);
+        if (from &lt; 0 || to &lt; 0 || from === to) return;
+        const [column] = columns.splice(from, 1);
+        if (from &lt; to) to--;
+        columns.splice(to, 0, column);
+        renderAll();
+      };
+
+      const renderHead = () =&gt; {
+        head.replaceChildren();
+        columns.forEach(column =&gt; {
+          const th = document.createElement(&#x27;th&#x27;);
+          th.scope = &#x27;col&#x27;;
+          th.draggable = true;
+          th.dataset.key = column.key;
+          th.setAttribute(&#x27;aria-sort&#x27;, sortKey === column.key ? (sortDirection === 1 ? &#x27;ascending&#x27; : &#x27;descending&#x27;) : &#x27;none&#x27;);
+          const button = document.createElement(&#x27;button&#x27;);
+          button.type = &#x27;button&#x27;;
+          button.className = &#x27;sort-button&#x27;;
+          button.dataset.key = column.key;
+          button.setAttribute(&#x27;aria-label&#x27;, `Sort by ${column.label}; Alt+Left or Alt+Right moves this column`);
+          const text = document.createElement(&#x27;span&#x27;);
+          text.textContent = column.label;
+          const mark = document.createElement(&#x27;span&#x27;);
+          mark.className = &#x27;sort-mark&#x27;;
+          mark.setAttribute(&#x27;aria-hidden&#x27;, &#x27;true&#x27;);
+          mark.textContent = sortKey === column.key ? (sortDirection === 1 ? &#x27;▲&#x27; : &#x27;▼&#x27;) : &#x27;↕&#x27;;
+          button.append(text, mark);
+          button.addEventListener(&#x27;keydown&#x27;, event =&gt; {
+            if (!event.altKey || (event.key !== &#x27;ArrowLeft&#x27; &amp;&amp; event.key !== &#x27;ArrowRight&#x27;)) return;
+            event.preventDefault();
+            moveColumnBy(column.key, event.key === &#x27;ArrowLeft&#x27; ? -1 : 1);
+          });
+          const handle = document.createElement(&#x27;button&#x27;);
+          handle.type = &#x27;button&#x27;;
+          handle.className = &#x27;resize-handle&#x27;;
+          handle.draggable = false;
+          handle.setAttribute(&#x27;aria-label&#x27;, `Resize ${column.label} column; use Left or Right arrow keys`);
+          handle.addEventListener(&#x27;keydown&#x27;, event =&gt; {
+            if (event.key !== &#x27;ArrowLeft&#x27; &amp;&amp; event.key !== &#x27;ArrowRight&#x27;) return;
+            event.preventDefault();
+            column.width = Math.max(56, column.width + (event.key === &#x27;ArrowLeft&#x27; ? -16 : 16));
+            renderColumns();
+          });
+          handle.addEventListener(&#x27;pointerdown&#x27;, event =&gt; {
+            event.preventDefault();
+            event.stopPropagation();
+            const startX = event.clientX;
+            const startWidth = column.width;
+            const move = moveEvent =&gt; {
+              column.width = Math.max(56, startWidth + moveEvent.clientX - startX);
+              renderColumns();
+            };
+            const stop = () =&gt; {
+              window.removeEventListener(&#x27;pointermove&#x27;, move);
+              window.removeEventListener(&#x27;pointerup&#x27;, stop);
+              window.removeEventListener(&#x27;pointercancel&#x27;, stop);
+            };
+            window.addEventListener(&#x27;pointermove&#x27;, move);
+            window.addEventListener(&#x27;pointerup&#x27;, stop);
+            window.addEventListener(&#x27;pointercancel&#x27;, stop);
+          });
+          th.append(button, handle);
+          head.append(th);
+        });
+      };
+
+      const renderBody = () =&gt; {
+        const sorted = [...rows].sort((a, b) =&gt; {
+          const av = value(a, sortKey);
+          const bv = value(b, sortKey);
+          if (typeof av === &#x27;number&#x27; &amp;&amp; typeof bv === &#x27;number&#x27;) return (av - bv) * sortDirection;
+          return String(av).localeCompare(String(bv), undefined, { numeric: true, sensitivity: &#x27;base&#x27; }) * sortDirection;
+        });
+        const fragment = document.createDocumentFragment();
+        sorted.forEach(row =&gt; {
+          const tr = document.createElement(&#x27;tr&#x27;);
+          columns.forEach(column =&gt; {
+            const key = column.key;
+            const td = document.createElement(&#x27;td&#x27;);
+            const cellValue = value(row, key);
+            if (key === &#x27;expression&#x27;) {
+              const pre = document.createElement(&#x27;pre&#x27;);
+              const code = document.createElement(&#x27;code&#x27;);
+              code.textContent = cellValue;
+              pre.append(code);
+              td.append(pre);
+            } else {
+              td.textContent = cellValue;
+            }
+            if (key === &#x27;score&#x27;) td.className = &#x27;score&#x27;;
+            if (cellValue === &#x27;&#x27;) td.classList.add(&#x27;blank&#x27;);
+            tr.append(td);
+          });
+          fragment.append(tr);
+        });
+        body.replaceChildren(fragment);
+      };
+
+      head.addEventListener(&#x27;click&#x27;, event =&gt; {
+        const button = event.target.closest(&#x27;button[data-key]&#x27;);
+        if (!button) return;
+        const next = button.dataset.key;
+        if (sortKey === next) sortDirection *= -1;
+        else { sortKey = next; sortDirection = 1; }
+        renderHead();
+        renderBody();
+      });
+
+      head.addEventListener(&#x27;dragstart&#x27;, event =&gt; {
+        if (event.target.closest(&#x27;.resize-handle&#x27;)) {
+          event.preventDefault();
+          return;
+        }
+        const th = event.target.closest(&#x27;th[data-key]&#x27;);
+        if (!th || !event.dataTransfer) return;
+        th.classList.add(&#x27;is-dragging&#x27;);
+        event.dataTransfer.effectAllowed = &#x27;move&#x27;;
+        event.dataTransfer.setData(&#x27;text/plain&#x27;, th.dataset.key);
+      });
+
+      head.addEventListener(&#x27;dragend&#x27;, event =&gt; {
+        event.target.closest(&#x27;th[data-key]&#x27;)?.classList.remove(&#x27;is-dragging&#x27;);
+      });
+
+      head.addEventListener(&#x27;dragover&#x27;, event =&gt; {
+        if (event.target.closest(&#x27;th[data-key]&#x27;)) event.preventDefault();
+      });
+
+      head.addEventListener(&#x27;drop&#x27;, event =&gt; {
+        const target = event.target.closest(&#x27;th[data-key]&#x27;);
+        if (!target || !event.dataTransfer) return;
+        event.preventDefault();
+        moveColumnTo(event.dataTransfer.getData(&#x27;text/plain&#x27;), target.dataset.key);
+      });
+
+      function renderAll() {
+        renderColumns();
+        renderHead();
+        renderBody();
+      }
+
+      renderAll();
+    })();
+  &lt;/script&gt;
+&lt;/div&gt;
+
+&lt;script src=&quot;https://unpkg.com/@floating-ui/core@1.7.3/dist/floating-ui.core.umd.min.js&quot;&gt;&lt;/script&gt;
+&lt;script src=&quot;https://unpkg.com/@floating-ui/dom@1.7.4/dist/floating-ui.dom.umd.min.js&quot;&gt;&lt;/script&gt;
+&lt;script&gt;
+(() =&gt; {
+  if (window.FloatingUIDOM == null) {
+    return;
+  }
+  const { autoUpdate, computePosition, flip, offset, shift, size } =
+    window.FloatingUIDOM;
+  const tooltipPlacements = new Set([&quot;top&quot;, &quot;right&quot;, &quot;bottom&quot;, &quot;left&quot;]);
+  const tooltipId = `codex-visualization-tooltip-${
+    window.crypto?.randomUUID?.() ?? Date.now().toString(36)
+  }`;
+  const tooltipGap = 5;
+  const hoverDelay = 700;
+  const skipDelay = 300;
+  let activeTrigger = null;
+  let pendingTrigger = null;
+  let tooltip = null;
+  let openTimeout = null;
+  let autoUpdateCleanup = null;
+  let positionRequest = 0;
+  let skipDelayUntil = 0;
+
+  const getTrigger = (target) =&gt;
+    target?.nodeType === Node.ELEMENT_NODE
+      ? target.closest(&quot;[data-tooltip]&quot;)
+      : null;
+  const containsTarget = (trigger, target) =&gt;
+    target?.nodeType != null &amp;&amp; trigger.contains(target);
+  const getContent = (trigger) =&gt;
+    trigger.getAttribute(&quot;data-tooltip&quot;)?.trim() ?? &quot;&quot;;
+  const getPlacement = (trigger) =&gt; {
+    const placement = trigger.getAttribute(&quot;data-tooltip-placement&quot;);
+    return tooltipPlacements.has(placement) ? placement : &quot;top&quot;;
+  };
+  const getTooltip = () =&gt; {
+    if (tooltip == null) {
+      tooltip = document.createElement(&quot;div&quot;);
+      tooltip.id = tooltipId;
+      tooltip.className = &quot;tooltip&quot;;
+      tooltip.setAttribute(&quot;role&quot;, &quot;tooltip&quot;);
+    }
+    return tooltip;
+  };
+  const setDescribedBy = (trigger, described) =&gt; {
+    const ids = new Set(
+      (trigger.getAttribute(&quot;aria-describedby&quot;) ?? &quot;&quot;)
+        .split(/\s+/)
+        .filter(Boolean),
+    );
+    if (described) {
+      ids.add(tooltipId);
+    } else {
+      ids.delete(tooltipId);
+    }
+    if (ids.size === 0) {
+      trigger.removeAttribute(&quot;aria-describedby&quot;);
+    } else {
+      trigger.setAttribute(&quot;aria-describedby&quot;, [...ids].join(&quot; &quot;));
+    }
+  };
+  const clearOpenTimeout = () =&gt; {
+    if (openTimeout != null) {
+      window.clearTimeout(openTimeout);
+      openTimeout = null;
+    }
+    pendingTrigger = null;
+  };
+  const closeTooltip = (activateSkipDelay = true) =&gt; {
+    clearOpenTimeout();
+    positionRequest += 1;
+    autoUpdateCleanup?.();
+    autoUpdateCleanup = null;
+    if (activeTrigger == null) {
+      return;
+    }
+    setDescribedBy(activeTrigger, false);
+    activeTrigger = null;
+    tooltip?.remove();
+    if (activateSkipDelay) {
+      skipDelayUntil = Date.now() + skipDelay;
+    }
+  };
+  const updatePosition = (trigger, floating) =&gt; {
+    const request = ++positionRequest;
+    void computePosition(trigger, floating, {
+      middleware: [
+        offset(tooltipGap),
+        flip({ padding: tooltipGap }),
+        shift({ padding: tooltipGap }),
+        size({
+          padding: tooltipGap,
+          apply({ availableHeight, availableWidth, elements }) {
+            elements.floating.style.setProperty(
+              &quot;--tooltip-available-width&quot;,
+              `${Math.max(0, availableWidth)}px`,
+            );
+            elements.floating.style.setProperty(
+              &quot;--tooltip-available-height&quot;,
+              `${Math.max(0, availableHeight)}px`,
+            );
+          },
+        }),
+      ],
+      placement: getPlacement(trigger),
+      strategy: &quot;fixed&quot;,
+    })
+      .then(({ x, y }) =&gt; {
+        if (activeTrigger !== trigger || request !== positionRequest) {
+          return;
+        }
+        const scale = window.devicePixelRatio || 1;
+        floating.style.transform = `translate(${Math.round(x * scale) / scale}px, ${Math.round(y * scale) / scale}px)`;
+        floating.style.visibility = &quot;visible&quot;;
+      })
+      .catch(() =&gt; {
+        if (activeTrigger === trigger &amp;&amp; request === positionRequest) {
+          closeTooltip(false);
+        }
+      });
+  };
+  const openTooltip = (trigger) =&gt; {
+    const content = getContent(trigger);
+    if (!trigger.isConnected || content.length === 0) {
+      return;
+    }
+    clearOpenTimeout();
+    if (activeTrigger === trigger) {
+      return;
+    }
+    closeTooltip();
+    const floating = getTooltip();
+    floating.textContent = content;
+    floating.style.visibility = &quot;hidden&quot;;
+    floating.style.transform = &quot;translate(0, 0)&quot;;
+    document.body.appendChild(floating);
+    activeTrigger = trigger;
+    setDescribedBy(trigger, true);
+    autoUpdateCleanup = autoUpdate(trigger, floating, () =&gt; {
+      updatePosition(trigger, floating);
+    });
+  };
+  const requestOpen = (trigger, immediate = false) =&gt; {
+    if (
+      getContent(trigger).length === 0 ||
+      activeTrigger === trigger ||
+      pendingTrigger === trigger
+    ) {
+      return;
+    }
+    clearOpenTimeout();
+    pendingTrigger = trigger;
+    const delay =
+      immediate || activeTrigger != null || Date.now() &lt; skipDelayUntil
+        ? 0
+        : hoverDelay;
+    if (delay === 0) {
+      openTooltip(trigger);
+      return;
+    }
+    openTimeout = window.setTimeout(() =&gt; {
+      openTimeout = null;
+      pendingTrigger = null;
+      openTooltip(trigger);
+    }, delay);
+  };
+  const handlePointerOpen = (event) =&gt; {
+    if (event.pointerType === &quot;touch&quot;) {
+      return;
+    }
+    const trigger = getTrigger(event.target);
+    if (trigger == null || containsTarget(trigger, event.relatedTarget)) {
+      return;
+    }
+    requestOpen(trigger);
+  };
+  const handleLeave = (event) =&gt; {
+    const trigger = getTrigger(event.target);
+    if (trigger == null || containsTarget(trigger, event.relatedTarget)) {
+      return;
+    }
+    if (activeTrigger === trigger || pendingTrigger === trigger) {
+      closeTooltip();
+    }
+  };
+  const handleFocusIn = (event) =&gt; {
+    const trigger = getTrigger(event.target);
+    if (trigger?.matches(&quot;:focus-visible&quot;)) {
+      requestOpen(trigger, true);
+    }
+  };
+  const handleKeyDown = (event) =&gt; {
+    if (event.key === &quot;Escape&quot;) {
+      closeTooltip();
+    }
+  };
+  const handleContextMenu = (event) =&gt; {
+    const trigger = getTrigger(event.target);
+    if (activeTrigger === trigger || pendingTrigger === trigger) {
+      closeTooltip();
+    }
+  };
+  const destroy = () =&gt; {
+    closeTooltip(false);
+    document.removeEventListener(&quot;pointerover&quot;, handlePointerOpen);
+    document.removeEventListener(&quot;pointerout&quot;, handleLeave);
+    document.removeEventListener(&quot;focusin&quot;, handleFocusIn);
+    document.removeEventListener(&quot;focusout&quot;, handleLeave);
+    document.removeEventListener(&quot;keydown&quot;, handleKeyDown);
+    document.removeEventListener(&quot;contextmenu&quot;, handleContextMenu);
+    tooltip = null;
+  };
+
+  document.addEventListener(&quot;pointerover&quot;, handlePointerOpen);
+  document.addEventListener(&quot;pointerout&quot;, handleLeave);
+  document.addEventListener(&quot;focusin&quot;, handleFocusIn);
+  document.addEventListener(&quot;focusout&quot;, handleLeave);
+  document.addEventListener(&quot;keydown&quot;, handleKeyDown);
+  document.addEventListener(&quot;contextmenu&quot;, handleContextMenu);
+  window.addEventListener(&quot;pagehide&quot;, destroy, { once: true });
+})();
+&lt;/script&gt;
+&lt;script id=&quot;codex-visualization-lucide&quot; async src=&quot;https://unpkg.com/lucide@1.17.0/dist/umd/lucide.js&quot;&gt;&lt;/script&gt;
+&lt;script&gt;
+(() =&gt; {
+  const initialize = () =&gt; {
+    globalThis.lucide?.createIcons({ attrs: { width: 16, height: 16 } });
+  };
+  if (globalThis.lucide != null) {
+    initialize();
+    return;
+  }
+  document
+    .getElementById(&quot;codex-visualization-lucide&quot;)
+    ?.addEventListener(&quot;load&quot;, initialize, { once: true });
+})();
+&lt;/script&gt;
+
+&lt;/body&gt;
+&lt;/html&gt;
+"></iframe>
+</body>
+</html>

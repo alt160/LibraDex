@@ -17,6 +17,9 @@ internal sealed class Scalar8Scalar8RangePlan : IDisposable
     internal long[] ShelfOffsets;
     internal int[] StartSlots;
     internal int[] EndSlots;
+    internal byte[] TerminalShelfFlags;
+    internal ulong[] TerminalScalarKeys;
+    internal long[] TerminalRootOffsets;
     private bool disposed;
 
     internal Scalar8Scalar8RangePlan(LibraDexFileSession session, Scalar8Scalar8Profile profile)
@@ -27,6 +30,9 @@ internal sealed class Scalar8Scalar8RangePlan : IDisposable
         ShelfOffsets = ArrayPool<long>.Shared.Rent(DefaultCapacity);
         StartSlots = ArrayPool<int>.Shared.Rent(DefaultCapacity);
         EndSlots = ArrayPool<int>.Shared.Rent(DefaultCapacity);
+        TerminalShelfFlags = ArrayPool<byte>.Shared.Rent(DefaultCapacity);
+        TerminalScalarKeys = ArrayPool<ulong>.Shared.Rent(DefaultCapacity);
+        TerminalRootOffsets = ArrayPool<long>.Shared.Rent(DefaultCapacity);
     }
 
     /// <summary>
@@ -95,8 +101,43 @@ internal sealed class Scalar8Scalar8RangePlan : IDisposable
         ShelfOffsets[ShelfCount] = shelfOffset;
         StartSlots[ShelfCount] = startSlot;
         EndSlots[ShelfCount] = endSlot;
+        TerminalShelfFlags[ShelfCount] = 0;
         ShelfCount++;
         RowCount = checked(RowCount + endSlot - startSlot);
+    }
+
+    /// <summary>
+    /// Adds a retained terminal identity shelf image for an exhausted `SS8-8` key route.<br/>
+    /// The key is carried by the terminal root once, so the retained shelf contributes identity slots only and uses <paramref name="encodedKey"/> for cursor key projection.<br/>
+    /// </summary>
+    /// <param name="shelfOffset">The durable offset of the terminal identity shelf.</param>
+    /// <param name="shelfBytes">The retained terminal identity shelf image, rented from the shared byte array pool.</param>
+    /// <param name="encodedKey">The exhausted route key stored on the terminal identity root.</param>
+    internal void AddTerminalIdentityShelfRange(long rootOffset, long shelfOffset, byte[] shelfBytes, ulong encodedKey)
+    {
+        ThrowIfDisposed();
+
+        int itemCount = TerminalIdentity8ShelfLayout.ReadItemCount(shelfBytes);
+        if (itemCount <= 0)
+        {
+            ArrayPool<byte>.Shared.Return(shelfBytes, clearArray: false);
+            return;
+        }
+
+        if (ShelfCount == Shelves.Length)
+        {
+            Grow();
+        }
+
+        Shelves[ShelfCount] = shelfBytes;
+        ShelfOffsets[ShelfCount] = shelfOffset;
+        StartSlots[ShelfCount] = 0;
+        EndSlots[ShelfCount] = itemCount;
+        TerminalShelfFlags[ShelfCount] = 1;
+        TerminalScalarKeys[ShelfCount] = encodedKey;
+        TerminalRootOffsets[ShelfCount] = rootOffset;
+        ShelfCount++;
+        RowCount = checked(RowCount + itemCount);
     }
 
     /// <summary>
@@ -117,6 +158,17 @@ internal sealed class Scalar8Scalar8RangePlan : IDisposable
         int copied = 0;
         for (int shelfIndex = 0; shelfIndex < ShelfCount; shelfIndex++)
         {
+            if (TerminalShelfFlags[shelfIndex] != 0)
+            {
+                for (int slot = StartSlots[shelfIndex]; slot < EndSlots[shelfIndex]; slot++)
+                {
+                    destination[copied] = TerminalIdentity8ShelfLayout.ReadIdentity(Shelves[shelfIndex], slot);
+                    copied++;
+                }
+
+                continue;
+            }
+
             Scalar8Scalar8ReadOnly shelf = new(Shelves[shelfIndex], Profile);
             for (int slot = StartSlots[shelfIndex]; slot < EndSlots[shelfIndex]; slot++)
             {
@@ -154,10 +206,16 @@ internal sealed class Scalar8Scalar8RangePlan : IDisposable
         ArrayPool<long>.Shared.Return(ShelfOffsets, clearArray: false);
         ArrayPool<int>.Shared.Return(StartSlots, clearArray: false);
         ArrayPool<int>.Shared.Return(EndSlots, clearArray: false);
+        ArrayPool<byte>.Shared.Return(TerminalShelfFlags, clearArray: false);
+        ArrayPool<ulong>.Shared.Return(TerminalScalarKeys, clearArray: false);
+        ArrayPool<long>.Shared.Return(TerminalRootOffsets, clearArray: false);
         Shelves = Array.Empty<byte[]>();
         ShelfOffsets = Array.Empty<long>();
         StartSlots = Array.Empty<int>();
         EndSlots = Array.Empty<int>();
+        TerminalShelfFlags = Array.Empty<byte>();
+        TerminalScalarKeys = Array.Empty<ulong>();
+        TerminalRootOffsets = Array.Empty<long>();
         ShelfCount = 0;
         RowCount = 0;
     }
@@ -169,18 +227,30 @@ internal sealed class Scalar8Scalar8RangePlan : IDisposable
         long[] newShelfOffsets = ArrayPool<long>.Shared.Rent(newLength);
         int[] newStartSlots = ArrayPool<int>.Shared.Rent(newLength);
         int[] newEndSlots = ArrayPool<int>.Shared.Rent(newLength);
+        byte[] newTerminalShelfFlags = ArrayPool<byte>.Shared.Rent(newLength);
+        ulong[] newTerminalScalarKeys = ArrayPool<ulong>.Shared.Rent(newLength);
+        long[] newTerminalRootOffsets = ArrayPool<long>.Shared.Rent(newLength);
         Array.Copy(Shelves, newShelves, ShelfCount);
         ShelfOffsets.AsSpan(0, ShelfCount).CopyTo(newShelfOffsets);
         StartSlots.AsSpan(0, ShelfCount).CopyTo(newStartSlots);
         EndSlots.AsSpan(0, ShelfCount).CopyTo(newEndSlots);
+        TerminalShelfFlags.AsSpan(0, ShelfCount).CopyTo(newTerminalShelfFlags);
+        TerminalScalarKeys.AsSpan(0, ShelfCount).CopyTo(newTerminalScalarKeys);
+        TerminalRootOffsets.AsSpan(0, ShelfCount).CopyTo(newTerminalRootOffsets);
         ArrayPool<byte[]>.Shared.Return(Shelves, clearArray: true);
         ArrayPool<long>.Shared.Return(ShelfOffsets, clearArray: false);
         ArrayPool<int>.Shared.Return(StartSlots, clearArray: false);
         ArrayPool<int>.Shared.Return(EndSlots, clearArray: false);
+        ArrayPool<byte>.Shared.Return(TerminalShelfFlags, clearArray: false);
+        ArrayPool<ulong>.Shared.Return(TerminalScalarKeys, clearArray: false);
+        ArrayPool<long>.Shared.Return(TerminalRootOffsets, clearArray: false);
         Shelves = newShelves;
         ShelfOffsets = newShelfOffsets;
         StartSlots = newStartSlots;
         EndSlots = newEndSlots;
+        TerminalShelfFlags = newTerminalShelfFlags;
+        TerminalScalarKeys = newTerminalScalarKeys;
+        TerminalRootOffsets = newTerminalRootOffsets;
     }
 
     private void ThrowIfDisposed()

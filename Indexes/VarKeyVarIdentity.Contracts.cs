@@ -23,6 +23,8 @@ internal readonly record struct VarKeyVarIdentityProfile(
     int MaxKeyLength,
     int MaxIdentityLength)
 {
+    public static readonly VarKeyVarIdentityProfile Default4KiB = Create(4 * 1024, 1024);
+    public static readonly VarKeyVarIdentityProfile Default8KiB = Create(8 * 1024, 1024);
     public static readonly VarKeyVarIdentityProfile Default16KiB = Create(16 * 1024, 1024);
     public static readonly VarKeyVarIdentityProfile Default32KiB = Create(32 * 1024, 1024);
     public static readonly VarKeyVarIdentityProfile Default64KiB = Create(64 * 1024, 1024);
@@ -104,7 +106,8 @@ internal enum VarKeyVarIdentityRouteTargetKind
 {
     None = 0,
     Shelf = 1,
-    Router = 2
+    Router = 2,
+    TerminalVarIdentityRoot = 3
 }
 
 internal readonly record struct VarKeyVarIdentityRouteTarget(
@@ -128,7 +131,8 @@ internal enum VarKeyVarIdentityRoutedInsertKind
     WalkedGrow = 4,
     WalkedShelfTransformSplit = 5,
     WalkedCreatedInitialShelf = 6,
-    Full = 7
+    Full = 7,
+    WalkedDuplicateRunOverflow = 8
 }
 
 internal readonly record struct VarKeyVarIdentityRoutedInsertResult(

@@ -105,6 +105,18 @@ internal readonly record struct Scalar8Scalar8Profile(
     }
 
     /// <summary>
+    /// Gets the 4 KiB `SS8-8` shelf profile used by memory-backed catalogs when retained slack matters more than large sequential disk scans.<br/>
+    /// The extent matches the common OS page granularity while preserving the same encoded tuple layout and router semantics.<br/>
+    /// </summary>
+    public static Scalar8Scalar8Profile Default4KiB => Create(4 * 1024);
+
+    /// <summary>
+    /// Gets the 8 KiB `SS8-8` shelf profile used as a middle point for memory-backed catalog tuning.<br/>
+    /// This keeps retained slack lower than the disk-oriented 32 KiB shelf while reducing router fanout pressure compared with 4 KiB shelves.<br/>
+    /// </summary>
+    public static Scalar8Scalar8Profile Default8KiB => Create(8 * 1024);
+
+    /// <summary>
     /// Gets the 16 KiB `SS8-8` shelf profile used for fixed-scalar shelf-size sweep validation.<br/>
     /// This keeps the encoded key and identity shape unchanged while stressing the smaller-shelf route fanout boundary.<br/>
     /// </summary>
@@ -145,12 +157,14 @@ internal readonly record struct Scalar8Scalar8Profile(
     {
         return shelfExtentSize switch
         {
+            4 * 1024 => Default4KiB,
+            8 * 1024 => Default8KiB,
             16 * 1024 => Default16KiB,
             24 * 1024 => Default24KiB,
             32 * 1024 => Default32KiB,
             48 * 1024 => Default48KiB,
             64 * 1024 => Default64KiB,
-            _ => throw new ArgumentOutOfRangeException(nameof(shelfExtentSize), shelfExtentSize, "Supported SS8-8 shelf-size sweep extents are 16384, 24576, 32768, 49152, and 65536 bytes.")
+            _ => throw new ArgumentOutOfRangeException(nameof(shelfExtentSize), shelfExtentSize, "Supported SS8-8 shelf-size sweep extents are 4096, 8192, 16384, 24576, 32768, 49152, and 65536 bytes.")
         };
     }
 }
@@ -188,7 +202,12 @@ internal enum Scalar8Scalar8RouteTargetKind
     /// <summary>
     /// The target bytes begin with the `Scalar8Scalar8` shelf magic.<br/>
     /// </summary>
-    Shelf = 2
+    Shelf = 2,
+
+    /// <summary>
+    /// The key route is exhausted and the target stores a terminal identity-only route root.<br/>
+    /// </summary>
+    TerminalIdentityRoot = 3
 }
 
 /// <summary>
@@ -391,6 +410,18 @@ internal readonly record struct Scalar8Scalar16Profile(
     }
 
     /// <summary>
+    /// Gets the 4 KiB `SS8-16` shelf profile used by memory-backed catalog sweeps.<br/>
+    /// This profile preserves the encoded tuple layout while testing page-sized shelf slack for RAM-only indexes.<br/>
+    /// </summary>
+    public static Scalar8Scalar16Profile Default4KiB => Create(4 * 1024);
+
+    /// <summary>
+    /// Gets the 8 KiB `SS8-16` shelf profile used by memory-backed catalogs unless a sweep override is active.<br/>
+    /// It keeps retained shelf slack lower than the disk-oriented profile while avoiding the highest router fanout of 4 KiB shelves.<br/>
+    /// </summary>
+    public static Scalar8Scalar16Profile Default8KiB => Create(8 * 1024);
+
+    /// <summary>
     /// Gets the 16 KiB `SS8-16` shelf profile used for fixed-scalar shelf-size sweep validation.<br/>
     /// This keeps the encoded key and identity shape unchanged while stressing the smaller-shelf route fanout boundary.<br/>
     /// </summary>
@@ -431,12 +462,14 @@ internal readonly record struct Scalar8Scalar16Profile(
     {
         return shelfExtentSize switch
         {
+            4 * 1024 => Default4KiB,
+            8 * 1024 => Default8KiB,
             16 * 1024 => Default16KiB,
             24 * 1024 => Default24KiB,
             32 * 1024 => Default32KiB,
             48 * 1024 => Default48KiB,
             64 * 1024 => Default64KiB,
-            _ => throw new ArgumentOutOfRangeException(nameof(shelfExtentSize), shelfExtentSize, "Supported SS8-16 shelf-size sweep extents are 16384, 24576, 32768, 49152, and 65536 bytes.")
+            _ => throw new ArgumentOutOfRangeException(nameof(shelfExtentSize), shelfExtentSize, "Supported SS8-16 shelf-size sweep extents are 4096, 8192, 16384, 24576, 32768, 49152, and 65536 bytes.")
         };
     }
 }
@@ -653,6 +686,18 @@ internal readonly record struct Scalar16Scalar8Profile(
             itemRegionSize,
             unusedTailBytes);
     }
+
+    /// <summary>
+    /// Gets the 4 KiB `SS16-8` shelf profile used by memory-backed catalog sweeps.<br/>
+    /// This page-sized option minimizes per-shelf slack while preserving the same routed fixed-scalar storage semantics.<br/>
+    /// </summary>
+    public static Scalar16Scalar8Profile Default4KiB => Create(4 * 1024);
+
+    /// <summary>
+    /// Gets the 8 KiB `SS16-8` shelf profile used by memory-backed catalogs unless a sweep override is active.<br/>
+    /// It is the RAM-oriented midpoint selected before per-shape workload evidence justifies a different default.<br/>
+    /// </summary>
+    public static Scalar16Scalar8Profile Default8KiB => Create(8 * 1024);
 
     /// <summary>
     /// Gets the default `SS16-8` shelf profile used by the first primitive validation slice.<br/>
@@ -875,8 +920,26 @@ internal readonly record struct Scalar16Scalar16Profile(
     }
 
     /// <summary>
-    /// Gets the default `SS16-16` shelf profile used by the first primitive validation slice.<br/>
-    /// This intentionally matches the current `SS8-8`, `SS16-8`, and `SS8-16` default shelf extent before shelf-size tuning.<br/>
+    /// Gets the 4 KiB `SS16-16` shelf profile used by memory-backed catalog sweeps.<br/>
+    /// This page-sized option minimizes retained slack for the widest scalar/scalar shape before measuring router fanout costs.<br/>
+    /// </summary>
+    public static Scalar16Scalar16Profile Default4KiB => Create(4 * 1024);
+
+    /// <summary>
+    /// Gets the 8 KiB `SS16-16` shelf profile used by memory-backed catalogs unless a sweep override is active.<br/>
+    /// It keeps RAM-backed shelf slack lower than the disk profile while preserving enough tuple capacity for ordinary routed scans.<br/>
+    /// </summary>
+    public static Scalar16Scalar16Profile Default8KiB => Create(8 * 1024);
+
+    /// <summary>
+    /// Gets the read-leaning balanced file-backed `SS16-16` shelf profile selected by the fixed-shape tuning pass.<br/>
+    /// This keeps the widest scalar/scalar shape off the 32 KiB write plateau while preserving the stronger read result seen at 24 KiB.<br/>
+    /// </summary>
+    public static Scalar16Scalar16Profile Default24KiB => Create(24 * 1024);
+
+    /// <summary>
+    /// Gets the 32 KiB `SS16-16` shelf profile used by legacy validation anchors and explicit shelf-size sweeps.<br/>
+    /// This remains available for comparisons against the smaller tuned file-backed default.<br/>
     /// </summary>
     public static Scalar16Scalar16Profile Default32KiB => Create(32 * 1024);
 }
@@ -1095,13 +1158,31 @@ internal readonly record struct Fixed32Scalar8Profile(
     }
 
     /// <summary>
+    /// Gets the 4 KiB `FS32-8` shelf profile used by memory-backed catalog sweeps.<br/>
+    /// This page-sized option minimizes retained slack for 32-byte fixed-key indexes when RAM locality is more important than disk scan size.<br/>
+    /// </summary>
+    public static Fixed32Scalar8Profile Default4KiB => Create(4 * 1024);
+
+    /// <summary>
+    /// Gets the 8 KiB `FS32-8` shelf profile used by memory-backed catalogs unless a sweep override is active.<br/>
+    /// It gives wide-key memory indexes a smaller default shelf without forcing the highest router fanout of 4 KiB shelves.<br/>
+    /// </summary>
+    public static Fixed32Scalar8Profile Default8KiB => Create(8 * 1024);
+
+    /// <summary>
     /// Gets the default `FS32-8` shelf profile used by the first primitive validation slice.<br/>
     /// This intentionally matches the current `SS8-8` default shelf extent so the first comparison isolates item width before shelf-size tuning.<br/>
     /// </summary>
     public static Fixed32Scalar8Profile Default32KiB => Create(32 * 1024);
 
     /// <summary>
-    /// Gets the default `FS32-8` shelf profile used by routed runtime paths after shelf-size tuning.<br/>
+    /// Gets the tuned default `FS32-8` shelf profile used by routed runtime paths after the 2026-06 performance redo.<br/>
+    /// This size avoids the observed 64 KiB write cliff while preserving a larger fixed-key shelf than the 32 KiB validation profile.<br/>
+    /// </summary>
+    public static Fixed32Scalar8Profile Default40KiB => Create(40 * 1024);
+
+    /// <summary>
+    /// Gets the legacy 64 KiB `FS32-8` shelf profile retained for compatibility tests and sweep comparison.<br/>
     /// This is the largest shelf addressable by the current 16-bit in-shelf slot offsets and was selected from the first write/read sweep.<br/>
     /// </summary>
     public static Fixed32Scalar8Profile Default64KiB => Create(64 * 1024);
@@ -1197,7 +1278,13 @@ internal enum Fixed32Scalar8RoutedInsertKind
     /// <summary>
     /// The insert could not proceed because the selected uniqueness policy rejected the key.<br/>
     /// </summary>
-    KeyConflict = 4
+    KeyConflict = 4,
+
+    /// <summary>
+    /// The tuple extended a dense sorted shelf whose left prefix stayed at the original offset while its right tail moved to one appended shelf.<br/>
+    /// The owning batch must retain the truncated left image until its unpublished left-prefix mutations are published.<br/>
+    /// </summary>
+    WalkedSortedTailSplit = 5
 }
 
 /// <summary>
@@ -1321,13 +1408,31 @@ internal readonly record struct Fixed32Scalar16Profile(
     }
 
     /// <summary>
+    /// Gets the 4 KiB `FS32-16` shelf profile used by memory-backed catalog sweeps.<br/>
+    /// This page-sized option minimizes retained slack for the widest fixed-key/scalar-identity profile before measuring route fanout costs.<br/>
+    /// </summary>
+    public static Fixed32Scalar16Profile Default4KiB => Create(4 * 1024);
+
+    /// <summary>
+    /// Gets the 8 KiB `FS32-16` shelf profile used by memory-backed catalogs unless a sweep override is active.<br/>
+    /// It is the RAM-oriented default for wide fixed-key indexes while file-backed indexes keep their larger sequential-scan profile.<br/>
+    /// </summary>
+    public static Fixed32Scalar16Profile Default8KiB => Create(8 * 1024);
+
+    /// <summary>
     /// Gets the default `FS32-16` shelf profile used by the first primitive validation slice.<br/>
     /// This intentionally matches the current `SS8-8` default shelf extent so the first comparison isolates item width before shelf-size tuning.<br/>
     /// </summary>
     public static Fixed32Scalar16Profile Default32KiB => Create(32 * 1024);
 
     /// <summary>
-    /// Gets the default `FS32-16` shelf profile used by routed runtime paths after shelf-size tuning.<br/>
+    /// Gets the tuned default `FS32-16` shelf profile used by routed runtime paths after the 2026-06 performance redo.<br/>
+    /// This size avoids the observed 64 KiB write cliff while preserving a larger fixed-key shelf than the 32 KiB validation profile.<br/>
+    /// </summary>
+    public static Fixed32Scalar16Profile Default40KiB => Create(40 * 1024);
+
+    /// <summary>
+    /// Gets the legacy 64 KiB `FS32-16` shelf profile retained for compatibility tests and sweep comparison.<br/>
     /// This is the largest shelf addressable by the current 16-bit in-shelf slot offsets and was selected from the first write/read sweep.<br/>
     /// </summary>
     public static Fixed32Scalar16Profile Default64KiB => Create(64 * 1024);
@@ -1423,7 +1528,13 @@ internal enum Fixed32Scalar16RoutedInsertKind
     /// <summary>
     /// The insert could not proceed because the selected uniqueness policy rejected the key.<br/>
     /// </summary>
-    KeyConflict = 4
+    KeyConflict = 4,
+
+    /// <summary>
+    /// The tuple extended a dense sorted shelf whose left prefix stayed at the original offset while its right tail moved to one appended shelf.<br/>
+    /// The owning batch must retain the truncated left image until its unpublished left-prefix mutations are published.<br/>
+    /// </summary>
+    WalkedSortedTailSplit = 5
 }
 
 /// <summary>

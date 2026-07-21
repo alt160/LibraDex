@@ -5,7 +5,7 @@ namespace LibraDex;
 /// The reservation is already part of the pending append stream when it is returned.<br/>
 /// Callers should fill <see cref="Span"/> immediately and then use <see cref="Extent"/> as the future committed location.<br/>
 /// </summary>
-public readonly ref struct RawDataReservation
+internal readonly ref struct RawDataReservation
 {
     internal RawDataReservation(RawDataExtent extent, Span<byte> span)
     {

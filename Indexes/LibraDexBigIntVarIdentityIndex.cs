@@ -57,6 +57,8 @@ public sealed class LibraDexBigIntVarIdentityIndex : IIndex, IIdentityPrimitiveE
 
     public IndexKeys KeyContract => keyContract;
 
+    public IdentityKeyMultiplicity IdentityKeyMultiplicity => IdentityKeyMultiplicity.MultipleKeysPerIdentity;
+
     public CatalogIndexKeyFamily KeyFamily => CatalogIndexKeyFamily.BigInt;
 
     public CatalogIndexIdentityFamily IdentityFamily => CatalogIndexIdentityFamily.Blob;
@@ -91,7 +93,7 @@ public sealed class LibraDexBigIntVarIdentityIndex : IIndex, IIdentityPrimitiveE
             result == FixedNVarIdentityInsertResult.Inserted,
             CreatedInitialShelfRoute: false,
             default,
-            commit);
+            LibraDexOperationDiagnostics.FromDataKernel(commit));
     }
 
     public LibraDexGenericInsertResult Insert(object? key, object identity)
@@ -135,6 +137,16 @@ public sealed class LibraDexBigIntVarIdentityIndex : IIndex, IIdentityPrimitiveE
     }
 
     /// <summary>
+    /// Counts all raw identities visible through this BigInteger variable-identity index facade.<br/>
+    /// The count path reads fixed-key / variable-identity shelf metadata and slot keys without copying raw identity byte arrays.<br/>
+    /// </summary>
+    /// <returns>The physical identity tuple count for this index facade.<br/></returns>
+    public long Count()
+    {
+        return CountIdentityPrimitive(new LibraDexIdentityPrimitiveRequest(LibraDexCriteriaKind.All, Array.Empty<object?>()));
+    }
+
+    /// <summary>
     /// Prepares a strict non-generic key-membership set for condition-builder `InSet` calls.<br/>
     /// BigInt variable-identity condition execution consumes this prepared set through the same internal primitive bridge as exact and range predicates, while preserving strict key-type validation.<br/>
     /// </summary>
@@ -169,6 +181,29 @@ public sealed class LibraDexBigIntVarIdentityIndex : IIndex, IIdentityPrimitiveE
     long IIdentityPrimitiveExecutor.CountIdentityPrimitive(LibraDexIdentityPrimitiveRequest request)
     {
         return CountIdentityPrimitive(request);
+    }
+
+    /// <summary>
+    /// Executes count as a fixed-key variable-identity aggregate over the condition-materialized BigInteger primitive.<br/>
+    /// The aggregate uses fixed-N variable-identity shelf counts and routed range counts, avoiding raw identity byte-array materialization.<br/>
+    /// </summary>
+    /// <param name="request">The aggregate request to execute.<br/></param>
+    /// <returns>The aggregate count result and physical plan classification.<br/></returns>
+    LibraDexPrimitiveAggregateResult IIdentityPrimitiveAggregateExecutor.ExecuteIdentityPrimitiveAggregate(LibraDexPrimitiveAggregateRequest request)
+    {
+        if (request.Kind != LibraDexPrimitiveAggregateKind.Count)
+        {
+            throw new NotSupportedException($"{request.Kind} is not connected to BigInteger variable-identity aggregation yet.");
+        }
+
+        if (request.Scope != AggregateScope.Tuples)
+        {
+            throw new NotSupportedException($"{request.Scope} aggregate scope is not connected to BigInteger variable-identity aggregation yet.");
+        }
+
+        return LibraDexPrimitiveAggregateResult.ForCount(
+            CountIdentityPrimitive(request.PrimitiveRequest),
+            LibraDexPrimitiveAggregatePlanKind.RangeSlots);
     }
 
     IReadOnlyList<object> IIdentityPrimitiveExecutor.ExecuteAllIdentities()
@@ -227,18 +262,123 @@ public sealed class LibraDexBigIntVarIdentityIndex : IIndex, IIdentityPrimitiveE
 
     private long CountIdentityPrimitive(LibraDexIdentityPrimitiveRequest request)
     {
+        if (request.CriteriaKind == LibraDexCriteriaKind.All)
+        {
+            return inner.CountOrdinaryIdentities();
+        }
+
         long count = 0;
-        foreach ((BigInteger lower, BigInteger upper) in ExpandPrimitiveRanges(request))
+        foreach ((BigInteger lower, BigInteger upper) in ExpandCountPrimitiveRanges(request))
         {
             if (lower > upper)
             {
                 continue;
             }
 
-            count += GetIdentities(lower, upper).Count;
+            count += CountOrdinaryIdentityRange(lower, upper);
         }
 
         return count;
+    }
+
+    /// <summary>
+    /// Expands a BigInteger variable-identity primitive into count-only ordered key ranges.<br/>
+    /// Membership operands are deduplicated as set membership, and multirange operands are sorted and merged so overlapping ranges do not double count the same physical key extent.<br/>
+    /// Iterator expansion remains separate to preserve plan-natural streaming behavior.<br/>
+    /// </summary>
+    /// <param name="request">The primitive request to normalize for counting.<br/></param>
+    /// <returns>Inclusive BigInteger key ranges for count-only execution.<br/></returns>
+    private IEnumerable<(BigInteger Lower, BigInteger Upper)> ExpandCountPrimitiveRanges(LibraDexIdentityPrimitiveRequest request)
+    {
+        return request.CriteriaKind switch
+        {
+            LibraDexCriteriaKind.In or LibraDexCriteriaKind.InSet => ExpandDistinctMembershipCountRanges(request.Values),
+            LibraDexCriteriaKind.MultiRange => ExpandMergedMultiRangeCountRanges(request.Values),
+            _ => ExpandPrimitiveRanges(request)
+        };
+    }
+
+    /// <summary>
+    /// Expands membership operands into one exact-key count range per distinct BigInteger key.<br/>
+    /// This avoids repeated range counts when duplicate membership values are supplied while still counting every physical identity stored under each selected key.<br/>
+    /// </summary>
+    /// <param name="values">The primitive request values containing direct keys or a prepared set.<br/></param>
+    /// <returns>Exact-key ranges in first-seen operand order.<br/></returns>
+    private IEnumerable<(BigInteger Lower, BigInteger Upper)> ExpandDistinctMembershipCountRanges(IReadOnlyList<object?> values)
+    {
+        HashSet<BigInteger> seenKeys = new();
+        foreach (BigInteger key in EnumerateMembershipKeys(values))
+        {
+            if (seenKeys.Add(key))
+            {
+                yield return (key, key);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Expands multirange operands into sorted non-overlapping BigInteger count ranges.<br/>
+    /// The merge step treats the multirange operand as a range union, preventing duplicate counts when condition materialization produces duplicate or overlapping extents.<br/>
+    /// </summary>
+    /// <param name="values">The primitive request values containing one range array.<br/></param>
+    /// <returns>Merged inclusive count ranges.<br/></returns>
+    private static IEnumerable<(BigInteger Lower, BigInteger Upper)> ExpandMergedMultiRangeCountRanges(IReadOnlyList<object?> values)
+    {
+        LibraDexIdentityKeyRange[] ranges = RequireIdentityKeyRanges(values);
+        if (ranges.Length == 0)
+        {
+            yield break;
+        }
+
+        (BigInteger Lower, BigInteger Upper)[] typedRanges = new (BigInteger Lower, BigInteger Upper)[ranges.Length];
+        for (int i = 0; i < ranges.Length; i++)
+        {
+            BigInteger lower = RequireBigInteger(ranges[i].LowerKey, nameof(values));
+            BigInteger upper = RequireBigInteger(ranges[i].UpperKey, nameof(values));
+            if (lower > upper)
+            {
+                throw new ArgumentException("BigInt variable-identity multi-range count requires each lower key to be less than or equal to its upper key.", nameof(values));
+            }
+
+            typedRanges[i] = (lower, upper);
+        }
+
+        Array.Sort(typedRanges, static (left, right) =>
+        {
+            int lowerComparison = left.Lower.CompareTo(right.Lower);
+            return lowerComparison != 0
+                ? lowerComparison
+                : left.Upper.CompareTo(right.Upper);
+        });
+
+        BigInteger currentLower = typedRanges[0].Lower;
+        BigInteger currentUpper = typedRanges[0].Upper;
+        for (int i = 1; i < typedRanges.Length; i++)
+        {
+            if (typedRanges[i].Lower <= currentUpper)
+            {
+                if (typedRanges[i].Upper > currentUpper)
+                {
+                    currentUpper = typedRanges[i].Upper;
+                }
+
+                continue;
+            }
+
+            yield return (currentLower, currentUpper);
+            currentLower = typedRanges[i].Lower;
+            currentUpper = typedRanges[i].Upper;
+        }
+
+        yield return (currentLower, currentUpper);
+    }
+
+    private long CountOrdinaryIdentityRange(BigInteger lowerKey, BigInteger upperKey)
+    {
+        ThrowIfDisposed();
+        byte[] lower = LibraDexBigIntCodec.Encode(lowerKey, MaxBytes, LibraDexBigIntKeyStorage.FixedWidth);
+        byte[] upper = LibraDexBigIntCodec.Encode(upperKey, MaxBytes, LibraDexBigIntKeyStorage.FixedWidth);
+        return inner.CountIdentityRange(lower, upper);
     }
 
     private IEnumerable<(BigInteger Lower, BigInteger Upper)> ExpandPrimitiveRanges(LibraDexIdentityPrimitiveRequest request)

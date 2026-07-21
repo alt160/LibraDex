@@ -28,6 +28,7 @@ internal static class KeyStateIdentityRouteLayout
     public const int Reserved1Offset = 40;
 
     public const ushort InlineSortedStorageKind = 1;
+    public const ushort TerminalIdentityRootStorageKind = 2;
     public const ushort Scalar8IdentityCode = 8;
     public const ushort Scalar16IdentityCode = 16;
 

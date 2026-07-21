@@ -6,7 +6,7 @@ namespace LibraDex;
 /// </summary>
 /// <param name="AttemptedInsertCount">The number of typed insert calls attempted before abort.</param>
 /// <param name="DeferredCommitRequests">The number of lower-level commit requests abandoned by the abort.</param>
-public readonly record struct UnsignedScalar8Scalar8BatchAbortResult(
+internal readonly record struct UnsignedScalar8Scalar8BatchAbortResult(
     long AttemptedInsertCount,
     long DeferredCommitRequests);
 
@@ -21,7 +21,7 @@ public readonly record struct UnsignedScalar8Scalar8BatchAbortResult(
 /// <param name="InitialShelfRouteCreateCount">The number of first-prefix shelf routes initialized by the batch.</param>
 /// <param name="DeferredCommitRequests">The number of lower-level commit requests folded into this batch commit.</param>
 /// <param name="Commit">The DataKernel commit telemetry for the batch publication.</param>
-public readonly record struct UnsignedScalar8Scalar8BatchCommitResult(
+internal readonly record struct UnsignedScalar8Scalar8BatchCommitResult(
     long AttemptedInsertCount,
     long InsertedCount,
     long AlreadyPresentCount,
@@ -34,7 +34,7 @@ public readonly record struct UnsignedScalar8Scalar8BatchCommitResult(
 /// Describes the public typed insert outcome for an unsigned scalar `SS8-8` index wrapper.<br/>
 /// The values mirror the encoded core outcomes while keeping normal unsigned call sites free of encoded type names.<br/>
 /// </summary>
-public enum UnsignedScalar8Scalar8InsertOutcome
+internal enum UnsignedScalar8Scalar8InsertOutcome
 {
     /// <summary>
     /// The unsigned `(key, identity)` tuple was physically inserted into the index.<br/>
@@ -60,11 +60,18 @@ public enum UnsignedScalar8Scalar8InsertOutcome
 /// <param name="CreatedInitialShelfRoute">Whether the wrapper created the first shelf route for the tuple's root prefix before inserting.</param>
 /// <param name="RouteCreateCommit">Commit telemetry for initial shelf-route creation, or default when no route was created.</param>
 /// <param name="InsertCommit">Commit telemetry for the insert mutation, or default when the tuple already existed or was rejected.</param>
-public readonly record struct UnsignedScalar8Scalar8InsertResult(
+internal readonly record struct UnsignedScalar8Scalar8InsertResult(
     UnsignedScalar8Scalar8InsertOutcome Outcome,
     bool CreatedInitialShelfRoute,
     DataKernelCommitTelemetry RouteCreateCommit,
-    DataKernelCommitTelemetry InsertCommit);
+    DataKernelCommitTelemetry InsertCommit)
+{
+    /// <summary>
+    /// Gets queued-writer path attribution when this result came from the typed queued writer facade.<br/>
+    /// The value remains `None` for normal typed inserts and typed batch inserts.<br/>
+    /// </summary>
+    internal Scalar8Scalar8QueuedInsertPath QueuedInsertPath { get; init; }
+}
 
 /// <summary>
 /// Reports the public result of reading unsigned scalar identities from an `UnsignedScalar8Scalar8Index` wrapper.<br/>
@@ -74,7 +81,7 @@ public readonly record struct UnsignedScalar8Scalar8InsertResult(
 /// <param name="UsedPooledScratch">Whether the convenience read rented scratch from the shared array pool.</param>
 /// <param name="CoalescingEnabled">Whether adjacent shelf coalescing was enabled for the read.</param>
 /// <param name="RangeScratchShelfCapacity">The number of profiled shelf extents represented by the range scratch path.</param>
-public readonly record struct UnsignedScalar8Scalar8RangeReadResult(
+internal readonly record struct UnsignedScalar8Scalar8RangeReadResult(
     int IdentityCount,
     bool UsedPooledScratch,
     bool CoalescingEnabled,
@@ -118,6 +125,23 @@ internal static class UnsignedScalar8Scalar8ResultMapper
             result.InitialShelfRouteCreateCount,
             result.DeferredCommitRequests,
             result.Commit);
+    }
+
+    /// <summary>
+    /// Maps an encoded insert result into the typed unsigned scalar insert result while preserving internal queued-writer attribution.<br/>
+    /// </summary>
+    /// <param name="result">The encoded core insert result.</param>
+    /// <returns>The typed unsigned insert result.</returns>
+    internal static UnsignedScalar8Scalar8InsertResult MapInsert(Scalar8Scalar8EncodedInsertResult result)
+    {
+        return new UnsignedScalar8Scalar8InsertResult(
+            MapInsertOutcome(result.Outcome),
+            result.CreatedInitialShelfRoute,
+            result.RouteCreateCommit,
+            result.InsertCommit)
+        {
+            QueuedInsertPath = result.QueuedInsertPath
+        };
     }
 
     /// <summary>

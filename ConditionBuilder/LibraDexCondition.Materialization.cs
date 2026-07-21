@@ -1,4 +1,5 @@
 using System.Collections;
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Numerics;
 using System.Text;
@@ -230,29 +231,46 @@ internal sealed class LibraDexConditionNode
     {
         LibraDexConditionLeafDescriptor descriptor = RequireLeaf();
         IIndex index = resolveIndex(descriptor.IndexName);
-        if (!string.Equals(index.Group, group, StringComparison.Ordinal))
+        if (index.Group.Length != 0 && !string.Equals(index.Group, group, StringComparison.Ordinal))
         {
             throw new InvalidOperationException($"Resolved index '{descriptor.IndexName}' belongs to group '{index.Group}', not condition group '{group}'.");
         }
 
         LibraDexConditionLeafClassification classification = LibraDexConditionEndCondition.ClassifyResolvedLeaf(group, descriptor, index);
+        object?[] values = MaterializeOperandValues(descriptor);
         if (classification.ExecutionClass == LibraDexConditionExecutionClass.ProjectionBacked)
         {
             if (resolveProjectionIndex is null)
             {
+                if (TryMaterializeProjectionFallback(index, values, descriptor, out IIdentityCriterion? fallbackWithoutBridge))
+                {
+                    return fallbackWithoutBridge;
+                }
+
                 throw new NotSupportedException($"Condition operator {descriptor.Operator} requires a maintained {classification.ProjectionKind} projection bridge.");
             }
 
             IIndex? projectionIndex = resolveProjectionIndex(descriptor, classification);
             if (projectionIndex is not null)
             {
-                return MaterializeProjectionLeaf(group, descriptor, classification, projectionIndex);
+                try
+                {
+                    return MaterializeProjectionLeaf(group, descriptor, classification, projectionIndex, values);
+                }
+                catch (NotSupportedException) when (TryMaterializeProjectionFallback(index, values, descriptor, out IIdentityCriterion? fallbackAfterBridge))
+                {
+                    return fallbackAfterBridge;
+                }
+            }
+
+            if (TryMaterializeProjectionFallback(index, values, descriptor, out IIdentityCriterion? fallbackWithoutProjection))
+            {
+                return fallbackWithoutProjection;
             }
 
             throw new NotSupportedException($"Condition operator {descriptor.Operator} requires a maintained {classification.ProjectionKind} projection bridge, but the resolver did not return one.");
         }
 
-        object?[] values = MaterializeOperandValues(descriptor);
         if (descriptor.ValueKind == LibraDexConditionValueKind.String &&
             RequiresManagedStringComparison(descriptor, index) &&
             IsStringComparisonOperator(descriptor.Operator))
@@ -268,6 +286,57 @@ internal sealed class LibraDexConditionNode
         }
 
         return MaterializeResolvedPrimitiveLeaf(index, values, descriptor);
+    }
+
+    /// <summary>
+    /// Tries to express a projection-backed leaf as a visible scan criterion against the exact index when the requested projection is not connected.<br/>
+    /// This keeps declared-but-unavailable folded, sort-key, reversed, and binary suffix projections correct across fixed, variable, and composite shape families while preserving the maintained projection as the fast path.<br/>
+    /// </summary>
+    /// <param name="index">The resolved exact index that owns the condition leaf.</param>
+    /// <param name="values">The already materialized operand values.</param>
+    /// <param name="descriptor">The condition leaf descriptor requesting the projection.</param>
+    /// <param name="criterion">Receives the exact-index scan criterion when the leaf can fall back without losing semantics.</param>
+    /// <returns><see langword="true"/> when a correct exact-index fallback was built.</returns>
+    private static bool TryMaterializeProjectionFallback(
+        IIndex index,
+        object?[] values,
+        LibraDexConditionLeafDescriptor descriptor,
+        [NotNullWhen(true)] out IIdentityCriterion? criterion)
+    {
+        criterion = null;
+        if (descriptor.ValueKind == LibraDexConditionValueKind.String)
+        {
+            if (IsStringComparisonOperator(descriptor.Operator))
+            {
+                criterion = MaterializeStringComparisonLeaf(index, values, descriptor);
+                return true;
+            }
+
+            if (IsStringMembershipOperator(descriptor.Operator))
+            {
+                criterion = MaterializeStringMembershipLeaf(index, values, descriptor);
+                return true;
+            }
+
+            if (TryMaterializePatternPrimitiveLeaf(index, values, descriptor, out criterion) &&
+                criterion is not null)
+            {
+                return true;
+            }
+
+            criterion = null;
+            return false;
+        }
+
+        if (descriptor.ValueKind == LibraDexConditionValueKind.Binary &&
+            TryMaterializePatternPrimitiveLeaf(index, values, descriptor, out criterion) &&
+            criterion is not null)
+        {
+            return true;
+        }
+
+        criterion = null;
+        return false;
     }
 
     /// <summary>
@@ -1104,7 +1173,7 @@ internal sealed class LibraDexConditionNode
         }
 
         string value = RequireNonNullString(values, 0, descriptor);
-        return CreateConditionLeaf(index, LibraDexCriteriaKind.Between, value, value + '\uffff');
+        return CreateConditionLeaf(index, LibraDexCriteriaKind.Prefix, value);
     }
 
     /// <summary>
@@ -1258,15 +1327,18 @@ internal sealed class LibraDexConditionNode
             return descriptor.StringComparisonPolicy;
         }
 
+        if (descriptor.IgnoreCase || !string.IsNullOrEmpty(descriptor.Culture))
+        {
+            return LibraDexStringComparisonPolicy.FromLegacy(descriptor.IgnoreCase, descriptor.Culture);
+        }
+
         if (index is ILibraDexStringComparisonPolicyProvider provider &&
             provider.StringComparisonPolicy is not null)
         {
             return provider.StringComparisonPolicy;
         }
 
-        return descriptor.IgnoreCase || !string.IsNullOrEmpty(descriptor.Culture)
-            ? LibraDexStringComparisonPolicy.FromLegacy(descriptor.IgnoreCase, descriptor.Culture)
-            : LibraDexStringComparisonPolicy.Default;
+        return LibraDexStringComparisonPolicy.Default;
     }
 
     /// <summary>
@@ -2244,7 +2316,8 @@ internal sealed class LibraDexConditionNode
         string group,
         LibraDexConditionLeafDescriptor descriptor,
         LibraDexConditionLeafClassification classification,
-        IIndex projectionIndex)
+        IIndex projectionIndex,
+        object?[] values)
     {
         if (projectionIndex.Group.Length != 0 &&
             !string.Equals(projectionIndex.Group, group, StringComparison.Ordinal))
@@ -2252,7 +2325,6 @@ internal sealed class LibraDexConditionNode
             throw new InvalidOperationException($"Projection index '{projectionIndex.Name}' belongs to group '{projectionIndex.Group}', not condition group '{group}'.");
         }
 
-        object?[] values = MaterializeOperandValues(descriptor);
         return classification.ProjectionKind switch
         {
             LibraDexIndexProjectionKind.Exact => MaterializeExactProjectionLeaf(group, projectionIndex, descriptor, values),

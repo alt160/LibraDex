@@ -7,7 +7,7 @@ namespace LibraDex;
 /// <param name="PrefixStart">The inclusive prefix start byte.</param>
 /// <param name="PrefixEnd">The inclusive prefix end byte.</param>
 /// <param name="TargetOffset">The route target file offset, or zero when unset.</param>
-public readonly record struct RouterRouteSnapshot(
+internal readonly record struct RouterRouteSnapshot(
     byte PrefixStart,
     byte PrefixEnd,
     long TargetOffset);

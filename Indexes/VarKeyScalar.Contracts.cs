@@ -54,11 +54,13 @@ internal readonly record struct VarKeyScalar8Profile(
     int ShelfExtentSize,
     int MaxKeyLength)
 {
+    public static readonly VarKeyScalar8Profile Default4KiB = Create(4 * 1024, 1024);
+    public static readonly VarKeyScalar8Profile Default8KiB = Create(8 * 1024, 1024);
     public static readonly VarKeyScalar8Profile Default16KiB = Create(16 * 1024, 1024);
     public static readonly VarKeyScalar8Profile Default32KiB = Create(32 * 1024, 1024);
     public static readonly VarKeyScalar8Profile Default64KiB = Create(64 * 1024, 1024);
     public static readonly VarKeyScalar8Profile Default128KiB = Create(128 * 1024, 1024);
-    public static readonly VarKeyScalar8Profile DefaultInitial = Default64KiB;
+    public static readonly VarKeyScalar8Profile DefaultInitial = Default16KiB;
 
     public static VarKeyScalar8Profile Create(int shelfExtentSize, int maxKeyLength)
     {
@@ -95,7 +97,8 @@ internal enum VarKeyScalar8RouteTargetKind
 {
     None = 0,
     Router = 1,
-    Shelf = 2
+    Shelf = 2,
+    TerminalIdentityRoot = 3
 }
 
 internal readonly record struct VarKeyScalar8RouteTarget(
@@ -256,6 +259,8 @@ internal readonly record struct VarKeyScalar16Profile(
     int ShelfExtentSize,
     int MaxKeyLength)
 {
+    public static readonly VarKeyScalar16Profile Default4KiB = Create(4 * 1024, 1024);
+    public static readonly VarKeyScalar16Profile Default8KiB = Create(8 * 1024, 1024);
     public static readonly VarKeyScalar16Profile Default16KiB = Create(16 * 1024, 1024);
     public static readonly VarKeyScalar16Profile Default32KiB = Create(32 * 1024, 1024);
     public static readonly VarKeyScalar16Profile Default64KiB = Create(64 * 1024, 1024);

@@ -7,6 +7,87 @@ internal readonly record struct LibraDexIdentityPrimitiveRequest(
     QueryDirection Direction = QueryDirection.Ascending);
 
 /// <summary>
+/// Selects the aggregate operation requested over a condition-materialized identity primitive.<br/>
+/// The aggregate layer reuses existing criteria semantics; this enum describes the operation to perform after the condition has already chosen an index and primitive request.<br/>
+/// </summary>
+internal enum LibraDexPrimitiveAggregateKind
+{
+    /// <summary>
+    /// Counts matching physical identity tuples with the requested aggregate scope.<br/>
+    /// </summary>
+    Count = 0
+}
+
+/// <summary>
+/// Describes how much physical work an aggregate executor used to produce a result.<br/>
+/// Diagnostics can expose whether an aggregate was answered from free metadata, routed range counts, key-only scans, or identity iteration fallback.<br/>
+/// </summary>
+internal enum LibraDexPrimitiveAggregatePlanKind
+{
+    /// <summary>
+    /// The executor did not classify the aggregate path.<br/>
+    /// This is used by the compatibility adapter around existing primitive count implementations until each shape reports more detail.<br/>
+    /// </summary>
+    Unclassified = 0,
+
+    /// <summary>
+    /// The aggregate was answered from existing metadata that is maintained only with same-page writes.<br/>
+    /// </summary>
+    Metadata = 1,
+
+    /// <summary>
+    /// The aggregate was answered from routed shelf or slot range counts without inspecting every identity.<br/>
+    /// </summary>
+    RangeSlots = 2,
+
+    /// <summary>
+    /// The aggregate scanned candidate keys for residual predicates while avoiding identity materialization.<br/>
+    /// </summary>
+    KeyScan = 3,
+
+    /// <summary>
+    /// The aggregate fell back to identity or tuple iteration.<br/>
+    /// </summary>
+    IdentityScan = 4
+}
+
+/// <summary>
+/// Carries one aggregate operation over an already-normalized primitive request.<br/>
+/// This keeps aggregate execution aligned with the condition builder's existing materialization, projection, null-state, and composite semantics.<br/>
+/// </summary>
+/// <param name="Kind">The aggregate operation to execute.<br/></param>
+/// <param name="PrimitiveRequest">The condition-materialized primitive request to aggregate over.<br/></param>
+/// <param name="Scope">The tuple/key aggregate scope requested by the caller.<br/></param>
+internal readonly record struct LibraDexPrimitiveAggregateRequest(
+    LibraDexPrimitiveAggregateKind Kind,
+    LibraDexIdentityPrimitiveRequest PrimitiveRequest,
+    AggregateScope Scope = AggregateScope.Tuples);
+
+/// <summary>
+/// Represents the result of one primitive aggregate execution.<br/>
+/// Count is the first connected aggregate value; future sum, average, min, and max fields can extend this result without changing condition materialization.<br/>
+/// </summary>
+/// <param name="Kind">The aggregate operation that produced the result.<br/></param>
+/// <param name="Count">The count result for <see cref="LibraDexPrimitiveAggregateKind.Count"/>.<br/></param>
+/// <param name="PlanKind">The physical aggregate plan classification used by the executor.<br/></param>
+internal readonly record struct LibraDexPrimitiveAggregateResult(
+    LibraDexPrimitiveAggregateKind Kind,
+    long Count,
+    LibraDexPrimitiveAggregatePlanKind PlanKind)
+{
+    /// <summary>
+    /// Creates a count aggregate result.<br/>
+    /// </summary>
+    /// <param name="count">The matching tuple count.<br/></param>
+    /// <param name="planKind">The physical aggregate plan classification used by the executor.<br/></param>
+    /// <returns>A count aggregate result.</returns>
+    internal static LibraDexPrimitiveAggregateResult ForCount(long count, LibraDexPrimitiveAggregatePlanKind planKind)
+    {
+        return new LibraDexPrimitiveAggregateResult(LibraDexPrimitiveAggregateKind.Count, count, planKind);
+    }
+}
+
+/// <summary>
 /// Describes one inclusive key extent requested by condition-driven multi-range retrieval.<br/>
 /// The bounds remain runtime objects at this layer because non-generic condition planning resolves index handles before generic physical readers are invoked.<br/>
 /// </summary>
@@ -14,7 +95,18 @@ internal readonly record struct LibraDexIdentityPrimitiveRequest(
 /// <param name="UpperKey">The inclusive upper key.</param>
 internal readonly record struct LibraDexIdentityKeyRange(object LowerKey, object UpperKey);
 
-internal interface IIdentityPrimitiveExecutor
+internal interface IIdentityPrimitiveAggregateExecutor
+{
+    /// <summary>
+    /// Executes one aggregate over an already-normalized identity primitive request.<br/>
+    /// Implementations must preserve condition-builder semantics and should choose the lowest-work shape-native path available for the requested aggregate.<br/>
+    /// </summary>
+    /// <param name="request">The aggregate request to execute.</param>
+    /// <returns>The aggregate result.</returns>
+    LibraDexPrimitiveAggregateResult ExecuteIdentityPrimitiveAggregate(LibraDexPrimitiveAggregateRequest request);
+}
+
+internal interface IIdentityPrimitiveExecutor : IIdentityPrimitiveAggregateExecutor
 {
     /// <summary>
     /// Streams identities for one normalized primitive request in the requested key traversal direction.<br/>
@@ -28,6 +120,29 @@ internal interface IIdentityPrimitiveExecutor
     IReadOnlyList<object> ExecuteIdentityPrimitive(LibraDexIdentityPrimitiveRequest request);
 
     long CountIdentityPrimitive(LibraDexIdentityPrimitiveRequest request);
+
+    /// <summary>
+    /// Executes count as the first aggregate primitive by adapting the existing primitive count implementation.<br/>
+    /// Shape-specific executors can override <see cref="IIdentityPrimitiveAggregateExecutor.ExecuteIdentityPrimitiveAggregate"/> later to report richer plan kinds or support additional aggregate operations.<br/>
+    /// </summary>
+    /// <param name="request">The aggregate request to execute.</param>
+    /// <returns>The aggregate result.</returns>
+    LibraDexPrimitiveAggregateResult IIdentityPrimitiveAggregateExecutor.ExecuteIdentityPrimitiveAggregate(LibraDexPrimitiveAggregateRequest request)
+    {
+        if (request.Kind != LibraDexPrimitiveAggregateKind.Count)
+        {
+            throw new NotSupportedException($"{request.Kind} is not connected to identity primitive aggregation yet.");
+        }
+
+        if (request.Scope != AggregateScope.Tuples)
+        {
+            throw new NotSupportedException($"{request.Scope} aggregate scope is not connected to identity primitive aggregation yet.");
+        }
+
+        return LibraDexPrimitiveAggregateResult.ForCount(
+            CountIdentityPrimitive(request.PrimitiveRequest),
+            LibraDexPrimitiveAggregatePlanKind.Unclassified);
+    }
 
     IReadOnlyList<object> ExecuteAllIdentities();
 
@@ -167,13 +282,12 @@ internal sealed class LibraDexIdentityCriterion : IIdentityCriterion
     internal static IIdentityCriterion Leaf(IIndex index, LibraDexCriteriaKind criteriaKind, LibraDexQueryDiagnostics diagnostics, params object?[] values)
     {
         ArgumentNullException.ThrowIfNull(index);
-        if (string.IsNullOrWhiteSpace(index.Group))
-        {
-            throw new InvalidOperationException("Programmatic identity criteria require an index with persisted identity-group metadata.");
-        }
+        string group = index.Group.Length == 0
+            ? "__standalone:" + index.Name
+            : index.Group;
 
         return new LibraDexIdentityCriterion(
-            index.Group,
+            group,
             LibraDexIdentityCriterionNodeKind.Leaf,
             index,
             criteriaKind,
@@ -478,9 +592,9 @@ internal static class LibraDexIdentityExecutionPlanner
     internal static long Count(IIdentityCriterion criterion, IdentityDeduplication deduplication)
     {
         ArgumentNullException.ThrowIfNull(criterion);
-        if (deduplication == IdentityDeduplication.Preserve && TryCountLeaf(criterion, out long leafCount))
+        if (deduplication == IdentityDeduplication.Preserve)
         {
-            return leafCount;
+            return CountPreserveNode(criterion);
         }
 
         LibraDexIdentityQueryOptions options = new(
@@ -491,6 +605,165 @@ internal static class LibraDexIdentityExecutionPlanner
             Bookmark: null);
         long count = 0;
         foreach (object _ in Iterate(criterion, options))
+        {
+            count++;
+        }
+
+        return count;
+    }
+
+    /// <summary>
+    /// Counts a criteria tree using preserve-duplicate stream semantics without materializing the final identity result list.<br/>
+    /// Leaf nodes route through primitive aggregate counts when available, so composed `Or` trees can sum physical metadata/range counts instead of expanding every matching identity.<br/>
+    /// Operators that depend on identity membership still materialize only the side needed for membership tests, preserving the current condition-builder meaning exactly.<br/>
+    /// </summary>
+    /// <param name="criterion">The criteria node to count.</param>
+    /// <returns>The number of identities that the preserve-duplicate plan-natural stream would produce.</returns>
+    private static long CountPreserveNode(IIdentityCriterion criterion)
+    {
+        return criterion.NodeKind switch
+        {
+            LibraDexIdentityCriterionNodeKind.Leaf => CountPreserveLeaf(criterion),
+            LibraDexIdentityCriterionNodeKind.External => CountIterator(IterateExternal(criterion)),
+            LibraDexIdentityCriterionNodeKind.And => CountPreserveIntersection(RequireLeft(criterion), RequireRight(criterion)),
+            LibraDexIdentityCriterionNodeKind.Or => checked(CountPreserveNode(RequireLeft(criterion)) + CountPreserveNode(RequireRight(criterion))),
+            LibraDexIdentityCriterionNodeKind.Except => CountPreserveDifference(RequireLeft(criterion), RequireRight(criterion)),
+            LibraDexIdentityCriterionNodeKind.Not => CountPreserveComplement(criterion, RequireLeft(criterion)),
+            _ => throw new NotSupportedException($"Identity criterion node {criterion.NodeKind} is not supported by identity counting.")
+        };
+    }
+
+    /// <summary>
+    /// Counts one primitive leaf through the aggregate executor when the index exposes one, otherwise through the leaf iterator.<br/>
+    /// This is the physical-count bridge used by composed preserve-duplicate counting, keeping `.Count(where)` aligned with the same primitive request used by retrieval.<br/>
+    /// </summary>
+    /// <param name="criterion">The leaf criterion to count.</param>
+    /// <returns>The preserve-duplicate tuple count for the leaf.</returns>
+    private static long CountPreserveLeaf(IIdentityCriterion criterion)
+    {
+        if (TryExecuteCountAggregateLeaf(criterion, out LibraDexPrimitiveAggregateResult aggregateResult))
+        {
+            return aggregateResult.Count;
+        }
+
+        return CountIterator(IterateLeaf(criterion));
+    }
+
+    /// <summary>
+    /// Counts an identity intersection by materializing the right membership side and streaming the left side through it.<br/>
+    /// Empty right-side membership short-circuits to zero so a large left-side primitive does not need to be read when the intersection cannot match.<br/>
+    /// External identity predicates keep their filter-over-source execution model and are counted directly from that filtered stream.<br/>
+    /// </summary>
+    /// <param name="leftCriterion">The left intersection child.</param>
+    /// <param name="rightCriterion">The right intersection child.</param>
+    /// <returns>The number of left-side identities whose value is present in the right-side identity set.</returns>
+    private static long CountPreserveIntersection(IIdentityCriterion leftCriterion, IIdentityCriterion rightCriterion)
+    {
+        if (TryGetExternalFilterPair(leftCriterion, rightCriterion, out IIdentityCriterion? source, out Func<LibraDexExternalIdentityContext, bool>? filter))
+        {
+            return CountIterator(FilterExternalIdentityIterator(IterateNode(source), filter));
+        }
+
+        List<object> rightIdentities = ExecuteNode(rightCriterion);
+        if (rightIdentities.Count == 0)
+        {
+            return 0;
+        }
+
+        HashSet<object> rightSet = new(rightIdentities, LibraDexObjectValueComparer.Instance);
+        long count = 0;
+        foreach (object identity in IterateNode(leftCriterion))
+        {
+            if (rightSet.Contains(identity))
+            {
+                count++;
+            }
+        }
+
+        return count;
+    }
+
+    /// <summary>
+    /// Counts a preserve-duplicate difference by materializing the excluded identity set and streaming the source side through it.<br/>
+    /// An empty excluded side delegates back to the source count path, allowing large source leaves or `Or` trees to keep using aggregate metadata counts.<br/>
+    /// </summary>
+    /// <param name="leftCriterion">The source criterion.</param>
+    /// <param name="rightCriterion">The exclusion criterion.</param>
+    /// <returns>The number of source identities not present in the exclusion set.</returns>
+    private static long CountPreserveDifference(IIdentityCriterion leftCriterion, IIdentityCriterion rightCriterion)
+    {
+        List<object> rightIdentities = ExecuteNode(rightCriterion);
+        if (rightIdentities.Count == 0)
+        {
+            return CountPreserveNode(leftCriterion);
+        }
+
+        HashSet<object> rightSet = new(rightIdentities, LibraDexObjectValueComparer.Instance);
+        long count = 0;
+        foreach (object identity in IterateNode(leftCriterion))
+        {
+            if (!rightSet.Contains(identity))
+            {
+                count++;
+            }
+        }
+
+        return count;
+    }
+
+    /// <summary>
+    /// Counts a preserve-duplicate complement by streaming the selected identity universe through the excluded identity set.<br/>
+    /// When the excluded side is empty, the method counts the universe through the same single-index `All` aggregate that count-all uses when that scope is available.<br/>
+    /// </summary>
+    /// <param name="criterion">The negated criterion whose leaves define the universe scope.</param>
+    /// <param name="childCriterion">The child criterion to exclude from the universe.</param>
+    /// <returns>The number of universe identities not present in the child result set.</returns>
+    private static long CountPreserveComplement(IIdentityCriterion criterion, IIdentityCriterion childCriterion)
+    {
+        List<object> excluded = ExecuteNode(childCriterion);
+        if (excluded.Count == 0 && TryCountPreserveUniverse(criterion, out long universeCount))
+        {
+            return universeCount;
+        }
+
+        return CountIterator(ComplementIterator(criterion, excluded));
+    }
+
+    /// <summary>
+    /// Counts the identity universe selected for a negated criterion when the universe can be represented as one primitive `All` aggregate.<br/>
+    /// Multi-index universes intentionally fall back to iteration because their grouped identity-universe semantics are broader than one physical tuple count.<br/>
+    /// </summary>
+    /// <param name="criterion">The criterion whose universe scope should be counted.</param>
+    /// <param name="count">Receives the universe count when a single aggregate executor can answer it.</param>
+    /// <returns><see langword="true"/> when a single primitive aggregate produced the count.</returns>
+    private static bool TryCountPreserveUniverse(IIdentityCriterion criterion, out long count)
+    {
+        count = 0;
+        if (!TryResolveSingleExecutableUniverse(criterion, out IIdentityPrimitiveExecutor? singleIndexExecutor) ||
+            singleIndexExecutor is not IIdentityPrimitiveAggregateExecutor aggregateExecutor)
+        {
+            return false;
+        }
+
+        LibraDexIdentityPrimitiveRequest primitiveRequest = new(LibraDexCriteriaKind.All, Array.Empty<object?>());
+        LibraDexPrimitiveAggregateResult aggregateResult = aggregateExecutor.ExecuteIdentityPrimitiveAggregate(new LibraDexPrimitiveAggregateRequest(
+            LibraDexPrimitiveAggregateKind.Count,
+            primitiveRequest,
+            AggregateScope.Tuples));
+        count = aggregateResult.Count;
+        return true;
+    }
+
+    /// <summary>
+    /// Counts a forward-only identity stream without allocating a result list.<br/>
+    /// This helper keeps count paths explicit at call sites that still need to consume identity streams for membership semantics.<br/>
+    /// </summary>
+    /// <param name="identities">The identity stream to consume.</param>
+    /// <returns>The number of identities produced by the stream.</returns>
+    private static long CountIterator(IEnumerable<object> identities)
+    {
+        long count = 0;
+        foreach (object _ in identities)
         {
             count++;
         }
@@ -512,6 +785,14 @@ internal static class LibraDexIdentityExecutionPlanner
     internal static LibraDexIdentityMutationResult ExecuteTargetDelete(IIdentityCriterion criterion, IIndex targetIndex)
     {
         ArgumentNullException.ThrowIfNull(criterion);
+        return ExecuteTargetDelete(Iterate(
+            criterion,
+            new LibraDexIdentityQueryOptions(Deduplication: IdentityDeduplication.Distinct)), targetIndex);
+    }
+
+    internal static LibraDexIdentityMutationResult ExecuteTargetDelete(IEnumerable<object> identities, IIndex targetIndex)
+    {
+        ArgumentNullException.ThrowIfNull(identities);
         ArgumentNullException.ThrowIfNull(targetIndex);
         if (targetIndex is not IIdentityPrimitiveTupleExecutor tupleExecutor ||
             targetIndex is not IIdentityExactTupleMutator exactMutator)
@@ -519,7 +800,7 @@ internal static class LibraDexIdentityExecutionPlanner
             throw new NotSupportedException("Targeted condition delete requires a target index that can capture and mutate exact physical tuples.");
         }
 
-        List<object> matchedIdentities = ExecuteNode(criterion);
+        HashSet<object> matchedIdentities = new(identities, LibraDexObjectValueComparer.Instance);
         if (matchedIdentities.Count == 0)
         {
             return new LibraDexIdentityMutationResult(
@@ -536,7 +817,7 @@ internal static class LibraDexIdentityExecutionPlanner
         for (int i = 0; i < targetTuples.Count; i++)
         {
             LibraDexObjectTuple tuple = targetTuples[i];
-            if (!ContainsIdentity(matchedIdentities, tuple.Identity))
+            if (!matchedIdentities.Contains(tuple.Identity))
             {
                 continue;
             }
@@ -563,6 +844,24 @@ internal static class LibraDexIdentityExecutionPlanner
         Func<object, object?>? newKeyFactory)
     {
         ArgumentNullException.ThrowIfNull(criterion);
+        return ExecuteTargetSetKey(
+            Iterate(criterion, new LibraDexIdentityQueryOptions(Deduplication: IdentityDeduplication.Distinct)),
+            targetIndex,
+            hasNewKey,
+            newKey,
+            newKeyFactory,
+            factoryUsesOldKey: false);
+    }
+
+    internal static LibraDexIdentityMutationResult ExecuteTargetSetKey(
+        IEnumerable<object> identities,
+        IIndex targetIndex,
+        bool hasNewKey,
+        object? newKey,
+        Func<object, object?>? newKeyFactory,
+        bool factoryUsesOldKey)
+    {
+        ArgumentNullException.ThrowIfNull(identities);
         ArgumentNullException.ThrowIfNull(targetIndex);
         if (targetIndex is not IIdentityPrimitiveTupleExecutor tupleExecutor ||
             targetIndex is not IIdentityExactTupleMutator exactMutator)
@@ -570,7 +869,7 @@ internal static class LibraDexIdentityExecutionPlanner
             throw new NotSupportedException("Targeted condition SetKey requires a target index that can capture and mutate exact physical tuples.");
         }
 
-        List<object> matchedIdentities = ExecuteNode(criterion);
+        HashSet<object> matchedIdentities = new(identities, LibraDexObjectValueComparer.Instance);
         if (matchedIdentities.Count == 0)
         {
             return new LibraDexIdentityMutationResult(
@@ -587,14 +886,14 @@ internal static class LibraDexIdentityExecutionPlanner
         for (int i = 0; i < targetTuples.Count; i++)
         {
             LibraDexObjectTuple tuple = targetTuples[i];
-            if (!ContainsIdentity(matchedIdentities, tuple.Identity))
+            if (!matchedIdentities.Contains(tuple.Identity))
             {
                 continue;
             }
 
             object? replacementKey = newKeyFactory is null
                 ? hasNewKey ? newKey : throw new InvalidOperationException("Targeted SetKey mutation is missing a replacement key.")
-                : newKeyFactory(tuple.Identity) ?? throw new InvalidOperationException("Targeted SetKey replacement-key factory returned null.");
+                : newKeyFactory(factoryUsesOldKey ? tuple.Key! : tuple.Identity) ?? throw new InvalidOperationException("Targeted SetKey replacement-key factory returned null.");
             oldTuples.Add(tuple);
             replacementTuples.Add(new LibraDexObjectTuple(replacementKey, tuple.Identity));
         }
@@ -639,6 +938,38 @@ internal static class LibraDexIdentityExecutionPlanner
             oldTuples.Count,
             changed,
             new LibraDexQueryDiagnostics(LibraDexExecutionKind.Scan, RowsScanned: targetTuples.Count, RowsReturned: changed));
+    }
+
+    internal static LibraDexIdentityMutationResult ExecuteTargetDeleteAll(IIndex targetIndex)
+    {
+        ArgumentNullException.ThrowIfNull(targetIndex);
+        if (targetIndex is IIdentityPrimitiveMutator primitiveMutator)
+        {
+            return primitiveMutator.DeleteIdentityPrimitive(
+                new LibraDexIdentityPrimitiveRequest(LibraDexCriteriaKind.All, Array.Empty<object?>()));
+        }
+
+        if (targetIndex is not IIdentityPrimitiveTupleExecutor tupleExecutor ||
+            targetIndex is not IIdentityExactTupleMutator exactMutator)
+        {
+            throw new NotSupportedException("DeleteAll requires a target index that can capture and mutate exact physical tuples.");
+        }
+
+        IReadOnlyList<LibraDexObjectTuple> tuples = tupleExecutor.ExecuteTuplePrimitive(
+            new LibraDexIdentityPrimitiveRequest(LibraDexCriteriaKind.All, Array.Empty<object?>()));
+        long changed = 0;
+        for (int i = 0; i < tuples.Count; i++)
+        {
+            LibraDexObjectTuple tuple = tuples[i];
+            if (exactMutator.DeleteExactTuple(tuple.Key!, tuple.Identity))
+                changed++;
+        }
+
+        return new LibraDexIdentityMutationResult(
+            LibraDexCriteriaMutationKind.Delete,
+            tuples.Count,
+            changed,
+            new LibraDexQueryDiagnostics(LibraDexExecutionKind.FastPath, RowsScanned: tuples.Count, RowsReturned: changed));
     }
 
     private static LibraDexIdentityMutationResult ExecuteDeleteMutation(IIdentityCriterion criterion)
@@ -1120,18 +1451,28 @@ internal static class LibraDexIdentityExecutionPlanner
         return true;
     }
 
-    private static bool TryCountLeaf(IIdentityCriterion criterion, out long count)
+    /// <summary>
+    /// Attempts to execute a single primitive leaf through the aggregate executor path.<br/>
+    /// This keeps public `.Count(where)` on the same condition-materialized primitive semantics while allowing indexes to specialize count, distinct count, and later aggregate operations independently from identity iteration.<br/>
+    /// </summary>
+    /// <param name="criterion">The criterion to aggregate.</param>
+    /// <param name="result">Receives the aggregate result when the criterion is an executable aggregate leaf.</param>
+    /// <returns><see langword="true"/> when the leaf was aggregated directly.</returns>
+    private static bool TryExecuteCountAggregateLeaf(IIdentityCriterion criterion, out LibraDexPrimitiveAggregateResult result)
     {
-        count = 0;
+        result = default;
         if (criterion.NodeKind != LibraDexIdentityCriterionNodeKind.Leaf ||
             criterion.CriteriaKind is null ||
-            criterion.Index is not IIdentityPrimitiveExecutor primitiveExecutor)
+            criterion.Index is not IIdentityPrimitiveAggregateExecutor aggregateExecutor)
         {
             return false;
         }
 
-        count = primitiveExecutor.CountIdentityPrimitive(
-            new LibraDexIdentityPrimitiveRequest(criterion.CriteriaKind.Value, criterion.Values));
+        LibraDexIdentityPrimitiveRequest primitiveRequest = new(criterion.CriteriaKind.Value, criterion.Values);
+        result = aggregateExecutor.ExecuteIdentityPrimitiveAggregate(new LibraDexPrimitiveAggregateRequest(
+            LibraDexPrimitiveAggregateKind.Count,
+            primitiveRequest,
+            AggregateScope.Tuples));
         return true;
     }
 

@@ -202,11 +202,10 @@ internal static partial class RawHarness
             Func<string, IIndex> deleteResolver = indexName => string.Equals(indexName, "deleteValue", StringComparison.Ordinal)
                 ? deleteIndex
                 : throw new KeyNotFoundException(indexName);
-            LibraDexIdentityMutationResult deleteNullResult = LibraDexCondition
+            LibraDexIdentityMutationResult deleteNullResult = catalog["routes"]["deleteValue"].Delete(LibraDexCondition
                 .ForGroup("routes")
                 .Index("deleteValue").AsInt64.EqualTo(ScalarNull.Null)
-                .EndCondition
-                .Delete(deleteResolver);
+                .EndCondition);
             IReadOnlyList<long> deleteAfterNullIds = LibraDexCondition
                 .ForGroup("routes")
                 .Index("deleteValue").AsInt64.All()
@@ -219,11 +218,7 @@ internal static partial class RawHarness
             }
 
             ValidateGenericInsert(deleteIndex.Insert(ScalarNull.Null, 613L), "key-state all delete proof null insert");
-            LibraDexIdentityMutationResult deleteAllResult = LibraDexCondition
-                .ForGroup("routes")
-                .Index("deleteValue").AsInt64.All()
-                .EndCondition
-                .Delete(deleteResolver);
+            LibraDexIdentityMutationResult deleteAllResult = catalog["routes"]["deleteValue"].DeleteAll();
             if (deleteAllResult.ChangedCount != 2 ||
                 LibraDexCondition.ForGroup("routes").Index("deleteValue").AsInt64.All().EndCondition.Count(deleteResolver, deduplication: IdentityDeduplication.Preserve) != 0)
             {
@@ -273,16 +268,14 @@ internal static partial class RawHarness
             Func<string, IIndex> setKeyResolver = indexName => string.Equals(indexName, "setKeyValue", StringComparison.Ordinal)
                 ? setKeyIndex
                 : throw new KeyNotFoundException(indexName);
-            LibraDexIdentityMutationResult setKeyToNullResult = LibraDexCondition
+            LibraDexIdentityMutationResult setKeyToNullResult = catalog["routes"]["setKeyValue"].SetKey(LibraDexCondition
                 .ForGroup("routes")
                 .Index("setKeyValue").AsInt64.EqualTo(60)
-                .EndCondition
-                .SetKey(setKeyResolver, null);
-            LibraDexIdentityMutationResult setKeyFromNullResult = LibraDexCondition
+                .EndCondition, null);
+            LibraDexIdentityMutationResult setKeyFromNullResult = catalog["routes"]["setKeyValue"].SetKey(LibraDexCondition
                 .ForGroup("routes")
                 .Index("setKeyValue").AsInt64.EqualTo(ScalarNull.Null)
-                .EndCondition
-                .SetKey(setKeyResolver, 70L);
+                .EndCondition, 70L);
             IReadOnlyList<long> setKeyNullIds = LibraDexCondition
                 .ForGroup("routes")
                 .Index("setKeyValue").AsInt64.EqualTo(ScalarNull.Null)
@@ -398,16 +391,14 @@ internal static partial class RawHarness
                 throw new InvalidDataException("String NullKey direct rekey paths did not leave expected null-first route ordering.");
             }
 
-            LibraDexIdentityMutationResult stringSetKeyToEmpty = LibraDexCondition
+            LibraDexIdentityMutationResult stringSetKeyToEmpty = catalog["routes"]["codeRekey"].SetKey(LibraDexCondition
                 .ForGroup("routes")
                 .Index("codeRekey").AsString.EqualTo("B")
-                .EndCondition
-                .SetKey(stringRekeyResolver, string.Empty);
-            LibraDexIdentityMutationResult stringSetKeyToNull = LibraDexCondition
+                .EndCondition, string.Empty);
+            LibraDexIdentityMutationResult stringSetKeyToNull = catalog["routes"]["codeRekey"].SetKey(LibraDexCondition
                 .ForGroup("routes")
                 .Index("codeRekey").AsString.EqualTo(NullKey.Empty)
-                .EndCondition
-                .SetKey(stringRekeyResolver, null);
+                .EndCondition, null);
             IReadOnlyList<ulong> stringSetKeyNullIds = LibraDexCondition
                 .ForGroup("routes")
                 .Index("codeRekey").AsString.EqualTo(NullKey.Null)
@@ -445,16 +436,14 @@ internal static partial class RawHarness
                 throw new InvalidDataException("Binary NullKey direct rekey paths did not leave expected null-first route ordering.");
             }
 
-            LibraDexIdentityMutationResult binarySetKeyToEmpty = LibraDexCondition
+            LibraDexIdentityMutationResult binarySetKeyToEmpty = catalog["routes"]["fingerprintRekey"].SetKey(LibraDexCondition
                 .ForGroup("routes")
                 .Index("fingerprintRekey").AsBinary.EqualTo(binaryRekeyB)
-                .EndCondition
-                .SetKey(binaryRekeyResolver, Array.Empty<byte>());
-            LibraDexIdentityMutationResult binarySetKeyToNull = LibraDexCondition
+                .EndCondition, Array.Empty<byte>());
+            LibraDexIdentityMutationResult binarySetKeyToNull = catalog["routes"]["fingerprintRekey"].SetKey(LibraDexCondition
                 .ForGroup("routes")
                 .Index("fingerprintRekey").AsBinary.EqualTo(NullKey.Empty)
-                .EndCondition
-                .SetKey(binaryRekeyResolver, null);
+                .EndCondition, null);
             IReadOnlyList<long> binarySetKeyNullIds = LibraDexCondition
                 .ForGroup("routes")
                 .Index("fingerprintRekey").AsBinary.EqualTo(NullKey.Null)
@@ -485,16 +474,14 @@ internal static partial class RawHarness
                 .Index("codeMembership").AsString.NotInSet(new[] { null!, string.Empty, "B" })
                 .EndCondition
                 .ToList<ulong>(stringMembershipResolver, deduplication: IdentityDeduplication.Preserve);
-            LibraDexIdentityMutationResult stringMembershipDelete = LibraDexCondition
+            LibraDexIdentityMutationResult stringMembershipDelete = catalog["routes"]["codeMembership"].Delete(LibraDexCondition
                 .ForGroup("routes")
                 .Index("codeMembership").AsString.InSet(new[] { string.Empty, "B" })
-                .EndCondition
-                .Delete(stringMembershipResolver);
-            LibraDexIdentityMutationResult stringMembershipSetKey = LibraDexCondition
+                .EndCondition);
+            LibraDexIdentityMutationResult stringMembershipSetKey = catalog["routes"]["codeMembership"].SetKey(LibraDexCondition
                 .ForGroup("routes")
                 .Index("codeMembership").AsString.InSet(new[] { null!, "A" })
-                .EndCondition
-                .SetKey(stringMembershipResolver, string.Empty);
+                .EndCondition, string.Empty);
             IReadOnlyList<ulong> stringMembershipEmptyIds = LibraDexCondition
                 .ForGroup("routes")
                 .Index("codeMembership").AsString.EqualTo(NullKey.Empty)
@@ -532,16 +519,14 @@ internal static partial class RawHarness
             LibraDexPreparedObjectSet binaryPreparedMembership = ((IIndex)binaryMembershipIndex).PrepareInSet(new object[] { null!, Array.Empty<byte>(), binaryMembershipB });
             IReadOnlyList<object> binaryPreparedIds = ((IIdentityPrimitiveExecutor)binaryMembershipIndex).ExecuteIdentityPrimitive(
                 new LibraDexIdentityPrimitiveRequest(LibraDexCriteriaKind.InSet, new object?[] { binaryPreparedMembership }));
-            LibraDexIdentityMutationResult binaryMembershipDelete = LibraDexCondition
+            LibraDexIdentityMutationResult binaryMembershipDelete = catalog["routes"]["fingerprintMembership"].Delete(LibraDexCondition
                 .ForGroup("routes")
                 .Index("fingerprintMembership").AsBinary.InSet(new byte[][] { Array.Empty<byte>(), binaryMembershipB })
-                .EndCondition
-                .Delete(binaryMembershipResolver);
-            LibraDexIdentityMutationResult binaryMembershipSetKey = LibraDexCondition
+                .EndCondition);
+            LibraDexIdentityMutationResult binaryMembershipSetKey = catalog["routes"]["fingerprintMembership"].SetKey(LibraDexCondition
                 .ForGroup("routes")
                 .Index("fingerprintMembership").AsBinary.InSet(new byte[][] { null!, binaryMembershipA })
-                .EndCondition
-                .SetKey(binaryMembershipResolver, Array.Empty<byte>());
+                .EndCondition, Array.Empty<byte>());
             IReadOnlyList<long> binaryMembershipEmptyIds = LibraDexCondition
                 .ForGroup("routes")
                 .Index("fingerprintMembership").AsBinary.EqualTo(NullKey.Empty)
@@ -699,16 +684,14 @@ internal static partial class RawHarness
             Func<string, IIndex> reopenedStringMutationResolver = indexName => string.Equals(indexName, "reopenCodeMutation", StringComparison.Ordinal)
                 ? reopenedStringMutationIndex
                 : throw new KeyNotFoundException(indexName);
-            LibraDexIdentityMutationResult reopenedStringDelete = LibraDexCondition
+            LibraDexIdentityMutationResult reopenedStringDelete = reopened["routes"]["reopenCodeMutation"].Delete(LibraDexCondition
                 .ForGroup("routes")
                 .Index("reopenCodeMutation").AsString.EqualTo(NullKey.Empty)
-                .EndCondition
-                .Delete(reopenedStringMutationResolver);
-            LibraDexIdentityMutationResult reopenedStringSetKey = LibraDexCondition
+                .EndCondition);
+            LibraDexIdentityMutationResult reopenedStringSetKey = reopened["routes"]["reopenCodeMutation"].SetKey(LibraDexCondition
                 .ForGroup("routes")
                 .Index("reopenCodeMutation").AsString.EqualTo("A")
-                .EndCondition
-                .SetKey(reopenedStringMutationResolver, null);
+                .EndCondition, null);
             bool reopenedStringRekey = reopenedStringMutationIndex.Rekey(965UL, null, "B");
             IReadOnlyList<ulong> reopenedStringMutationAllIds = LibraDexCondition
                 .ForGroup("routes")
@@ -773,16 +756,14 @@ internal static partial class RawHarness
             Func<string, IIndex> reopenedBinaryMutationResolver = indexName => string.Equals(indexName, "reopenFingerprintMutation", StringComparison.Ordinal)
                 ? reopenedBinaryMutationIndex
                 : throw new KeyNotFoundException(indexName);
-            LibraDexIdentityMutationResult reopenedBinaryDelete = LibraDexCondition
+            LibraDexIdentityMutationResult reopenedBinaryDelete = reopened["routes"]["reopenFingerprintMutation"].Delete(LibraDexCondition
                 .ForGroup("routes")
                 .Index("reopenFingerprintMutation").AsBinary.EqualTo(NullKey.Empty)
-                .EndCondition
-                .Delete(reopenedBinaryMutationResolver);
-            LibraDexIdentityMutationResult reopenedBinarySetKey = LibraDexCondition
+                .EndCondition);
+            LibraDexIdentityMutationResult reopenedBinarySetKey = reopened["routes"]["reopenFingerprintMutation"].SetKey(LibraDexCondition
                 .ForGroup("routes")
                 .Index("reopenFingerprintMutation").AsBinary.EqualTo(reopenedBinaryMutationA)
-                .EndCondition
-                .SetKey(reopenedBinaryMutationResolver, null);
+                .EndCondition, null);
             bool reopenedBinaryRekey = reopenedBinaryMutationIndex.Rekey(975L, NullKey.Null, reopenedBinaryMutationB);
             IReadOnlyList<long> reopenedBinaryMutationAllIds = LibraDexCondition
                 .ForGroup("routes")

@@ -237,6 +237,11 @@ internal ref struct Scalar16Scalar8
 
     private int NormalizeDeletedSlots(ushort physicalCount)
     {
+        if (CountDeletedSlots(physicalCount) == 0)
+        {
+            return 0;
+        }
+
         byte[] compacted = new byte[physicalCount * Scalar16Scalar8Layout.ItemSize];
         int writeIndex = 0;
         for (int slotIndex = 0; slotIndex < physicalCount; slotIndex++)

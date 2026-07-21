@@ -147,21 +147,25 @@ internal sealed class VarKeyScalar16MutableShelf
         int slotCapacity = slotCapacityBytes / VarKeyScalar16Layout.SlotSize;
         int[] offsets = rentSidecars ? ArrayPool<int>.Shared.Rent(slotCapacity) : new int[slotCapacity];
         uint[] prefixes = rentSidecars ? ArrayPool<uint>.Shared.Rent(slotCapacity) : new uint[slotCapacity];
-        bool[] deleted = new bool[slotCapacity];
+        bool[] deleted = rentSidecars ? ArrayPool<bool>.Shared.Rent(slotCapacity) : new bool[slotCapacity];
+        if (rentSidecars)
+        {
+            deleted.AsSpan(0, slotCapacity).Clear();
+        }
         int cursor = VarKeyScalar16Layout.HeaderSize;
         for (int i = 0; i < count; i++)
         {
             int offset = VarKeyScalar16Layout.ReadSlotRecordOffset(bytes, cursor);
             if (offset < recordArenaStart || offset >= recordArenaEnd)
             {
-                ReleaseFailedDecodeBuffers(bytes, offsets, prefixes, ownsBytes, rentSidecars);
+                ReleaseFailedDecodeBuffers(bytes, offsets, prefixes, deleted, ownsBytes, rentSidecars);
                 return false;
             }
 
             int recordLength = VarKeyScalar16Layout.GetRecordLength(bytes, offset);
             if (recordLength <= 0 || offset + recordLength > recordArenaEnd)
             {
-                ReleaseFailedDecodeBuffers(bytes, offsets, prefixes, ownsBytes, rentSidecars);
+                ReleaseFailedDecodeBuffers(bytes, offsets, prefixes, deleted, ownsBytes, rentSidecars);
                 return false;
             }
 
@@ -203,6 +207,7 @@ internal sealed class VarKeyScalar16MutableShelf
         {
             ArrayPool<int>.Shared.Return(recordOffsets, clearArray: false);
             ArrayPool<uint>.Shared.Return(keyPrefixes, clearArray: false);
+            ArrayPool<bool>.Shared.Return(deletedSlots, clearArray: false);
         }
 
         if (ownsBytes)
@@ -369,6 +374,38 @@ internal sealed class VarKeyScalar16MutableShelf
         }
 
         return MarkSlotRangeDeleted(startSlot, endSlot - startSlot);
+    }
+
+    /// <summary>
+    /// Counts live tuples whose raw key is inside an inclusive key range.<br/>
+    /// The mutable tombstone sidecar is honored so in-flight durability batches do not over-count deleted-but-not-yet-normalized slots.<br/>
+    /// </summary>
+    /// <param name="lowerKey">The inclusive lower raw key bound.<br/></param>
+    /// <param name="upperKey">The inclusive upper raw key bound.<br/></param>
+    /// <returns>The number of live shelf-local tuples in the requested key range.<br/></returns>
+    internal int CountLiveItemsInKeyRange(ReadOnlySpan<byte> lowerKey, ReadOnlySpan<byte> upperKey)
+    {
+        if (lowerKey.SequenceCompareTo(upperKey) > 0)
+        {
+            return 0;
+        }
+
+        int count = 0;
+        int slotIndex = LowerBoundKey(lowerKey);
+        for (int i = slotIndex; i < itemCount; i++)
+        {
+            if (ReadKeyAt(i).SequenceCompareTo(upperKey) > 0)
+            {
+                break;
+            }
+
+            if (!deletedSlots[i])
+            {
+                count++;
+            }
+        }
+
+        return count;
     }
 
     /// <summary>
@@ -679,6 +716,7 @@ internal sealed class VarKeyScalar16MutableShelf
         byte[] bytes,
         int[] offsets,
         uint[] prefixes,
+        bool[] deletedSlots,
         bool ownsBytes,
         bool ownsSidecars)
     {
@@ -686,6 +724,7 @@ internal sealed class VarKeyScalar16MutableShelf
         {
             ArrayPool<int>.Shared.Return(offsets, clearArray: false);
             ArrayPool<uint>.Shared.Return(prefixes, clearArray: false);
+            ArrayPool<bool>.Shared.Return(deletedSlots, clearArray: false);
         }
 
         if (ownsBytes)

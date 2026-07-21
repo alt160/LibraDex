@@ -147,21 +147,25 @@ internal sealed class VarKeyScalar8MutableShelf
         int slotCapacity = slotCapacityBytes / VarKeyScalar8Layout.SlotSize;
         int[] offsets = rentSidecars ? ArrayPool<int>.Shared.Rent(slotCapacity) : new int[slotCapacity];
         uint[] prefixes = rentSidecars ? ArrayPool<uint>.Shared.Rent(slotCapacity) : new uint[slotCapacity];
-        bool[] deleted = new bool[slotCapacity];
+        bool[] deleted = rentSidecars ? ArrayPool<bool>.Shared.Rent(slotCapacity) : new bool[slotCapacity];
+        if (rentSidecars)
+        {
+            deleted.AsSpan(0, slotCapacity).Clear();
+        }
         int cursor = VarKeyScalar8Layout.HeaderSize;
         for (int i = 0; i < count; i++)
         {
             int offset = VarKeyScalar8Layout.ReadSlotRecordOffset(bytes, cursor);
             if (offset < recordArenaStart || offset >= recordArenaEnd)
             {
-                ReleaseFailedDecodeBuffers(bytes, offsets, prefixes, ownsBytes, rentSidecars);
+                ReleaseFailedDecodeBuffers(bytes, offsets, prefixes, deleted, ownsBytes, rentSidecars);
                 return false;
             }
 
             int recordLength = VarKeyScalar8Layout.GetRecordLength(bytes, offset);
             if (recordLength <= 0 || offset + recordLength > recordArenaEnd)
             {
-                ReleaseFailedDecodeBuffers(bytes, offsets, prefixes, ownsBytes, rentSidecars);
+                ReleaseFailedDecodeBuffers(bytes, offsets, prefixes, deleted, ownsBytes, rentSidecars);
                 return false;
             }
 
@@ -203,6 +207,7 @@ internal sealed class VarKeyScalar8MutableShelf
         {
             ArrayPool<int>.Shared.Return(recordOffsets, clearArray: false);
             ArrayPool<uint>.Shared.Return(keyPrefixes, clearArray: false);
+            ArrayPool<bool>.Shared.Return(deletedSlots, clearArray: false);
         }
 
         if (ownsBytes)
@@ -370,6 +375,40 @@ internal sealed class VarKeyScalar8MutableShelf
     }
 
     /// <summary>
+    /// Counts live tuples whose raw key is inside an inclusive key range.<br/>
+    /// The method observes the mutable tombstone sidecar, so durability-batch count paths can stay accurate before deleted slots are normalized for publication.<br/>
+    /// </summary>
+    /// <param name="lowerKey">The inclusive lower raw key bound.<br/></param>
+    /// <param name="upperKey">The inclusive upper raw key bound.<br/></param>
+    /// <returns>The number of live shelf-local tuples in the requested key range.<br/></returns>
+    internal int CountLiveItemsInKeyRange(ReadOnlySpan<byte> lowerKey, ReadOnlySpan<byte> upperKey)
+    {
+        if (lowerKey.SequenceCompareTo(upperKey) > 0)
+        {
+            return 0;
+        }
+
+        int lowerSlot = LowerBoundKey(lowerKey);
+        int upperSlot = UpperBoundKey(upperKey);
+        int slotCount = Math.Max(0, upperSlot - lowerSlot);
+        if (slotCount == 0 || deletedItemCount == 0)
+        {
+            return slotCount;
+        }
+
+        int count = 0;
+        for (int i = lowerSlot; i < upperSlot; i++)
+        {
+            if (!deletedSlots[i])
+            {
+                count++;
+            }
+        }
+
+        return count;
+    }
+
+    /// <summary>
     /// Marks one exact raw-key and encoded-identity tuple as deleted when it is currently live in this shelf.<br/>
     /// The tuple lower-bound keeps projection maintenance from deleting neighboring identities that share the same key or folded projection key.<br/>
     /// The record payload remains in place until slot normalization or a later payload repack consumes the tombstone sidecar.<br/>
@@ -515,6 +554,34 @@ internal sealed class VarKeyScalar8MutableShelf
             int middle = low + ((high - low) >> 1);
             int comparison = CompareSlotKey(middle, prefix, key);
             if (comparison < 0)
+            {
+                low = middle + 1;
+            }
+            else
+            {
+                high = middle;
+            }
+        }
+
+        return low;
+    }
+
+    /// <summary>
+    /// Finds the first sorted slot whose key is greater than the supplied raw key.<br/>
+    /// Range counts use this as an exclusive high slot so clean mutable shelves can count boundary ranges by slot arithmetic.<br/>
+    /// </summary>
+    /// <param name="key">The inclusive high raw key bound.<br/></param>
+    /// <returns>The first slot after all keys less than or equal to <paramref name="key"/>.<br/></returns>
+    private int UpperBoundKey(ReadOnlySpan<byte> key)
+    {
+        uint prefix = VarKeyScalar8Layout.CreateKeyPrefix(key);
+        int low = 0;
+        int high = itemCount;
+        while (low < high)
+        {
+            int middle = low + ((high - low) >> 1);
+            int comparison = CompareSlotKey(middle, prefix, key);
+            if (comparison <= 0)
             {
                 low = middle + 1;
             }
@@ -674,6 +741,7 @@ internal sealed class VarKeyScalar8MutableShelf
         byte[] bytes,
         int[] offsets,
         uint[] prefixes,
+        bool[] deletedSlots,
         bool ownsBytes,
         bool ownsSidecars)
     {
@@ -681,6 +749,7 @@ internal sealed class VarKeyScalar8MutableShelf
         {
             ArrayPool<int>.Shared.Return(offsets, clearArray: false);
             ArrayPool<uint>.Shared.Return(prefixes, clearArray: false);
+            ArrayPool<bool>.Shared.Return(deletedSlots, clearArray: false);
         }
 
         if (ownsBytes)

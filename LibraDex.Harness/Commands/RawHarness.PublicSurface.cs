@@ -134,7 +134,7 @@ internal static partial class RawHarness
     /// <returns>Zero when the primitive `FS32-8` shelf validates.</returns>
     private static int RunFixed32Scalar8Sanity(string[] args)
     {
-        Fixed32Scalar8Profile profile = Fixed32Scalar8Profile.Create(GetIntOption(args, "--shelf-size", Fixed32Scalar8Profile.Default64KiB.ShelfExtentSize));
+        Fixed32Scalar8Profile profile = Fixed32Scalar8Profile.Create(GetIntOption(args, "--shelf-size", Fixed32Scalar8Profile.Default40KiB.ShelfExtentSize));
         byte[] bytes = new byte[profile.ShelfExtentSize];
         Fixed32Scalar8 shelf = new(bytes, profile);
         shelf.Initialize();
@@ -161,7 +161,7 @@ internal static partial class RawHarness
     /// <returns>Zero when the primitive `FS32-16` shelf validates.</returns>
     private static int RunFixed32Scalar16Sanity(string[] args)
     {
-        Fixed32Scalar16Profile profile = Fixed32Scalar16Profile.Create(GetIntOption(args, "--shelf-size", Fixed32Scalar16Profile.Default64KiB.ShelfExtentSize));
+        Fixed32Scalar16Profile profile = Fixed32Scalar16Profile.Create(GetIntOption(args, "--shelf-size", Fixed32Scalar16Profile.Default40KiB.ShelfExtentSize));
         byte[] bytes = new byte[profile.ShelfExtentSize];
         Fixed32Scalar16 shelf = new(bytes, profile);
         shelf.Initialize();
@@ -421,7 +421,7 @@ internal static partial class RawHarness
             FlushToDiskOnCommit: false,
             MaxCommitGapCoalesceBytes: 512);
 
-        Fixed32Scalar8Profile profile = Fixed32Scalar8Profile.Create(GetIntOption(args, "--shelf-size", Fixed32Scalar8Profile.Default64KiB.ShelfExtentSize));
+        Fixed32Scalar8Profile profile = Fixed32Scalar8Profile.Create(GetIntOption(args, "--shelf-size", Fixed32Scalar8Profile.Default40KiB.ShelfExtentSize));
         using (DataKernel kernel = OpenKernel(backing, path, FileMode.Create, options, DataKernelTelemetryOptions.EnabledOptions))
         {
             RawDataReservation reservation = kernel.Reserve(profile.ShelfExtentSize);
@@ -787,7 +787,7 @@ internal static partial class RawHarness
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         File.Delete(path);
 
-        Fixed32Scalar8Profile profile = Fixed32Scalar8Profile.Default64KiB;
+        Fixed32Scalar8Profile profile = Fixed32Scalar8Profile.Default40KiB;
         if (itemCount <= 0 || itemCount > profile.MaxItemCount)
         {
             Console.Error.WriteLine($"fs32-8-route-sanity item count must be between 1 and {profile.MaxItemCount}.");
@@ -929,7 +929,7 @@ internal static partial class RawHarness
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         File.Delete(path);
 
-        Scalar16Scalar16Profile profile = Scalar16Scalar16Profile.Default32KiB;
+        Scalar16Scalar16Profile profile = Scalar16Scalar16Profile.Default24KiB;
         if (itemCount <= 0 || itemCount > profile.MaxItemCount)
         {
             Console.Error.WriteLine($"ss16-16-route-sanity item count must be between 1 and {profile.MaxItemCount}.");
@@ -1161,7 +1161,7 @@ internal static partial class RawHarness
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         File.Delete(path);
 
-        Fixed32Scalar8Profile profile = Fixed32Scalar8Profile.Default64KiB;
+        Fixed32Scalar8Profile profile = Fixed32Scalar8Profile.Default40KiB;
         if (itemCount <= 0 || itemCount + 1 > profile.MaxItemCount)
         {
             Console.Error.WriteLine($"fs32-8-route-insert-sanity item count must be between 1 and {profile.MaxItemCount - 1}.");
@@ -1326,7 +1326,7 @@ internal static partial class RawHarness
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         File.Delete(path);
 
-        Scalar16Scalar16Profile profile = Scalar16Scalar16Profile.Default32KiB;
+        Scalar16Scalar16Profile profile = Scalar16Scalar16Profile.Default24KiB;
         if (itemCount <= 0 || itemCount + 1 > profile.MaxItemCount)
         {
             Console.Error.WriteLine($"ss16-16-route-insert-sanity item count must be between 1 and {profile.MaxItemCount - 1}.");
@@ -1654,7 +1654,7 @@ internal static partial class RawHarness
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         File.Delete(path);
 
-        Fixed32Scalar8Profile profile = Fixed32Scalar8Profile.Default64KiB;
+        Fixed32Scalar8Profile profile = Fixed32Scalar8Profile.Default40KiB;
         int leftCount = profile.MaxItemCount / 2;
         int rightCount = profile.MaxItemCount - leftCount;
         ulong[] key0s = new ulong[profile.MaxItemCount];
@@ -2174,7 +2174,7 @@ internal static partial class RawHarness
     private static int RunFixed32Scalar16IdentitySplitPreservation(string path, int extraItems)
     {
         File.Delete(path);
-        Fixed32Scalar16Profile profile = Fixed32Scalar16Profile.Default64KiB;
+        Fixed32Scalar16Profile profile = Fixed32Scalar16Profile.Default40KiB;
         int itemCount = checked(profile.MaxItemCount + extraItems);
         DataKernelOptions options = CreateIdentity16SplitPreservationOptions();
         long rootOffset;
@@ -2499,7 +2499,7 @@ internal static partial class RawHarness
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         File.Delete(path);
 
-        Fixed32Scalar8Profile profile = Fixed32Scalar8Profile.Default64KiB;
+        Fixed32Scalar8Profile profile = Fixed32Scalar8Profile.Default40KiB;
         int leftCount = profile.MaxItemCount / 2;
         int rightCount = profile.MaxItemCount - leftCount;
         ulong[] key0s = new ulong[profile.MaxItemCount];
@@ -3210,7 +3210,7 @@ internal static partial class RawHarness
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         File.Delete(path);
 
-        Fixed32Scalar8Profile profile = Fixed32Scalar8Profile.Default64KiB;
+        Fixed32Scalar8Profile profile = Fixed32Scalar8Profile.Default40KiB;
         int leftCount = profile.MaxItemCount / 2;
         int rightCount = profile.MaxItemCount - leftCount;
         ulong[] key0s = new ulong[profile.MaxItemCount];
@@ -3672,7 +3672,7 @@ internal static partial class RawHarness
         string fileName = Path.GetFileNameWithoutExtension(basePath);
         Directory.CreateDirectory(directory);
 
-        Fixed32Scalar8Profile profile = Fixed32Scalar8Profile.Default64KiB;
+        Fixed32Scalar8Profile profile = Fixed32Scalar8Profile.Default40KiB;
         string oneLevelPath = Path.Combine(directory, fileName + "-one.lbdx");
         string twoLevelPath = Path.Combine(directory, fileName + "-two.lbdx");
         File.Delete(oneLevelPath);
@@ -3809,7 +3809,7 @@ internal static partial class RawHarness
         string fileName = Path.GetFileNameWithoutExtension(basePath);
         Directory.CreateDirectory(directory);
 
-        Fixed32Scalar8Profile profile = Fixed32Scalar8Profile.Default64KiB;
+        Fixed32Scalar8Profile profile = Fixed32Scalar8Profile.Default40KiB;
         string oneLevelPath = Path.Combine(directory, fileName + "-one.lbdx");
         string twoLevelPath = Path.Combine(directory, fileName + "-two.lbdx");
         File.Delete(oneLevelPath);
@@ -4092,7 +4092,7 @@ internal static partial class RawHarness
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         File.Delete(path);
 
-        Fixed32Scalar8Profile profile = Fixed32Scalar8Profile.Default64KiB;
+        Fixed32Scalar8Profile profile = Fixed32Scalar8Profile.Default40KiB;
         CreateFixed32Scalar8DeeperTransformSplitVectors(profile, out ulong[] key0s, out ulong[] key1s, out ulong[] key2s, out ulong[] key3s, out ulong[] identities, out int _, out int rightCount);
         DataKernelOptions options = new(
             AppendBufferSize: DefaultAppendBufferSize,
@@ -4555,7 +4555,7 @@ internal static partial class RawHarness
 
         Scalar8Scalar8Profile ss88Profile = Scalar8Scalar8Profile.Default32KiB;
         Scalar16Scalar8Profile ss168Profile = Scalar16Scalar8Profile.Default32KiB;
-        Fixed32Scalar8Profile fs328Profile = Fixed32Scalar8Profile.Default64KiB;
+        Fixed32Scalar8Profile fs328Profile = Fixed32Scalar8Profile.Default40KiB;
         Scalar8Scalar8DesignPerfResult[] ss88Results =
         [
             MeasureScalar8Scalar8DesignScenario("direct no-split", runs, static (path, profile) => MeasureScalar8Scalar8DesignDirectNoSplit(path, profile), ss88Directory, ss88Profile),
@@ -4691,7 +4691,7 @@ internal static partial class RawHarness
     /// <summary>
     /// Sweeps `SS16-16` shelf sizes across the validated unified walked-decision mutation outcomes.<br/>
     /// Each row uses the same measured mutation paths as `ss16-16-design-perf`, varying only the `Scalar16Scalar16Profile` shelf extent.<br/>
-    /// This is intended to identify whether the 32 KiB default remains a good working anchor before optimizing or drying the shape.<br/>
+    /// This is intended to keep the 24 KiB tuned default visible while comparing nearby shelf extents before optimizing or drying the shape.<br/>
     /// </summary>
     /// <param name="args">The harness command-line arguments.</param>
     /// <returns>Zero when all shelf-size measurements complete.</returns>
@@ -6310,6 +6310,7 @@ internal static partial class RawHarness
         byte[] bytes16 = Convert.FromHexString("00112233445566778899AABBCCDDEEFF");
         byte[] bytes8 = Convert.FromHexString("0102030405060708");
         byte[] bytes32 = Convert.FromHexString("00112233445566778899AABBCCDDEEFF102132435465768798A9BACBDCEDFE0F");
+        byte[] bytes32Next = Convert.FromHexString("00112233445566778899AABBCCDDEEFF102132435465768798A9BACBDCEDFE10");
 
         using (LibraDexIndex<long, long> index = Indexes.CreateOrOpen<long, long>(
             path,
@@ -6476,6 +6477,21 @@ internal static partial class RawHarness
             ValidateGenericRead(read, identities, new long[] { 9001 }, "byte32[]/long same-session read");
             using LibraDexRangeReader<byte[], long> reader = index.OpenRangeReader(bytes32, bytes32);
             ValidateGenericLongReader(reader, new long[] { 9001 }, "byte32[]/long same-session reader");
+            (int cachedEntries, _, long maxCachedBytes) = index.Session.GetFixed32Scalar8ReadCacheStatsForValidation(index.RootRouterOffset);
+            if (cachedEntries == 0 || maxCachedBytes != 0)
+            {
+                throw new InvalidDataException("FS32-8 same-session range read did not retain an unlimited immutable shelf cache entry.");
+            }
+
+            ValidateGenericInsert(index.Insert(bytes32Next, 9002), "byte32[]/long post-cache insert");
+            (cachedEntries, _, _) = index.Session.GetFixed32Scalar8ReadCacheStatsForValidation(index.RootRouterOffset);
+            if (cachedEntries != 0)
+            {
+                throw new InvalidDataException("FS32-8 shelf mutation did not invalidate the immutable read cache.");
+            }
+
+            using LibraDexRangeReader<byte[], long> postMutationReader = index.OpenRangeReader(bytes32, bytes32Next);
+            ValidateGenericLongReader(postMutationReader, new long[] { 9001, 9002 }, "byte32[]/long post-cache mutation reader");
         }
 
         using (LibraDexIndex<byte[], Guid> index = Indexes.CreateOrOpen<byte[], Guid>(
@@ -6493,6 +6509,22 @@ internal static partial class RawHarness
             ValidateGenericGuidRead(read, identities, new Guid[] { guidIdentity }, "byte32[]/Guid same-session read");
             using LibraDexRangeReader<byte[], Guid> reader = index.OpenRangeReader(bytes32, bytes32);
             ValidateGenericGuidReader(reader, new Guid[] { guidIdentity }, "byte32[]/Guid same-session reader");
+            (int cachedEntries, _, long maxCachedBytes) = index.Session.GetFixed32Scalar16ReadCacheStatsForValidation(index.RootRouterOffset);
+            if (cachedEntries == 0 || maxCachedBytes != 0)
+            {
+                throw new InvalidDataException("FS32-16 same-session range read did not retain an unlimited immutable shelf cache entry.");
+            }
+
+            Guid nextGuidIdentity = Guid.Parse("20314253-6475-8697-a8b9-cadbecfd0e1f");
+            ValidateGenericInsert(index.Insert(bytes32Next, nextGuidIdentity), "byte32[]/Guid post-cache insert");
+            (cachedEntries, _, _) = index.Session.GetFixed32Scalar16ReadCacheStatsForValidation(index.RootRouterOffset);
+            if (cachedEntries != 0)
+            {
+                throw new InvalidDataException("FS32-16 shelf mutation did not invalidate the immutable read cache.");
+            }
+
+            using LibraDexRangeReader<byte[], Guid> postMutationReader = index.OpenRangeReader(bytes32, bytes32Next);
+            ValidateGenericGuidReader(postMutationReader, new Guid[] { guidIdentity, nextGuidIdentity }, "byte32[]/Guid post-cache mutation reader");
         }
 
         using (LibraDexIndex<TimeSpan, long> index = Indexes.CreateOrOpen<TimeSpan, long>(
@@ -6695,24 +6727,34 @@ internal static partial class RawHarness
 
         ValidateGenericInsert(index.Insert(11, 1100), "catalog batch insert 11");
         ValidateGenericInsert(index.Insert(12, 1200), "catalog batch insert 12");
-        LibraDexGenericBatchCommitResult firstCommit = index.Batch.Commit();
+        LibraDexGenericBatchCommitResult firstCommit = index.Batch.Publish();
         if (!index.Batch.IsEnabled || firstCommit.InsertedCount != 2 || firstCommit.DeferredCommitRequests == 0)
         {
-            throw new InvalidDataException("Batch.Commit did not publish two inserts and remain enabled.");
+            throw new InvalidDataException("Batch.Publish did not publish two inserts and remain enabled.");
         }
 
         ValidateGenericInsert(index.Insert(13, 1300), "catalog batch insert 13");
-        LibraDexGenericBatchCommitResult finalCommit = index.Batch.CommitAndDisable();
+        LibraDexGenericBatchCommitResult finalCommit = index.Batch.PublishAndDisable();
         if (index.Batch.IsEnabled || finalCommit.InsertedCount != 1 || finalCommit.DeferredCommitRequests == 0)
         {
-            throw new InvalidDataException("Batch.CommitAndDisable did not publish one insert and disable batching.");
+            throw new InvalidDataException("Batch.PublishAndDisable did not publish one insert and disable batching.");
+        }
+
+        using (LibraDexBatch<long, long> publishBatch = index.BeginBatch())
+        {
+            ValidateGenericInsert(publishBatch.Insert(14, 1400), "catalog direct publish batch insert 14");
+            LibraDexGenericBatchCommitResult publishCommit = publishBatch.Publish();
+            if (publishCommit.InsertedCount != 1 || publishCommit.DeferredCommitRequests == 0)
+            {
+                throw new InvalidDataException("Direct batch Publish did not publish one insert.");
+            }
         }
 
         long[] identities = new long[8];
-        LibraDexGenericRangeReadResult read = index.ReadRange(10, 13, identities);
-        ValidateGenericRead(read, identities, new long[] { 1000, 1100, 1200, 1300 }, "catalog read");
-        using LibraDexRangeReader<long, long> reader = index.OpenRangeReader(10, 13);
-        ValidateGenericLongReader(reader, new long[] { 1000, 1100, 1200, 1300 }, "catalog reader");
+        LibraDexGenericRangeReadResult read = index.ReadRange(10, 14, identities);
+        ValidateGenericRead(read, identities, new long[] { 1000, 1100, 1200, 1300, 1400 }, "catalog read");
+        using LibraDexRangeReader<long, long> reader = index.OpenRangeReader(10, 14);
+        ValidateGenericLongReader(reader, new long[] { 1000, 1100, 1200, 1300, 1400 }, "catalog reader");
 
         index.Close();
 
@@ -6797,12 +6839,30 @@ internal static partial class RawHarness
             IReadOnlyDictionary<int, long> duplicateGroupCounts = duplicateGroups.Counts(
                 IdentityResultOrdering.PlanNatural,
                 IdentityDeduplication.Preserve);
+            IReadOnlyDictionary<int, long> duplicateOnlyCounts = duplicateGroups.Duplicates().Counts(
+                IdentityResultOrdering.PlanNatural,
+                IdentityDeduplication.Preserve);
+            IReadOnlyDictionary<int, long> singletonCounts = duplicateGroups.Singletons().Counts(
+                IdentityResultOrdering.PlanNatural,
+                IdentityDeduplication.Preserve);
+            IReadOnlyDictionary<int, long> countDescendingCounts = duplicateGroups
+                .OrderBy(LibraDexGroupOrder.CountDescending)
+                .Take(2)
+                .Counts(IdentityResultOrdering.PlanNatural, IdentityDeduplication.Preserve);
             IReadOnlyDictionary<int, long> duplicateFirstRepresentatives = duplicateGroups.FirstIdentities(
                 IdentityResultOrdering.PlanNatural,
                 IdentityDeduplication.Preserve);
             IReadOnlyDictionary<int, long> duplicateLastRepresentatives = duplicateGroups.LastIdentities(
                 IdentityResultOrdering.PlanNatural,
                 IdentityDeduplication.Preserve);
+            IReadOnlyDictionary<int, long> countDescendingFirstRepresentatives = duplicateGroups
+                .OrderBy(LibraDexGroupOrder.CountDescending)
+                .Take(2)
+                .FirstIdentities(IdentityResultOrdering.PlanNatural, IdentityDeduplication.Preserve);
+            IReadOnlyDictionary<int, long> countDescendingLastRepresentatives = duplicateGroups
+                .OrderBy(LibraDexGroupOrder.CountDescending)
+                .Take(2)
+                .LastIdentities(IdentityResultOrdering.PlanNatural, IdentityDeduplication.Preserve);
             IReadOnlyList<LibraDexGroupMetadata<int, long>> duplicateOnlyMetadata = duplicateGroups.Duplicates().Metadata(
                 IdentityResultOrdering.PlanNatural,
                 IdentityDeduplication.Preserve);
@@ -6847,10 +6907,24 @@ internal static partial class RawHarness
                 duplicateGroupCounts[1] != 2 ||
                 duplicateGroupCounts[2] != 2 ||
                 duplicateGroupCounts[3] != 1 ||
+                duplicateOnlyCounts.Count != 2 ||
+                duplicateOnlyCounts[1] != 2 ||
+                duplicateOnlyCounts[2] != 2 ||
+                singletonCounts.Count != 1 ||
+                singletonCounts[3] != 1 ||
+                countDescendingCounts.Count != 2 ||
+                countDescendingCounts[1] != 2 ||
+                countDescendingCounts[2] != 2 ||
                 duplicateFirstRepresentatives[1] != 100 ||
                 duplicateLastRepresentatives[1] != 101 ||
                 duplicateFirstRepresentatives[2] != 200 ||
                 duplicateLastRepresentatives[2] != 201 ||
+                countDescendingFirstRepresentatives.Count != 2 ||
+                countDescendingFirstRepresentatives[1] != 100 ||
+                countDescendingFirstRepresentatives[2] != 200 ||
+                countDescendingLastRepresentatives.Count != 2 ||
+                countDescendingLastRepresentatives[1] != 101 ||
+                countDescendingLastRepresentatives[2] != 201 ||
                 duplicateOnlyMetadata.Count != 2 ||
                 singletonMetadata.Count != 1 ||
                 singletonMetadata[0].Key != 3 ||
@@ -6962,7 +7036,7 @@ internal static partial class RawHarness
             ValidateGenericInsert(age.Insert(44, 4400), "group batch age insert");
             ValidateGenericInsert(gender.Insert(1, 4200), "group batch gender insert 1");
             ValidateGenericInsert(gender.Insert(2, 4400), "group batch gender insert 2");
-            LibraDexGenericBatchCommitResult groupCommit = peopleBatch.CommitAndDisable();
+            LibraDexGenericBatchCommitResult groupCommit = peopleBatch.PublishAndDisable();
             if (peopleBatch.IsEnabled ||
                 groupCommit.InsertedCount != 3 ||
                 groupCommit.DeferredCommitRequests == 0)
@@ -6995,6 +7069,7 @@ internal static partial class RawHarness
                 ageInfo.Group != "people" ||
                 ageInfo.Name != "age" ||
                 ageInfo.SlotIndex != 1 ||
+                !ageInfo.IsDirectoryItemCountAuthoritative ||
                 !reopened.Indexes["people"].TryGetInfo("priority", out CatalogIndexInfo priorityInfo) ||
                 priorityInfo.SortOrder != LibraDexIndexSortOrder.Descending ||
                 !reopened.Indexes["people"].TryGetInfo("score", out CatalogIndexInfo scoreInfo) ||
@@ -7002,6 +7077,7 @@ internal static partial class RawHarness
                 scoreInfo.SortOrder != LibraDexIndexSortOrder.Descending ||
                 scoreInfo.Projections.Count != 2 ||
                 scoreInfo.Projections[1].Direction != LibraDexIndexByteDirection.Reversed ||
+                !scoreInfo.IsDirectoryItemCountAuthoritative ||
                 !scoreInfo.TryCreateShape(out LibraDexIndexShapeSpec? scoreInfoShape) ||
                 scoreInfoShape.SortOrder != LibraDexIndexSortOrder.Descending ||
                 !reopened.Indexes["people"].TryGetInfo("displayName", out CatalogIndexInfo displayNameInfo) ||
@@ -7328,10 +7404,7 @@ internal static partial class RawHarness
                     LibraDexCompositePart.Scalar<Guid>("tenantId").EqualTo(persistedTenant),
                     LibraDexCompositePart.String("username").EqualTo("Cody"))
                 .EndCondition;
-            LibraDexIdentityMutationResult reopenedTenantUserDeleteResult = reopenedTenantUserDeleteCondition.Delete(
-                indexName => string.Equals(indexName, "tenantUser", StringComparison.Ordinal)
-                    ? reopenedTenantUser
-                    : throw new KeyNotFoundException(indexName));
+            LibraDexIdentityMutationResult reopenedTenantUserDeleteResult = reopened["people"]["tenantUser"].Delete(reopenedTenantUserDeleteCondition);
             IReadOnlyList<long> reopenedTenantUserDeletedIds = reopenedTenantUserDeleteCondition.ToList<long>(
                 indexName => string.Equals(indexName, "tenantUser", StringComparison.Ordinal)
                     ? reopenedTenantUser
@@ -7345,16 +7418,15 @@ internal static partial class RawHarness
             }
             LibraDexCompositeKey coleCompositeKey = Key.Of(persistedTenant, "Cole");
             LibraDexCompositeKey colinCompositeKey = Key.Of(persistedTenant, "Colin");
-            LibraDexIdentityMutationResult reopenedTenantUserSetKeyResult = LibraDexCondition
+            LibraDexConditionEndCondition reopenedTenantUserSetKeyCondition = LibraDexCondition
                 .ForGroup("people")
                 .Index("tenantUser").Where(
                     LibraDexCompositePart.Scalar<Guid>("tenantId").EqualTo(persistedTenant),
                     LibraDexCompositePart.String("username").EqualTo("Cole"))
-                .EndCondition
-                .SetKey(indexName => string.Equals(indexName, "tenantUser", StringComparison.Ordinal)
-                    ? reopenedTenantUser
-                    : throw new KeyNotFoundException(indexName),
-                    colinCompositeKey);
+                .EndCondition;
+            LibraDexIdentityMutationResult reopenedTenantUserSetKeyResult = reopened["people"]["tenantUser"].SetKey(
+                reopenedTenantUserSetKeyCondition,
+                colinCompositeKey);
             IReadOnlyList<long> reopenedTenantUserOldSetKeyIds = LibraDexCondition
                 .ForGroup("people")
                 .Index("tenantUser").Where(
@@ -7456,11 +7528,11 @@ internal static partial class RawHarness
                 throw new InvalidDataException("Reopened string projection index did not resolve folded and sort-key condition branches.");
             }
 
-            LibraDexIdentityMutationResult reopenedDisplayDeleteResult = LibraDexCondition
+            LibraDexConditionEndCondition reopenedDisplayDeleteCondition = LibraDexCondition
                 .ForGroup("people")
                 .Index("displayName").AsString.Contains("ri")
-                .EndCondition
-                .Delete(reopenedDisplayName.ResolveIndex);
+                .EndCondition;
+            LibraDexIdentityMutationResult reopenedDisplayDeleteResult = reopened["people"]["displayName"].Delete(reopenedDisplayDeleteCondition);
             IReadOnlyList<ulong> reopenedDisplayAfterDeleteIds = LibraDexCondition
                 .ForGroup("people")
                 .Index("displayName").AsString.All()
@@ -7650,10 +7722,7 @@ internal static partial class RawHarness
                 .ForGroup("people")
                 .Index("deleteAge").AsInt32.Between(11, 14)
                 .EndCondition;
-            LibraDexIdentityMutationResult scalarDeleteResult = scalarDeleteCondition.Delete(
-                indexName => string.Equals(indexName, "deleteAge", StringComparison.Ordinal)
-                    ? scalarDeleteAge
-                    : throw new KeyNotFoundException(indexName));
+            LibraDexIdentityMutationResult scalarDeleteResult = scalarDeleteCatalog["people"]["deleteAge"].Delete(scalarDeleteCondition);
             IReadOnlyList<long> scalarDeleteRemainingIds = LibraDexCondition
                 .ForGroup("people")
                 .Index("deleteAge").AsInt32.All()
@@ -7677,13 +7746,11 @@ internal static partial class RawHarness
             ValidateGenericInsert(scalarDeleteCompaction.Insert(12, 1212L), "scalar delete compaction age 12 insert");
             ValidateGenericInsert(scalarDeleteCompaction.Insert(14, 1414L), "scalar delete compaction age 14 insert");
             LibraDexStatsMarker scalarDeleteCompactionStatsMarker = scalarDeleteCompactionCatalog.Stats.Mark();
-            LibraDexIdentityMutationResult scalarDeleteCompactionResult = LibraDexCondition
+            LibraDexConditionEndCondition scalarDeleteCompactionCondition = LibraDexCondition
                 .ForGroup("people")
                 .Index("deleteCompaction").AsInt32.EqualTo(12)
-                .EndCondition
-                .Delete(indexName => string.Equals(indexName, "deleteCompaction", StringComparison.Ordinal)
-                    ? scalarDeleteCompaction
-                    : throw new KeyNotFoundException(indexName));
+                .EndCondition;
+            LibraDexIdentityMutationResult scalarDeleteCompactionResult = scalarDeleteCompactionCatalog["people"]["deleteCompaction"].Delete(scalarDeleteCompactionCondition);
             LibraDexReclaimedPayloadStats scalarDeleteCompactionQueuedStats = scalarDeleteCompactionCatalog.Stats.ReclaimedPayload;
             long scalarDeleteCompactionQueuedOffsets = scalarDeleteCompactionQueuedStats.QueuedCellCount;
             string scalarDeleteCompactionQueuedOffsetText = string.Join(
@@ -7730,20 +7797,16 @@ internal static partial class RawHarness
             ValidateGenericInsert(scalarBatchDelete.Insert(14, 1414L), "scalar batch delete age 14 insert");
             ValidateGenericInsert(scalarBatchDelete.Insert(16, 1616L), "scalar batch delete age 16 insert");
             scalarBatchDelete.Batch.Enable();
-            LibraDexIdentityMutationResult firstBatchDeleteResult = LibraDexCondition
+            LibraDexConditionEndCondition firstBatchDeleteCondition = LibraDexCondition
                 .ForGroup("people")
                 .Index("batchDelete").AsInt32.Between(11, 13)
-                .EndCondition
-                .Delete(indexName => string.Equals(indexName, "batchDelete", StringComparison.Ordinal)
-                    ? scalarBatchDelete
-                    : throw new KeyNotFoundException(indexName));
-            LibraDexIdentityMutationResult secondBatchDeleteResult = LibraDexCondition
+                .EndCondition;
+            LibraDexIdentityMutationResult firstBatchDeleteResult = scalarDeleteCatalog["people"]["batchDelete"].Delete(firstBatchDeleteCondition);
+            LibraDexConditionEndCondition secondBatchDeleteCondition = LibraDexCondition
                 .ForGroup("people")
                 .Index("batchDelete").AsInt32.Between(13, 15)
-                .EndCondition
-                .Delete(indexName => string.Equals(indexName, "batchDelete", StringComparison.Ordinal)
-                    ? scalarBatchDelete
-                    : throw new KeyNotFoundException(indexName));
+                .EndCondition;
+            LibraDexIdentityMutationResult secondBatchDeleteResult = scalarDeleteCatalog["people"]["batchDelete"].Delete(secondBatchDeleteCondition);
             LibraDexGenericBatchCommitResult batchDeleteCommit = scalarBatchDelete.Batch.CommitAndDisable();
             IReadOnlyList<long> scalarBatchDeleteIds = LibraDexCondition
                 .ForGroup("people")
@@ -7771,13 +7834,11 @@ internal static partial class RawHarness
             ValidateGenericInsert(guidBatchDelete.Insert(guidBatchDeleteB, 2202L), "scalar batch delete Guid B insert");
             ValidateGenericInsert(guidBatchDelete.Insert(guidBatchDeleteC, 2303L), "scalar batch delete Guid C insert");
             guidBatchDelete.Batch.Enable();
-            LibraDexIdentityMutationResult guidBatchDeleteResult = LibraDexCondition
+            LibraDexConditionEndCondition guidBatchDeleteCondition = LibraDexCondition
                 .ForGroup("people")
                 .Index("guidBatchDelete").AsGuid.Between(guidBatchDeleteA, guidBatchDeleteB)
-                .EndCondition
-                .Delete(indexName => string.Equals(indexName, "guidBatchDelete", StringComparison.Ordinal)
-                    ? guidBatchDelete
-                    : throw new KeyNotFoundException(indexName));
+                .EndCondition;
+            LibraDexIdentityMutationResult guidBatchDeleteResult = scalarDeleteCatalog["people"]["guidBatchDelete"].Delete(guidBatchDeleteCondition);
             _ = guidBatchDelete.Batch.CommitAndDisable();
             IReadOnlyList<long> guidBatchDeleteIds = LibraDexCondition
                 .ForGroup("people")
@@ -8041,13 +8102,11 @@ internal static partial class RawHarness
             Guid deleteGuidB = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
             ValidateGenericInsert(scalarDeleteGuid.Insert(deleteGuidA, 2100L), "scalar condition delete Guid A insert");
             ValidateGenericInsert(scalarDeleteGuid.Insert(deleteGuidB, 2200L), "scalar condition delete Guid B insert");
-            LibraDexIdentityMutationResult scalarDeleteGuidResult = LibraDexCondition
+            LibraDexConditionEndCondition scalarDeleteGuidCondition = LibraDexCondition
                 .ForGroup("people")
                 .Index("deleteGuid").AsGuid.EqualTo(deleteGuidB)
-                .EndCondition
-                .Delete(indexName => string.Equals(indexName, "deleteGuid", StringComparison.Ordinal)
-                    ? scalarDeleteGuid
-                    : throw new KeyNotFoundException(indexName));
+                .EndCondition;
+            LibraDexIdentityMutationResult scalarDeleteGuidResult = scalarDeleteCatalog["people"]["deleteGuid"].Delete(scalarDeleteGuidCondition);
             IReadOnlyList<long> scalarDeleteGuidRemainingIds = LibraDexCondition
                 .ForGroup("people")
                 .Index("deleteGuid").AsGuid.EqualTo(deleteGuidA)
@@ -8066,13 +8125,11 @@ internal static partial class RawHarness
             byte[] deleteFingerprintB = Convert.FromHexString("202122232425262728292A2B2C2D2E2F303132333435363738393A3B3C3D3E3F");
             ValidateGenericInsert(scalarDeleteFingerprint.Insert(deleteFingerprintA, 3100L), "scalar condition delete fingerprint A insert");
             ValidateGenericInsert(scalarDeleteFingerprint.Insert(deleteFingerprintB, 3200L), "scalar condition delete fingerprint B insert");
-            LibraDexIdentityMutationResult scalarDeleteFingerprintResult = LibraDexCondition
+            LibraDexConditionEndCondition scalarDeleteFingerprintCondition = LibraDexCondition
                 .ForGroup("people")
                 .Index("deleteFingerprint").AsBinary.EqualTo(deleteFingerprintB)
-                .EndCondition
-                .Delete(indexName => string.Equals(indexName, "deleteFingerprint", StringComparison.Ordinal)
-                    ? scalarDeleteFingerprint
-                    : throw new KeyNotFoundException(indexName));
+                .EndCondition;
+            LibraDexIdentityMutationResult scalarDeleteFingerprintResult = scalarDeleteCatalog["people"]["deleteFingerprint"].Delete(scalarDeleteFingerprintCondition);
             IReadOnlyList<long> scalarDeleteFingerprintRemainingIds = LibraDexCondition
                 .ForGroup("people")
                 .Index("deleteFingerprint").AsBinary.EqualTo(deleteFingerprintA)
@@ -8091,13 +8148,11 @@ internal static partial class RawHarness
             Guid deleteIdentityB = Guid.Parse("22222222-2222-2222-2222-222222222222");
             ValidateGenericInsert(scalarDeleteAgeGuid.Insert(20, deleteIdentityA), "scalar condition delete SS8-16 age 20 insert");
             ValidateGenericInsert(scalarDeleteAgeGuid.Insert(22, deleteIdentityB), "scalar condition delete SS8-16 age 22 insert");
-            LibraDexIdentityMutationResult scalarDeleteAgeGuidResult = LibraDexCondition
+            LibraDexConditionEndCondition scalarDeleteAgeGuidCondition = LibraDexCondition
                 .ForGroup("people")
                 .Index("deleteAgeGuid").AsInt32.GreaterOrEqual(22)
-                .EndCondition
-                .Delete(indexName => string.Equals(indexName, "deleteAgeGuid", StringComparison.Ordinal)
-                    ? scalarDeleteAgeGuid
-                    : throw new KeyNotFoundException(indexName));
+                .EndCondition;
+            LibraDexIdentityMutationResult scalarDeleteAgeGuidResult = scalarDeleteCatalog["people"]["deleteAgeGuid"].Delete(scalarDeleteAgeGuidCondition);
             IReadOnlyList<Guid> scalarDeleteAgeGuidRemainingIds = LibraDexCondition
                 .ForGroup("people")
                 .Index("deleteAgeGuid").AsInt32.All()
@@ -8114,13 +8169,11 @@ internal static partial class RawHarness
             LibraDexIndex<Guid, Guid> scalarDeleteGuidGuid = scalarDeleteCatalog.Indexes["people"]["deleteGuidGuid"].Create<Guid, Guid>();
             ValidateGenericInsert(scalarDeleteGuidGuid.Insert(deleteGuidA, deleteIdentityA), "scalar condition delete SS16-16 Guid A insert");
             ValidateGenericInsert(scalarDeleteGuidGuid.Insert(deleteGuidB, deleteIdentityB), "scalar condition delete SS16-16 Guid B insert");
-            LibraDexIdentityMutationResult scalarDeleteGuidGuidResult = LibraDexCondition
+            LibraDexConditionEndCondition scalarDeleteGuidGuidCondition = LibraDexCondition
                 .ForGroup("people")
                 .Index("deleteGuidGuid").AsGuid.EqualTo(deleteGuidA)
-                .EndCondition
-                .Delete(indexName => string.Equals(indexName, "deleteGuidGuid", StringComparison.Ordinal)
-                    ? scalarDeleteGuidGuid
-                    : throw new KeyNotFoundException(indexName));
+                .EndCondition;
+            LibraDexIdentityMutationResult scalarDeleteGuidGuidResult = scalarDeleteCatalog["people"]["deleteGuidGuid"].Delete(scalarDeleteGuidGuidCondition);
             IReadOnlyList<Guid> scalarDeleteGuidGuidRemainingIds = LibraDexCondition
                 .ForGroup("people")
                 .Index("deleteGuidGuid").AsGuid.EqualTo(deleteGuidB)
@@ -8137,13 +8190,11 @@ internal static partial class RawHarness
             LibraDexIndex<byte[], Guid> scalarDeleteFingerprintGuid = scalarDeleteCatalog.Indexes["people"]["deleteFingerprintGuid"].Blob.Scalar<Guid>(LibraDexScalarWidth.Bytes32).Create();
             ValidateGenericInsert(scalarDeleteFingerprintGuid.Insert(deleteFingerprintA, deleteIdentityA), "scalar condition delete FS32-16 fingerprint A insert");
             ValidateGenericInsert(scalarDeleteFingerprintGuid.Insert(deleteFingerprintB, deleteIdentityB), "scalar condition delete FS32-16 fingerprint B insert");
-            LibraDexIdentityMutationResult scalarDeleteFingerprintGuidResult = LibraDexCondition
+            LibraDexConditionEndCondition scalarDeleteFingerprintGuidCondition = LibraDexCondition
                 .ForGroup("people")
                 .Index("deleteFingerprintGuid").AsBinary.EqualTo(deleteFingerprintA)
-                .EndCondition
-                .Delete(indexName => string.Equals(indexName, "deleteFingerprintGuid", StringComparison.Ordinal)
-                    ? scalarDeleteFingerprintGuid
-                    : throw new KeyNotFoundException(indexName));
+                .EndCondition;
+            LibraDexIdentityMutationResult scalarDeleteFingerprintGuidResult = scalarDeleteCatalog["people"]["deleteFingerprintGuid"].Delete(scalarDeleteFingerprintGuidCondition);
             IReadOnlyList<Guid> scalarDeleteFingerprintGuidRemainingIds = LibraDexCondition
                 .ForGroup("people")
                 .Index("deleteFingerprintGuid").AsBinary.EqualTo(deleteFingerprintB)
@@ -8197,15 +8248,13 @@ internal static partial class RawHarness
             {
                 throw new InvalidDataException("Scalar SS8-8 condition SetKey did not replace exact old tuples with the requested new key.");
             }
-            LibraDexIdentityMutationResult scalarSetKeyUsingResult = LibraDexCondition
+            LibraDexConditionEndCondition scalarSetKeyUsingCondition = LibraDexCondition
                 .ForGroup("people")
                 .Index("setKeyAge").AsInt32.EqualTo(35)
-                .EndCondition
-                .SetKeyUsing(
-                    indexName => string.Equals(indexName, "setKeyAge", StringComparison.Ordinal)
-                        ? scalarSetKeyAge
-                        : throw new KeyNotFoundException(indexName),
-                    identity => identity is long id && id == 3000L ? 36 : 37);
+                .EndCondition;
+            LibraDexIdentityMutationResult scalarSetKeyUsingResult = scalarDeleteCatalog["people"]["setKeyAge"].SetKeyUsing(
+                scalarSetKeyUsingCondition,
+                oldKey => (int)oldKey + 1);
             IReadOnlyList<long> scalarSetKeyUsingFirstIds = LibraDexCondition
                 .ForGroup("people")
                 .Index("setKeyAge").AsInt32.EqualTo(36)
@@ -8213,21 +8262,13 @@ internal static partial class RawHarness
                 .ToList<long>(indexName => string.Equals(indexName, "setKeyAge", StringComparison.Ordinal)
                     ? scalarSetKeyAge
                     : throw new KeyNotFoundException(indexName));
-            IReadOnlyList<long> scalarSetKeyUsingSecondIds = LibraDexCondition
-                .ForGroup("people")
-                .Index("setKeyAge").AsInt32.EqualTo(37)
-                .EndCondition
-                .ToList<long>(indexName => string.Equals(indexName, "setKeyAge", StringComparison.Ordinal)
-                    ? scalarSetKeyAge
-                    : throw new KeyNotFoundException(indexName));
             if (scalarSetKeyUsingResult.MatchedCount != 2 ||
                 scalarSetKeyUsingResult.ChangedCount != 2 ||
-                scalarSetKeyUsingFirstIds.Count != 1 ||
+                scalarSetKeyUsingFirstIds.Count != 2 ||
                 scalarSetKeyUsingFirstIds[0] != 3000L ||
-                scalarSetKeyUsingSecondIds.Count != 1 ||
-                scalarSetKeyUsingSecondIds[0] != 3001L)
+                scalarSetKeyUsingFirstIds[1] != 3001L)
             {
-                throw new InvalidDataException("Scalar SS8-8 condition SetKeyUsing did not create replacement keys from matched identities.");
+                throw new InvalidDataException("Scalar SS8-8 target-owned SetKeyUsing did not transform the matched tuples' old key.");
             }
 
             LibraDexIndex<Guid, Guid> scalarSetKeyGuidGuid = scalarDeleteCatalog.Indexes["people"]["setKeyGuidGuid"].Create<Guid, Guid>();
@@ -8307,7 +8348,7 @@ internal static partial class RawHarness
                 .Index("targetAge").AsInt32.InSet(new[] { 42, 44 })
                 .AND.Index("targetGender").AsInt32.InSet(new[] { 1, 2 })
                 .EndCondition;
-            LibraDexIdentityMutationResult targetDeleteResult = targetMutationCondition.DeleteFrom("targetAge", targetMutationIndexes);
+            LibraDexIdentityMutationResult targetDeleteResult = targetMutationCatalog["people"]["targetAge"].Delete(targetMutationCondition);
             IReadOnlyList<long> targetAgeAfterDeleteIds = LibraDexCondition
                 .ForGroup("people")
                 .Index("targetAge").AsInt32.All()
@@ -8330,7 +8371,7 @@ internal static partial class RawHarness
 
             ValidateGenericInsert(targetMutationAge.Insert(42, 4200L), "targeted composed mutation age 42 restore insert");
             ValidateGenericInsert(targetMutationAge.Insert(44, 4400L), "targeted composed mutation age 44 restore insert");
-            LibraDexIdentityMutationResult targetSetKeyResult = targetMutationCondition.SetKeyOn("targetAge", targetMutationIndexes, 99);
+            LibraDexIdentityMutationResult targetSetKeyResult = targetMutationCatalog["people"]["targetAge"].SetKey(targetMutationCondition, 99);
             IReadOnlyList<long> targetAgeAfterSetKeyIds = LibraDexCondition
                 .ForGroup("people")
                 .Index("targetAge").AsInt32.EqualTo(99)
@@ -8354,18 +8395,12 @@ internal static partial class RawHarness
                 .ForGroup("people")
                 .Index("targetGender").AsInt32.InSet(new[] { 1, 2 })
                 .EndCondition;
-            LibraDexIdentityMutationResult targetSetKeyOnUsingResult = targetMutationByGenderCondition.SetKeyOnUsing(
-                "targetAge",
-                targetMutationIndexes,
-                identity => identity is long id && id == 4200L ? 142 : 144);
+            LibraDexIdentityMutationResult targetSetKeyOnUsingResult = targetMutationCatalog["people"]["targetAge"].SetKeyUsing(
+                targetMutationByGenderCondition,
+                oldKey => (int)oldKey + 43);
             IReadOnlyList<long> targetAgeUsingFirstIds = LibraDexCondition
                 .ForGroup("people")
                 .Index("targetAge").AsInt32.EqualTo(142)
-                .EndCondition
-                .ToList<long>(targetMutationResolver, deduplication: IdentityDeduplication.Preserve);
-            IReadOnlyList<long> targetAgeUsingSecondIds = LibraDexCondition
-                .ForGroup("people")
-                .Index("targetAge").AsInt32.EqualTo(144)
                 .EndCondition
                 .ToList<long>(targetMutationResolver, deduplication: IdentityDeduplication.Preserve);
             IReadOnlyList<long> targetGenderAfterSetKeyOnUsingIds = LibraDexCondition
@@ -8375,15 +8410,14 @@ internal static partial class RawHarness
                 .ToList<long>(targetMutationResolver, deduplication: IdentityDeduplication.Preserve);
             if (targetSetKeyOnUsingResult.MatchedCount != 2 ||
                 targetSetKeyOnUsingResult.ChangedCount != 2 ||
-                targetAgeUsingFirstIds.Count != 1 ||
+                targetAgeUsingFirstIds.Count != 2 ||
                 targetAgeUsingFirstIds[0] != 4200L ||
-                targetAgeUsingSecondIds.Count != 1 ||
-                targetAgeUsingSecondIds[0] != 4400L ||
+                targetAgeUsingFirstIds[1] != 4400L ||
                 targetGenderAfterSetKeyOnUsingIds.Count != 2 ||
                 targetGenderAfterSetKeyOnUsingIds[0] != 4200L ||
                 targetGenderAfterSetKeyOnUsingIds[1] != 4400L)
             {
-                throw new InvalidDataException("Targeted composed SetKeyOnUsing did not derive target replacement keys while preserving the selector index.");
+                throw new InvalidDataException("Target-owned composed SetKeyUsing did not transform old target keys while preserving the selector index.");
             }
 
             LibraDexIndex<int, long> reopenedGender = reopened.Indexes["people"]["gender"].Open<int, long>();
@@ -9206,7 +9240,7 @@ internal static partial class RawHarness
             adoptedExactScanPrefixIds.Count != 2 ||
             adoptedExactScanPrefixIds[0] != 601UL ||
             adoptedExactScanPrefixIds[1] != 602UL ||
-            adoptedExactPrefixCriterion.CriteriaKind != LibraDexCriteriaKind.Between ||
+            adoptedExactPrefixCriterion.CriteriaKind != LibraDexCriteriaKind.Prefix ||
             adoptedExactPrefixIds.Count != 1 ||
             adoptedExactPrefixIds[0] != 601UL ||
             adoptedExactScanSuffixCriterion.CriteriaKind != LibraDexCriteriaKind.StringPattern ||
@@ -10131,11 +10165,11 @@ internal static partial class RawHarness
         Func<string, IIndex> patternMutationResolver = indexName => patternMutationIndexes.TryGetValue(indexName, out IIndex? resolvedIndex)
             ? resolvedIndex
             : throw new KeyNotFoundException(indexName);
-        LibraDexIdentityMutationResult guidPatternDeleteFromResult = LibraDexCondition
+        LibraDexConditionEndCondition guidPatternDeleteCondition = LibraDexCondition
             .ForGroup("patternMutation")
             .Index("guidTarget").AsGuid.StartsWith("00112233")
-            .EndCondition
-            .DeleteFrom("guidTarget", patternMutationIndexes);
+            .EndCondition;
+        LibraDexIdentityMutationResult guidPatternDeleteFromResult = patternMutationCatalog["patternMutation"]["guidTarget"].Delete(guidPatternDeleteCondition);
         IReadOnlyList<long> guidPatternDeletedIds = LibraDexCondition
             .ForGroup("patternMutation")
             .Index("guidTarget").AsGuid.StartsWith("00112233")
@@ -10146,11 +10180,13 @@ internal static partial class RawHarness
             .Index("guidTarget").AsGuid.EndsWith("ccddeeff")
             .EndCondition
             .ToList<long>(patternMutationResolver, deduplication: IdentityDeduplication.Preserve);
-        LibraDexIdentityMutationResult binaryPatternSetKeyOnResult = LibraDexCondition
+        LibraDexConditionEndCondition binaryPatternSetKeyCondition = LibraDexCondition
             .ForGroup("patternMutation")
             .Index("binaryTarget").AsBinary.Contains(Convert.FromHexString("44556677"))
-            .EndCondition
-            .SetKeyOn("binaryTarget", patternMutationIndexes, patternBinaryReplacement);
+            .EndCondition;
+        LibraDexIdentityMutationResult binaryPatternSetKeyOnResult = patternMutationCatalog["patternMutation"]["binaryTarget"].SetKey(
+            binaryPatternSetKeyCondition,
+            patternBinaryReplacement);
         IReadOnlyList<long> binaryPatternOldIds = LibraDexCondition
             .ForGroup("patternMutation")
             .Index("binaryTarget").AsBinary.Contains(Convert.FromHexString("44556677"))
@@ -11026,6 +11062,10 @@ internal static partial class RawHarness
         IReadOnlyList<long> groupWhereIds = catalog.Indexes["surface"].GetIdentities<long>(
             index.Where.GreaterOrEqual(10).EndCondition.AndAlso(index.Where.LessOrEqual(11).EndCondition),
             deduplication: IdentityDeduplication.Preserve);
+        AbraxasIdentityQueryAdapter<long> abraxasIdentityQuery = catalog.Indexes["surface"].AbraxasIdentityQuery<long>();
+        IReadOnlyList<long> abraxasIdentityIds = abraxasIdentityQuery.Get(
+            index.Where.GreaterOrEqual(10).EndCondition.AndAlso(index.Where.LessOrEqual(11).EndCondition),
+            deduplication: IdentityDeduplication.Preserve);
         long reusableMinimum = 10;
         LibraDexConditionEndCondition deferredMinimum = index.Where.GreaterOrEqual(() => reusableMinimum, "minimum").EndCondition;
         IReadOnlyList<long> deferredMinimumIds = index.GetIdentities(deferredMinimum, deduplication: IdentityDeduplication.Preserve);
@@ -11153,6 +11193,17 @@ internal static partial class RawHarness
         IReadOnlyList<long> rootNotGroupIds = catalog.Indexes["surface"].GetIdentities<long>(
             rootNotGroupCondition,
             deduplication: IdentityDeduplication.Preserve);
+        LibraDexConditionEndCondition composedPreserveOrCountCondition = index.Where.EqualTo(10L).Or.Between(10L, 11L).EndCondition;
+        LibraDexConditionEndCondition composedEmptyAndCountCondition = index.Where.EqualTo(99L).And.GreaterOrEqual(10L).EndCondition;
+        LibraDexConditionEndCondition composedEmptyExceptCountCondition = index.Where.Between(10L, 12L).And.Not.EqualTo(99L).EndCondition;
+        LibraDexConditionEndCondition composedEmptyComplementCountCondition = catalog.Indexes["surface"]
+            .Where(index).Not.EqualTo(99L)
+            .EndCondition;
+        long composedPreserveOrCount = composedPreserveOrCountCondition.Count(surfaceResolver, IdentityDeduplication.Preserve);
+        long composedDistinctOrCount = composedPreserveOrCountCondition.Count(surfaceResolver, IdentityDeduplication.Distinct);
+        long composedEmptyAndCount = composedEmptyAndCountCondition.Count(surfaceResolver, IdentityDeduplication.Preserve);
+        long composedEmptyExceptCount = composedEmptyExceptCountCondition.Count(surfaceResolver, IdentityDeduplication.Preserve);
+        long composedEmptyComplementCount = composedEmptyComplementCountCondition.Count(surfaceResolver, IdentityDeduplication.Preserve);
         Dictionary<long, int> externalAges = new()
         {
             [1000L] = 17,
@@ -11331,11 +11382,11 @@ internal static partial class RawHarness
         Func<string, IIndex> externalMutationResolver = indexName => externalMutationIndexes.TryGetValue(indexName, out IIndex? resolvedIndex)
             ? resolvedIndex
             : throw new KeyNotFoundException(indexName);
-        LibraDexIdentityMutationResult externalSourceDeleteResult = LibraDexCondition
+        LibraDexConditionEndCondition externalSourceDeleteCondition = LibraDexCondition
             .ForGroup("externalMutation")
             .External(new[] { 1L, 3L })
-            .EndCondition
-            .DeleteFrom("target", externalMutationIndexes);
+            .EndCondition;
+        LibraDexIdentityMutationResult externalSourceDeleteResult = externalMutationCatalog["externalMutation"]["target"].Delete(externalSourceDeleteCondition);
         IReadOnlyList<long> externalDeleteRemovedIds = LibraDexCondition
             .ForGroup("externalMutation")
             .Index("target").AsInt32.InSet(new[] { 10, 30 })
@@ -11346,12 +11397,14 @@ internal static partial class RawHarness
             .Index("target").AsInt32.All()
             .EndCondition
             .ToList<long>(externalMutationResolver, deduplication: IdentityDeduplication.Preserve);
-        LibraDexIdentityMutationResult externalFilterSetKeyResult = LibraDexCondition
+        LibraDexConditionEndCondition externalFilterSetKeyCondition = LibraDexCondition
             .ForGroup("externalMutation")
             .Index("guard").AsInt32.EqualTo(1)
             .And.External(identity => (long)identity == 2L)
-            .EndCondition
-            .SetKeyOn("target", externalMutationIndexes, 22);
+            .EndCondition;
+        LibraDexIdentityMutationResult externalFilterSetKeyResult = externalMutationCatalog["externalMutation"]["target"].SetKey(
+            externalFilterSetKeyCondition,
+            22);
         IReadOnlyList<long> externalFilterOldKeyIds = LibraDexCondition
             .ForGroup("externalMutation")
             .Index("target").AsInt32.EqualTo(20)
@@ -11370,6 +11423,14 @@ internal static partial class RawHarness
         bool surfaceIdentityCursorFirst = surfaceIdentityCursor.Next();
         long surfaceIdentityCursorValue = surfaceIdentityCursorFirst ? surfaceIdentityCursor.GetIdentity() : -1;
         bool surfaceIdentityCursorSecond = surfaceIdentityCursor.Next();
+        using LibraDexIdentityCursor<long> abraxasIdentityCursor = abraxasIdentityQuery.OpenCursor(
+            namedMultiKeyCondition,
+            deduplication: IdentityDeduplication.Preserve,
+            skip: 1,
+            take: 1);
+        bool abraxasIdentityCursorFirst = abraxasIdentityCursor.Next();
+        long abraxasIdentityCursorValue = abraxasIdentityCursorFirst ? abraxasIdentityCursor.GetIdentity() : -1;
+        bool abraxasIdentityCursorSecond = abraxasIdentityCursor.Next();
         using LibraDexIndexCursor<long, long> directIndexCursor = index.GetCursor(index.Where.Between(10L, 12L).EndCondition, skip: 1, take: 1);
         bool directIndexCursorFirst = directIndexCursor.Next();
         LibraDexCursorEntry<long, long> directIndexCursorEntry = directIndexCursorFirst
@@ -11429,6 +11490,7 @@ internal static partial class RawHarness
         }
 
         ValidateNativeDescendingRangeShapes();
+        ValidateSingleKeyPerIdentityContract();
 
         using LibraDexIndexCursor<long, long> groupedTargetCursor = catalog.Indexes["surface"].GetCursor(index, clauseNotGroupCondition);
         List<LibraDexCursorEntry<long, long>> groupedTargetEntries = new();
@@ -11628,6 +11690,10 @@ internal static partial class RawHarness
             groupWhereIds.Count != 2 ||
             groupWhereIds[0] != 1000 ||
             groupWhereIds[1] != 1100 ||
+            abraxasIdentityQuery.Group != "surface" ||
+            abraxasIdentityIds.Count != 2 ||
+            abraxasIdentityIds[0] != 1000 ||
+            abraxasIdentityIds[1] != 1100 ||
             descendingRangeRows.Count != 3 ||
             descendingRangeRows[0].Key != 12L ||
             descendingRangeRows[0].Identity != 1200L ||
@@ -11705,6 +11771,11 @@ internal static partial class RawHarness
             rootNotGroupIds.Count != 2 ||
             rootNotGroupIds[0] != 1000 ||
             rootNotGroupIds[1] != 1100 ||
+            composedPreserveOrCount != 3 ||
+            composedDistinctOrCount != 2 ||
+            composedEmptyAndCount != 0 ||
+            composedEmptyExceptCount != 3 ||
+            composedEmptyComplementCount != 3 ||
             externalIdentityIds.Count != 1 ||
             externalIdentityIds[0] != 1200 ||
             externalContexts.Count != 3 ||
@@ -11775,6 +11846,9 @@ internal static partial class RawHarness
             !surfaceIdentityCursorFirst ||
             surfaceIdentityCursorValue != 1100 ||
             surfaceIdentityCursorSecond ||
+            !abraxasIdentityCursorFirst ||
+            abraxasIdentityCursorValue != 1100 ||
+            abraxasIdentityCursorSecond ||
             !directIndexCursorFirst ||
             directIndexCursorEntry.Key != 11 ||
             directIndexCursorEntry.Identity != 1100 ||
@@ -12109,7 +12183,7 @@ internal static partial class RawHarness
         Func<string, IIndex> inverseMutationResolver = indexName => inverseMutationIndexes.TryGetValue(indexName, out IIndex? resolvedIndex)
             ? resolvedIndex
             : throw new KeyNotFoundException(indexName);
-        LibraDexIdentityMutationResult inverseDeleteFromResult = inverseSelfRelative.DeleteFrom("age", inverseMutationIndexes);
+        LibraDexIdentityMutationResult inverseDeleteFromResult = catalog["inverseUsers"]["age"].Delete(inverseSelfRelative);
         IReadOnlyList<ulong> inverseDeleteOldAgeIds = users.GetIdentities<ulong>(
             users.Where("age").AsInt32.EqualTo(30).EndCondition,
             IdentityResultOrdering.IdentityAscending,
@@ -12119,10 +12193,9 @@ internal static partial class RawHarness
             IdentityResultOrdering.IdentityAscending,
             IdentityDeduplication.Preserve);
         ValidateGenericInsert(age.Insert(30, 102UL), "inverse targeted mutation restored age 30/102 insert");
-        LibraDexIdentityMutationResult inverseSetKeyOnUsingResult = inverseSelfRelative.SetKeyOnUsing(
-            "age",
-            inverseMutationIndexes,
-            identity => (ulong)identity == 102UL ? 50 : 60);
+        LibraDexIdentityMutationResult inverseSetKeyOnUsingResult = catalog["inverseUsers"]["age"].SetKeyUsing(
+            inverseSelfRelative,
+            _ => 50);
         IReadOnlyList<ulong> inverseSetKeyOldAgeIds = users.GetIdentities<ulong>(
             users.Where("age").AsInt32.EqualTo(30).EndCondition,
             IdentityResultOrdering.IdentityAscending,
@@ -13586,7 +13659,7 @@ internal static partial class RawHarness
                 }
             }
 
-            (DataKernelCommitTelemetry commit, long deferredRequests) = durabilityBatch.Commit();
+            (DataKernelCommitTelemetry commit, long deferredRequests, _) = durabilityBatch.Commit();
             if (deferredRequests == 0 || commit.WriteCallCount == 0)
             {
                 throw new InvalidDataException("Clustered write-intent VS8 batch did not fold lower-level commit requests into one publication.");
@@ -13657,6 +13730,7 @@ internal static partial class RawHarness
         ValidateGenericInsert(ss88.Insert(1, 101), "descending SS8-8 insert 1");
         ValidateGenericInsert(ss88.Insert(2, 102), "descending SS8-8 insert 2");
         ValidateGenericInsert(ss88.Insert(3, 103), "descending SS8-8 insert 3");
+        ValidateFixedShapePhysicalCount(ss88, 3, LibraDexCondition.ForGroup("descending-shapes").Index("ss88").AsInt64.Between(1, 2).EndCondition, 2, "SS8-8");
         using (LibraDexRangeReader<long, long> reader = ss88.OpenRangeReader(1, 3, QueryDirection.Descending))
         {
             if (!reader.TryReadNext(out long firstKey, out long firstIdentity) ||
@@ -13672,10 +13746,13 @@ internal static partial class RawHarness
             }
         }
 
+        ValidateFixedShapePhysicalCountAfterDelete(ss88, 2, 102, LibraDexCondition.ForGroup("descending-shapes").Index("ss88").AsInt64.EqualTo(2).EndCondition, 2, "SS8-8");
+
         using LibraDexIndex<Guid, long> ss168 = catalog.Indexes["descending-shapes"]["ss168"].GuidKeys<long>().Create();
         ValidateGenericInsert(ss168.Insert(guid1, 201), "descending SS16-8 insert 1");
         ValidateGenericInsert(ss168.Insert(guid2, 202), "descending SS16-8 insert 2");
         ValidateGenericInsert(ss168.Insert(guid3, 203), "descending SS16-8 insert 3");
+        ValidateFixedShapePhysicalCount(ss168, 3, LibraDexCondition.ForGroup("descending-shapes").Index("ss168").AsGuid.Between(guid1, guid2).EndCondition, 2, "SS16-8");
         using (LibraDexRangeReader<Guid, long> reader = ss168.OpenRangeReader(guid1, guid3, QueryDirection.Descending))
         {
             if (!reader.TryReadNext(out Guid firstKey, out long firstIdentity) ||
@@ -13691,10 +13768,13 @@ internal static partial class RawHarness
             }
         }
 
+        ValidateFixedShapePhysicalCountAfterDelete(ss168, guid2, 202, LibraDexCondition.ForGroup("descending-shapes").Index("ss168").AsGuid.EqualTo(guid2).EndCondition, 2, "SS16-8");
+
         using LibraDexIndex<long, Guid> ss816 = catalog.Indexes["descending-shapes"]["ss816"].Int64Keys<Guid>().Create();
         ValidateGenericInsert(ss816.Insert(1, guid1), "descending SS8-16 insert 1");
         ValidateGenericInsert(ss816.Insert(2, guid2), "descending SS8-16 insert 2");
         ValidateGenericInsert(ss816.Insert(3, guid3), "descending SS8-16 insert 3");
+        ValidateFixedShapePhysicalCount(ss816, 3, LibraDexCondition.ForGroup("descending-shapes").Index("ss816").AsInt64.Between(1, 2).EndCondition, 2, "SS8-16");
         using (LibraDexRangeReader<long, Guid> reader = ss816.OpenRangeReader(1, 3, QueryDirection.Descending))
         {
             if (!reader.TryReadNext(out long firstKey, out Guid firstIdentity) ||
@@ -13710,10 +13790,13 @@ internal static partial class RawHarness
             }
         }
 
+        ValidateFixedShapePhysicalCountAfterDelete(ss816, 2, guid2, LibraDexCondition.ForGroup("descending-shapes").Index("ss816").AsInt64.EqualTo(2).EndCondition, 2, "SS8-16");
+
         using LibraDexIndex<Guid, Guid> ss1616 = catalog.Indexes["descending-shapes"]["ss1616"].GuidKeys<Guid>().Create();
         ValidateGenericInsert(ss1616.Insert(guid1, guid1), "descending SS16-16 insert 1");
         ValidateGenericInsert(ss1616.Insert(guid2, guid2), "descending SS16-16 insert 2");
         ValidateGenericInsert(ss1616.Insert(guid3, guid3), "descending SS16-16 insert 3");
+        ValidateFixedShapePhysicalCount(ss1616, 3, LibraDexCondition.ForGroup("descending-shapes").Index("ss1616").AsGuid.Between(guid1, guid2).EndCondition, 2, "SS16-16");
         using (LibraDexRangeReader<Guid, Guid> reader = ss1616.OpenRangeReader(guid1, guid3, QueryDirection.Descending))
         {
             if (!reader.TryReadNext(out Guid firstKey, out Guid firstIdentity) ||
@@ -13729,10 +13812,13 @@ internal static partial class RawHarness
             }
         }
 
+        ValidateFixedShapePhysicalCountAfterDelete(ss1616, guid2, guid2, LibraDexCondition.ForGroup("descending-shapes").Index("ss1616").AsGuid.EqualTo(guid2).EndCondition, 2, "SS16-16");
+
         using LibraDexIndex<byte[], long> fs328 = catalog.Indexes["descending-shapes"]["fs328"].Blob.Scalar<long>(LibraDexScalarWidth.Bytes32).Create();
         ValidateGenericInsert(fs328.Insert(bytes1, 501), "descending FS32-8 insert 1");
         ValidateGenericInsert(fs328.Insert(bytes2, 502), "descending FS32-8 insert 2");
         ValidateGenericInsert(fs328.Insert(bytes3, 503), "descending FS32-8 insert 3");
+        ValidateFixedShapePhysicalCount(fs328, 3, LibraDexCondition.ForGroup("descending-shapes").Index("fs328").AsBinary.Between(bytes1, bytes2).EndCondition, 2, "FS32-8");
         using (LibraDexRangeReader<byte[], long> reader = fs328.OpenRangeReader(bytes1, bytes3, QueryDirection.Descending))
         {
             if (!reader.TryReadNext(out byte[] firstKey, out long firstIdentity) ||
@@ -13748,10 +13834,13 @@ internal static partial class RawHarness
             }
         }
 
+        ValidateFixedShapePhysicalCountAfterDelete(fs328, bytes2, 502, LibraDexCondition.ForGroup("descending-shapes").Index("fs328").AsBinary.EqualTo(bytes2).EndCondition, 2, "FS32-8");
+
         using LibraDexIndex<byte[], Guid> fs3216 = catalog.Indexes["descending-shapes"]["fs3216"].Blob.Scalar<Guid>(LibraDexScalarWidth.Bytes32).Create();
         ValidateGenericInsert(fs3216.Insert(bytes1, guid1), "descending FS32-16 insert 1");
         ValidateGenericInsert(fs3216.Insert(bytes2, guid2), "descending FS32-16 insert 2");
         ValidateGenericInsert(fs3216.Insert(bytes3, guid3), "descending FS32-16 insert 3");
+        ValidateFixedShapePhysicalCount(fs3216, 3, LibraDexCondition.ForGroup("descending-shapes").Index("fs3216").AsBinary.Between(bytes1, bytes2).EndCondition, 2, "FS32-16");
         using (LibraDexRangeReader<byte[], Guid> reader = fs3216.OpenRangeReader(bytes1, bytes3, QueryDirection.Descending))
         {
             if (!reader.TryReadNext(out byte[] firstKey, out Guid firstIdentity) ||
@@ -13765,6 +13854,184 @@ internal static partial class RawHarness
             {
                 throw new InvalidDataException("Native descending FS32-16 reader did not return expected key order.");
             }
+        }
+
+        ValidateFixedShapePhysicalCountAfterDelete(fs3216, bytes2, guid2, LibraDexCondition.ForGroup("descending-shapes").Index("fs3216").AsBinary.EqualTo(bytes2).EndCondition, 2, "FS32-16");
+    }
+
+    /// <summary>
+    /// Validates the opt-in single-key-per-identity contract exposed through public index options and persisted catalog metadata.<br/>
+    /// The contract is deliberately enforced on immediate generic writes first: duplicate identity writes to a different key are rejected, lossless direct rekey remains available, and batch writers are rejected until they track staged identity-key ownership.<br/>
+    /// </summary>
+    private static void ValidateSingleKeyPerIdentityContract()
+    {
+        using Catalog catalog = Catalog.CreateMemory();
+        IndexOptions options = new() { IdentityKeyMultiplicity = IdentityKeyMultiplicity.SingleKeyPerIdentity };
+        using LibraDexIndex<long, long> index = catalog.Indexes["single-key"]["value"].Int64Keys<long>().Create(options: options);
+        if (index.IdentityKeyMultiplicity != IdentityKeyMultiplicity.SingleKeyPerIdentity ||
+            !catalog.Indexes.TryGetInfo("single-key", "value", out CatalogIndexInfo info) ||
+            info.IdentityKeyMultiplicity != IdentityKeyMultiplicity.SingleKeyPerIdentity)
+        {
+            throw new InvalidDataException("Single-key-per-identity option was not exposed through index and catalog metadata.");
+        }
+
+        ValidateGenericInsert(index.Insert(10, 100), "single-key first insert");
+        LibraDexGenericInsertResult duplicateIdentityDifferentKey = index.Insert(11, 100);
+        if (duplicateIdentityDifferentKey.Inserted ||
+            index.Count() != 1 ||
+            index.Count(LibraDexCondition.ForGroup("single-key").Index("value").AsInt64.EqualTo(11).EndCondition) != 0)
+        {
+            throw new InvalidDataException("Single-key-per-identity insert guard allowed the same identity at a different key.");
+        }
+
+        index.Rekey(100, 10, 12);
+        if (index.Count() != 1 ||
+            index.Count(LibraDexCondition.ForGroup("single-key").Index("value").AsInt64.EqualTo(10).EndCondition) != 0 ||
+            index.Count(LibraDexCondition.ForGroup("single-key").Index("value").AsInt64.EqualTo(12).EndCondition) != 1 ||
+            index.Insert(10, 100).Inserted)
+        {
+            throw new InvalidDataException("Single-key-per-identity direct rekey did not preserve exactly one identity-key association.");
+        }
+
+        using (LibraDexBatch<long, long> batch = index.BeginBatch())
+        {
+            ValidateGenericInsert(batch.Insert(30, 300), "single-key batch first insert");
+            if (batch.Insert(31, 300).Inserted)
+            {
+                throw new InvalidDataException("Single-key-per-identity explicit batch allowed a staged duplicate identity at a different key.");
+            }
+
+            LibraDexGenericBatchCommitResult commit = batch.Commit();
+            if (commit.InsertedCount != 1)
+            {
+                throw new InvalidDataException("Single-key-per-identity explicit batch did not publish exactly one accepted insert.");
+            }
+        }
+
+        using (Catalog groupCatalog = Catalog.CreateMemory())
+        {
+            LibraDexIndex<long, long> groupIndex = groupCatalog.Indexes["single-key-group"]["value"].Int64Keys<long>().Create(options: options);
+            CatalogIdentityGroupBatchManager groupBatch = groupCatalog.Indexes["single-key-group"].Batch;
+            groupBatch.Enable();
+            ValidateGenericInsert(groupIndex.Insert(40, 400), "single-key group batch first insert");
+            if (groupIndex.Insert(41, 400).Inserted)
+            {
+                throw new InvalidDataException("Single-key-per-identity group batch allowed a staged duplicate identity at a different key.");
+            }
+
+            LibraDexGenericBatchCommitResult groupCommit = groupBatch.PublishAndDisable();
+            if (groupCommit.InsertedCount != 1)
+            {
+                throw new InvalidDataException("Single-key-per-identity group batch did not publish exactly one accepted insert.");
+            }
+        }
+
+        LibraDexQueuedWriter<long, long> writer = index.BeginConcurrentWriter();
+        ValidateGenericInsert(writer.Insert(50, 500), "single-key queued writer first insert");
+        if (writer.Insert(51, 500).Inserted)
+        {
+            throw new InvalidDataException("Single-key-per-identity queued writer allowed a staged duplicate identity at a different key.");
+        }
+
+        using (LibraDexConcurrentBatch<long, long> concurrentBatch = index.BeginConcurrentBatch())
+        {
+            ValidateGenericInsert(concurrentBatch.Insert(60, 600), "single-key concurrent batch first insert");
+            if (concurrentBatch.Insert(61, 600).Inserted)
+            {
+                throw new InvalidDataException("Single-key-per-identity concurrent batch allowed a staged duplicate identity at a different key.");
+            }
+
+            LibraDexConcurrentBatchPublishResult concurrentPublish = concurrentBatch.Publish();
+            if (concurrentPublish.InsertedCount != 1)
+            {
+                throw new InvalidDataException("Single-key-per-identity concurrent batch did not publish exactly one accepted insert.");
+            }
+        }
+
+        string path = Path.Combine("artifacts", "tmp-single-key-contract.lbdx");
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
+        File.Delete(path);
+        using (Catalog persisted = Catalog.Create(path))
+        {
+            using LibraDexIndex<long, long> persistedIndex = persisted.Indexes["single-key"]["value"].Int64Keys<long>().Create(options: options);
+            ValidateGenericInsert(persistedIndex.Insert(20, 200), "single-key persisted insert");
+        }
+
+        using (Catalog reopened = Catalog.Open(path))
+        {
+            if (!reopened.Indexes.TryGetInfo("single-key", "value", out CatalogIndexInfo reopenedInfo) ||
+                reopenedInfo.IdentityKeyMultiplicity != IdentityKeyMultiplicity.SingleKeyPerIdentity)
+            {
+                throw new InvalidDataException("Single-key-per-identity metadata was not preserved across catalog reopen.");
+            }
+
+            IIndex reopenedIndex = reopened.Indexes["single-key"]["value"].Open();
+            try
+            {
+                if (reopenedIndex.IdentityKeyMultiplicity != IdentityKeyMultiplicity.SingleKeyPerIdentity)
+                {
+                    throw new InvalidDataException("Single-key-per-identity reopened index did not expose the persisted contract.");
+                }
+            }
+            finally
+            {
+                (reopenedIndex as IDisposable)?.Dispose();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Validates public physical tuple counting for a fixed generic shape.<br/>
+    /// The whole-index count exercises the public `.Count()` aggregate, while the condition count proves `.Count(where)` routes through condition primitive counting with tuple multiplicity preserved.<br/>
+    /// </summary>
+    /// <typeparam name="TKey">The fixed generic key type.</typeparam>
+    /// <typeparam name="TIdentity">The fixed generic identity type.</typeparam>
+    /// <param name="index">The populated index to count.</param>
+    /// <param name="expectedAllCount">The expected whole-index tuple count.</param>
+    /// <param name="condition">The condition whose physical tuple count should be tested.</param>
+    /// <param name="expectedConditionCount">The expected condition tuple count.</param>
+    /// <param name="shapeName">The diagnostic shape name.</param>
+    private static void ValidateFixedShapePhysicalCount<TKey, TIdentity>(
+        LibraDexIndex<TKey, TIdentity> index,
+        long expectedAllCount,
+        LibraDexConditionEndCondition condition,
+        long expectedConditionCount,
+        string shapeName)
+    {
+        if (index.Count() != expectedAllCount ||
+            ((IIndex)index).Count() != expectedAllCount ||
+            index.Count(condition) != expectedConditionCount)
+        {
+            throw new InvalidDataException($"{shapeName} physical tuple count did not match expected values.");
+        }
+    }
+
+    /// <summary>
+    /// Validates that exact tuple deletion updates only the already-written shelf state needed by physical tuple counts.<br/>
+    /// Whole-index and exact-key counts are read after deletion so fixed shapes prove count metadata stays truthful without relying on an extra global count publication.<br/>
+    /// </summary>
+    /// <typeparam name="TKey">The fixed generic key type.</typeparam>
+    /// <typeparam name="TIdentity">The fixed generic identity type.</typeparam>
+    /// <param name="index">The populated index to mutate and count.</param>
+    /// <param name="key">The exact key to delete.</param>
+    /// <param name="identity">The exact identity to delete.</param>
+    /// <param name="deletedKeyCondition">The exact-key condition that should become empty after delete.</param>
+    /// <param name="expectedAllCount">The expected whole-index tuple count after delete.</param>
+    /// <param name="shapeName">The diagnostic shape name.</param>
+    private static void ValidateFixedShapePhysicalCountAfterDelete<TKey, TIdentity>(
+        LibraDexIndex<TKey, TIdentity> index,
+        TKey key,
+        TIdentity identity,
+        LibraDexConditionEndCondition deletedKeyCondition,
+        long expectedAllCount,
+        string shapeName)
+    {
+        index.Delete(key, identity);
+        if (index.Count() != expectedAllCount ||
+            ((IIndex)index).Count() != expectedAllCount ||
+            index.Count(deletedKeyCondition) != 0)
+        {
+            throw new InvalidDataException($"{shapeName} physical tuple count did not track exact tuple deletion.");
         }
     }
 
@@ -14479,6 +14746,7 @@ internal static partial class RawHarness
         int itemCount = GetIntOption(args, "--items", 1400);
         int duplicateModulo = GetIntOption(args, "--duplicate-modulo", 32);
         int identityLength = GetIntOption(args, "--identity-length", 96);
+        string identityShape = GetOption(args, "--identity-shape", "generated");
         if (itemCount <= 0 || duplicateModulo <= 0 || identityLength < 16 || identityLength > 1024)
         {
             throw new ArgumentOutOfRangeException(nameof(args), "SV8 routed sanity requires positive items, positive duplicate modulo, and identity length 16-1024.");
@@ -14499,7 +14767,7 @@ internal static partial class RawHarness
             for (int i = 0; i < itemCount; i++)
             {
                 ulong key = CreateScalar8VarIdentityKey(i, duplicateModulo);
-                byte[] identity = CreateScalar8VarIdentity(i, identityLength);
+                byte[] identity = CreateScalar8VarIdentityHarnessIdentity(i, identityLength, identityShape);
                 Scalar8VarIdentityRoutedInsertResult result = session.InsertWalkedRoutedScalar8VarIdentity(rootOffset, identityLength, key, identity, allowDuplicateKeys: true, maxRouterHops: 8);
                 if (result.InsertResult != Scalar8VarIdentityInsertResult.Inserted)
                 {
@@ -14534,47 +14802,96 @@ internal static partial class RawHarness
         using LibraDexFileSession reopened = LibraDexFileSession.Open(path, options, DataKernelTelemetryOptions.EnabledOptions);
         ulong lower = CreateScalar8VarIdentityKey(0, duplicateModulo);
         ulong upper = CreateScalar8VarIdentityKey(Math.Min(2, duplicateModulo - 1), duplicateModulo);
-        using Scalar8VarIdentityRangeReader identitiesReader = reopened.OpenScalar8VarIdentityRangeReader(rootOffset, identityLength, lower, upper);
-        int identityCount = identitiesReader.Count;
+        bool previousTraversalMode = Scalar8VarIdentityRangeReader.UseExhaustiveRouteTraversal;
+        int identityCount;
+        int prunedIdentityCount;
+        int exactCount;
+        int prunedExactCount;
+        try
+        {
+            Scalar8VarIdentityRangeReader.UseExhaustiveRouteTraversal = true;
+            using Scalar8VarIdentityRangeReader identitiesReader = reopened.OpenScalar8VarIdentityRangeReader(rootOffset, identityLength, lower, upper);
+            identityCount = identitiesReader.Count;
+
+            Scalar8VarIdentityRangeReader.UseExhaustiveRouteTraversal = false;
+            using Scalar8VarIdentityRangeReader prunedIdentitiesReader = reopened.OpenScalar8VarIdentityRangeReader(rootOffset, identityLength, lower, upper);
+            prunedIdentityCount = prunedIdentitiesReader.Count;
+        }
+        finally
+        {
+            Scalar8VarIdentityRangeReader.UseExhaustiveRouteTraversal = previousTraversalMode;
+        }
+
         int expected = CountScalar8VarIdentityKeyRange(itemCount, duplicateModulo, 0, Math.Min(2, duplicateModulo - 1));
         if (identityCount != expected)
         {
             throw new InvalidDataException($"Routed SV8 range read returned {identityCount}; expected {expected}.");
         }
 
-        using Scalar8VarIdentityRangeReader exactReader = reopened.OpenScalar8VarIdentityRangeReader(rootOffset, identityLength, lower, lower);
-        int exactCount = exactReader.Count;
-        byte[] previousIdentity = new byte[identityLength];
-        byte[] currentIdentity = new byte[identityLength];
-        if (exactReader.MoveNext())
+        if (prunedIdentityCount != identityCount)
         {
-            exactReader.CopyCurrentIdentityTo(previousIdentity);
-            while (exactReader.MoveNext())
-            {
-                exactReader.CopyCurrentIdentityTo(currentIdentity);
-                if (previousIdentity.AsSpan().SequenceCompareTo(currentIdentity) > 0)
-                {
-                    throw new InvalidDataException("Routed SV8 exact-key range returned identities out of order.");
-                }
-
-                byte[] swap = previousIdentity;
-                previousIdentity = currentIdentity;
-                currentIdentity = swap;
-            }
+            throw new InvalidDataException($"Routed SV8 pruned range read returned {prunedIdentityCount}; exhaustive returned {identityCount}.");
         }
 
-        bool deletedExact = reopened.DeleteScalar8VarIdentityExactTuple(rootOffset, identityLength, lower, CreateScalar8VarIdentity(0, identityLength));
+        byte[] previousIdentity = new byte[identityLength];
+        byte[] currentIdentity = new byte[identityLength];
+        try
+        {
+            Scalar8VarIdentityRangeReader.UseExhaustiveRouteTraversal = true;
+            using Scalar8VarIdentityRangeReader exactReader = reopened.OpenScalar8VarIdentityRangeReader(rootOffset, identityLength, lower, lower);
+            exactCount = exactReader.Count;
+            if (exactReader.MoveNext())
+            {
+                exactReader.CopyCurrentIdentityTo(previousIdentity);
+                while (exactReader.MoveNext())
+                {
+                    exactReader.CopyCurrentIdentityTo(currentIdentity);
+                    if (previousIdentity.AsSpan().SequenceCompareTo(currentIdentity) > 0)
+                    {
+                        throw new InvalidDataException("Routed SV8 exact-key range returned identities out of order.");
+                    }
+
+                    byte[] swap = previousIdentity;
+                    previousIdentity = currentIdentity;
+                    currentIdentity = swap;
+                }
+            }
+
+            Scalar8VarIdentityRangeReader.UseExhaustiveRouteTraversal = false;
+            using Scalar8VarIdentityRangeReader prunedExactReader = reopened.OpenScalar8VarIdentityRangeReader(rootOffset, identityLength, lower, lower);
+            prunedExactCount = prunedExactReader.Count;
+        }
+        finally
+        {
+            Scalar8VarIdentityRangeReader.UseExhaustiveRouteTraversal = previousTraversalMode;
+        }
+
+        if (prunedExactCount != exactCount)
+        {
+            throw new InvalidDataException($"Routed SV8 pruned exact-key read returned {prunedExactCount}; exhaustive returned {exactCount}.");
+        }
+
+        byte[] firstIdentity = CreateScalar8VarIdentityHarnessIdentity(0, identityLength, identityShape);
+        bool deletedExact = reopened.DeleteScalar8VarIdentityExactTuple(rootOffset, identityLength, lower, firstIdentity);
         if (!deletedExact)
         {
             throw new InvalidDataException("Routed SV8 exact tuple delete did not delete the expected tuple.");
         }
 
-        using (Scalar8VarIdentityRangeReader afterExactDeleteReader = reopened.OpenScalar8VarIdentityRangeReader(rootOffset, identityLength, lower, lower))
+        try
         {
-            if (afterExactDeleteReader.Count != exactCount - 1)
+            Scalar8VarIdentityRangeReader.UseExhaustiveRouteTraversal = true;
+            using (Scalar8VarIdentityRangeReader afterExactDeleteReader = reopened.OpenScalar8VarIdentityRangeReader(rootOffset, identityLength, lower, lower))
             {
-                throw new InvalidDataException($"Routed SV8 exact tuple delete left {afterExactDeleteReader.Count} rows for the exact key; expected {exactCount - 1}.");
+                if (afterExactDeleteReader.Count != exactCount - 1)
+                {
+                    throw new InvalidDataException($"Routed SV8 exact tuple delete left {afterExactDeleteReader.Count} rows for the exact key; expected {exactCount - 1}.");
+                }
             }
+        }
+        finally
+        {
+            Scalar8VarIdentityRangeReader.UseExhaustiveRouteTraversal = previousTraversalMode;
         }
 
         long rangeDeleted = reopened.DeleteScalar8VarIdentityKeyRange(rootOffset, identityLength, lower, upper);
@@ -14583,16 +14900,52 @@ internal static partial class RawHarness
             throw new InvalidDataException($"Routed SV8 range delete removed {rangeDeleted}; expected {expected - 1} after the exact delete.");
         }
 
-        using (Scalar8VarIdentityRangeReader afterRangeDeleteReader = reopened.OpenScalar8VarIdentityRangeReader(rootOffset, identityLength, lower, upper))
+        try
         {
-            if (afterRangeDeleteReader.Count != 0)
+            Scalar8VarIdentityRangeReader.UseExhaustiveRouteTraversal = true;
+            using (Scalar8VarIdentityRangeReader afterRangeDeleteReader = reopened.OpenScalar8VarIdentityRangeReader(rootOffset, identityLength, lower, upper))
             {
-                throw new InvalidDataException($"Routed SV8 range delete left {afterRangeDeleteReader.Count} rows in the deleted range.");
+                if (afterRangeDeleteReader.Count != 0)
+                {
+                    throw new InvalidDataException($"Routed SV8 range delete left {afterRangeDeleteReader.Count} rows in the deleted range.");
+                }
             }
         }
+        finally
+        {
+            Scalar8VarIdentityRangeReader.UseExhaustiveRouteTraversal = previousTraversalMode;
+        }
 
-        Console.WriteLine($"sv8-routed-sanity ok items={itemCount} duplicateModulo={duplicateModulo} identityLength={identityLength} grows={growCount} splits={splitCount} duplicateRunOverflows={duplicateRunOverflowCount} rangeCount={identityCount} exactCount={exactCount} rangeDeleted={rangeDeleted}");
+        Console.WriteLine($"sv8-routed-sanity ok items={itemCount} duplicateModulo={duplicateModulo} identityLength={identityLength} identityShape={identityShape} grows={growCount} splits={splitCount} duplicateRunOverflows={duplicateRunOverflowCount} rangeCount={identityCount} exactCount={exactCount} rangeDeleted={rangeDeleted}");
         return 0;
+    }
+
+    /// <summary>
+    /// Creates the `SV8` routed-sanity identity payload for either synthetic or path-like workloads.<br/>
+    /// Path-like identities reproduce FileSearch byte ordering pressure without reaching into the FileSearch workbench assembly.<br/>
+    /// </summary>
+    /// <param name="index">The source row index.</param>
+    /// <param name="identityLength">The exact identity byte length to emit.</param>
+    /// <param name="identityShape">The requested identity generator shape.</param>
+    /// <returns>A raw identity byte array with exactly <paramref name="identityLength"/> bytes.</returns>
+    private static byte[] CreateScalar8VarIdentityHarnessIdentity(int index, int identityLength, string identityShape)
+    {
+        if (!identityShape.Equals("path", StringComparison.OrdinalIgnoreCase))
+        {
+            return CreateScalar8VarIdentity(index, identityLength);
+        }
+
+        byte[] identity = new byte[identityLength];
+        string path = string.Create(
+            CultureInfo.InvariantCulture,
+            $"C:\\msys64\\usr\\share\\zoneinfo\\America\\file-{index:D8}.dat");
+        int written = Encoding.UTF8.GetBytes(path, identity);
+        for (int i = written; i < identity.Length; i++)
+        {
+            identity[i] = (byte)('a' + ((index + i) % 26));
+        }
+
+        return identity;
     }
 
 
@@ -14833,17 +15186,39 @@ internal static partial class RawHarness
         int identityLength = GetIntOption(args, "--identity-length", 96);
         int iterations = GetIntOption(args, "--iterations", 200);
         int rangeKeyCount = GetIntOption(args, "--range-key-count", Math.Min(16, Math.Max(1, duplicateModulo)));
+        int readStartKey = GetIntOption(args, "--read-start-key", 0);
+        int writeBatchSize = GetIntOption(args, "--write-batch-size", itemCount);
+        int readWindowCount = GetIntOption(args, "--read-window-count", 1);
+        int readWindowStep = GetIntOption(args, "--read-window-step", rangeKeyCount);
         string order = GetOption(args, "--order", "natural");
         string keyDistribution = GetOption(args, "--key-distribution", "low");
         string iterationModeText = GetOption(args, "--iteration-mode", "identities");
+        string readPatternText = GetOption(args, "--read-pattern", "range");
+        bool exhaustiveReadTraversal = GetBoolOption(args, "--exhaustive-read-traversal", false);
+        bool scanDescendantRoutesForPrunedReads = GetBoolOption(args, "--scan-descendant-routes-for-pruned-reads", false);
         bool fixedIdentityLength = GetBoolOption(args, "--fixed-identity-length", false);
         bool includeAttribution = GetBoolOption(args, "--include-attribution", false);
+        bool writeTelemetry = GetBoolOption(args, "--write-telemetry", false);
+        bool coalesceWrites = GetBoolOption(args, "--coalesce-writes", false);
         int initialShelfKiB = GetIntOption(args, "--initial-shelf-kib", Scalar8VarIdentityProfile.DefaultInitial.ShelfExtentSize / 1024);
+        int commitGapCoalesceBytes = GetIntOption(args, "--commit-gap-coalesce-bytes", 512);
         string journalMode = GetOption(args, "--journal-mode", "wal");
         string synchronous = GetOption(args, "--synchronous", "normal");
-        if (itemCount <= 0 || duplicateModulo <= 0 || identityLength <= 0 || identityLength > 1024 || iterations <= 0 || rangeKeyCount <= 0 || rangeKeyCount > duplicateModulo)
+        if (itemCount <= 0 ||
+            duplicateModulo <= 0 ||
+            identityLength <= 0 ||
+            identityLength > 1024 ||
+            iterations <= 0 ||
+            rangeKeyCount <= 0 ||
+            rangeKeyCount > duplicateModulo ||
+            readStartKey < 0 ||
+            readStartKey + rangeKeyCount > duplicateModulo ||
+            writeBatchSize <= 0 ||
+            readWindowCount <= 0 ||
+            readWindowStep <= 0 ||
+            commitGapCoalesceBytes < 0)
         {
-            throw new ArgumentOutOfRangeException(nameof(args), "SV8 routed SQLite comparison requires positive items, duplicate modulo, iterations, range key count within the duplicate modulo, and identity length 1-1024.");
+            throw new ArgumentOutOfRangeException(nameof(args), "SV8 routed SQLite comparison requires positive items, duplicate modulo, iterations, write batch size, read window settings, non-negative commit gap coalescing, read start/key count within the duplicate modulo, and identity length 1-1024.");
         }
 
         if (!order.Equals("natural", StringComparison.OrdinalIgnoreCase) &&
@@ -14860,7 +15235,13 @@ internal static partial class RawHarness
         }
 
         VarIdentityIterationMode iterationMode = ParseVarIdentityIterationMode(iterationModeText);
+        Scalar8VarIdentityReadPattern readPattern = ParseScalar8VarIdentityReadPattern(readPatternText);
         Scalar8VarIdentityProfile initialProfile = CreateScalar8VarIdentityComparisonProfile(initialShelfKiB, identityLength);
+        if (coalesceWrites && initialProfile.ShelfExtentSize != Scalar8VarIdentityProfile.DefaultInitial.ShelfExtentSize)
+        {
+            throw new ArgumentOutOfRangeException(nameof(args), "SV8 coalesced comparison currently uses the public batch default initial shelf profile; omit --initial-shelf-kib or use the default profile.");
+        }
+
         int[] writeOrder = CreateScalar8VarIdentityWriteOrder(itemCount, duplicateModulo, order, identityLength, fixedIdentityLength, keyDistribution);
 
         Directory.CreateDirectory(directory);
@@ -14869,63 +15250,293 @@ internal static partial class RawHarness
         File.Delete(libraPath);
         ResetSqliteScalar8Scalar8Files(sqlitePath);
 
-        DataKernelOptions libraOptions = CreateDesignPerfOptions();
+        DataKernelOptions libraOptions = CreateDesignPerfOptions(commitGapCoalesceBytes);
         SqliteScalar8Scalar8Options sqliteOptions = new(journalMode, synchronous);
         long rootOffset;
         long libraGrowths = 0;
         long libraSplits = 0;
         long libraDuplicateRunOverflows = 0;
+        long[] libraDiagnosticPathCounts = new long[Enum.GetValues<Scalar8VarIdentityInsertDiagnosticPath>().Length];
+        long[] libraCoalescedDiagnosticPathCounts = new long[Enum.GetValues<Scalar8VarIdentityInsertDiagnosticPath>().Length];
+        long[] libraCoalescedKindCounts = new long[Enum.GetValues<Scalar8VarIdentityRoutedInsertKind>().Length];
         Scalar8VarIdentityWalkedWriteAttribution libraAttribution = default;
+        long libraPrepareItemTicks = 0;
+        long libraPrepareKeyTicks = 0;
+        long libraPrepareIdentityTicks = 0;
+        long libraBatchBeginTicks = 0;
+        long libraInsertTicks = 0;
+        long libraCommitTicks = 0;
+        long sqlitePrepareKeyTicks = 0;
+        long sqlitePrepareIdentityTicks = 0;
+        long sqliteExecuteTicks = 0;
+        long sqliteCommitTicks = 0;
+        long libraPrepareItemAllocatedBytes = 0;
+        long libraPrepareKeyAllocatedBytes = 0;
+        long libraPrepareIdentityAllocatedBytes = 0;
+        long libraBatchBeginAllocatedBytes = 0;
+        long libraInsertAllocatedBytes = 0;
+        long libraCommitAllocatedBytes = 0;
+        long sqlitePrepareKeyAllocatedBytes = 0;
+        long sqlitePrepareIdentityAllocatedBytes = 0;
+        long sqliteExecuteAllocatedBytes = 0;
+        long sqliteCommitAllocatedBytes = 0;
+        int libraWriteBatchCount = 0;
+        int libraCoalescedSortedBatchCount = 0;
+        long libraCoalescedLargestSameKeyFrequencySum = 0;
+        int libraCoalescedLargestSameKeyFrequencyMax = 0;
+        int sqliteWriteBatchCount = 0;
+        long libraCommitBytesWritten = 0;
+        long libraCommitStagedExtents = 0;
+        long libraCommitStagedSegments = 0;
+        long libraCommitWriteCalls = 0;
+        long libraCommitBackingWriteCalls = 0;
+        long libraCommitKernelElapsedTicks = 0;
+        long libraCommitScalar8VarDirtyShelves = 0;
+        int libraCommitScalar8VarDirtyShelvesMax = 0;
+        long libraCommitDeferredRequests = 0;
         Stopwatch libraWriteWatch = Stopwatch.StartNew();
         using (LibraDexFileSession session = LibraDexFileSession.Initialize(libraPath, libraOptions, CreateDesignPerfMetadata(8301), DataKernelTelemetryOptions.EnabledOptions))
         {
             (RouterSnapshot root, _) = session.CreateRootRouterIndex(CreateHarnessSlot(0, "sv8rcmp", 0));
             rootOffset = root.Offset;
-            int rootShelfCount = keyDistribution.Equals("high-byte", StringComparison.OrdinalIgnoreCase)
-                ? Math.Min(duplicateModulo, 256)
-                : 1;
-            for (int prefix = 0; prefix < rootShelfCount; prefix++)
+            if (coalesceWrites)
             {
-                _ = session.CreateScalar8VarIdentityShelfAndLinkRootRoute(rootOffset, (byte)prefix, initialProfile);
-            }
+                using Scalar8VarIdentityIndex index = new(session, 0, "sv8rcmp", rootOffset, identityLength, ownsSession: false);
+                for (int batchStart = 0; batchStart < itemCount; batchStart += writeBatchSize)
+                {
+                    libraWriteBatchCount++;
+                    int batchCount = Math.Min(writeBatchSize, itemCount - batchStart);
+                    long allocatedBefore = 0;
+                    long started = 0;
+                    if (writeTelemetry)
+                    {
+                        allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
+                        started = Stopwatch.GetTimestamp();
+                    }
 
-            using LibraDexFileSessionDurabilityBatch durabilityBatch = session.BeginDurabilityBatch();
-            for (int orderIndex = 0; orderIndex < itemCount; orderIndex++)
+                    Scalar8VarIdentityBatchInsert[] items = new Scalar8VarIdentityBatchInsert[batchCount];
+                    if (writeTelemetry)
+                    {
+                        libraPrepareItemTicks += Stopwatch.GetTimestamp() - started;
+                        libraPrepareItemAllocatedBytes += GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
+                    }
+
+                    for (int batchIndex = 0; batchIndex < batchCount; batchIndex++)
+                    {
+                        int i = writeOrder[batchStart + batchIndex];
+                        allocatedBefore = writeTelemetry ? GC.GetAllocatedBytesForCurrentThread() : 0;
+                        started = writeTelemetry ? Stopwatch.GetTimestamp() : 0;
+                        ulong key = CreateScalar8VarIdentityKey(i, duplicateModulo, keyDistribution);
+                        if (writeTelemetry)
+                        {
+                            libraPrepareKeyTicks += Stopwatch.GetTimestamp() - started;
+                            libraPrepareKeyAllocatedBytes += GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
+                        }
+
+                        allocatedBefore = writeTelemetry ? GC.GetAllocatedBytesForCurrentThread() : 0;
+                        started = writeTelemetry ? Stopwatch.GetTimestamp() : 0;
+                        byte[] identity = CreateScalar8VarIdentity(i, identityLength, fixedIdentityLength);
+                        if (writeTelemetry)
+                        {
+                            libraPrepareIdentityTicks += Stopwatch.GetTimestamp() - started;
+                            libraPrepareIdentityAllocatedBytes += GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
+                        }
+
+                        items[batchIndex] = new Scalar8VarIdentityBatchInsert(
+                            key,
+                            identity);
+                    }
+
+                    allocatedBefore = writeTelemetry ? GC.GetAllocatedBytesForCurrentThread() : 0;
+                    started = writeTelemetry ? Stopwatch.GetTimestamp() : 0;
+                    using Scalar8VarIdentityBatch batch = index.BeginBatch(new LibraDexWriteIntent(
+                        Order: LibraDexWriteOrder.Sorted,
+                        Volume: batchCount >= 1000 ? LibraDexWriteVolume.Thousands : LibraDexWriteVolume.Small,
+                        Locality: LibraDexWriteLocality.Clustered,
+                        Priority: LibraDexWritePriority.WriteSpeed));
+                    if (writeTelemetry)
+                    {
+                        libraBatchBeginTicks += Stopwatch.GetTimestamp() - started;
+                        libraBatchBeginAllocatedBytes += GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
+                    }
+
+                    allocatedBefore = writeTelemetry ? GC.GetAllocatedBytesForCurrentThread() : 0;
+                    started = writeTelemetry ? Stopwatch.GetTimestamp() : 0;
+                    Scalar8VarIdentityCoalescedInsertResult coalesced = batch.InsertCoalesced(items, collectDiagnostics: includeAttribution || writeTelemetry);
+                    if (writeTelemetry)
+                    {
+                        libraInsertTicks += Stopwatch.GetTimestamp() - started;
+                        libraInsertAllocatedBytes += GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
+                        if (coalesced.Sorted)
+                        {
+                            libraCoalescedSortedBatchCount++;
+                        }
+
+                        libraCoalescedLargestSameKeyFrequencySum += coalesced.LargestSameKeyFrequency;
+                        if (coalesced.LargestSameKeyFrequency > libraCoalescedLargestSameKeyFrequencyMax)
+                        {
+                            libraCoalescedLargestSameKeyFrequencyMax = coalesced.LargestSameKeyFrequency;
+                        }
+                    }
+
+                    if (coalesced.InsertedCount != batchCount)
+                    {
+                        throw new InvalidDataException($"Expected coalesced routed SV8 insert count {batchCount}, got inserted={coalesced.InsertedCount} attempted={coalesced.AttemptedInsertCount} already={coalesced.AlreadyPresentCount} conflicts={coalesced.KeyConflictCount}.");
+                    }
+
+                    if (coalesced.DiagnosticPathCounts is not null)
+                    {
+                        int limit = Math.Min(libraCoalescedDiagnosticPathCounts.Length, coalesced.DiagnosticPathCounts.Length);
+                        for (int pathIndex = 0; pathIndex < limit; pathIndex++)
+                        {
+                            libraCoalescedDiagnosticPathCounts[pathIndex] += coalesced.DiagnosticPathCounts[pathIndex];
+                        }
+                    }
+
+                    if (coalesced.KindCounts is not null)
+                    {
+                        int limit = Math.Min(libraCoalescedKindCounts.Length, coalesced.KindCounts.Length);
+                        for (int kindIndex = 0; kindIndex < limit; kindIndex++)
+                        {
+                            libraCoalescedKindCounts[kindIndex] += coalesced.KindCounts[kindIndex];
+                        }
+                    }
+
+                    allocatedBefore = writeTelemetry ? GC.GetAllocatedBytesForCurrentThread() : 0;
+                    started = writeTelemetry ? Stopwatch.GetTimestamp() : 0;
+                    ScalarVarIdentityBatchCommitResult commitResult = batch.Commit();
+                    if (writeTelemetry)
+                    {
+                        libraCommitTicks += Stopwatch.GetTimestamp() - started;
+                        libraCommitAllocatedBytes += GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
+                        libraCommitBytesWritten += commitResult.Commit.BytesWritten;
+                        libraCommitStagedExtents += commitResult.Commit.StagedExtentCount;
+                        libraCommitStagedSegments += commitResult.Commit.StagedSegmentCount;
+                        libraCommitWriteCalls += commitResult.Commit.WriteCallCount;
+                        libraCommitBackingWriteCalls += commitResult.Commit.BackingWriteCallCount;
+                        libraCommitKernelElapsedTicks += commitResult.Commit.ElapsedTicks;
+                        libraCommitScalar8VarDirtyShelves += commitResult.StorageDiagnostics.Scalar8VarIdentityDirtyShelves;
+                        if (commitResult.StorageDiagnostics.Scalar8VarIdentityDirtyShelves > libraCommitScalar8VarDirtyShelvesMax)
+                        {
+                            libraCommitScalar8VarDirtyShelvesMax = commitResult.StorageDiagnostics.Scalar8VarIdentityDirtyShelves;
+                        }
+
+                        libraCommitDeferredRequests += commitResult.DeferredCommitRequests;
+                    }
+                }
+            }
+            else
             {
-                int i = writeOrder[orderIndex];
-                ulong key = CreateScalar8VarIdentityKey(i, duplicateModulo, keyDistribution);
-                byte[] identity = CreateScalar8VarIdentity(i, identityLength, fixedIdentityLength);
-                Scalar8VarIdentityRoutedInsertResult result;
-                if (includeAttribution)
+                int rootShelfCount = keyDistribution.Equals("high-byte", StringComparison.OrdinalIgnoreCase)
+                    ? Math.Min(duplicateModulo, 256)
+                    : 1;
+                for (int prefix = 0; prefix < rootShelfCount; prefix++)
                 {
-                    result = session.InsertWalkedRoutedScalar8VarIdentity(rootOffset, identityLength, key, identity, allowDuplicateKeys: true, maxRouterHops: 8, out Scalar8VarIdentityWalkedWriteAttribution attribution);
-                    libraAttribution += attribution;
-                }
-                else
-                {
-                    result = session.InsertWalkedRoutedScalar8VarIdentity(rootOffset, identityLength, key, identity, allowDuplicateKeys: true, maxRouterHops: 8);
+                    _ = session.CreateScalar8VarIdentityShelfAndLinkRootRoute(rootOffset, (byte)prefix, initialProfile);
                 }
 
-                if (result.InsertResult != Scalar8VarIdentityInsertResult.Inserted)
+                for (int batchStart = 0; batchStart < itemCount; batchStart += writeBatchSize)
                 {
-                    throw new InvalidDataException($"Expected routed SV8 insert {i}, got {result.Kind}/{result.InsertResult}.");
-                }
+                    libraWriteBatchCount++;
+                    long allocatedBefore;
+                    long started;
+                    allocatedBefore = writeTelemetry ? GC.GetAllocatedBytesForCurrentThread() : 0;
+                    started = writeTelemetry ? Stopwatch.GetTimestamp() : 0;
+                    using LibraDexFileSessionDurabilityBatch durabilityBatch = session.BeginDurabilityBatch();
+                    if (writeTelemetry)
+                    {
+                        libraBatchBeginTicks += Stopwatch.GetTimestamp() - started;
+                        libraBatchBeginAllocatedBytes += GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
+                    }
 
-                if (result.Kind == Scalar8VarIdentityRoutedInsertKind.WalkedGrow)
-                {
-                    libraGrowths++;
-                }
-                else if (result.Kind == Scalar8VarIdentityRoutedInsertKind.WalkedShelfSplit)
-                {
-                    libraSplits++;
-                }
-                else if (result.Kind == Scalar8VarIdentityRoutedInsertKind.WalkedDuplicateRunOverflow)
-                {
-                    libraDuplicateRunOverflows++;
+                    int batchCount = Math.Min(writeBatchSize, itemCount - batchStart);
+                    for (int batchIndex = 0; batchIndex < batchCount; batchIndex++)
+                    {
+                        int i = writeOrder[batchStart + batchIndex];
+                        allocatedBefore = writeTelemetry ? GC.GetAllocatedBytesForCurrentThread() : 0;
+                        started = writeTelemetry ? Stopwatch.GetTimestamp() : 0;
+                        ulong key = CreateScalar8VarIdentityKey(i, duplicateModulo, keyDistribution);
+                        if (writeTelemetry)
+                        {
+                            libraPrepareKeyTicks += Stopwatch.GetTimestamp() - started;
+                            libraPrepareKeyAllocatedBytes += GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
+                        }
+
+                        allocatedBefore = writeTelemetry ? GC.GetAllocatedBytesForCurrentThread() : 0;
+                        started = writeTelemetry ? Stopwatch.GetTimestamp() : 0;
+                        byte[] identity = CreateScalar8VarIdentity(i, identityLength, fixedIdentityLength);
+                        if (writeTelemetry)
+                        {
+                            libraPrepareIdentityTicks += Stopwatch.GetTimestamp() - started;
+                            libraPrepareIdentityAllocatedBytes += GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
+                        }
+
+                        Scalar8VarIdentityRoutedInsertResult result;
+                        allocatedBefore = writeTelemetry ? GC.GetAllocatedBytesForCurrentThread() : 0;
+                        started = writeTelemetry ? Stopwatch.GetTimestamp() : 0;
+                        if (includeAttribution)
+                        {
+                            result = session.InsertWalkedRoutedScalar8VarIdentity(rootOffset, identityLength, key, identity, allowDuplicateKeys: true, maxRouterHops: 8, out Scalar8VarIdentityWalkedWriteAttribution attribution);
+                            libraAttribution += attribution;
+                        }
+                        else
+                        {
+                            result = session.InsertWalkedRoutedScalar8VarIdentity(rootOffset, identityLength, key, identity, allowDuplicateKeys: true, maxRouterHops: 8);
+                        }
+                        if (writeTelemetry)
+                        {
+                            libraInsertTicks += Stopwatch.GetTimestamp() - started;
+                            libraInsertAllocatedBytes += GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
+                        }
+
+                        if (result.InsertResult != Scalar8VarIdentityInsertResult.Inserted)
+                        {
+                            throw new InvalidDataException($"Expected routed SV8 insert {i}, got {result.Kind}/{result.InsertResult}.");
+                        }
+
+                        if (result.Kind == Scalar8VarIdentityRoutedInsertKind.WalkedGrow)
+                        {
+                            libraGrowths++;
+                        }
+                        else if (result.Kind == Scalar8VarIdentityRoutedInsertKind.WalkedShelfSplit)
+                        {
+                            libraSplits++;
+                        }
+                        else if (result.Kind == Scalar8VarIdentityRoutedInsertKind.WalkedDuplicateRunOverflow)
+                        {
+                            libraDuplicateRunOverflows++;
+                        }
+
+                        int diagnosticPath = (int)result.DiagnosticPath;
+                        if ((uint)diagnosticPath < (uint)libraDiagnosticPathCounts.Length)
+                        {
+                            libraDiagnosticPathCounts[diagnosticPath]++;
+                        }
+                    }
+
+                    allocatedBefore = writeTelemetry ? GC.GetAllocatedBytesForCurrentThread() : 0;
+                    started = writeTelemetry ? Stopwatch.GetTimestamp() : 0;
+                    (DataKernelCommitTelemetry commitTelemetry, long deferredRequests, LibraDexBatchStorageDiagnostics storageDiagnostics) = durabilityBatch.Commit();
+                    if (writeTelemetry)
+                    {
+                        libraCommitTicks += Stopwatch.GetTimestamp() - started;
+                        libraCommitAllocatedBytes += GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
+                        libraCommitBytesWritten += commitTelemetry.BytesWritten;
+                        libraCommitStagedExtents += commitTelemetry.StagedExtentCount;
+                        libraCommitStagedSegments += commitTelemetry.StagedSegmentCount;
+                        libraCommitWriteCalls += commitTelemetry.WriteCallCount;
+                        libraCommitBackingWriteCalls += commitTelemetry.BackingWriteCallCount;
+                        libraCommitKernelElapsedTicks += commitTelemetry.ElapsedTicks;
+                        libraCommitScalar8VarDirtyShelves += storageDiagnostics.Scalar8VarIdentityDirtyShelves;
+                        if (storageDiagnostics.Scalar8VarIdentityDirtyShelves > libraCommitScalar8VarDirtyShelvesMax)
+                        {
+                            libraCommitScalar8VarDirtyShelvesMax = storageDiagnostics.Scalar8VarIdentityDirtyShelves;
+                        }
+
+                        libraCommitDeferredRequests += deferredRequests;
+                    }
                 }
             }
-
-            _ = durabilityBatch.Commit();
         }
 
         libraWriteWatch.Stop();
@@ -14934,37 +15545,99 @@ internal static partial class RawHarness
         using (SqliteConnection connection = OpenSqliteScalar8Scalar8Connection(sqlitePath, sqliteOptions))
         {
             InitializeSqliteScalar8VarIdentitySchema(connection);
-            using SqliteTransaction transaction = connection.BeginTransaction();
             using SqliteCommand command = connection.CreateCommand();
-            command.Transaction = transaction;
             command.CommandText = "INSERT INTO items(k, i) VALUES($k, $i);";
             SqliteParameter keyParameter = command.Parameters.Add("$k", SqliteType.Integer);
             SqliteParameter identityParameter = command.Parameters.Add("$i", SqliteType.Blob);
-            for (int orderIndex = 0; orderIndex < itemCount; orderIndex++)
+            for (int batchStart = 0; batchStart < itemCount; batchStart += writeBatchSize)
             {
-                int i = writeOrder[orderIndex];
-                keyParameter.Value = unchecked((long)CreateScalar8VarIdentitySqliteKey(i, duplicateModulo, keyDistribution));
-                identityParameter.Value = CreateScalar8VarIdentity(i, identityLength, fixedIdentityLength);
-                command.ExecuteNonQuery();
-            }
+                sqliteWriteBatchCount++;
+                using SqliteTransaction transaction = connection.BeginTransaction();
+                command.Transaction = transaction;
+                int batchCount = Math.Min(writeBatchSize, itemCount - batchStart);
+                for (int batchIndex = 0; batchIndex < batchCount; batchIndex++)
+                {
+                    int i = writeOrder[batchStart + batchIndex];
+                    long allocatedBefore = writeTelemetry ? GC.GetAllocatedBytesForCurrentThread() : 0;
+                    long started = writeTelemetry ? Stopwatch.GetTimestamp() : 0;
+                    keyParameter.Value = unchecked((long)CreateScalar8VarIdentitySqliteKey(i, duplicateModulo, keyDistribution));
+                    if (writeTelemetry)
+                    {
+                        sqlitePrepareKeyTicks += Stopwatch.GetTimestamp() - started;
+                        sqlitePrepareKeyAllocatedBytes += GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
+                    }
 
-            transaction.Commit();
+                    allocatedBefore = writeTelemetry ? GC.GetAllocatedBytesForCurrentThread() : 0;
+                    started = writeTelemetry ? Stopwatch.GetTimestamp() : 0;
+                    identityParameter.Value = CreateScalar8VarIdentity(i, identityLength, fixedIdentityLength);
+                    if (writeTelemetry)
+                    {
+                        sqlitePrepareIdentityTicks += Stopwatch.GetTimestamp() - started;
+                        sqlitePrepareIdentityAllocatedBytes += GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
+                    }
+
+                    allocatedBefore = writeTelemetry ? GC.GetAllocatedBytesForCurrentThread() : 0;
+                    started = writeTelemetry ? Stopwatch.GetTimestamp() : 0;
+                    command.ExecuteNonQuery();
+                    if (writeTelemetry)
+                    {
+                        sqliteExecuteTicks += Stopwatch.GetTimestamp() - started;
+                        sqliteExecuteAllocatedBytes += GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
+                    }
+                }
+
+                long commitAllocatedBefore = writeTelemetry ? GC.GetAllocatedBytesForCurrentThread() : 0;
+                long commitStarted = writeTelemetry ? Stopwatch.GetTimestamp() : 0;
+                transaction.Commit();
+                if (writeTelemetry)
+                {
+                    sqliteCommitTicks += Stopwatch.GetTimestamp() - commitStarted;
+                    sqliteCommitAllocatedBytes += GC.GetAllocatedBytesForCurrentThread() - commitAllocatedBefore;
+                }
+            }
         }
 
         sqliteWriteWatch.Stop();
+        if (coalesceWrites && includeAttribution)
+        {
+            PrintScalar8VarIdentityDiagnosticPathCounts("libraCoalescedDiagnosticPath", libraCoalescedDiagnosticPathCounts);
+            PrintScalar8VarIdentityKindCounts("libraCoalescedKind", libraCoalescedKindCounts);
+        }
 
-        int lowerKey = 0;
-        int upperKey = rangeKeyCount - 1;
+        int lowerKey = readStartKey;
+        int upperKey = readStartKey + rangeKeyCount - 1;
         VarKeyScalar8ReadMeasurement libraRead;
+        bool previousExhaustiveReadTraversal = Scalar8VarIdentityRangeReader.UseExhaustiveRouteTraversal;
+        bool previousScanDescendantRoutesForPrunedReads = Scalar8VarIdentityRangeReader.ScanDescendantRoutesForPrunedReads;
         using (LibraDexFileSession reopened = LibraDexFileSession.Open(libraPath, libraOptions, DataKernelTelemetryOptions.EnabledOptions))
         {
-            libraRead = MeasureScalar8VarIdentityRangeReads(reopened, rootOffset, identityLength, duplicateModulo, keyDistribution, lowerKey, upperKey, itemCount, iterations, iterationMode);
+            try
+            {
+                Scalar8VarIdentityRangeReader.UseExhaustiveRouteTraversal = exhaustiveReadTraversal;
+                Scalar8VarIdentityRangeReader.ScanDescendantRoutesForPrunedReads = scanDescendantRoutesForPrunedReads;
+                libraRead = readPattern switch
+                {
+                    Scalar8VarIdentityReadPattern.ExactKeys => MeasureScalar8VarIdentityExactKeyReads(reopened, rootOffset, identityLength, duplicateModulo, keyDistribution, lowerKey, rangeKeyCount, itemCount, iterations, iterationMode),
+                    Scalar8VarIdentityReadPattern.RotatingRange => MeasureScalar8VarIdentityRotatingRangeReads(reopened, rootOffset, identityLength, duplicateModulo, keyDistribution, rangeKeyCount, readWindowCount, readWindowStep, itemCount, iterations, iterationMode),
+                    _ => MeasureScalar8VarIdentityRangeReads(reopened, rootOffset, identityLength, duplicateModulo, keyDistribution, lowerKey, upperKey, itemCount, iterations, iterationMode)
+                };
+            }
+            finally
+            {
+                Scalar8VarIdentityRangeReader.UseExhaustiveRouteTraversal = previousExhaustiveReadTraversal;
+                Scalar8VarIdentityRangeReader.ScanDescendantRoutesForPrunedReads = previousScanDescendantRoutesForPrunedReads;
+            }
         }
 
         VarKeyScalar8ReadMeasurement sqliteRead;
         using (SqliteConnection connection = OpenSqliteScalar8Scalar8Connection(sqlitePath, sqliteOptions))
         {
-            sqliteRead = MeasureSqliteScalar8VarIdentityRangeReads(connection, duplicateModulo, keyDistribution, identityLength, lowerKey, upperKey, itemCount, iterations, iterationMode);
+            sqliteRead = readPattern switch
+            {
+                Scalar8VarIdentityReadPattern.ExactKeys => MeasureSqliteScalar8VarIdentityExactKeyReads(connection, duplicateModulo, keyDistribution, identityLength, lowerKey, rangeKeyCount, itemCount, iterations, iterationMode),
+                Scalar8VarIdentityReadPattern.RotatingRange => MeasureSqliteScalar8VarIdentityRotatingRangeReads(connection, duplicateModulo, keyDistribution, identityLength, rangeKeyCount, readWindowCount, readWindowStep, itemCount, iterations, iterationMode),
+                _ => MeasureSqliteScalar8VarIdentityRangeReads(connection, duplicateModulo, keyDistribution, identityLength, lowerKey, upperKey, itemCount, iterations, iterationMode)
+            };
         }
 
         long libraBytes = new FileInfo(libraPath).Length;
@@ -14975,23 +15648,76 @@ internal static partial class RawHarness
         Console.WriteLine($"items {itemCount}");
         Console.WriteLine($"duplicateModulo {duplicateModulo}");
         Console.WriteLine($"identityLength {identityLength}");
+        Console.WriteLine($"writeBatchSize {writeBatchSize}");
         Console.WriteLine($"initialShelfKiB {initialShelfKiB}");
         Console.WriteLine($"fixedIdentityLength {fixedIdentityLength}");
         Console.WriteLine($"includeAttribution {includeAttribution}");
+        Console.WriteLine($"writeTelemetry {writeTelemetry}");
+        Console.WriteLine($"coalesceWrites {coalesceWrites}");
+        Console.WriteLine($"commitGapCoalesceBytes {commitGapCoalesceBytes}");
         Console.WriteLine($"iterationMode {iterationModeText}");
+        Console.WriteLine($"readPattern {readPatternText}");
+        Console.WriteLine($"exhaustiveReadTraversal {exhaustiveReadTraversal}");
+        Console.WriteLine($"scanDescendantRoutesForPrunedReads {scanDescendantRoutesForPrunedReads}");
         Console.WriteLine($"order {order}");
         Console.WriteLine($"keyDistribution {keyDistribution}");
         Console.WriteLine($"rangeKeys {lowerKey}-{upperKey}");
+        Console.WriteLine($"readWindowCount {readWindowCount}");
+        Console.WriteLine($"readWindowStep {readWindowStep}");
         Console.WriteLine($"iterations {iterations}");
         Console.WriteLine($"libraGrowths {libraGrowths}");
         Console.WriteLine($"libraSplits {libraSplits}");
         Console.WriteLine($"libraDuplicateRunOverflows {libraDuplicateRunOverflows}");
+        if (coalesceWrites && includeAttribution)
+        {
+            PrintScalar8VarIdentityDiagnosticPathCounts("libraCoalescedDiagnosticPath", libraCoalescedDiagnosticPathCounts);
+            PrintScalar8VarIdentityKindCounts("libraCoalescedKind", libraCoalescedKindCounts);
+        }
         Console.WriteLine("| row | items/sec | ids/sec | ns/id | readCalls | backingReads | readBytes | cacheArenas | cacheBytes | bytes | bytes/item | checksum |");
         Console.WriteLine("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
         Console.WriteLine(FormattableString.Invariant($"| SV8 routed write/read | {libraWriteItemsPerSecond:F2} | {libraRead.IdentitiesPerSecond:F2} | {libraRead.NsPerIdentity:F2} | {libraRead.ReadTelemetry.ReadCallCount} | {libraRead.ReadTelemetry.BackingReadCallCount} | {libraRead.ReadTelemetry.BytesRead} | {libraRead.RouterArenaCacheCount} | {libraRead.RouterArenaCacheBytes} | {libraBytes} | {(double)libraBytes / itemCount:F2} | {libraRead.Checksum} |"));
         Console.WriteLine(FormattableString.Invariant($"| SQLite write/read | {sqliteWriteItemsPerSecond:F2} | {sqliteRead.IdentitiesPerSecond:F2} | {sqliteRead.NsPerIdentity:F2} | 0 | 0 | 0 | 0 | 0 | {sqliteBytes} | {(double)sqliteBytes / itemCount:F2} | {sqliteRead.Checksum} |"));
         Console.WriteLine($"SV8/SQLite read {FormatMultiplier(libraRead.IdentitiesPerSecond, sqliteRead.IdentitiesPerSecond)}");
         Console.WriteLine($"SV8/SQLite write {FormatMultiplier(libraWriteItemsPerSecond, sqliteWriteItemsPerSecond)}");
+        if (writeTelemetry)
+        {
+            double ticksToMs = 1000d / Stopwatch.Frequency;
+            double ticksToNsPerItem = 1_000_000_000d / Stopwatch.Frequency / itemCount;
+            Console.WriteLine($"libraWriteBatches {libraWriteBatchCount}");
+            Console.WriteLine($"sqliteWriteBatches {sqliteWriteBatchCount}");
+            Console.WriteLine($"libraCommitBytesWritten {libraCommitBytesWritten}");
+            Console.WriteLine($"libraCommitStagedExtents {libraCommitStagedExtents}");
+            Console.WriteLine($"libraCommitStagedSegments {libraCommitStagedSegments}");
+            Console.WriteLine($"libraCommitWriteCalls {libraCommitWriteCalls}");
+            Console.WriteLine($"libraCommitBackingWriteCalls {libraCommitBackingWriteCalls}");
+            Console.WriteLine($"libraCommitKernelElapsedTicks {libraCommitKernelElapsedTicks}");
+            Console.WriteLine($"libraCommitScalar8VarDirtyShelves {libraCommitScalar8VarDirtyShelves}");
+            Console.WriteLine($"libraCommitScalar8VarDirtyShelvesMax {libraCommitScalar8VarDirtyShelvesMax}");
+            Console.WriteLine($"libraCommitDeferredRequests {libraCommitDeferredRequests}");
+            if (coalesceWrites)
+            {
+                double averageLargestFrequency = libraWriteBatchCount == 0
+                    ? 0
+                    : (double)libraCoalescedLargestSameKeyFrequencySum / libraWriteBatchCount;
+                Console.WriteLine($"libraCoalescedSortedBatches {libraCoalescedSortedBatchCount}");
+                Console.WriteLine(FormattableString.Invariant($"libraCoalescedLargestSameKeyFrequencyAvg {averageLargestFrequency:F2}"));
+                Console.WriteLine($"libraCoalescedLargestSameKeyFrequencyMax {libraCoalescedLargestSameKeyFrequencyMax}");
+            }
+
+            Console.WriteLine("| write telemetry | ticks | ms | ns/item | allocated bytes |");
+            Console.WriteLine("|---|---:|---:|---:|---:|");
+            PrintScalar8VarIdentityWriteTelemetryRow("libra prep item array", libraPrepareItemTicks, ticksToMs, ticksToNsPerItem, libraPrepareItemAllocatedBytes);
+            PrintScalar8VarIdentityWriteTelemetryRow("libra prep key", libraPrepareKeyTicks, ticksToMs, ticksToNsPerItem, libraPrepareKeyAllocatedBytes);
+            PrintScalar8VarIdentityWriteTelemetryRow("libra prep identity", libraPrepareIdentityTicks, ticksToMs, ticksToNsPerItem, libraPrepareIdentityAllocatedBytes);
+            PrintScalar8VarIdentityWriteTelemetryRow("libra batch begin", libraBatchBeginTicks, ticksToMs, ticksToNsPerItem, libraBatchBeginAllocatedBytes);
+            PrintScalar8VarIdentityWriteTelemetryRow("libra insert", libraInsertTicks, ticksToMs, ticksToNsPerItem, libraInsertAllocatedBytes);
+            PrintScalar8VarIdentityWriteTelemetryRow("libra commit", libraCommitTicks, ticksToMs, ticksToNsPerItem, libraCommitAllocatedBytes);
+            PrintScalar8VarIdentityWriteTelemetryRow("sqlite prep key", sqlitePrepareKeyTicks, ticksToMs, ticksToNsPerItem, sqlitePrepareKeyAllocatedBytes);
+            PrintScalar8VarIdentityWriteTelemetryRow("sqlite prep identity", sqlitePrepareIdentityTicks, ticksToMs, ticksToNsPerItem, sqlitePrepareIdentityAllocatedBytes);
+            PrintScalar8VarIdentityWriteTelemetryRow("sqlite execute", sqliteExecuteTicks, ticksToMs, ticksToNsPerItem, sqliteExecuteAllocatedBytes);
+            PrintScalar8VarIdentityWriteTelemetryRow("sqlite commit", sqliteCommitTicks, ticksToMs, ticksToNsPerItem, sqliteCommitAllocatedBytes);
+        }
+
         if (includeAttribution)
         {
             double ticksToNsPerItem = 1_000_000_000d / Stopwatch.Frequency / itemCount;
@@ -15011,9 +15737,72 @@ internal static partial class RawHarness
             PrintVarIdentityAttributionRow("stage", libraAttribution.StageTicks, attributedTicks, ticksToNsPerItem);
             PrintVarIdentityAttributionRow("structural", libraAttribution.StructuralTicks, attributedTicks, ticksToNsPerItem);
             PrintVarIdentityAttributionRow("attributed total", attributedTicks, attributedTicks, ticksToNsPerItem);
+            Console.WriteLine("| diagnostic path | count |");
+            Console.WriteLine("|---|---:|");
+            for (int i = 0; i < libraDiagnosticPathCounts.Length; i++)
+            {
+                long count = libraDiagnosticPathCounts[i];
+                if (count == 0)
+                {
+                    continue;
+                }
+
+                string name = Enum.GetName((Scalar8VarIdentityInsertDiagnosticPath)i) ?? i.ToString(CultureInfo.InvariantCulture);
+                Console.WriteLine(FormattableString.Invariant($"| {name} | {count} |"));
+            }
         }
 
         return 0;
+    }
+
+
+    private static void PrintScalar8VarIdentityWriteTelemetryRow(string label, long ticks, double ticksToMs, double ticksToNsPerItem, long allocatedBytes)
+    {
+        Console.WriteLine(FormattableString.Invariant($"| {label} | {ticks} | {ticks * ticksToMs:F3} | {ticks * ticksToNsPerItem:F2} | {allocatedBytes} |"));
+    }
+
+
+    /// <summary>
+    /// Prints nonzero `SV8` insert diagnostic path counters using a stable console prefix.<br/>
+    /// The routed SQLite comparison uses this for coalesced batches where attribution is otherwise unavailable.<br/>
+    /// </summary>
+    /// <param name="prefix">The metric prefix written before each path name.</param>
+    /// <param name="counts">The diagnostic path counters indexed by <see cref="Scalar8VarIdentityInsertDiagnosticPath"/>.</param>
+    private static void PrintScalar8VarIdentityDiagnosticPathCounts(string prefix, long[] counts)
+    {
+        for (int i = 0; i < counts.Length; i++)
+        {
+            long count = counts[i];
+            if (count == 0)
+            {
+                continue;
+            }
+
+            string name = Enum.GetName((Scalar8VarIdentityInsertDiagnosticPath)i) ?? i.ToString(CultureInfo.InvariantCulture);
+            Console.WriteLine(FormattableString.Invariant($"{prefix}.{name} {count}"));
+        }
+    }
+
+
+    /// <summary>
+    /// Prints nonzero `SV8` routed insert kind counters using a stable console prefix.<br/>
+    /// This separates ordinary no-split writes from grow, split, and duplicate-run structural paths in coalesced batches.<br/>
+    /// </summary>
+    /// <param name="prefix">The metric prefix written before each kind name.</param>
+    /// <param name="counts">The routed insert kind counters indexed by <see cref="Scalar8VarIdentityRoutedInsertKind"/>.</param>
+    private static void PrintScalar8VarIdentityKindCounts(string prefix, long[] counts)
+    {
+        for (int i = 0; i < counts.Length; i++)
+        {
+            long count = counts[i];
+            if (count == 0)
+            {
+                continue;
+            }
+
+            string name = Enum.GetName((Scalar8VarIdentityRoutedInsertKind)i) ?? i.ToString(CultureInfo.InvariantCulture);
+            Console.WriteLine(FormattableString.Invariant($"{prefix}.{name} {count}"));
+        }
     }
 
 
@@ -15036,6 +15825,26 @@ internal static partial class RawHarness
 
 
     /// <summary>
+    /// Parses the `SV8` read pattern used by routed SQLite comparison commands.<br/>
+    /// `range` measures a contiguous BETWEEN scan, while `exact-keys` measures one equality probe per generated key so specific-key fanout does not get conflated with range traversal.<br/>
+    /// </summary>
+    /// <param name="value">The command-line mode value.</param>
+    /// <returns>The parsed read pattern.</returns>
+    private static Scalar8VarIdentityReadPattern ParseScalar8VarIdentityReadPattern(string value)
+    {
+        return value.ToLowerInvariant() switch
+        {
+            "range" => Scalar8VarIdentityReadPattern.Range,
+            "exact-keys" => Scalar8VarIdentityReadPattern.ExactKeys,
+            "exactkeys" => Scalar8VarIdentityReadPattern.ExactKeys,
+            "rotating-range" => Scalar8VarIdentityReadPattern.RotatingRange,
+            "rotatingrange" => Scalar8VarIdentityReadPattern.RotatingRange,
+            _ => throw new ArgumentOutOfRangeException(nameof(value), value, "SV8 read pattern must be 'range', 'exact-keys', or 'rotating-range'.")
+        };
+    }
+
+
+    /// <summary>
     /// Builds the SQLite var-identity range-read projection matching the requested iteration payload mode.<br/>
     /// Keeping the projection narrow prevents key-only and identity-only measurements from accidentally timing tuple materialization work.<br/>
     /// </summary>
@@ -15048,6 +15857,23 @@ internal static partial class RawHarness
             VarIdentityIterationMode.Keys => "SELECT k FROM items WHERE k >= $lower AND k <= $upper ORDER BY k, i;",
             VarIdentityIterationMode.Tuples => "SELECT k, i FROM items WHERE k >= $lower AND k <= $upper ORDER BY k, i;",
             _ => "SELECT i FROM items WHERE k >= $lower AND k <= $upper ORDER BY k, i;"
+        };
+    }
+
+
+    /// <summary>
+    /// Builds the SQLite var-identity exact-key read projection matching the requested iteration payload mode.<br/>
+    /// The query uses equality on the primary-key prefix so it mirrors a specific-key identity scoop rather than a contiguous range cursor.<br/>
+    /// </summary>
+    /// <param name="iterationMode">The comparison iteration payload mode.</param>
+    /// <returns>The SQLite command text for the requested projection.</returns>
+    private static string CreateSqliteVarIdentityExactKeyReadCommandText(VarIdentityIterationMode iterationMode)
+    {
+        return iterationMode switch
+        {
+            VarIdentityIterationMode.Keys => "SELECT k FROM items WHERE k = $key ORDER BY i;",
+            VarIdentityIterationMode.Tuples => "SELECT k, i FROM items WHERE k = $key ORDER BY i;",
+            _ => "SELECT i FROM items WHERE k = $key ORDER BY i;"
         };
     }
 
@@ -15251,7 +16077,36 @@ internal static partial class RawHarness
         int expected = CountScalar8VarIdentityKeyRange(itemCount, duplicateModulo, 0, Math.Min(2, duplicateModulo - 1));
         if (identityCount != expected)
         {
-            throw new InvalidDataException($"Routed SV16 range read returned {identityCount}; expected {expected}.");
+            Dictionary<(ulong High, ulong Low), int> returnedKeyCounts = [];
+            while (identitiesReader.MoveNext())
+            {
+                (ulong High, ulong Low) key = (identitiesReader.CurrentEncodedKeyHigh, identitiesReader.CurrentEncodedKeyLow);
+                returnedKeyCounts.TryGetValue(key, out int keyCount);
+                returnedKeyCounts[key] = keyCount + 1;
+            }
+
+            string returnedKeySummary = string.Join(
+                ", ",
+                returnedKeyCounts
+                    .OrderBy(static pair => pair.Key.High)
+                    .ThenBy(static pair => pair.Key.Low)
+                    .Select(static pair => $"{pair.Key.High:X16}:{pair.Key.Low:X16}={pair.Value}"));
+            List<string> exactKeySummaries = [];
+            for (int logicalKey = 0; logicalKey <= Math.Min(2, duplicateModulo - 1); logicalKey++)
+            {
+                CreateScalar16VarIdentityKey(logicalKey, duplicateModulo, keyDistribution, out ulong exactHigh, out ulong exactLow);
+                using Scalar16VarIdentityRangeReader exactReader = reopened.OpenScalar16VarIdentityRangeReader(
+                    rootOffset,
+                    identityLength,
+                    exactHigh,
+                    exactLow,
+                    exactHigh,
+                    exactLow);
+                exactKeySummaries.Add($"{exactHigh:X16}:{exactLow:X16}={exactReader.Count}");
+            }
+
+            throw new InvalidDataException(
+                $"Routed SV16 range read returned {identityCount}; expected {expected}; returned keys: {returnedKeySummary}; exact routes: {string.Join(", ", exactKeySummaries)}.");
         }
 
         bool deletedExact = reopened.DeleteScalar16VarIdentityExactTuple(rootOffset, identityLength, lowerHigh, lowerLow, CreateScalar8VarIdentity(0, identityLength));
@@ -15300,7 +16155,8 @@ internal static partial class RawHarness
         int itemCount = GetIntOption(args, "--items", 512);
         int duplicateModulo = GetIntOption(args, "--duplicate-modulo", 16);
         int identityLength = GetIntOption(args, "--identity-length", 48);
-        if (itemCount <= 0 || duplicateModulo <= 0 || duplicateModulo > 256 || identityLength <= 0 || identityLength > 1024)
+        long readCacheMaxBytes = GetLongOption(args, "--read-cache-max-bytes", 0);
+        if (itemCount <= 0 || duplicateModulo <= 0 || duplicateModulo > 256 || identityLength <= 0 || identityLength > 1024 || readCacheMaxBytes < 0)
         {
             throw new ArgumentOutOfRangeException(nameof(args), "SV16 public API sanity requires positive items, duplicate modulo 1-256, and identity length 1-1024.");
         }
@@ -15318,7 +16174,8 @@ internal static partial class RawHarness
             maxIdentityLength: 1024,
             options: options,
             developerMetadata: CreateDesignPerfMetadata(9179),
-            telemetryOptions: DataKernelTelemetryOptions.EnabledOptions))
+            telemetryOptions: DataKernelTelemetryOptions.EnabledOptions,
+            readCacheMaxBytes: readCacheMaxBytes))
         {
             rootOffset = index.RootRouterOffset;
             using (Scalar16VarIdentityBatch batch = index.BeginBatch(new LibraDexWriteIntent(
@@ -15378,9 +16235,10 @@ internal static partial class RawHarness
             path,
             maxIdentityLength: 1024,
             options: options,
-            telemetryOptions: DataKernelTelemetryOptions.EnabledOptions))
+            telemetryOptions: DataKernelTelemetryOptions.EnabledOptions,
+            readCacheMaxBytes: readCacheMaxBytes))
         {
-            if (reopened.RootRouterOffset != rootOffset || reopened.Name != "sv16-api")
+            if (reopened.RootRouterOffset != rootOffset || reopened.Name != "sv16-api" || reopened.ReadCacheMaxBytes != readCacheMaxBytes)
             {
                 throw new InvalidDataException("Reopened public SV16 index did not preserve root offset and name.");
             }
@@ -15474,6 +16332,16 @@ internal static partial class RawHarness
                 throw new InvalidDataException("Public SV16 identity buffer did not match streaming reader results.");
             }
 
+            (int cacheEntryCount, long cachedBytes, long configuredMaxBytes) =
+                reopened.Session.GetScalar16VarIdentityReadCacheStatsForValidation(reopened.RootRouterOffset);
+            if (configuredMaxBytes != readCacheMaxBytes ||
+                (readCacheMaxBytes > 0 && cachedBytes > readCacheMaxBytes) ||
+                cacheEntryCount < 0)
+            {
+                throw new InvalidDataException(
+                    $"Public SV16 per-index read-cache policy failed. entries={cacheEntryCount} bytes={cachedBytes} configured={configuredMaxBytes} expected={readCacheMaxBytes}.");
+            }
+
             if (!reopened.DeleteExactTuple(lowerHigh, lowerLow, CreateScalar8VarIdentity(0, identityLength)))
             {
                 throw new InvalidDataException("Internal SV16 exact tuple delete did not remove the expected tuple.");
@@ -15496,7 +16364,8 @@ internal static partial class RawHarness
             path,
             maxIdentityLength: 1024,
             options: options,
-            telemetryOptions: DataKernelTelemetryOptions.EnabledOptions))
+            telemetryOptions: DataKernelTelemetryOptions.EnabledOptions,
+            readCacheMaxBytes: readCacheMaxBytes))
         {
             if (openedAgain.RootRouterOffset != rootOffset)
             {
@@ -15504,7 +16373,7 @@ internal static partial class RawHarness
             }
         }
 
-        Console.WriteLine($"sv16-index-api-sanity ok path={path} root={rootOffset} items={itemCount} duplicateModulo={duplicateModulo} identityLength={identityLength} lazyCreates={lazyRouteCreates} deferredCommits={deferredCommitRequests} rangeCount={expected} checksum={checksum}");
+        Console.WriteLine($"sv16-index-api-sanity ok path={path} root={rootOffset} items={itemCount} duplicateModulo={duplicateModulo} identityLength={identityLength} readCacheMaxBytes={readCacheMaxBytes} lazyCreates={lazyRouteCreates} deferredCommits={deferredCommitRequests} rangeCount={expected} checksum={checksum}");
         return 0;
     }
 
@@ -18357,9 +19226,9 @@ internal static partial class RawHarness
 
 
     /// <summary>
-    /// Validates that a full `VS8` shelf with a long shared raw-key prefix transforms into one multi-byte child router instead of an appended one-byte router chain.<br/>
-    /// The command forces all inserted keys through a single root route, keeps several deeper key bytes identical, verifies the transformed child router consumes multiple bytes, then reopens and range-reads every inserted identity.<br/>
-    /// This is the first correctness guard for route-limited multi-byte router prefixes before performance comparison work.<br/>
+    /// Validates that a full `VS8` shelf with a long shared raw-key prefix transforms into an exact-stem expanded router chain.<br/>
+    /// The command name is retained for harness compatibility, but live transforms no longer persist compressed nearest-route stems because later stem rollover can violate ordered shelf ownership.<br/>
+    /// The proof forces all inserted keys through one root route, validates the first expanded chain router, then reopens and range-reads every inserted identity through the production hop budget.<br/>
     /// </summary>
     /// <param name="args">The harness command-line arguments.</param>
     /// <returns>Zero when the multi-byte transform, reopen, and range read validate.</returns>
@@ -18390,7 +19259,7 @@ internal static partial class RawHarness
             for (int i = 0; i < itemCount; i++)
             {
                 byte[] key = CreateVarKeyScalar8LongSharedPrefixKey(i, keyLength, sharedPrefixLength);
-                VarKeyScalar8RoutedInsertResult result = session.InsertWalkedRoutedVarKeyScalar8(rootOffset, maxKeyLength: 1024, key, CreateVarKeyScalar8Identity(i), allowDuplicateKeys: true, maxRouterHops: 8);
+                VarKeyScalar8RoutedInsertResult result = session.InsertWalkedRoutedVarKeyScalar8(rootOffset, maxKeyLength: 1024, key, CreateVarKeyScalar8Identity(i), allowDuplicateKeys: true, maxRouterHops: LibraDexFileSession.DefaultVarKeyScalar8MaxRouterHops);
                 if (result.InsertResult != VarKeyScalar8InsertResult.Inserted)
                 {
                     throw new InvalidDataException($"Expected VS8 mb-router insert {i}, got {result.Kind}/{result.InsertResult}.");
@@ -18416,9 +19285,9 @@ internal static partial class RawHarness
             byte[] childRouterBytes = new byte[RouterLayout.Size];
             session.ReadRouterPageForRangeScan(childRouterOffset, childRouterBytes);
             RouterReader childReader = new(childRouterBytes);
-            if (!childReader.IsValid || childReader.HasDirectIndex || childReader.PrefixByteCount <= 1 || childReader.RouteCount != 2)
+            if (!childReader.IsValid || !childReader.HasDirectIndex || childReader.PrefixByteCount != 1 || childReader.RouteCount != RouterLayout.MaxOneByteRouteCount)
             {
-                throw new InvalidDataException($"Expected transformed VS8 child to be a two-route multi-byte router, got valid={childReader.IsValid} direct={childReader.HasDirectIndex} prefixBytes={childReader.PrefixByteCount} routes={childReader.RouteCount}.");
+                throw new InvalidDataException($"Expected transformed VS8 child to be an expanded exact-stem router, got valid={childReader.IsValid} direct={childReader.HasDirectIndex} prefixBytes={childReader.PrefixByteCount} routes={childReader.RouteCount}.");
             }
         }
 
@@ -18441,7 +19310,7 @@ internal static partial class RawHarness
                 checksum += unchecked((long)identities[i]);
             }
 
-            Console.WriteLine("vs8 mb-router transform sanity");
+            Console.WriteLine("vs8 historical mb-router command: exact-stem expanded-chain sanity");
             Console.WriteLine($"path {path}");
             Console.WriteLine($"rootOffset {rootOffset}");
             Console.WriteLine($"childRouterOffset {childRouterOffset}");
@@ -18836,7 +19705,7 @@ internal static partial class RawHarness
                         earlySegmentWatch.Stop();
                         earlyPreTriggerInsertElapsed = earlySegmentWatch.Elapsed;
                         Stopwatch earlyCommitWatch = Stopwatch.StartNew();
-                        (earlyPreTriggerCommitTelemetry, _) = durabilityBatch.Commit();
+                        (earlyPreTriggerCommitTelemetry, _, _) = durabilityBatch.Commit();
                         earlyCommitWatch.Stop();
                         earlyPreTriggerCommitElapsed = earlyCommitWatch.Elapsed;
                         durabilityBatch.Dispose();
@@ -18876,7 +19745,7 @@ internal static partial class RawHarness
                             }
 
                             phaseWatch.Restart();
-                            (earlyOptimizeCommitTelemetry, _) = optimizeBatch.Commit();
+                            (earlyOptimizeCommitTelemetry, _, _) = optimizeBatch.Commit();
                             phaseWatch.Stop();
                             earlyOptimizeCommitElapsed = phaseWatch.Elapsed;
                         }
@@ -18892,7 +19761,7 @@ internal static partial class RawHarness
                 earlySegmentWatch.Stop();
                 earlyPostTriggerInsertElapsed = earlySegmentWatch.Elapsed;
                 Stopwatch finalCommitWatch = Stopwatch.StartNew();
-                (earlyPostTriggerCommitTelemetry, _) = durabilityBatch.Commit();
+                (earlyPostTriggerCommitTelemetry, _, _) = durabilityBatch.Commit();
                 finalCommitWatch.Stop();
                 earlyPostTriggerCommitElapsed = finalCommitWatch.Elapsed;
             }
@@ -19373,7 +20242,7 @@ internal static partial class RawHarness
                         earlySegmentWatch.Stop();
                         earlyPreTriggerInsertElapsed = earlySegmentWatch.Elapsed;
                         Stopwatch earlyCommitWatch = Stopwatch.StartNew();
-                        (earlyPreTriggerCommitTelemetry, _) = durabilityBatch.Commit();
+                        (earlyPreTriggerCommitTelemetry, _, _) = durabilityBatch.Commit();
                         earlyCommitWatch.Stop();
                         earlyPreTriggerCommitElapsed = earlyCommitWatch.Elapsed;
                         durabilityBatch.Dispose();
@@ -19413,7 +20282,7 @@ internal static partial class RawHarness
                             }
 
                             phaseWatch.Restart();
-                            (earlyOptimizeCommitTelemetry, _) = optimizeBatch.Commit();
+                            (earlyOptimizeCommitTelemetry, _, _) = optimizeBatch.Commit();
                             phaseWatch.Stop();
                             earlyOptimizeCommitElapsed = phaseWatch.Elapsed;
                         }
@@ -19429,7 +20298,7 @@ internal static partial class RawHarness
                 earlySegmentWatch.Stop();
                 earlyPostTriggerInsertElapsed = earlySegmentWatch.Elapsed;
                 Stopwatch finalCommitWatch = Stopwatch.StartNew();
-                (earlyPostTriggerCommitTelemetry, _) = durabilityBatch.Commit();
+                (earlyPostTriggerCommitTelemetry, _, _) = durabilityBatch.Commit();
                 finalCommitWatch.Stop();
                 earlyPostTriggerCommitElapsed = finalCommitWatch.Elapsed;
             }
@@ -21740,7 +22609,7 @@ internal static partial class RawHarness
         int prefixCount = GetIntOption(args, "--prefix-count", 16);
         int repeatCount = GetIntOption(args, "--repeat-count", 1);
         int commitGapCoalesceBytes = GetIntOption(args, "--commit-gap-coalesce-bytes", DefaultScalar16Scalar16RoutedBulkWriteCommitGapCoalesceBytes);
-        int shelfExtentSize = GetIntOption(args, "--shelf-size", Scalar16Scalar16Profile.Default32KiB.ShelfExtentSize);
+        int shelfExtentSize = GetIntOption(args, "--shelf-size", Scalar16Scalar16Profile.Default24KiB.ShelfExtentSize);
         bool includeAttribution = GetBoolOption(args, "--include-attribution", false);
         if (batches <= 0 || warmupBatches < 0 || itemsPerBatch <= 0)
         {
@@ -22458,6 +23327,12 @@ internal static partial class RawHarness
         int repeatCount = GetIntOption(args, "--repeat-count", 3);
         int scalar8Scalar8CommitGapCoalesceBytes = GetIntOption(args, "--ss8-8-commit-gap-coalesce-bytes", 512);
         int wideCommitGapCoalesceBytes = GetIntOption(args, "--wide-commit-gap-coalesce-bytes", 16 * 1024);
+        int scalar8Scalar8ShelfSize = GetIntOption(args, "--ss8-8-shelf-size", Scalar8Scalar8Profile.Default32KiB.ShelfExtentSize);
+        int scalar16Scalar8ShelfSize = GetIntOption(args, "--ss16-8-shelf-size", Scalar16Scalar8Profile.Default32KiB.ShelfExtentSize);
+        int scalar8Scalar16ShelfSize = GetIntOption(args, "--ss8-16-shelf-size", Scalar8Scalar16Profile.Default32KiB.ShelfExtentSize);
+        int scalar16Scalar16ShelfSize = GetIntOption(args, "--ss16-16-shelf-size", Scalar16Scalar16Profile.Default24KiB.ShelfExtentSize);
+        int fixed32Scalar8ShelfSize = GetIntOption(args, "--fs32-8-shelf-size", Fixed32Scalar8Profile.Default40KiB.ShelfExtentSize);
+        int fixed32Scalar16ShelfSize = GetIntOption(args, "--fs32-16-shelf-size", Fixed32Scalar16Profile.Default40KiB.ShelfExtentSize);
         string journalMode = GetOption(args, "--journal-mode", "wal");
         string synchronous = GetOption(args, "--synchronous", "normal");
         if (batches <= 0 || warmupBatches < 0 || itemsPerBatch <= 0 || repeatCount <= 0)
@@ -22483,6 +23358,12 @@ internal static partial class RawHarness
         DataKernelOptions scalar8Scalar8Options = CreateDesignPerfOptions(scalar8Scalar8CommitGapCoalesceBytes);
         DataKernelOptions wideOptions = CreateDesignPerfOptions(wideCommitGapCoalesceBytes);
         SqliteScalar8Scalar8Options sqliteOptions = new(journalMode, synchronous);
+        Scalar8Scalar8Profile scalar8Scalar8Profile = Scalar8Scalar8Profile.FromSupportedShelfExtentSize(scalar8Scalar8ShelfSize);
+        Scalar16Scalar8Profile scalar16Scalar8Profile = Scalar16Scalar8Profile.Create(scalar16Scalar8ShelfSize);
+        Scalar8Scalar16Profile scalar8Scalar16Profile = Scalar8Scalar16Profile.Create(scalar8Scalar16ShelfSize);
+        Scalar16Scalar16Profile scalar16Scalar16Profile = Scalar16Scalar16Profile.Create(scalar16Scalar16ShelfSize);
+        Fixed32Scalar8Profile fixed32Scalar8Profile = Fixed32Scalar8Profile.Create(fixed32Scalar8ShelfSize);
+        Fixed32Scalar16Profile fixed32Scalar16Profile = Fixed32Scalar16Profile.Create(fixed32Scalar16ShelfSize);
 
         AllShapeWriteParityRow[] rows =
         [
@@ -22490,84 +23371,84 @@ internal static partial class RawHarness
                 "SS8-8",
                 "sorted",
                 16,
-                MeasureRepeatedScalar8Scalar8RoutedBulkWrite(Path.Combine(directory, "libra-ss8-8-sorted.lbdx"), "libra ss8-8 sorted", batches, warmupBatches, itemsPerBatch, prefixCount, sortedOrder, scalar8Scalar8Options, repeatCount, Scalar8Scalar8Profile.Default32KiB),
+                MeasureRepeatedScalar8Scalar8RoutedBulkWrite(Path.Combine(directory, "libra-ss8-8-sorted.lbdx"), "libra ss8-8 sorted", batches, warmupBatches, itemsPerBatch, prefixCount, sortedOrder, scalar8Scalar8Options, repeatCount, scalar8Scalar8Profile),
                 MeasureRepeatedSqliteScalar8Scalar8Write(Path.Combine(directory, "sqlite-ss8-8-sorted.db"), "sqlite ss8-8 sorted", batches, warmupBatches, itemsPerBatch, prefixCount, sortedOrder, sqliteOptions, repeatCount),
                 MeasureRepeatedDataKernelPayloadStreamWriteParity(Path.Combine(directory, "raw-ss8-8-sorted.lbdx"), "raw dk ss8-8 sorted", batches, warmupBatches, itemsPerBatch, 16, sortedOrder, scalar8Scalar8Options, repeatCount)),
             new(
                 "SS8-8",
                 "random",
                 16,
-                MeasureRepeatedScalar8Scalar8RoutedBulkWrite(Path.Combine(directory, "libra-ss8-8-random.lbdx"), "libra ss8-8 random", batches, warmupBatches, itemsPerBatch, prefixCount, randomOrder, scalar8Scalar8Options, repeatCount, Scalar8Scalar8Profile.Default32KiB),
+                MeasureRepeatedScalar8Scalar8RoutedBulkWrite(Path.Combine(directory, "libra-ss8-8-random.lbdx"), "libra ss8-8 random", batches, warmupBatches, itemsPerBatch, prefixCount, randomOrder, scalar8Scalar8Options, repeatCount, scalar8Scalar8Profile),
                 MeasureRepeatedSqliteScalar8Scalar8Write(Path.Combine(directory, "sqlite-ss8-8-random.db"), "sqlite ss8-8 random", batches, warmupBatches, itemsPerBatch, prefixCount, randomOrder, sqliteOptions, repeatCount),
                 MeasureRepeatedDataKernelPayloadStreamWriteParity(Path.Combine(directory, "raw-ss8-8-random.lbdx"), "raw dk ss8-8 random", batches, warmupBatches, itemsPerBatch, 16, randomOrder, scalar8Scalar8Options, repeatCount)),
             new(
                 "SS16-8",
                 "sorted",
                 24,
-                MeasureRepeatedScalar16Scalar8RoutedBulkWrite(Path.Combine(directory, "libra-ss16-8-sorted.lbdx"), "libra ss16-8 sorted", batches, warmupBatches, itemsPerBatch, prefixCount, sortedOrder, wideOptions, repeatCount, Scalar16Scalar8Profile.Default32KiB, includeAttribution: false),
+                MeasureRepeatedScalar16Scalar8RoutedBulkWrite(Path.Combine(directory, "libra-ss16-8-sorted.lbdx"), "libra ss16-8 sorted", batches, warmupBatches, itemsPerBatch, prefixCount, sortedOrder, wideOptions, repeatCount, scalar16Scalar8Profile, includeAttribution: false),
                 MeasureRepeatedSqliteScalar16Scalar8BlobWrite(Path.Combine(directory, "sqlite-ss16-8-sorted.db"), "sqlite ss16-8 sorted", batches, warmupBatches, itemsPerBatch, prefixCount, sortedOrder, sqliteOptions, repeatCount),
                 MeasureRepeatedDataKernelPayloadStreamWriteParity(Path.Combine(directory, "raw-ss16-8-sorted.lbdx"), "raw dk ss16-8 sorted", batches, warmupBatches, itemsPerBatch, 24, sortedOrder, wideOptions, repeatCount)),
             new(
                 "SS16-8",
                 "random",
                 24,
-                MeasureRepeatedScalar16Scalar8RoutedBulkWrite(Path.Combine(directory, "libra-ss16-8-random.lbdx"), "libra ss16-8 random", batches, warmupBatches, itemsPerBatch, prefixCount, randomOrder, wideOptions, repeatCount, Scalar16Scalar8Profile.Default32KiB, includeAttribution: false),
+                MeasureRepeatedScalar16Scalar8RoutedBulkWrite(Path.Combine(directory, "libra-ss16-8-random.lbdx"), "libra ss16-8 random", batches, warmupBatches, itemsPerBatch, prefixCount, randomOrder, wideOptions, repeatCount, scalar16Scalar8Profile, includeAttribution: false),
                 MeasureRepeatedSqliteScalar16Scalar8BlobWrite(Path.Combine(directory, "sqlite-ss16-8-random.db"), "sqlite ss16-8 random", batches, warmupBatches, itemsPerBatch, prefixCount, randomOrder, sqliteOptions, repeatCount),
                 MeasureRepeatedDataKernelPayloadStreamWriteParity(Path.Combine(directory, "raw-ss16-8-random.lbdx"), "raw dk ss16-8 random", batches, warmupBatches, itemsPerBatch, 24, randomOrder, wideOptions, repeatCount)),
             new(
                 "SS8-16",
                 "sorted",
                 24,
-                MeasureRepeatedScalar8Scalar16RoutedBulkWrite(Path.Combine(directory, "libra-ss8-16-sorted.lbdx"), "libra ss8-16 sorted", batches, warmupBatches, itemsPerBatch, prefixCount, sortedOrder, wideOptions, repeatCount, Scalar8Scalar16Profile.Default32KiB, includeAttribution: false),
+                MeasureRepeatedScalar8Scalar16RoutedBulkWrite(Path.Combine(directory, "libra-ss8-16-sorted.lbdx"), "libra ss8-16 sorted", batches, warmupBatches, itemsPerBatch, prefixCount, sortedOrder, wideOptions, repeatCount, scalar8Scalar16Profile, includeAttribution: false),
                 MeasureRepeatedSqliteScalar8Scalar16BlobWrite(Path.Combine(directory, "sqlite-ss8-16-sorted.db"), "sqlite ss8-16 sorted", batches, warmupBatches, itemsPerBatch, prefixCount, sortedOrder, sqliteOptions, repeatCount),
                 MeasureRepeatedDataKernelPayloadStreamWriteParity(Path.Combine(directory, "raw-ss8-16-sorted.lbdx"), "raw dk ss8-16 sorted", batches, warmupBatches, itemsPerBatch, 24, sortedOrder, wideOptions, repeatCount)),
             new(
                 "SS8-16",
                 "random",
                 24,
-                MeasureRepeatedScalar8Scalar16RoutedBulkWrite(Path.Combine(directory, "libra-ss8-16-random.lbdx"), "libra ss8-16 random", batches, warmupBatches, itemsPerBatch, prefixCount, randomOrder, wideOptions, repeatCount, Scalar8Scalar16Profile.Default32KiB, includeAttribution: false),
+                MeasureRepeatedScalar8Scalar16RoutedBulkWrite(Path.Combine(directory, "libra-ss8-16-random.lbdx"), "libra ss8-16 random", batches, warmupBatches, itemsPerBatch, prefixCount, randomOrder, wideOptions, repeatCount, scalar8Scalar16Profile, includeAttribution: false),
                 MeasureRepeatedSqliteScalar8Scalar16BlobWrite(Path.Combine(directory, "sqlite-ss8-16-random.db"), "sqlite ss8-16 random", batches, warmupBatches, itemsPerBatch, prefixCount, randomOrder, sqliteOptions, repeatCount),
                 MeasureRepeatedDataKernelPayloadStreamWriteParity(Path.Combine(directory, "raw-ss8-16-random.lbdx"), "raw dk ss8-16 random", batches, warmupBatches, itemsPerBatch, 24, randomOrder, wideOptions, repeatCount)),
             new(
                 "SS16-16",
                 "sorted",
                 32,
-                MeasureRepeatedScalar16Scalar16RoutedBulkWrite(Path.Combine(directory, "libra-ss16-16-sorted.lbdx"), "libra ss16-16 sorted", batches, warmupBatches, itemsPerBatch, prefixCount, sortedOrder, wideOptions, repeatCount, Scalar16Scalar16Profile.Default32KiB, includeAttribution: false),
+                MeasureRepeatedScalar16Scalar16RoutedBulkWrite(Path.Combine(directory, "libra-ss16-16-sorted.lbdx"), "libra ss16-16 sorted", batches, warmupBatches, itemsPerBatch, prefixCount, sortedOrder, wideOptions, repeatCount, scalar16Scalar16Profile, includeAttribution: false),
                 MeasureRepeatedSqliteScalar16Scalar16BlobWrite(Path.Combine(directory, "sqlite-ss16-16-sorted.db"), "sqlite ss16-16 sorted", batches, warmupBatches, itemsPerBatch, prefixCount, sortedOrder, sqliteOptions, repeatCount),
                 MeasureRepeatedDataKernelPayloadStreamWriteParity(Path.Combine(directory, "raw-ss16-16-sorted.lbdx"), "raw dk ss16-16 sorted", batches, warmupBatches, itemsPerBatch, 32, sortedOrder, wideOptions, repeatCount)),
             new(
                 "SS16-16",
                 "random",
                 32,
-                MeasureRepeatedScalar16Scalar16RoutedBulkWrite(Path.Combine(directory, "libra-ss16-16-random.lbdx"), "libra ss16-16 random", batches, warmupBatches, itemsPerBatch, prefixCount, randomOrder, wideOptions, repeatCount, Scalar16Scalar16Profile.Default32KiB, includeAttribution: false),
+                MeasureRepeatedScalar16Scalar16RoutedBulkWrite(Path.Combine(directory, "libra-ss16-16-random.lbdx"), "libra ss16-16 random", batches, warmupBatches, itemsPerBatch, prefixCount, randomOrder, wideOptions, repeatCount, scalar16Scalar16Profile, includeAttribution: false),
                 MeasureRepeatedSqliteScalar16Scalar16BlobWrite(Path.Combine(directory, "sqlite-ss16-16-random.db"), "sqlite ss16-16 random", batches, warmupBatches, itemsPerBatch, prefixCount, randomOrder, sqliteOptions, repeatCount),
                 MeasureRepeatedDataKernelPayloadStreamWriteParity(Path.Combine(directory, "raw-ss16-16-random.lbdx"), "raw dk ss16-16 random", batches, warmupBatches, itemsPerBatch, 32, randomOrder, wideOptions, repeatCount)),
             new(
                 "FS32-8",
                 "sorted",
                 40,
-                MeasureRepeatedFixed32Scalar8RoutedBulkWrite(Path.Combine(directory, "libra-fs32-8-sorted.lbdx"), "libra fs32-8 sorted", batches, warmupBatches, itemsPerBatch, prefixCount, sortedOrder, wideOptions, repeatCount, Fixed32Scalar8Profile.Default64KiB, includeAttribution: false),
+                MeasureRepeatedFixed32Scalar8RoutedBulkWrite(Path.Combine(directory, "libra-fs32-8-sorted.lbdx"), "libra fs32-8 sorted", batches, warmupBatches, itemsPerBatch, prefixCount, sortedOrder, wideOptions, repeatCount, fixed32Scalar8Profile, includeAttribution: false),
                 MeasureRepeatedSqliteFixed32Scalar8BlobWrite(Path.Combine(directory, "sqlite-fs32-8-sorted.db"), "sqlite fs32-8 sorted", batches, warmupBatches, itemsPerBatch, prefixCount, sortedOrder, sqliteOptions, repeatCount),
                 MeasureRepeatedDataKernelPayloadStreamWriteParity(Path.Combine(directory, "raw-fs32-8-sorted.lbdx"), "raw dk fs32-8 sorted", batches, warmupBatches, itemsPerBatch, 40, sortedOrder, wideOptions, repeatCount)),
             new(
                 "FS32-8",
                 "random",
                 40,
-                MeasureRepeatedFixed32Scalar8RoutedBulkWrite(Path.Combine(directory, "libra-fs32-8-random.lbdx"), "libra fs32-8 random", batches, warmupBatches, itemsPerBatch, prefixCount, randomOrder, wideOptions, repeatCount, Fixed32Scalar8Profile.Default64KiB, includeAttribution: false),
+                MeasureRepeatedFixed32Scalar8RoutedBulkWrite(Path.Combine(directory, "libra-fs32-8-random.lbdx"), "libra fs32-8 random", batches, warmupBatches, itemsPerBatch, prefixCount, randomOrder, wideOptions, repeatCount, fixed32Scalar8Profile, includeAttribution: false),
                 MeasureRepeatedSqliteFixed32Scalar8BlobWrite(Path.Combine(directory, "sqlite-fs32-8-random.db"), "sqlite fs32-8 random", batches, warmupBatches, itemsPerBatch, prefixCount, randomOrder, sqliteOptions, repeatCount),
                 MeasureRepeatedDataKernelPayloadStreamWriteParity(Path.Combine(directory, "raw-fs32-8-random.lbdx"), "raw dk fs32-8 random", batches, warmupBatches, itemsPerBatch, 40, randomOrder, wideOptions, repeatCount)),
             new(
                 "FS32-16",
                 "sorted",
                 48,
-                MeasureRepeatedFixed32Scalar16RoutedBulkWrite(Path.Combine(directory, "libra-fs32-16-sorted.lbdx"), "libra fs32-16 sorted", batches, warmupBatches, itemsPerBatch, prefixCount, sortedOrder, wideOptions, repeatCount, Fixed32Scalar16Profile.Default64KiB, includeAttribution: false),
+                MeasureRepeatedFixed32Scalar16RoutedBulkWrite(Path.Combine(directory, "libra-fs32-16-sorted.lbdx"), "libra fs32-16 sorted", batches, warmupBatches, itemsPerBatch, prefixCount, sortedOrder, wideOptions, repeatCount, fixed32Scalar16Profile, includeAttribution: false),
                 MeasureRepeatedSqliteFixed32Scalar16BlobWrite(Path.Combine(directory, "sqlite-fs32-16-sorted.db"), "sqlite fs32-16 sorted", batches, warmupBatches, itemsPerBatch, prefixCount, sortedOrder, sqliteOptions, repeatCount),
                 MeasureRepeatedDataKernelPayloadStreamWriteParity(Path.Combine(directory, "raw-fs32-16-sorted.lbdx"), "raw dk fs32-16 sorted", batches, warmupBatches, itemsPerBatch, 48, sortedOrder, wideOptions, repeatCount)),
             new(
                 "FS32-16",
                 "random",
                 48,
-                MeasureRepeatedFixed32Scalar16RoutedBulkWrite(Path.Combine(directory, "libra-fs32-16-random.lbdx"), "libra fs32-16 random", batches, warmupBatches, itemsPerBatch, prefixCount, randomOrder, wideOptions, repeatCount, Fixed32Scalar16Profile.Default64KiB, includeAttribution: false),
+                MeasureRepeatedFixed32Scalar16RoutedBulkWrite(Path.Combine(directory, "libra-fs32-16-random.lbdx"), "libra fs32-16 random", batches, warmupBatches, itemsPerBatch, prefixCount, randomOrder, wideOptions, repeatCount, fixed32Scalar16Profile, includeAttribution: false),
                 MeasureRepeatedSqliteFixed32Scalar16BlobWrite(Path.Combine(directory, "sqlite-fs32-16-random.db"), "sqlite fs32-16 random", batches, warmupBatches, itemsPerBatch, prefixCount, randomOrder, sqliteOptions, repeatCount),
                 MeasureRepeatedDataKernelPayloadStreamWriteParity(Path.Combine(directory, "raw-fs32-16-random.lbdx"), "raw dk fs32-16 random", batches, warmupBatches, itemsPerBatch, 48, randomOrder, wideOptions, repeatCount))
         ];
@@ -22581,6 +23462,12 @@ internal static partial class RawHarness
             repeatCount,
             scalar8Scalar8CommitGapCoalesceBytes,
             wideCommitGapCoalesceBytes,
+            scalar8Scalar8Profile,
+            scalar16Scalar8Profile,
+            scalar8Scalar16Profile,
+            scalar16Scalar16Profile,
+            fixed32Scalar8Profile,
+            fixed32Scalar16Profile,
             sqliteOptions,
             rows);
 
@@ -22592,6 +23479,12 @@ internal static partial class RawHarness
         Console.WriteLine($"repeatCount {repeatCount:N0}");
         Console.WriteLine($"ss8-8CommitGapCoalesceBytes {scalar8Scalar8CommitGapCoalesceBytes:N0}");
         Console.WriteLine($"wideCommitGapCoalesceBytes {wideCommitGapCoalesceBytes:N0}");
+        Console.WriteLine($"ss8-8ShelfSize {scalar8Scalar8Profile.ShelfExtentSize:N0}");
+        Console.WriteLine($"ss16-8ShelfSize {scalar16Scalar8Profile.ShelfExtentSize:N0}");
+        Console.WriteLine($"ss8-16ShelfSize {scalar8Scalar16Profile.ShelfExtentSize:N0}");
+        Console.WriteLine($"ss16-16ShelfSize {scalar16Scalar16Profile.ShelfExtentSize:N0}");
+        Console.WriteLine($"fs32-8ShelfSize {fixed32Scalar8Profile.ShelfExtentSize:N0}");
+        Console.WriteLine($"fs32-16ShelfSize {fixed32Scalar16Profile.ShelfExtentSize:N0}");
         Console.WriteLine($"journalMode {journalMode}");
         Console.WriteLine($"synchronous {synchronous}");
         PrintAllShapeWriteParityResults(rows);
@@ -22632,7 +23525,7 @@ internal static partial class RawHarness
         Directory.CreateDirectory(artifactDirectory);
         string libraPath = Path.Combine(directory, "fs32-8-read.lbdx");
         File.Delete(libraPath);
-        Fixed32Scalar8Profile profile = Fixed32Scalar8Profile.Default64KiB;
+        Fixed32Scalar8Profile profile = Fixed32Scalar8Profile.Default40KiB;
         DataKernelOptions libraOptions = CreateDesignPerfOptions(commitGapCoalesceBytes);
         int[] sortedOrder = CreateScalar8Scalar8OrderVector(itemsPerBatch, Scalar8Scalar8InsertOrder.Sorted);
         long rootOffset;
@@ -22811,6 +23704,115 @@ internal static partial class RawHarness
 
 
     /// <summary>
+    /// Sweeps `FS32-16` shelf sizes across routed bulk-write and routed range-read workloads.<br/>
+    /// The command mirrors `fs32-8-size-sweep` so fixed-32 key behavior can be compared across scalar-8 and scalar-16 identity lanes with the same cadence.<br/>
+    /// </summary>
+    /// <param name="args">The harness command-line arguments.</param>
+    /// <returns>Zero when the size sweep report is written.</returns>
+    private static int RunFixed32Scalar16SizeSweep(string[] args)
+    {
+        int[] shelfSizes = ParseIntList(GetOption(args, "--shelf-sizes", "32768,40960,49152,57344,65536"));
+        string directory = GetOption(args, "--directory", Path.Combine(@"T:\LibraDex", "FS32-16SizeSweep"));
+        string artifactDirectory = GetOption(args, "--artifact-directory", Path.Combine("artifacts", "perf-runs"));
+        int batches = GetIntOption(args, "--batches", 100);
+        int warmupBatches = GetIntOption(args, "--warmup-batches", 5);
+        int itemsPerBatch = GetIntOption(args, "--items-per-batch", 1024);
+        int prefixCount = GetIntOption(args, "--prefix-count", 16);
+        int readIterations = GetIntOption(args, "--read-iterations", 100);
+        int repeatCount = GetIntOption(args, "--repeat-count", 3);
+        int commitGapCoalesceBytes = GetIntOption(args, "--commit-gap-coalesce-bytes", 16 * 1024);
+        if (shelfSizes.Length == 0 || batches <= 0 || warmupBatches < 0 || itemsPerBatch <= 0 || prefixCount <= 0 || prefixCount > 256 || readIterations <= 0 || repeatCount <= 0 || commitGapCoalesceBytes < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(args), "FS32-16 size-sweep requires shelf sizes, positive write/read settings, prefix count 1-256, and non-negative coalescing bytes.");
+        }
+
+        Directory.CreateDirectory(directory);
+        Directory.CreateDirectory(artifactDirectory);
+        int[] sortedOrder = CreateScalar8Scalar8OrderVector(itemsPerBatch, Scalar8Scalar8InsertOrder.Sorted);
+        int[] randomOrder = CreateScalar8Scalar8OrderVector(itemsPerBatch, Scalar8Scalar8InsertOrder.Random);
+        int itemsPerPrefix = (itemsPerBatch + prefixCount - 1) / prefixCount;
+        int crossUpperPrefix = Math.Min(2, prefixCount - 1);
+        int maxRangeCount = Math.Max(batches * itemsPerPrefix, batches * itemsPerPrefix * (crossUpperPrefix + 1));
+        ulong[] identities = new ulong[maxRangeCount];
+        DataKernelOptions options = CreateDesignPerfOptions(commitGapCoalesceBytes);
+        Fixed32Scalar16SizeSweepRow[] rows = new Fixed32Scalar16SizeSweepRow[shelfSizes.Length];
+
+        for (int i = 0; i < shelfSizes.Length; i++)
+        {
+            Fixed32Scalar16Profile profile = Fixed32Scalar16Profile.Create(shelfSizes[i]);
+            string profileDirectory = Path.Combine(directory, profile.ShelfExtentSize.ToString(CultureInfo.InvariantCulture));
+            Directory.CreateDirectory(profileDirectory);
+            Scalar8Scalar8RoutedBulkWriteResult sortedWrite = MeasureRepeatedFixed32Scalar16RoutedBulkWrite(
+                Path.Combine(profileDirectory, "fs32-16-sorted.lbdx"),
+                "fs32-16 sorted",
+                batches,
+                warmupBatches,
+                itemsPerBatch,
+                prefixCount,
+                sortedOrder,
+                options,
+                repeatCount,
+                profile,
+                includeAttribution: false);
+            Scalar8Scalar8RoutedBulkWriteResult randomWrite = MeasureRepeatedFixed32Scalar16RoutedBulkWrite(
+                Path.Combine(profileDirectory, "fs32-16-random.lbdx"),
+                "fs32-16 random",
+                batches,
+                warmupBatches,
+                itemsPerBatch,
+                prefixCount,
+                randomOrder,
+                options,
+                repeatCount,
+                profile,
+                includeAttribution: false);
+
+            string readPath = Path.Combine(profileDirectory, "fs32-16-read.lbdx");
+            File.Delete(readPath);
+            long rootOffset;
+            using (LibraDexFileSession created = LibraDexFileSession.Initialize(readPath, options, CreateDesignPerfMetadata(32162), DataKernelTelemetryOptions.EnabledOptions))
+            {
+                (RouterSnapshot root, _) = created.CreateRootRouterIndex(CreateHarnessSlot(0, "f3216swp", 0));
+                rootOffset = root.Offset;
+                _ = RunFixed32Scalar16RoutedBulkWriteLoop(created, rootOffset, batches, itemsPerBatch, prefixCount, sortedOrder, batchOffset: 0, profile, includeAttribution: false);
+            }
+
+            Fixed32Scalar16ReadParityResult prefix0Read;
+            Fixed32Scalar16ReadParityResult prefixSpanRead;
+            using (LibraDexFileSession opened = LibraDexFileSession.Open(readPath, options, DataKernelTelemetryOptions.EnabledOptions))
+            {
+                prefix0Read = MeasureRepeatedFixed32Scalar16ReadRange(opened, rootOffset, profile, "fs32-16 prefix 0", batches, itemsPerBatch, prefixCount, 0, 0, readIterations, identities, repeatCount);
+                prefixSpanRead = MeasureRepeatedFixed32Scalar16ReadRange(opened, rootOffset, profile, "fs32-16 prefix 0-2", batches, itemsPerBatch, prefixCount, 0, crossUpperPrefix, readIterations, identities, repeatCount);
+            }
+
+            rows[i] = new Fixed32Scalar16SizeSweepRow(profile, sortedWrite, randomWrite, prefix0Read, prefixSpanRead);
+        }
+
+        string reportPath = WriteFixed32Scalar16SizeSweepReport(
+            artifactDirectory,
+            batches,
+            warmupBatches,
+            itemsPerBatch,
+            prefixCount,
+            readIterations,
+            repeatCount,
+            commitGapCoalesceBytes,
+            rows);
+
+        Console.WriteLine("fs32-16 size sweep");
+        Console.WriteLine($"batches {batches:N0}");
+        Console.WriteLine($"warmupBatches {warmupBatches:N0}");
+        Console.WriteLine($"itemsPerBatch {itemsPerBatch:N0}");
+        Console.WriteLine($"prefixCount {prefixCount:N0}");
+        Console.WriteLine($"readIterations {readIterations:N0}");
+        Console.WriteLine($"repeatCount {repeatCount:N0}");
+        PrintFixed32Scalar16SizeSweepRows(rows);
+        Console.WriteLine($"report {Path.GetFullPath(reportPath)}");
+        return 0;
+    }
+
+
+    /// <summary>
     /// Validates eight same-file indexes over the same generated identity set using two independent instances of each current physical shape.<br/>
     /// Creation, write, and reopen-validation orders are intentionally different from slot order so the test exercises index-directory slot replacement and root-router independence instead of sequential happy-path assumptions.<br/>
     /// </summary>
@@ -22842,7 +23844,7 @@ internal static partial class RawHarness
         Scalar8Scalar8Profile scalar8Scalar8Profile = Scalar8Scalar8Profile.Default32KiB;
         Scalar16Scalar8Profile scalar16Scalar8Profile = Scalar16Scalar8Profile.Default32KiB;
         Scalar8Scalar16Profile scalar8Scalar16Profile = Scalar8Scalar16Profile.Default32KiB;
-        Scalar16Scalar16Profile scalar16Scalar16Profile = Scalar16Scalar16Profile.Default32KiB;
+        Scalar16Scalar16Profile scalar16Scalar16Profile = Scalar16Scalar16Profile.Default24KiB;
         int[] sortedOrder = CreateScalar8Scalar8OrderVector(itemsPerBatch, Scalar8Scalar8InsertOrder.Sorted);
         MultiIndexSameIdentitiesPlan[] plans = CreateEightIndexSameIdentitiesPlans();
         long rootCreateWrites = 0;
@@ -25095,7 +26097,7 @@ internal static partial class RawHarness
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         File.Delete(path);
 
-        Fixed32Scalar8Profile profile = Fixed32Scalar8Profile.Default64KiB;
+        Fixed32Scalar8Profile profile = Fixed32Scalar8Profile.Default40KiB;
         CreateFixed32Scalar8TransformSplitVectors(profile, out ulong[] key0s, out ulong[] key1s, out ulong[] key2s, out ulong[] key3s, out ulong[] identities, out int _, out int _);
         DataKernelOptions options = new(
             AppendBufferSize: DefaultAppendBufferSize,
@@ -27506,7 +28508,7 @@ internal static partial class RawHarness
         for (int profileIndex = 0; profileIndex < profiles.Length; profileIndex++)
         {
             Scalar16Scalar16Profile profile = profiles[profileIndex];
-            string anchor = profile.ShelfExtentSize == Scalar16Scalar16Profile.Default32KiB.ShelfExtentSize ? "yes" : "";
+            string anchor = profile.ShelfExtentSize == Scalar16Scalar16Profile.Default24KiB.ShelfExtentSize ? "yes" : "";
             for (int scenarioIndex = 0; scenarioIndex < scenariosPerProfile; scenarioIndex++)
             {
                 Scalar8Scalar8DesignPerfResult result = results[resultIndex++];
@@ -29071,6 +30073,12 @@ internal static partial class RawHarness
         int repeatCount,
         int scalar8Scalar8CommitGapCoalesceBytes,
         int wideCommitGapCoalesceBytes,
+        Scalar8Scalar8Profile scalar8Scalar8Profile,
+        Scalar16Scalar8Profile scalar16Scalar8Profile,
+        Scalar8Scalar16Profile scalar8Scalar16Profile,
+        Scalar16Scalar16Profile scalar16Scalar16Profile,
+        Fixed32Scalar8Profile fixed32Scalar8Profile,
+        Fixed32Scalar16Profile fixed32Scalar16Profile,
         SqliteScalar8Scalar8Options sqliteOptions,
         ReadOnlySpan<AllShapeWriteParityRow> rows)
     {
@@ -29089,6 +30097,12 @@ internal static partial class RawHarness
         builder.AppendLine($"- Repeat samples per row: `{repeatCount}`");
         builder.AppendLine($"- `SS8-8` commit gap coalescing bytes: `{scalar8Scalar8CommitGapCoalesceBytes}`");
         builder.AppendLine($"- Wider-shape commit gap coalescing bytes: `{wideCommitGapCoalesceBytes}`");
+        builder.AppendLine($"- `SS8-8` shelf size: `{scalar8Scalar8Profile.ShelfExtentSize}` bytes; max items: `{scalar8Scalar8Profile.MaxItemCount}`");
+        builder.AppendLine($"- `SS16-8` shelf size: `{scalar16Scalar8Profile.ShelfExtentSize}` bytes; max items: `{scalar16Scalar8Profile.MaxItemCount}`");
+        builder.AppendLine($"- `SS8-16` shelf size: `{scalar8Scalar16Profile.ShelfExtentSize}` bytes; max items: `{scalar8Scalar16Profile.MaxItemCount}`");
+        builder.AppendLine($"- `SS16-16` shelf size: `{scalar16Scalar16Profile.ShelfExtentSize}` bytes; max items: `{scalar16Scalar16Profile.MaxItemCount}`");
+        builder.AppendLine($"- `FS32-8` shelf size: `{fixed32Scalar8Profile.ShelfExtentSize}` bytes; max items: `{fixed32Scalar8Profile.MaxItemCount}`");
+        builder.AppendLine($"- `FS32-16` shelf size: `{fixed32Scalar16Profile.ShelfExtentSize}` bytes; max items: `{fixed32Scalar16Profile.MaxItemCount}`");
         builder.AppendLine($"- SQLite journal mode: `{sqliteOptions.JournalMode}`");
         builder.AppendLine($"- SQLite synchronous mode: `{sqliteOptions.Synchronous}`");
         builder.AppendLine("- SQLite schemas use `WITHOUT ROWID` primary-key B-trees.");
@@ -29233,7 +30247,7 @@ internal static partial class RawHarness
         for (int i = 0; i < rows.Length; i++)
         {
             Fixed32Scalar8SizeSweepRow row = rows[i];
-            string anchor = row.Profile.ShelfExtentSize == Fixed32Scalar8Profile.Default64KiB.ShelfExtentSize ? "yes" : "";
+            string anchor = row.Profile.ShelfExtentSize == Fixed32Scalar8Profile.Default40KiB.ShelfExtentSize ? "yes" : "";
             builder.AppendLine(CultureInfo.InvariantCulture, $"| {row.Profile.ShelfExtentSize} | {row.Profile.MaxItemCount} | {anchor} | {row.SortedWrite.ItemsPerSecond:F2} | {row.RandomWrite.ItemsPerSecond:F2} | {row.RandomWrite.BytesPerItem:F2} | {row.Prefix0Read.IdentitiesPerSecond:F2} | {row.Prefix0Read.NsPerIdentity:F2} | {row.Prefix0Read.BytesPerRange:F2} | {row.PrefixSpanRead.IdentitiesPerSecond:F2} | {row.PrefixSpanRead.NsPerIdentity:F2} | {row.PrefixSpanRead.BytesPerRange:F2} |");
         }
 
@@ -29245,6 +30259,69 @@ internal static partial class RawHarness
         for (int i = 0; i < rows.Length; i++)
         {
             Fixed32Scalar8SizeSweepRow row = rows[i];
+            builder.AppendLine(CultureInfo.InvariantCulture, $"| {row.Profile.ShelfExtentSize} | sorted | {row.SortedWrite.ItemsPerSecond:F2} | {row.SortedWrite.MicrosecondsPerItem:F3} | {row.SortedWrite.WritesPerBatch:F3} | {row.SortedWrite.BytesPerItem:F2} | {row.SortedWrite.MiBs:F2} | {row.SortedWrite.Checksum} |");
+            builder.AppendLine(CultureInfo.InvariantCulture, $"| {row.Profile.ShelfExtentSize} | random | {row.RandomWrite.ItemsPerSecond:F2} | {row.RandomWrite.MicrosecondsPerItem:F3} | {row.RandomWrite.WritesPerBatch:F3} | {row.RandomWrite.BytesPerItem:F2} | {row.RandomWrite.MiBs:F2} | {row.RandomWrite.Checksum} |");
+        }
+
+        builder.AppendLine();
+        builder.AppendLine("## Notes");
+        builder.AppendLine();
+        builder.AppendLine("- Larger shelves can reduce split and routing pressure but increase per-shelf read/write byte movement.");
+        builder.AppendLine("- Prefer the smallest shelf size that materially improves write throughput without harming read latency.");
+        builder.AppendLine("- Bytes/item and bytes/range are secondary diagnostics here; logical read/write throughput is the priority signal.");
+
+        return WriteReport(reportPath, builder);
+    }
+
+
+    private static string WriteFixed32Scalar16SizeSweepReport(
+        string artifactDirectory,
+        int batches,
+        int warmupBatches,
+        int itemsPerBatch,
+        int prefixCount,
+        int readIterations,
+        int repeatCount,
+        int commitGapCoalesceBytes,
+        ReadOnlySpan<Fixed32Scalar16SizeSweepRow> rows)
+    {
+        string reportPath = PrepareCurrentReport(artifactDirectory, "fs32-16-size-sweep-current.md", "fs32-16-size-sweep");
+
+        string timestamp = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture);
+        StringBuilder builder = new();
+        builder.AppendLine($"# FS32-16 Size Sweep - {timestamp} UTC");
+        builder.AppendLine();
+        builder.AppendLine("## Scope");
+        builder.AppendLine();
+        builder.AppendLine($"- Write batches per row: `{batches}`");
+        builder.AppendLine($"- Warmup batches per write row: `{warmupBatches}`");
+        builder.AppendLine($"- Items per batch: `{itemsPerBatch}`");
+        builder.AppendLine($"- Root prefixes per generated batch: `{prefixCount}`");
+        builder.AppendLine($"- Read iterations per row: `{readIterations}`");
+        builder.AppendLine($"- Repeat samples per row: `{repeatCount}`");
+        builder.AppendLine($"- Commit gap coalescing bytes: `{commitGapCoalesceBytes}`");
+        builder.AppendLine("- Write rows use routed `FS32-16` bulk insertion with sorted and random item order.");
+        builder.AppendLine("- Read rows use the harness-local routed `FS32-16` range walker over the sorted write fixture.");
+        builder.AppendLine();
+        builder.AppendLine("## Summary");
+        builder.AppendLine();
+        builder.AppendLine("| shelf bytes | max items | anchor | sorted write items/sec | random write items/sec | random write B/item | prefix 0 ids/sec | prefix 0 ns/id | prefix 0 bytes/range | prefix 0-2 ids/sec | prefix 0-2 ns/id | prefix 0-2 bytes/range |");
+        builder.AppendLine("|---:|---:|:---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
+        for (int i = 0; i < rows.Length; i++)
+        {
+            Fixed32Scalar16SizeSweepRow row = rows[i];
+            string anchor = row.Profile.ShelfExtentSize == Fixed32Scalar16Profile.Default40KiB.ShelfExtentSize ? "yes" : "";
+            builder.AppendLine(CultureInfo.InvariantCulture, $"| {row.Profile.ShelfExtentSize} | {row.Profile.MaxItemCount} | {anchor} | {row.SortedWrite.ItemsPerSecond:F2} | {row.RandomWrite.ItemsPerSecond:F2} | {row.RandomWrite.BytesPerItem:F2} | {row.Prefix0Read.IdentitiesPerSecond:F2} | {row.Prefix0Read.NsPerIdentity:F2} | {row.Prefix0Read.BytesPerRange:F2} | {row.PrefixSpanRead.IdentitiesPerSecond:F2} | {row.PrefixSpanRead.NsPerIdentity:F2} | {row.PrefixSpanRead.BytesPerRange:F2} |");
+        }
+
+        builder.AppendLine();
+        builder.AppendLine("## Write Detail");
+        builder.AppendLine();
+        builder.AppendLine("| shelf bytes | order | items/sec | us/item | writes/batch | bytes/item | MiB/s | checksum |");
+        builder.AppendLine("|---:|---|---:|---:|---:|---:|---:|---:|");
+        for (int i = 0; i < rows.Length; i++)
+        {
+            Fixed32Scalar16SizeSweepRow row = rows[i];
             builder.AppendLine(CultureInfo.InvariantCulture, $"| {row.Profile.ShelfExtentSize} | sorted | {row.SortedWrite.ItemsPerSecond:F2} | {row.SortedWrite.MicrosecondsPerItem:F3} | {row.SortedWrite.WritesPerBatch:F3} | {row.SortedWrite.BytesPerItem:F2} | {row.SortedWrite.MiBs:F2} | {row.SortedWrite.Checksum} |");
             builder.AppendLine(CultureInfo.InvariantCulture, $"| {row.Profile.ShelfExtentSize} | random | {row.RandomWrite.ItemsPerSecond:F2} | {row.RandomWrite.MicrosecondsPerItem:F3} | {row.RandomWrite.WritesPerBatch:F3} | {row.RandomWrite.BytesPerItem:F2} | {row.RandomWrite.MiBs:F2} | {row.RandomWrite.Checksum} |");
         }
@@ -30279,6 +31356,12 @@ internal static partial class RawHarness
                 throw new InvalidDataException("Fixed BigInt exact lookup did not return the huge-key identity.");
             }
 
+            if (fixedIndex.Count() != 6 ||
+                ((IIndex)fixedIndex).Count() != 6)
+            {
+                throw new InvalidDataException("Fixed BigInt count did not return the expected shelf-header tuple count.");
+            }
+
             Guid guidLow = Guid.Parse("00000000-0000-0000-0000-000000000101");
             Guid guidMiddle = Guid.Parse("00000000-0000-0000-0000-000000000102");
             Guid guidHigh = Guid.Parse("00000000-0000-0000-0000-000000000103");
@@ -30290,6 +31373,12 @@ internal static partial class RawHarness
             if (!fixedGuidRange.SequenceEqual(new[] { guidLow, guidMiddle, guidHigh }.Order()))
             {
                 throw new InvalidDataException("Fixed BigInt FSN-16 range did not return the expected Guid identities.");
+            }
+
+            if (fixedGuidIndex.Count() != 3 ||
+                ((IIndex)fixedGuidIndex).Count() != 3)
+            {
+                throw new InvalidDataException("Fixed BigInt FSN-16 count did not return the expected shelf-header tuple count.");
             }
 
             const int fixedGuidRoutedCount = 1500;
@@ -30307,6 +31396,12 @@ internal static partial class RawHarness
                 throw new InvalidDataException($"Fixed routed BigInt FSN-16 range did not return the expected Guid identities. Count={fixedGuidRoutedRange.Length}.");
             }
 
+            if (fixedGuidRouted.Count() != fixedGuidRoutedCount ||
+                ((IIndex)fixedGuidRouted).Count() != fixedGuidRoutedCount)
+            {
+                throw new InvalidDataException("Fixed routed BigInt FSN-16 count did not return the expected routed shelf-header tuple count.");
+            }
+
             LibraDexBigIntScalar8Index<long> fixedRouted = catalog.Indexes["people"]["scoreRouted"].BigIntKeys<long>(maxBytes: 32).Create();
             const int fixedRoutedCount = 3000;
             for (int i = 0; i < fixedRoutedCount; i++)
@@ -30322,6 +31417,12 @@ internal static partial class RawHarness
                 throw new InvalidDataException($"Fixed routed BigInt range did not return the expected split-shelf identities. Count={fixedRoutedRange.Length}, First={(fixedRoutedRange.Length > 0 ? fixedRoutedRange[0] : -1)}, Last={(fixedRoutedRange.Length > 0 ? fixedRoutedRange[^1] : -1)}.");
             }
 
+            if (fixedRouted.Count() != fixedRoutedCount ||
+                ((IIndex)fixedRouted).Count() != fixedRoutedCount)
+            {
+                throw new InvalidDataException("Fixed routed BigInt count did not return the expected routed shelf-header tuple count.");
+            }
+
             const int varIdentityCount = 1500;
             LibraDexBigIntVarIdentityIndex varIdentityIndex = catalog.Indexes["people"]["scoreVarIdentity"].BigIntVarIdentityKeys(maxBytes: 32, maxIdentityBytes: 64).Create();
             for (int i = 0; i < varIdentityCount; i++)
@@ -30335,6 +31436,12 @@ internal static partial class RawHarness
                 Encoding.UTF8.GetString(varIdentityRange[^1]) != "varid-001499")
             {
                 throw new InvalidDataException($"Fixed BigInt variable-identity range did not return the expected identities. Count={varIdentityRange.Count}.");
+            }
+
+            if (varIdentityIndex.Count() != varIdentityCount ||
+                ((IIndex)varIdentityIndex).Count() != varIdentityCount)
+            {
+                throw new InvalidDataException("Fixed BigInt variable-identity count did not return the expected shelf-header tuple count.");
             }
 
             LibraDexBigIntScalar8Index<long> varIndex = catalog.Indexes["people"]["scoreVar"].BigIntVarLenKeys<long>(maxBytes: 32).Create();
@@ -30405,6 +31512,9 @@ internal static partial class RawHarness
                 fixedBridgePlan.Rows.Count != 1 ||
                 fixedBridgePlan.Rows[0].Action != LibraDexConditionBridgeAction.ExecuteCurrentPrimitive ||
                 fixedCondition.Count(bigIntResolver, IdentityDeduplication.Preserve) != 3 ||
+                fixedMembershipCondition.Count(bigIntResolver, IdentityDeduplication.Preserve) != 2 ||
+                fixedRoutedCondition.Count(bigIntResolver, IdentityDeduplication.Preserve) != 3 ||
+                varIdentityCondition.Count(bigIntResolver, IdentityDeduplication.Preserve) != 2 ||
                 !fixedMembershipCondition.Exists(bigIntResolver, IdentityDeduplication.Preserve))
             {
                 throw new InvalidDataException("BigInt condition-builder retrieval did not return expected identity results.");
@@ -30434,6 +31544,11 @@ internal static partial class RawHarness
                 throw new InvalidDataException("Reopened fixed BigInt range did not return the expected identities.");
             }
 
+            if (fixedIndex.Count() != 6)
+            {
+                throw new InvalidDataException("Reopened fixed BigInt count did not return the expected tuple count.");
+            }
+
             Guid guidLow = Guid.Parse("00000000-0000-0000-0000-000000000101");
             Guid guidMiddle = Guid.Parse("00000000-0000-0000-0000-000000000102");
             Guid guidHigh = Guid.Parse("00000000-0000-0000-0000-000000000103");
@@ -30453,6 +31568,11 @@ internal static partial class RawHarness
                 throw new InvalidDataException("Reopened fixed routed BigInt FSN-16 range did not return the expected Guid identities.");
             }
 
+            if (fixedGuidRouted.Count() != 1500)
+            {
+                throw new InvalidDataException("Reopened fixed routed BigInt FSN-16 count did not return the expected tuple count.");
+            }
+
             LibraDexBigIntScalar8Index<long> fixedRouted = reopened.Indexes["people"]["scoreRouted"].BigIntKeys<long>(maxBytes: 32).Open();
             long[] reopenedFixedRouted = fixedRouted.GetIdentities(BigInteger.Zero, new BigInteger(2999)).Order().ToArray();
             if (reopenedFixedRouted.Length != 3000 ||
@@ -30460,6 +31580,11 @@ internal static partial class RawHarness
                 reopenedFixedRouted[^1] != 102_999L)
             {
                 throw new InvalidDataException("Reopened fixed routed BigInt range did not return the expected identities.");
+            }
+
+            if (fixedRouted.Count() != 3000)
+            {
+                throw new InvalidDataException("Reopened fixed routed BigInt count did not return the expected tuple count.");
             }
 
             LibraDexBigIntVarIdentityIndex varIdentityIndex = reopened.Indexes["people"]["scoreVarIdentity"].BigIntVarIdentityKeys(maxBytes: 32, maxIdentityBytes: 64).Open();
@@ -30471,9 +31596,46 @@ internal static partial class RawHarness
                 throw new InvalidDataException("Reopened fixed BigInt variable-identity range did not return the expected identities.");
             }
 
+            if (varIdentityIndex.Count() != 1500)
+            {
+                throw new InvalidDataException("Reopened fixed BigInt variable-identity count did not return the expected tuple count.");
+            }
+
             CatalogIndexInfo varIdentityInfo = reopened.Indexes.List().Single(info =>
                 info.Group == "people" &&
                 info.Name == "scoreVarIdentity");
+            IReadOnlyList<CatalogIndexInfo> bigIntCatalogInfos = reopened.Indexes.List()
+                .Where(static info =>
+                    info.Group == "people" &&
+                    (info.Name == "score" ||
+                     info.Name == "scoreRouted" ||
+                     info.Name == "scoreGuidRouted" ||
+                     info.Name == "scoreVarIdentity" ||
+                     info.Name == "scoreVar"))
+                .ToArray();
+            CatalogIndexInfo fixedInfo = bigIntCatalogInfos.Single(info => info.Name == "score");
+            CatalogIndexInfo fixedRoutedInfo = bigIntCatalogInfos.Single(info => info.Name == "scoreRouted");
+            CatalogIndexInfo fixedGuidRoutedInfo = bigIntCatalogInfos.Single(info => info.Name == "scoreGuidRouted");
+            CatalogIndexInfo fixedVarIdentityInfo = bigIntCatalogInfos.Single(info => info.Name == "scoreVarIdentity");
+            CatalogIndexInfo varLenInfo = bigIntCatalogInfos.Single(info => info.Name == "scoreVar");
+            if (fixedInfo.IsDirectoryItemCountAuthoritative ||
+                fixedRoutedInfo.IsDirectoryItemCountAuthoritative ||
+                fixedGuidRoutedInfo.IsDirectoryItemCountAuthoritative ||
+                fixedVarIdentityInfo.IsDirectoryItemCountAuthoritative ||
+                !varLenInfo.IsDirectoryItemCountAuthoritative)
+            {
+                throw new InvalidDataException("BigInt catalog metadata did not expose directory count authority by physical count strategy.");
+            }
+
+            IndexDirectorySlotSnapshot[] bigIntDirectorySlots = reopened.Session.IndexDirectory.ActiveSlots.ToArray();
+            if (bigIntDirectorySlots.Single(slot => slot.SlotIndex == fixedInfo.SlotIndex).ItemCount != 0 ||
+                bigIntDirectorySlots.Single(slot => slot.SlotIndex == fixedRoutedInfo.SlotIndex).ItemCount != 0 ||
+                bigIntDirectorySlots.Single(slot => slot.SlotIndex == fixedGuidRoutedInfo.SlotIndex).ItemCount != 0 ||
+                bigIntDirectorySlots.Single(slot => slot.SlotIndex == fixedVarIdentityInfo.SlotIndex).ItemCount != 0)
+            {
+                throw new InvalidDataException("Fixed-N BigInt directory slots unexpectedly maintained tuple counts after shelf-local inserts.");
+            }
+
             IIndex nonGenericVarIdentityIndex = reopened.OpenIndex(varIdentityInfo);
             ValidateGenericInsert(nonGenericVarIdentityIndex.Insert(new BigInteger(1500), CreateBigIntVarIdentityBytes(1500)), "metadata-opened fixed BigInt variable identity insert");
             IReadOnlyList<byte[]> afterMetadataOpenInsert = varIdentityIndex.GetIdentities(new BigInteger(1500));
@@ -30827,6 +31989,372 @@ internal static partial class RawHarness
     }
 
 
+    /// <summary>
+    /// Measures routed `FSN-8` and `FSN-16` range counting against routed range reads over the same deterministic fixed-width key population.<br/>
+    /// The measured range spans many deep same-prefix routes, so fully contained routes should use shelf-header counts while only boundary shelves inspect slot/key metadata.<br/>
+    /// </summary>
+    /// <param name="args">The harness command-line arguments.<br/></param>
+    /// <returns>Zero when the count and read loops both produce the expected checksums.<br/></returns>
+    private static int RunFixedNScalarRangeCountPerf(string[] args)
+    {
+        string path = GetOption(args, "--path", Path.Combine("artifacts", "fixedn-scalar-range-count-perf.lbdx"));
+        int keySize = GetIntOption(args, "--key-size", LibraDexBigIntCodec.GetFixedEncodedLength(32));
+        int itemCount = GetIntOption(args, "--items", 32_768);
+        int iterations = GetIntOption(args, "--iterations", 10_000);
+        int warmupIterations = GetIntOption(args, "--warmup-iterations", 5);
+        if (itemCount <= 0 || iterations <= 0 || warmupIterations < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(args), "FixedN scalar range-count perf requires positive items and iterations, and non-negative warmups.");
+        }
+
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.Delete(path);
+        FixedNScalar8Profile fs8Profile = FixedNScalar8Profile.Default64KiB(keySize);
+        FixedNScalar16Profile fs16Profile = FixedNScalar16Profile.Default64KiB(keySize);
+        DataKernelOptions options = new(
+            AppendBufferSize: DefaultAppendBufferSize,
+            ReservedPrefixBytes: 0,
+            FlushToDiskOnCommit: false,
+            MaxCommitGapCoalesceBytes: 512);
+        SuperblockDeveloperMetadata metadata = new(
+            DevIdentity: "LibraDexFixedNScalarRangeCountPerf",
+            DevCustomText: "FSN routed range count perf",
+            DevGuid: Guid.Parse("51f10c96-6f59-45df-8dac-c334aa23f5b6"),
+            DevDate1UtcTicks: 1,
+            DevDate2UtcTicks: 2,
+            DevNumber: 5);
+        using (LibraDexFileSession session = LibraDexFileSession.Initialize(path, options, metadata, DataKernelTelemetryOptions.EnabledOptions))
+        {
+            (RouterSnapshot fs8Root, _) = session.CreateRootRouterIndex(CreateHarnessSlot(0, "fsn8rcpf", 0));
+            FixedNScalar8IndexHandle fs8Handle = new(fs8Root.Offset, fs8Profile, IsRouted: true);
+            using FixedNScalar8Index fs8 = new(session, fs8Handle, slotIndex: 0);
+            (RouterSnapshot fs16Root, _) = session.CreateRootRouterIndex(CreateHarnessSlot(1, "fsn16rcp", 0));
+            FixedNScalar16IndexHandle fs16Handle = new(fs16Root.Offset, fs16Profile, IsRouted: true);
+            using FixedNScalar16Index fs16 = new(session, fs16Handle, slotIndex: 1);
+            InsertFixedNScalarRoutedItems(fs8, fs16, keySize, itemCount);
+        }
+
+        using LibraDexFileSession reopened = LibraDexFileSession.Open(path, options, DataKernelTelemetryOptions.EnabledOptions);
+        ReadOnlySpan<IndexDirectorySlotSnapshot> slots = reopened.IndexDirectory.ActiveSlots;
+        if (slots.Length < 2)
+        {
+            throw new InvalidDataException("Reopened FixedN scalar range-count perf file did not preserve both routed indexes.");
+        }
+
+        FixedNScalar8IndexHandle reopenedFs8Handle = new(slots[0].RootRouterOffset, fs8Profile, IsRouted: true);
+        using FixedNScalar8Index reopenedFs8 = new(reopened, reopenedFs8Handle, slotIndex: 0);
+        FixedNScalar16IndexHandle reopenedFs16Handle = new(slots[1].RootRouterOffset, fs16Profile, IsRouted: true);
+        using FixedNScalar16Index reopenedFs16 = new(reopened, reopenedFs16Handle, slotIndex: 1);
+        byte[] lowerKey = CreateFixedNTestKey(keySize, itemCount / 4);
+        byte[] upperKey = CreateFixedNTestKey(keySize, (itemCount * 3) / 4);
+        int expected = ((itemCount * 3) / 4) - (itemCount / 4) + 1;
+        FixedNScalarRangeCountPerfRow fs8Count = MeasureFixedNScalarRangeLoop(
+            "FSN-8-count",
+            expected,
+            iterations,
+            warmupIterations,
+            () => reopenedFs8.CountIdentityRange(lowerKey, upperKey));
+        FixedNScalarRangeCountPerfRow fs8Read = MeasureFixedNScalarRangeLoop(
+            "FSN-8-read",
+            expected,
+            iterations,
+            warmupIterations,
+            () => reopenedFs8.ReadIdentityRange(lowerKey, upperKey).Length);
+        FixedNScalarRangeCountPerfRow fs16Count = MeasureFixedNScalarRangeLoop(
+            "FSN-16-count",
+            expected,
+            iterations,
+            warmupIterations,
+            () => reopenedFs16.CountIdentityRange(lowerKey, upperKey));
+        FixedNScalarRangeCountPerfRow fs16Read = MeasureFixedNScalarRangeLoop(
+            "FSN-16-read",
+            expected,
+            iterations,
+            warmupIterations,
+            () => reopenedFs16.ReadIdentityRange(lowerKey, upperKey).Length / FixedNScalar16Layout.IdentitySize);
+
+        Console.WriteLine(
+            $"fixedn-scalar-range-count-perf ok path={path} items={itemCount} keySize={keySize} expected={expected} iterations={iterations} warmups={warmupIterations}");
+        PrintFixedNScalarRangeCountPerf("FSN-8", iterations, fs8Count, fs8Read);
+        PrintFixedNScalarRangeCountPerf("FSN-16", iterations, fs16Count, fs16Read);
+        return 0;
+    }
+
+
+    /// <summary>
+    /// Inserts the same deterministic fixed-width key population into routed `FSN-8` and `FSN-16` indexes.<br/>
+    /// Keys are inserted in ascending order so each index sees identical route pressure and the count/read baselines are comparable.<br/>
+    /// </summary>
+    /// <param name="fs8">The routed `FSN-8` index.<br/></param>
+    /// <param name="fs16">The routed `FSN-16` index.<br/></param>
+    /// <param name="keySize">The encoded fixed-width key size.<br/></param>
+    /// <param name="itemCount">The number of deterministic tuples to insert.<br/></param>
+    private static void InsertFixedNScalarRoutedItems(
+        FixedNScalar8Index fs8,
+        FixedNScalar16Index fs16,
+        int keySize,
+        int itemCount)
+    {
+        for (int i = 0; i < itemCount; i++)
+        {
+            byte[] key = CreateFixedNTestKey(keySize, i);
+            if (fs8.Insert(key, (ulong)i, allowDuplicateKeys: true).Result != FixedNScalarInsertResult.Inserted)
+            {
+                throw new InvalidDataException($"FSN-8 routed range-count perf setup insert {i} failed.");
+            }
+
+            if (fs16.Insert(key, CreateFixedNIdentity16(i), allowDuplicateKeys: true).Result != FixedNScalarInsertResult.Inserted)
+            {
+                throw new InvalidDataException($"FSN-16 routed range-count perf setup insert {i} failed.");
+            }
+        }
+    }
+
+
+    /// <summary>
+    /// Holds one routed fixed-N scalar range-count performance row.<br/>
+    /// The checksum prevents dead-loop measurements from hiding an incorrect count or read result.<br/>
+    /// </summary>
+    /// <param name="Elapsed">The measured elapsed time.<br/></param>
+    /// <param name="Checksum">The accumulated count checksum.<br/></param>
+    private readonly record struct FixedNScalarRangeCountPerfRow(TimeSpan Elapsed, long Checksum);
+
+
+    /// <summary>
+    /// Measures one repeated routed fixed-N scalar range operation with warmup and per-iteration correctness checks.<br/>
+    /// Shared measurement logic keeps count and read baselines comparable and reports failures with the specific loop label.<br/>
+    /// </summary>
+    /// <param name="label">The loop label used in validation errors.<br/></param>
+    /// <param name="expected">The expected count per call.<br/></param>
+    /// <param name="iterations">The measured iteration count.<br/></param>
+    /// <param name="warmupIterations">The warmup iteration count.<br/></param>
+    /// <param name="count">The operation returning the observed count.<br/></param>
+    /// <returns>The measured elapsed time and checksum.<br/></returns>
+    private static FixedNScalarRangeCountPerfRow MeasureFixedNScalarRangeLoop(
+        string label,
+        int expected,
+        int iterations,
+        int warmupIterations,
+        Func<long> count)
+    {
+        for (int i = 0; i < warmupIterations; i++)
+        {
+            long warmup = count();
+            if (warmup != expected)
+            {
+                throw new InvalidDataException($"{label} warmup returned {warmup}; expected {expected}.");
+            }
+        }
+
+        long checksum = 0;
+        Stopwatch watch = Stopwatch.StartNew();
+        for (int i = 0; i < iterations; i++)
+        {
+            long value = count();
+            if (value != expected)
+            {
+                throw new InvalidDataException($"{label} iteration {i} returned {value}; expected {expected}.");
+            }
+
+            checksum += value;
+        }
+
+        watch.Stop();
+        return new FixedNScalarRangeCountPerfRow(watch.Elapsed, checksum);
+    }
+
+
+    /// <summary>
+    /// Prints one fixed-N scalar count/read comparison row.<br/>
+    /// The row format matches the FV range-count perf output so fixed-N scalar and var-identity results can be compared directly.<br/>
+    /// </summary>
+    /// <param name="shape">The shape label to print.<br/></param>
+    /// <param name="iterations">The measured iteration count.<br/></param>
+    /// <param name="count">The optimized count-only measurement.<br/></param>
+    /// <param name="read">The range-read baseline measurement.<br/></param>
+    private static void PrintFixedNScalarRangeCountPerf(
+        string shape,
+        int iterations,
+        FixedNScalarRangeCountPerfRow count,
+        FixedNScalarRangeCountPerfRow read)
+    {
+        double speedup = read.Elapsed.TotalMilliseconds / Math.Max(count.Elapsed.TotalMilliseconds, 0.000001D);
+        Console.WriteLine(
+            $"{shape} countMs={count.Elapsed.TotalMilliseconds:F3} readMs={read.Elapsed.TotalMilliseconds:F3} speedup={speedup:F2}x " +
+            $"countOpsPerSecond={iterations / Math.Max(count.Elapsed.TotalSeconds, 0.000001D):F2} readOpsPerSecond={iterations / Math.Max(read.Elapsed.TotalSeconds, 0.000001D):F2} " +
+            $"countChecksum={count.Checksum} readChecksum={read.Checksum}");
+    }
+
+
+    /// <summary>
+    /// Measures routed `FV` range counting against routed range reads over the same deterministic fixed-width key population.<br/>
+    /// The measured range spans many routed prefixes, so fully contained routes should use cached shelf-header counts while only boundary shelves inspect slot/key metadata.<br/>
+    /// </summary>
+    /// <param name="args">The harness command-line arguments.<br/></param>
+    /// <returns>Zero when the count and read loops both produce the expected checksum.<br/></returns>
+    private static int RunFixedNVarIdentityRangeCountPerf(string[] args)
+    {
+        string path = GetOption(args, "--path", Path.Combine("artifacts", "fixedn-varidentity-range-count-perf.lbdx"));
+        int keySize = GetIntOption(args, "--key-size", LibraDexBigIntCodec.GetFixedEncodedLength(32));
+        int itemCount = GetIntOption(args, "--items", 32_768);
+        int iterations = GetIntOption(args, "--iterations", 10_000);
+        int warmupIterations = GetIntOption(args, "--warmup-iterations", 5);
+        if (itemCount <= 0 || iterations <= 0 || warmupIterations < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(args), "FV range-count perf requires positive items and iterations, and non-negative warmups.");
+        }
+
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.Delete(path);
+        FixedNVarIdentityProfile profile = FixedNVarIdentityProfile.Default64KiB(keySize, maxIdentityLength: 64);
+        DataKernelOptions options = new(
+            AppendBufferSize: DefaultAppendBufferSize,
+            ReservedPrefixBytes: 0,
+            FlushToDiskOnCommit: false,
+            MaxCommitGapCoalesceBytes: 512);
+        SuperblockDeveloperMetadata metadata = new(
+            DevIdentity: "LibraDexFixedNVarIdentityRangeCountPerf",
+            DevCustomText: "FV routed range count perf",
+            DevGuid: Guid.Parse("65a34de6-1594-4bf6-9153-f463f456d36a"),
+            DevDate1UtcTicks: 1,
+            DevDate2UtcTicks: 2,
+            DevNumber: 4);
+        using (LibraDexFileSession session = LibraDexFileSession.Initialize(path, options, metadata, DataKernelTelemetryOptions.EnabledOptions))
+        {
+            (RouterSnapshot root, _) = session.CreateRootRouterIndex(CreateHarnessSlot(0, "fvrcperf", 0));
+            FixedNVarIdentityIndexHandle handle = new(root.Offset, profile, IsRouted: true);
+            using FixedNVarIdentityIndex index = new(session, handle, slotIndex: 0);
+            InsertFixedNVarIdentityRoutedItems(index, keySize, itemCount);
+        }
+
+        using LibraDexFileSession reopened = LibraDexFileSession.Open(path, options, DataKernelTelemetryOptions.EnabledOptions);
+        FixedNVarIdentityIndexHandle reopenedHandle = new(reopened.IndexDirectory.ActiveSlots[0].RootRouterOffset, profile, IsRouted: true);
+        using FixedNVarIdentityIndex reopenedIndex = new(reopened, reopenedHandle, slotIndex: 0);
+        byte[] lowerKey = CreateFixedNTestKey(keySize, itemCount / 4);
+        byte[] upperKey = CreateFixedNTestKey(keySize, (itemCount * 3) / 4);
+        int expected = ((itemCount * 3) / 4) - (itemCount / 4) + 1;
+        FixedNVarIdentityRangeCountPerfRow countRow = MeasureFixedNVarIdentityRangeCountLoop(reopenedIndex, lowerKey, upperKey, expected, iterations, warmupIterations);
+        FixedNVarIdentityRangeCountPerfRow readRow = MeasureFixedNVarIdentityRangeReadLoop(reopenedIndex, lowerKey, upperKey, expected, iterations, warmupIterations);
+        double speedup = readRow.Elapsed.TotalMilliseconds / Math.Max(countRow.Elapsed.TotalMilliseconds, 0.000001D);
+        Console.WriteLine(
+            $"fixedn-varidentity-range-count-perf ok path={path} items={itemCount} keySize={keySize} expected={expected} iterations={iterations} warmups={warmupIterations}");
+        Console.WriteLine(
+            $"FV countMs={countRow.Elapsed.TotalMilliseconds:F3} readMs={readRow.Elapsed.TotalMilliseconds:F3} speedup={speedup:F2}x " +
+            $"countOpsPerSecond={iterations / Math.Max(countRow.Elapsed.TotalSeconds, 0.000001D):F2} readOpsPerSecond={iterations / Math.Max(readRow.Elapsed.TotalSeconds, 0.000001D):F2} " +
+            $"countChecksum={countRow.Checksum} readChecksum={readRow.Checksum}");
+        return 0;
+    }
+
+
+    /// <summary>
+    /// Holds one routed `FV` range-count performance row.<br/>
+    /// The checksum prevents dead-loop measurements from hiding an incorrect count or read result.<br/>
+    /// </summary>
+    /// <param name="Elapsed">The measured elapsed time.<br/></param>
+    /// <param name="Checksum">The accumulated count checksum.<br/></param>
+    private readonly record struct FixedNVarIdentityRangeCountPerfRow(TimeSpan Elapsed, long Checksum);
+
+
+    /// <summary>
+    /// Measures repeated routed `FV` range-count calls with correctness checks.<br/>
+    /// This is the optimized count-only path that can use contained-route shelf-count metadata.<br/>
+    /// </summary>
+    /// <param name="index">The routed `FV` index to measure.<br/></param>
+    /// <param name="lowerKey">The inclusive lower encoded key.<br/></param>
+    /// <param name="upperKey">The inclusive upper encoded key.<br/></param>
+    /// <param name="expected">The expected count per call.<br/></param>
+    /// <param name="iterations">The measured iteration count.<br/></param>
+    /// <param name="warmupIterations">The warmup iteration count.<br/></param>
+    /// <returns>The elapsed time and checksum for the measured count loop.<br/></returns>
+    private static FixedNVarIdentityRangeCountPerfRow MeasureFixedNVarIdentityRangeCountLoop(
+        FixedNVarIdentityIndex index,
+        byte[] lowerKey,
+        byte[] upperKey,
+        int expected,
+        int iterations,
+        int warmupIterations)
+    {
+        return MeasureFixedNVarIdentityRangeLoop(
+            "FV-count",
+            expected,
+            iterations,
+            warmupIterations,
+            () => index.CountIdentityRange(lowerKey, upperKey));
+    }
+
+
+    /// <summary>
+    /// Measures repeated routed `FV` range reads and counts the returned identities.<br/>
+    /// This baseline copies identity payloads, so it represents the work count-only traversal should avoid.<br/>
+    /// </summary>
+    /// <param name="index">The routed `FV` index to measure.<br/></param>
+    /// <param name="lowerKey">The inclusive lower encoded key.<br/></param>
+    /// <param name="upperKey">The inclusive upper encoded key.<br/></param>
+    /// <param name="expected">The expected count per call.<br/></param>
+    /// <param name="iterations">The measured iteration count.<br/></param>
+    /// <param name="warmupIterations">The warmup iteration count.<br/></param>
+    /// <returns>The elapsed time and checksum for the measured read loop.<br/></returns>
+    private static FixedNVarIdentityRangeCountPerfRow MeasureFixedNVarIdentityRangeReadLoop(
+        FixedNVarIdentityIndex index,
+        byte[] lowerKey,
+        byte[] upperKey,
+        int expected,
+        int iterations,
+        int warmupIterations)
+    {
+        return MeasureFixedNVarIdentityRangeLoop(
+            "FV-read",
+            expected,
+            iterations,
+            warmupIterations,
+            () => index.ReadIdentityRange(lowerKey, upperKey).Count);
+    }
+
+
+    /// <summary>
+    /// Measures one repeated routed `FV` range operation with warmup and per-iteration correctness checks.<br/>
+    /// Shared measurement logic keeps count and read baselines comparable and reports failures with the specific loop label.<br/>
+    /// </summary>
+    /// <param name="label">The loop label used in validation errors.<br/></param>
+    /// <param name="expected">The expected count per call.<br/></param>
+    /// <param name="iterations">The measured iteration count.<br/></param>
+    /// <param name="warmupIterations">The warmup iteration count.<br/></param>
+    /// <param name="count">The operation returning the observed count.<br/></param>
+    /// <returns>The measured elapsed time and checksum.<br/></returns>
+    private static FixedNVarIdentityRangeCountPerfRow MeasureFixedNVarIdentityRangeLoop(
+        string label,
+        int expected,
+        int iterations,
+        int warmupIterations,
+        Func<long> count)
+    {
+        for (int i = 0; i < warmupIterations; i++)
+        {
+            long warmup = count();
+            if (warmup != expected)
+            {
+                throw new InvalidDataException($"{label} warmup returned {warmup}; expected {expected}.");
+            }
+        }
+
+        long checksum = 0;
+        Stopwatch watch = Stopwatch.StartNew();
+        for (int i = 0; i < iterations; i++)
+        {
+            long value = count();
+            if (value != expected)
+            {
+                throw new InvalidDataException($"{label} iteration {i} returned {value}; expected {expected}.");
+            }
+
+            checksum += value;
+        }
+
+        watch.Stop();
+        return new FixedNVarIdentityRangeCountPerfRow(watch.Elapsed, checksum);
+    }
+
+
     private static Guid CreateStableGuid(int value)
     {
         Span<byte> bytes = stackalloc byte[16];
@@ -31115,7 +32643,7 @@ internal static partial class RawHarness
         Console.Error.WriteLine("  dotnet run --project LibraDex.Harness -c Debug -- generic-index-api-sanity --path T:\\LibraDex\\generic-index-api-sanity.lbdx");
         Console.Error.WriteLine("  dotnet run --project LibraDex.Harness -c Release -- sv8-shelf-sanity --items 1800 --duplicate-modulo 6 --identity-length 48");
         Console.Error.WriteLine("  dotnet run --project LibraDex.Harness -c Release -- sv8-routed-sanity --path T:\\LibraDex\\sv8-routed-sanity.lbdx --items 1400 --duplicate-modulo 32 --identity-length 96");
-        Console.Error.WriteLine("  dotnet run --project LibraDex.Harness -c Release -- sv8-routed-sqlite-comparison --directory T:\\LibraDex\\SV8RoutedSqliteComparison --items 12000 --duplicate-modulo 256 --identity-length 96 --range-key-count 16 --iterations 100 --order natural");
+        Console.Error.WriteLine("  dotnet run --project LibraDex.Harness -c Release -- sv8-routed-sqlite-comparison --directory T:\\LibraDex\\SV8RoutedSqliteComparison --items 12000 --duplicate-modulo 256 --identity-length 96 --range-key-count 16 --iterations 100 --order natural --read-pattern range");
         Console.Error.WriteLine("  dotnet run --project LibraDex.Harness -c Release -- varlen-optimizer-modes-sanity --directory T:\\LibraDex\\VarLenOptimizerModesSanity --items 12000");
         Console.Error.WriteLine("  dotnet run --project LibraDex.Harness -c Release -- varlen-optimizer-lifecycle-sanity --directory T:\\LibraDex\\VarLenOptimizerLifecycleSanity --items 12000");
         Console.Error.WriteLine("  dotnet run --project LibraDex.Harness -c Release -- varlen-hierarchical-median-comparison --directory T:\\LibraDex\\VarLenHierarchicalMedianComparison --samples 5 --items 12000 --iterations 50");
@@ -31172,7 +32700,7 @@ internal static partial class RawHarness
         Directory.CreateDirectory(artifactDirectory);
         string libraPath = Path.Combine(directory, "fs32-16-read.lbdx");
         File.Delete(libraPath);
-        Fixed32Scalar16Profile profile = Fixed32Scalar16Profile.Default64KiB;
+        Fixed32Scalar16Profile profile = Fixed32Scalar16Profile.Default40KiB;
         DataKernelOptions libraOptions = CreateDesignPerfOptions(commitGapCoalesceBytes);
         int[] sortedOrder = CreateScalar8Scalar8OrderVector(itemsPerBatch, Scalar8Scalar8InsertOrder.Sorted);
         long rootOffset;
@@ -31323,6 +32851,12 @@ internal static partial class RawHarness
         int iterations = GetIntOption(args, "--iterations", 100);
         int repeatCount = GetIntOption(args, "--repeat-count", 3);
         int wideCommitGapCoalesceBytes = GetIntOption(args, "--wide-commit-gap-coalesce-bytes", 16 * 1024);
+        int scalar8Scalar8ShelfSize = GetIntOption(args, "--ss8-8-shelf-size", Scalar8Scalar8Profile.Default32KiB.ShelfExtentSize);
+        int scalar16Scalar8ShelfSize = GetIntOption(args, "--ss16-8-shelf-size", Scalar16Scalar8Profile.Default32KiB.ShelfExtentSize);
+        int scalar8Scalar16ShelfSize = GetIntOption(args, "--ss8-16-shelf-size", Scalar8Scalar16Profile.Default32KiB.ShelfExtentSize);
+        int scalar16Scalar16ShelfSize = GetIntOption(args, "--ss16-16-shelf-size", Scalar16Scalar16Profile.Default24KiB.ShelfExtentSize);
+        int fixed32Scalar8ShelfSize = GetIntOption(args, "--fs32-8-shelf-size", Fixed32Scalar8Profile.Default40KiB.ShelfExtentSize);
+        int fixed32Scalar16ShelfSize = GetIntOption(args, "--fs32-16-shelf-size", Fixed32Scalar16Profile.Default40KiB.ShelfExtentSize);
         string journalMode = GetOption(args, "--journal-mode", "wal");
         string synchronous = GetOption(args, "--synchronous", "normal");
         if (batches <= 0 || itemsPerBatch <= 0 || prefixCount <= 0 || prefixCount > 256 || iterations <= 0 || repeatCount <= 0)
@@ -31334,6 +32868,12 @@ internal static partial class RawHarness
         Directory.CreateDirectory(artifactDirectory);
         DataKernelOptions options = CreateDesignPerfOptions(wideCommitGapCoalesceBytes);
         SqliteScalar8Scalar8Options sqliteOptions = new(journalMode, synchronous);
+        Scalar8Scalar8Profile scalar8Scalar8Profile = Scalar8Scalar8Profile.FromSupportedShelfExtentSize(scalar8Scalar8ShelfSize);
+        Scalar16Scalar8Profile scalar16Scalar8Profile = Scalar16Scalar8Profile.Create(scalar16Scalar8ShelfSize);
+        Scalar8Scalar16Profile scalar8Scalar16Profile = Scalar8Scalar16Profile.Create(scalar8Scalar16ShelfSize);
+        Scalar16Scalar16Profile scalar16Scalar16Profile = Scalar16Scalar16Profile.Create(scalar16Scalar16ShelfSize);
+        Fixed32Scalar8Profile fixed32Scalar8Profile = Fixed32Scalar8Profile.Create(fixed32Scalar8ShelfSize);
+        Fixed32Scalar16Profile fixed32Scalar16Profile = Fixed32Scalar16Profile.Create(fixed32Scalar16ShelfSize);
         int[] sortedOrder = CreateScalar8Scalar8OrderVector(itemsPerBatch, Scalar8Scalar8InsertOrder.Sorted);
         AllShapeReadRangeCase[] ranges = CreateAllShapeReadRangeCases(prefixCount);
         int maxRangeCount = batches * itemsPerBatch;
@@ -31341,12 +32881,12 @@ internal static partial class RawHarness
         ulong[] identityLows = new ulong[maxRangeCount];
         List<AllShapeReadRangeSweepRow> rows = [];
 
-        MeasureAllShapeReadRangeSweepSs88(directory, batches, itemsPerBatch, prefixCount, iterations, repeatCount, sortedOrder, options, sqliteOptions, ranges, identities, rows);
-        MeasureAllShapeReadRangeSweepSs168(directory, batches, itemsPerBatch, prefixCount, iterations, repeatCount, sortedOrder, options, sqliteOptions, ranges, identities, rows);
-        MeasureAllShapeReadRangeSweepSs816(directory, batches, itemsPerBatch, prefixCount, iterations, repeatCount, sortedOrder, options, sqliteOptions, ranges, identities, identityLows, rows);
-        MeasureAllShapeReadRangeSweepSs1616(directory, batches, itemsPerBatch, prefixCount, iterations, repeatCount, sortedOrder, options, sqliteOptions, ranges, identities, identityLows, rows);
-        MeasureAllShapeReadRangeSweepFs328(directory, batches, itemsPerBatch, prefixCount, iterations, repeatCount, sortedOrder, options, sqliteOptions, ranges, identities, rows);
-        MeasureAllShapeReadRangeSweepFs3216(directory, batches, itemsPerBatch, prefixCount, iterations, repeatCount, sortedOrder, options, sqliteOptions, ranges, identities, rows);
+        MeasureAllShapeReadRangeSweepSs88(directory, batches, itemsPerBatch, prefixCount, iterations, repeatCount, sortedOrder, options, sqliteOptions, scalar8Scalar8Profile, ranges, identities, rows);
+        MeasureAllShapeReadRangeSweepSs168(directory, batches, itemsPerBatch, prefixCount, iterations, repeatCount, sortedOrder, options, sqliteOptions, scalar16Scalar8Profile, ranges, identities, rows);
+        MeasureAllShapeReadRangeSweepSs816(directory, batches, itemsPerBatch, prefixCount, iterations, repeatCount, sortedOrder, options, sqliteOptions, scalar8Scalar16Profile, ranges, identities, identityLows, rows);
+        MeasureAllShapeReadRangeSweepSs1616(directory, batches, itemsPerBatch, prefixCount, iterations, repeatCount, sortedOrder, options, sqliteOptions, scalar16Scalar16Profile, ranges, identities, identityLows, rows);
+        MeasureAllShapeReadRangeSweepFs328(directory, batches, itemsPerBatch, prefixCount, iterations, repeatCount, sortedOrder, options, sqliteOptions, fixed32Scalar8Profile, ranges, identities, rows);
+        MeasureAllShapeReadRangeSweepFs3216(directory, batches, itemsPerBatch, prefixCount, iterations, repeatCount, sortedOrder, options, sqliteOptions, fixed32Scalar16Profile, ranges, identities, rows);
 
         string reportPath = WriteAllShapeReadRangeSweepReport(
             artifactDirectory,
@@ -31356,6 +32896,12 @@ internal static partial class RawHarness
             iterations,
             repeatCount,
             wideCommitGapCoalesceBytes,
+            scalar8Scalar8Profile,
+            scalar16Scalar8Profile,
+            scalar8Scalar16Profile,
+            scalar16Scalar16Profile,
+            fixed32Scalar8Profile,
+            fixed32Scalar16Profile,
             sqliteOptions,
             rows);
 
@@ -31365,17 +32911,22 @@ internal static partial class RawHarness
         Console.WriteLine($"prefixCount {prefixCount:N0}");
         Console.WriteLine($"iterations {iterations:N0}");
         Console.WriteLine($"repeatCount {repeatCount:N0}");
+        Console.WriteLine($"ss8-8ShelfSize {scalar8Scalar8Profile.ShelfExtentSize:N0}");
+        Console.WriteLine($"ss16-8ShelfSize {scalar16Scalar8Profile.ShelfExtentSize:N0}");
+        Console.WriteLine($"ss8-16ShelfSize {scalar8Scalar16Profile.ShelfExtentSize:N0}");
+        Console.WriteLine($"ss16-16ShelfSize {scalar16Scalar16Profile.ShelfExtentSize:N0}");
+        Console.WriteLine($"fs32-8ShelfSize {fixed32Scalar8Profile.ShelfExtentSize:N0}");
+        Console.WriteLine($"fs32-16ShelfSize {fixed32Scalar16Profile.ShelfExtentSize:N0}");
         PrintAllShapeReadRangeSweepRows(rows);
         Console.WriteLine($"report {Path.GetFullPath(reportPath)}");
         return 0;
     }
 
 
-    private static void MeasureAllShapeReadRangeSweepSs168(string directory, int batches, int itemsPerBatch, int prefixCount, int iterations, int repeatCount, int[] sortedOrder, DataKernelOptions options, SqliteScalar8Scalar8Options sqliteOptions, ReadOnlySpan<AllShapeReadRangeCase> ranges, ulong[] identities, List<AllShapeReadRangeSweepRow> rows)
+    private static void MeasureAllShapeReadRangeSweepSs168(string directory, int batches, int itemsPerBatch, int prefixCount, int iterations, int repeatCount, int[] sortedOrder, DataKernelOptions options, SqliteScalar8Scalar8Options sqliteOptions, Scalar16Scalar8Profile profile, ReadOnlySpan<AllShapeReadRangeCase> ranges, ulong[] identities, List<AllShapeReadRangeSweepRow> rows)
     {
         string libraPath = Path.Combine(directory, "read-sweep-ss16-8.lbdx");
         File.Delete(libraPath);
-        Scalar16Scalar8Profile profile = Scalar16Scalar8Profile.Default32KiB;
         long rootOffset;
         using (LibraDexFileSession created = LibraDexFileSession.Initialize(libraPath, options, CreateDesignPerfMetadata(16801), DataKernelTelemetryOptions.EnabledOptions))
         {
@@ -31404,11 +32955,10 @@ internal static partial class RawHarness
     }
 
 
-    private static void MeasureAllShapeReadRangeSweepSs816(string directory, int batches, int itemsPerBatch, int prefixCount, int iterations, int repeatCount, int[] sortedOrder, DataKernelOptions options, SqliteScalar8Scalar8Options sqliteOptions, ReadOnlySpan<AllShapeReadRangeCase> ranges, ulong[] identities, ulong[] identityLows, List<AllShapeReadRangeSweepRow> rows)
+    private static void MeasureAllShapeReadRangeSweepSs816(string directory, int batches, int itemsPerBatch, int prefixCount, int iterations, int repeatCount, int[] sortedOrder, DataKernelOptions options, SqliteScalar8Scalar8Options sqliteOptions, Scalar8Scalar16Profile profile, ReadOnlySpan<AllShapeReadRangeCase> ranges, ulong[] identities, ulong[] identityLows, List<AllShapeReadRangeSweepRow> rows)
     {
         string libraPath = Path.Combine(directory, "read-sweep-ss8-16.lbdx");
         File.Delete(libraPath);
-        Scalar8Scalar16Profile profile = Scalar8Scalar16Profile.Default32KiB;
         long rootOffset;
         using (LibraDexFileSession created = LibraDexFileSession.Initialize(libraPath, options, CreateDesignPerfMetadata(81601), DataKernelTelemetryOptions.EnabledOptions))
         {
@@ -31437,11 +32987,10 @@ internal static partial class RawHarness
     }
 
 
-    private static void MeasureAllShapeReadRangeSweepSs1616(string directory, int batches, int itemsPerBatch, int prefixCount, int iterations, int repeatCount, int[] sortedOrder, DataKernelOptions options, SqliteScalar8Scalar8Options sqliteOptions, ReadOnlySpan<AllShapeReadRangeCase> ranges, ulong[] identities, ulong[] identityLows, List<AllShapeReadRangeSweepRow> rows)
+    private static void MeasureAllShapeReadRangeSweepSs1616(string directory, int batches, int itemsPerBatch, int prefixCount, int iterations, int repeatCount, int[] sortedOrder, DataKernelOptions options, SqliteScalar8Scalar8Options sqliteOptions, Scalar16Scalar16Profile profile, ReadOnlySpan<AllShapeReadRangeCase> ranges, ulong[] identities, ulong[] identityLows, List<AllShapeReadRangeSweepRow> rows)
     {
         string libraPath = Path.Combine(directory, "read-sweep-ss16-16.lbdx");
         File.Delete(libraPath);
-        Scalar16Scalar16Profile profile = Scalar16Scalar16Profile.Default32KiB;
         long rootOffset;
         using (LibraDexFileSession created = LibraDexFileSession.Initialize(libraPath, options, CreateDesignPerfMetadata(161601), DataKernelTelemetryOptions.EnabledOptions))
         {
@@ -31470,11 +33019,10 @@ internal static partial class RawHarness
     }
 
 
-    private static void MeasureAllShapeReadRangeSweepFs328(string directory, int batches, int itemsPerBatch, int prefixCount, int iterations, int repeatCount, int[] sortedOrder, DataKernelOptions options, SqliteScalar8Scalar8Options sqliteOptions, ReadOnlySpan<AllShapeReadRangeCase> ranges, ulong[] identities, List<AllShapeReadRangeSweepRow> rows)
+    private static void MeasureAllShapeReadRangeSweepFs328(string directory, int batches, int itemsPerBatch, int prefixCount, int iterations, int repeatCount, int[] sortedOrder, DataKernelOptions options, SqliteScalar8Scalar8Options sqliteOptions, Fixed32Scalar8Profile profile, ReadOnlySpan<AllShapeReadRangeCase> ranges, ulong[] identities, List<AllShapeReadRangeSweepRow> rows)
     {
         string libraPath = Path.Combine(directory, "read-sweep-fs32-8.lbdx");
         File.Delete(libraPath);
-        Fixed32Scalar8Profile profile = Fixed32Scalar8Profile.Default64KiB;
         long rootOffset;
         using (LibraDexFileSession created = LibraDexFileSession.Initialize(libraPath, options, CreateDesignPerfMetadata(32801), DataKernelTelemetryOptions.EnabledOptions))
         {
@@ -31503,11 +33051,10 @@ internal static partial class RawHarness
     }
 
 
-    private static void MeasureAllShapeReadRangeSweepFs3216(string directory, int batches, int itemsPerBatch, int prefixCount, int iterations, int repeatCount, int[] sortedOrder, DataKernelOptions options, SqliteScalar8Scalar8Options sqliteOptions, ReadOnlySpan<AllShapeReadRangeCase> ranges, ulong[] identities, List<AllShapeReadRangeSweepRow> rows)
+    private static void MeasureAllShapeReadRangeSweepFs3216(string directory, int batches, int itemsPerBatch, int prefixCount, int iterations, int repeatCount, int[] sortedOrder, DataKernelOptions options, SqliteScalar8Scalar8Options sqliteOptions, Fixed32Scalar16Profile profile, ReadOnlySpan<AllShapeReadRangeCase> ranges, ulong[] identities, List<AllShapeReadRangeSweepRow> rows)
     {
         string libraPath = Path.Combine(directory, "read-sweep-fs32-16.lbdx");
         File.Delete(libraPath);
-        Fixed32Scalar16Profile profile = Fixed32Scalar16Profile.Default64KiB;
         long rootOffset;
         using (LibraDexFileSession created = LibraDexFileSession.Initialize(libraPath, options, CreateDesignPerfMetadata(321601), DataKernelTelemetryOptions.EnabledOptions))
         {
@@ -31649,7 +33196,22 @@ internal static partial class RawHarness
     }
 
 
-    private static string WriteAllShapeReadRangeSweepReport(string artifactDirectory, int batches, int itemsPerBatch, int prefixCount, int iterations, int repeatCount, int commitGapCoalesceBytes, SqliteScalar8Scalar8Options sqliteOptions, IReadOnlyList<AllShapeReadRangeSweepRow> rows)
+    private static string WriteAllShapeReadRangeSweepReport(
+        string artifactDirectory,
+        int batches,
+        int itemsPerBatch,
+        int prefixCount,
+        int iterations,
+        int repeatCount,
+        int commitGapCoalesceBytes,
+        Scalar8Scalar8Profile scalar8Scalar8Profile,
+        Scalar16Scalar8Profile scalar16Scalar8Profile,
+        Scalar8Scalar16Profile scalar8Scalar16Profile,
+        Scalar16Scalar16Profile scalar16Scalar16Profile,
+        Fixed32Scalar8Profile fixed32Scalar8Profile,
+        Fixed32Scalar16Profile fixed32Scalar16Profile,
+        SqliteScalar8Scalar8Options sqliteOptions,
+        IReadOnlyList<AllShapeReadRangeSweepRow> rows)
     {
         string reportPath = PrepareCurrentReport(artifactDirectory, "all-shape-read-range-sweep-current.md", "all-shape-read-range-sweep");
         string timestamp = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture);
@@ -31664,6 +33226,12 @@ internal static partial class RawHarness
         builder.AppendLine($"- Read iterations per row: `{iterations}`");
         builder.AppendLine($"- Repeat samples per row: `{repeatCount}`");
         builder.AppendLine($"- Commit gap coalescing during fixture build: `{commitGapCoalesceBytes}`");
+        builder.AppendLine($"- `SS8-8` shelf size: `{scalar8Scalar8Profile.ShelfExtentSize}` bytes; max items: `{scalar8Scalar8Profile.MaxItemCount}`");
+        builder.AppendLine($"- `SS16-8` shelf size: `{scalar16Scalar8Profile.ShelfExtentSize}` bytes; max items: `{scalar16Scalar8Profile.MaxItemCount}`");
+        builder.AppendLine($"- `SS8-16` shelf size: `{scalar8Scalar16Profile.ShelfExtentSize}` bytes; max items: `{scalar8Scalar16Profile.MaxItemCount}`");
+        builder.AppendLine($"- `SS16-16` shelf size: `{scalar16Scalar16Profile.ShelfExtentSize}` bytes; max items: `{scalar16Scalar16Profile.MaxItemCount}`");
+        builder.AppendLine($"- `FS32-8` shelf size: `{fixed32Scalar8Profile.ShelfExtentSize}` bytes; max items: `{fixed32Scalar8Profile.MaxItemCount}`");
+        builder.AppendLine($"- `FS32-16` shelf size: `{fixed32Scalar16Profile.ShelfExtentSize}` bytes; max items: `{fixed32Scalar16Profile.MaxItemCount}`");
         builder.AppendLine($"- SQLite journal mode: `{sqliteOptions.JournalMode}`");
         builder.AppendLine($"- SQLite synchronous mode: `{sqliteOptions.Synchronous}`");
         builder.AppendLine($"- Raw file reserve read baseline: `{FileReserveReadBaselineMiBs:F2} MiB/s`");

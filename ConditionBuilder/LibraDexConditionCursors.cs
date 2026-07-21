@@ -13,6 +13,7 @@ public readonly record struct LibraDexCursorEntry<TKey, TIdentity>(TKey? Key, TI
 /// <summary>
 /// Provides a forward-only cursor over identity values produced by a completed LibraDex condition.<br/>
 /// Conditions remain filter descriptors; this cursor is the materialization boundary used when callers only need identities.<br/>
+/// The cursor is a live-session cursor, not a snapshot; use materialized identity lists when another owner may write to the same session.<br/>
 /// </summary>
 /// <typeparam name="TIdentity">The public identity type returned by the cursor.</typeparam>
 public sealed class LibraDexIdentityCursor<TIdentity> : IDisposable
@@ -30,8 +31,8 @@ public sealed class LibraDexIdentityCursor<TIdentity> : IDisposable
     }
 
     /// <summary>
-    /// Gets the zero-based ordinal of the current returned identity.<br/>
-    /// The value is `-1` until <see cref="Next"/> returns <see langword="true"/> for the first time.<br/>
+    /// Gets the zero-based logical ordinal of the most recently consumed identity.<br/>
+    /// Skip and pull operations advance this position even though they invalidate the scalar current identity.<br/>
     /// </summary>
     public long Ordinal { get; private set; }
 
@@ -63,6 +64,82 @@ public sealed class LibraDexIdentityCursor<TIdentity> : IDisposable
     /// <returns><see langword="true"/> when an identity is available through <see cref="GetIdentity"/>.</returns>
     public bool MoveNext()
         => Next();
+
+    /// <summary>
+    /// Consumes up to <paramref name="count"/> upcoming unread identities without returning them.<br/>
+    /// The method may be called before the first move or between individual reads and returns the actual count consumed at end-of-stream.<br/>
+    /// </summary>
+    /// <param name="count">The maximum number of upcoming identities to consume.<br/></param>
+    /// <returns>The number of identities actually skipped.<br/></returns>
+    public int Skip(int count)
+    {
+        ThrowIfDisposed();
+        if (count < 0)
+            throw new ArgumentOutOfRangeException(nameof(count), "Skip must be zero or greater.");
+
+        if (count == 0)
+            return 0;
+
+        hasCurrent = false;
+        current = default;
+        int skipped = 0;
+        while (skipped < count && enumerator.MoveNext())
+        {
+            Ordinal++;
+            skipped++;
+        }
+
+        return skipped;
+    }
+
+    /// <summary>
+    /// Eagerly returns up to <paramref name="count"/> upcoming unread identities and advances beyond them.<br/>
+    /// The identity exposed by the previous successful <see cref="Next"/> call is not repeated.<br/>
+    /// </summary>
+    /// <param name="count">The maximum number of upcoming identities to return.<br/></param>
+    /// <returns>A caller-owned array containing the identities actually pulled.<br/></returns>
+    public IReadOnlyList<TIdentity> Pull(int count)
+    {
+        ThrowIfDisposed();
+        if (count < 0)
+            throw new ArgumentOutOfRangeException(nameof(count), "Pull count must be zero or greater.");
+
+        if (count == 0)
+            return Array.Empty<TIdentity>();
+
+        TIdentity[] identities = new TIdentity[count];
+        int pulled = Pull(identities.AsSpan());
+        if (pulled == count)
+            return identities;
+
+        Array.Resize(ref identities, pulled);
+        return identities;
+    }
+
+    /// <summary>
+    /// Copies upcoming unread identities into caller-owned storage and advances beyond them.<br/>
+    /// The returned count identifies the populated prefix when the condition stream ends before the destination fills.<br/>
+    /// </summary>
+    /// <param name="destination">The destination receiving upcoming identities.<br/></param>
+    /// <returns>The number of destination elements populated.<br/></returns>
+    public int Pull(Span<TIdentity> destination)
+    {
+        ThrowIfDisposed();
+        if (destination.Length == 0)
+            return 0;
+
+        hasCurrent = false;
+        current = default;
+        int pulled = 0;
+        while (pulled < destination.Length && enumerator.MoveNext())
+        {
+            destination[pulled] = enumerator.Current;
+            Ordinal++;
+            pulled++;
+        }
+
+        return pulled;
+    }
 
     /// <summary>
     /// Gets the current identity value.<br/>
@@ -112,6 +189,7 @@ public sealed class LibraDexIdentityCursor<TIdentity> : IDisposable
 /// <summary>
 /// Provides a forward-only cursor over key/identity entries from one target LibraDex index after a completed condition has filtered the identity stream.<br/>
 /// The cursor returns the target index's stored key values directly, so callers can enumerate indexed values without separate covering-index ceremony.<br/>
+/// The cursor is a live-session cursor, not a published-reader view, and cursor-local mutation is write behavior for concurrency purposes.<br/>
 /// </summary>
 /// <typeparam name="TKey">The public key type exposed by the target index.</typeparam>
 /// <typeparam name="TIdentity">The public identity type exposed by the target index.</typeparam>
@@ -162,8 +240,8 @@ public sealed class LibraDexIndexCursor<TKey, TIdentity> : IDisposable
     }
 
     /// <summary>
-    /// Gets the zero-based ordinal of the current returned entry after skip/take have been applied.<br/>
-    /// The value is `-1` until <see cref="Next"/> returns <see langword="true"/> for the first time.<br/>
+    /// Gets the zero-based logical ordinal of the most recently consumed entry after the initial skip boundary.<br/>
+    /// Live skip and pull operations advance this position even though they invalidate the scalar current entry.<br/>
     /// </summary>
     public long Ordinal { get; private set; }
 
@@ -216,6 +294,82 @@ public sealed class LibraDexIndexCursor<TKey, TIdentity> : IDisposable
     /// <returns><see langword="true"/> when an entry is available through <see cref="GetEntry"/>.</returns>
     public bool MoveNext()
         => Next();
+
+    /// <summary>
+    /// Consumes up to <paramref name="count"/> upcoming unread target-index entries without returning them.<br/>
+    /// Initial cursor paging and the optional take boundary remain in force, while repeated calls can move relative to the reader's live position.<br/>
+    /// </summary>
+    /// <param name="count">The maximum number of upcoming entries to consume.<br/></param>
+    /// <returns>The number of entries actually skipped.<br/></returns>
+    public int Skip(int count)
+    {
+        ThrowIfDisposed();
+        if (count < 0)
+            throw new ArgumentOutOfRangeException(nameof(count), "Skip must be zero or greater.");
+
+        if (count == 0)
+            return 0;
+
+        hasCurrent = false;
+        current = default;
+        int consumed = 0;
+        while (consumed < count && Next())
+            consumed++;
+
+        hasCurrent = false;
+        current = default;
+        return consumed;
+    }
+
+    /// <summary>
+    /// Eagerly returns up to <paramref name="count"/> upcoming unread target-index entries and advances beyond them.<br/>
+    /// The entry exposed by the previous successful <see cref="Next"/> call is not repeated.<br/>
+    /// </summary>
+    /// <param name="count">The maximum number of upcoming entries to return.<br/></param>
+    /// <returns>A caller-owned array containing the entries actually pulled.<br/></returns>
+    public IReadOnlyList<LibraDexCursorEntry<TKey, TIdentity>> Pull(int count)
+    {
+        ThrowIfDisposed();
+        if (count < 0)
+            throw new ArgumentOutOfRangeException(nameof(count), "Pull count must be zero or greater.");
+
+        if (count == 0)
+            return Array.Empty<LibraDexCursorEntry<TKey, TIdentity>>();
+
+        LibraDexCursorEntry<TKey, TIdentity>[] entries = new LibraDexCursorEntry<TKey, TIdentity>[count];
+        int pulled = Pull(entries.AsSpan());
+        if (pulled == count)
+            return entries;
+
+        Array.Resize(ref entries, pulled);
+        return entries;
+    }
+
+    /// <summary>
+    /// Copies upcoming unread target-index entries into caller-owned storage and advances beyond them.<br/>
+    /// The returned count identifies the populated prefix when the cursor ends before the destination fills.<br/>
+    /// </summary>
+    /// <param name="destination">The destination receiving upcoming key/identity entries.<br/></param>
+    /// <returns>The number of destination elements populated.<br/></returns>
+    public int Pull(Span<LibraDexCursorEntry<TKey, TIdentity>> destination)
+    {
+        ThrowIfDisposed();
+        if (destination.Length == 0)
+            return 0;
+
+        hasCurrent = false;
+        current = default;
+        int pulled = 0;
+        while (pulled < destination.Length && Next())
+        {
+            destination[pulled] = new LibraDexCursorEntry<TKey, TIdentity>(CastKey(current.Key), GetIdentity());
+            pulled++;
+        }
+
+        hasCurrent = false;
+        current = default;
+        return pulled;
+    }
 
     /// <summary>
     /// Gets the current target-index key value.<br/>
@@ -590,6 +744,9 @@ internal static class LibraDexConditionCursorExecutor
             yield break;
         }
 
+        HashSet<object>? matchedIdentitySet = CanUseDefaultIdentityHashSet(matchedIdentities)
+            ? new HashSet<object>(matchedIdentities)
+            : null;
         foreach (LibraDexObjectTuple tuple in IterateTuplePrimitive(
             targetIndex,
             LibraDexCriteriaKind.All,
@@ -597,7 +754,7 @@ internal static class LibraDexConditionCursorExecutor
             takeLimit: null,
             direction))
         {
-            if (ContainsIdentity(matchedIdentities, tuple.Identity))
+            if (ContainsIdentity(matchedIdentities, matchedIdentitySet, tuple.Identity))
             {
                 yield return tuple;
             }

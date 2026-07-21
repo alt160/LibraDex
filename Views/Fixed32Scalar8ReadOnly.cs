@@ -17,7 +17,7 @@ internal readonly ref struct Fixed32Scalar8ReadOnly
     /// </summary>
     /// <param name="bytes">The shelf bytes to project.</param>
     public Fixed32Scalar8ReadOnly(ReadOnlySpan<byte> bytes)
-        : this(bytes, Fixed32Scalar8Profile.Default64KiB)
+        : this(bytes, Fixed32Scalar8Profile.Default40KiB)
     {
     }
 

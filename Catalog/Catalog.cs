@@ -6,6 +6,7 @@ namespace LibraDex;
 /// <summary>
 /// Represents a public grouping of LibraDex indexes over one memory-backed or file-backed catalog session.<br/>
 /// The catalog is the first public construction concept: callers open or create a catalog, then create/open individual indexes beneath `catalog.Indexes`.<br/>
+/// Active catalog sessions are single-owner by default; use external serialization or isolated catalogs when multiple callers may write concurrently.<br/>
 /// </summary>
 public sealed class Catalog : IDisposable
 {
@@ -41,11 +42,11 @@ public sealed class Catalog : IDisposable
     /// Gets whether this catalog is memory-backed or file-backed.<br/>
     /// Memory-backed catalogs are temporary and cannot be reopened after disposal.<br/>
     /// </summary>
-    public DataKernelBackingKind BackingKind { get; }
+    internal DataKernelBackingKind BackingKind { get; }
 
     /// <summary>
     /// Gets the options supplied when this catalog was opened or created.<br/>
-    /// `CatalogOptions` is intentionally empty in this slice, but the property gives future catalog-level policy a stable home.<br/>
+    /// Diagnostics options may enable fail-fast unsupported-concurrency checks, but they do not turn the active session into a concurrent writer or published-reader domain.<br/>
     /// </summary>
     public CatalogOptions Options { get; }
 
@@ -126,6 +127,16 @@ public sealed class Catalog : IDisposable
     internal LibraDexFileSession Session => session;
 
     /// <summary>
+    /// Gets the current memory-backed DataKernel arena diagnostics for internal workbench tooling.<br/>
+    /// File-backed catalogs return a zero-valued snapshot because their committed bytes are not held by the managed arena.<br/>
+    /// </summary>
+    /// <returns>The current DataKernel memory arena diagnostic snapshot.</returns>
+    internal DataKernelMemoryDiagnostics GetMemoryDiagnostics()
+    {
+        return session.GetMemoryDiagnostics();
+    }
+
+    /// <summary>
     /// Creates a new file-backed catalog.<br/>
     /// Creation fails if the target file already exists, preserving the explicit create/open split and avoiding accidental reuse of an unexpected file.<br/>
     /// </summary>
@@ -151,7 +162,7 @@ public sealed class Catalog : IDisposable
             requiredPath,
             CreateDefaultDataKernelOptions(),
             CreateCatalogDeveloperMetadata(),
-            DataKernelTelemetryOptions.EnabledOptions);
+            DataKernelTelemetryOptions.FromLevel(effectiveOptions.DiagnosticsLevel));
         return new Catalog(session, requiredPath, DataKernelBackingKind.File, effectiveOptions);
     }
 
@@ -174,8 +185,10 @@ public sealed class Catalog : IDisposable
         LibraDexFileSession session = LibraDexFileSession.Open(
             requiredPath,
             CreateDefaultDataKernelOptions(),
-            DataKernelTelemetryOptions.EnabledOptions);
-        return new Catalog(session, requiredPath, DataKernelBackingKind.File, effectiveOptions);
+            DataKernelTelemetryOptions.FromLevel(effectiveOptions.DiagnosticsLevel));
+        Catalog catalog = new(session, requiredPath, DataKernelBackingKind.File, effectiveOptions);
+        catalog.ValidateExistingIdentityContracts();
+        return catalog;
     }
 
     /// <summary>
@@ -204,7 +217,7 @@ public sealed class Catalog : IDisposable
         LibraDexFileSession session = LibraDexFileSession.InitializeMemory(
             CreateDefaultDataKernelOptions(),
             CreateCatalogDeveloperMetadata(),
-            DataKernelTelemetryOptions.EnabledOptions);
+            DataKernelTelemetryOptions.FromLevel(effectiveOptions.DiagnosticsLevel));
         return new Catalog(session, null, DataKernelBackingKind.Memory, effectiveOptions);
     }
 
@@ -292,6 +305,7 @@ public sealed class Catalog : IDisposable
         LibraDexIndex<TKey, TIdentity>? exactReversedProjection = null)
     {
         ThrowIfDisposed();
+        ValidateIdentityType(typeof(TIdentity), identityFamily, nameof(CreateGenericIndex));
         if (TryFindSlot(session, slotIndex, out _))
         {
             throw new InvalidOperationException("The requested LibraDex index slot is already active.");
@@ -317,13 +331,15 @@ public sealed class Catalog : IDisposable
             shape,
             ownsSession: false,
             options.Keys,
+            options.IdentityKeyMultiplicity,
             this,
             group,
             keyFamily,
             identityFamily,
             logicalShape,
             exactReversedProjection,
-            options.DateTimeKeyEncoding);
+            options.DateTimeKeyEncoding,
+            options.ReadCacheMaxBytes);
     }
 
     internal LibraDexIndex<TKey, TIdentity> OpenGenericIndex<TKey, TIdentity>(
@@ -333,6 +349,7 @@ public sealed class Catalog : IDisposable
         LibraDexScalarWidth? identityWidth)
     {
         ThrowIfDisposed();
+        ValidateIdentityType(typeof(TIdentity), CatalogIndexIdentityFamily.Scalar, nameof(OpenGenericIndex));
         if (!TryFindSlot(session, slotIndex, out IndexDirectorySlotSnapshot slot))
         {
             throw new InvalidDataException("The requested LibraDex index slot is not active.");
@@ -349,6 +366,7 @@ public sealed class Catalog : IDisposable
         if (session.TryReadCatalogIndexMetadata(slot, out CatalogIndexMetadata metadata))
         {
             persistedMetadata = metadata;
+            ValidateIdentityType(ResolvePersistedType(metadata.IdentityTypeName), metadata.IdentityFamily, nameof(OpenGenericIndex));
             name = string.IsNullOrWhiteSpace(metadata.IndexName) ? slot.Name : metadata.IndexName;
             group = metadata.Group;
             keyFamily = metadata.KeyFamily;
@@ -364,7 +382,7 @@ public sealed class Catalog : IDisposable
         {
             exactReversedProjection = OpenGenericIndex<TKey, TIdentity>(
                 projectionOwnerMetadata.ExactReversedProjectionSlotIndex,
-                new IndexOptions { Keys = keyContract },
+                new IndexOptions { Keys = keyContract, IdentityKeyMultiplicity = projectionOwnerMetadata.IdentityKeyMultiplicity },
                 keyWidth,
                 identityWidth);
         }
@@ -377,13 +395,15 @@ public sealed class Catalog : IDisposable
             shape,
             ownsSession: false,
             keyContract,
+            persistedMetadata?.IdentityKeyMultiplicity ?? options.IdentityKeyMultiplicity,
             this,
             group,
             keyFamily,
             identityFamily,
             logicalShape,
             exactReversedProjection,
-            persistedMetadata?.DateTimeKeyEncoding ?? options.DateTimeKeyEncoding);
+            persistedMetadata?.DateTimeKeyEncoding ?? options.DateTimeKeyEncoding,
+            options.ReadCacheMaxBytes);
     }
 
     internal LibraDexIndex<TKey, TIdentity> CreateOrOpenGenericIndex<TKey, TIdentity>(
@@ -402,6 +422,7 @@ public sealed class Catalog : IDisposable
     internal IIndex OpenIndex(CatalogIndexInfo info)
     {
         ThrowIfDisposed();
+        ValidateIdentityType(ResolvePersistedType(info.IdentityTypeName), info.IdentityFamily, nameof(OpenIndex));
         if (info.KeyFamily == CatalogIndexKeyFamily.Composite)
         {
             return OpenCompositeIndex(info);
@@ -442,6 +463,19 @@ public sealed class Catalog : IDisposable
             }
         }
 
+        if (info.KeyFamily == CatalogIndexKeyFamily.Scalar &&
+            info.IdentityFamily == CatalogIndexIdentityFamily.Blob &&
+            info.VarIdentityMaxLength > 0)
+        {
+            Type persistedKeyType = ResolvePersistedType(info.KeyTypeName);
+            if (persistedKeyType == typeof(ulong))
+            {
+                return OpenUInt64VarIdentityIndex(info);
+            }
+
+            throw new NotSupportedException("Only UInt64-key variable-identity scalar indexes are currently connected to metadata-driven open.");
+        }
+
         Type keyType = ResolvePersistedType(info.KeyTypeName);
         Type identityType = ResolvePersistedType(info.IdentityTypeName);
         LibraDexScalarWidth? keyWidth = keyType == typeof(byte[])
@@ -462,7 +496,7 @@ public sealed class Catalog : IDisposable
                 .Invoke(this, new object?[]
                 {
                     info.SlotIndex,
-                    new IndexOptions { Keys = info.KeyContract },
+                    new IndexOptions { Keys = info.KeyContract, IdentityKeyMultiplicity = info.IdentityKeyMultiplicity },
                     keyWidth,
                     identityWidth
                 });
@@ -480,6 +514,7 @@ public sealed class Catalog : IDisposable
     {
         ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(shape);
+        ValidateIdentityType(shape.IdentityType, shape.IdentityFamily, nameof(CreateIndex));
         if (shape.KeyType == typeof(byte[]) || shape.IdentityType == typeof(byte[]))
         {
             throw new NotSupportedException("Shape-driven byte[] index creation requires persisted scalar-width metadata.");
@@ -530,6 +565,7 @@ public sealed class Catalog : IDisposable
     {
         ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(shape);
+        ValidateIdentityType(shape.IdentityType, shape.IdentityFamily, nameof(CreateCompositeIndex));
         if (shape.KeyFamily != CatalogIndexKeyFamily.Composite)
         {
             throw new ArgumentException("Composite index creation requires a composite logical shape.", nameof(shape));
@@ -559,6 +595,7 @@ public sealed class Catalog : IDisposable
     internal LibraDexRoutedCompositeIndex OpenCompositeIndex(CatalogIndexInfo info)
     {
         ThrowIfDisposed();
+        ValidateIdentityType(ResolvePersistedType(info.IdentityTypeName), info.IdentityFamily, nameof(OpenCompositeIndex));
         if (info.KeyFamily != CatalogIndexKeyFamily.Composite)
         {
             throw new ArgumentException("The supplied catalog index metadata does not describe a composite index.", nameof(info));
@@ -645,9 +682,11 @@ public sealed class Catalog : IDisposable
         IndexOptions options)
     {
         ThrowIfDisposed();
+        EnsureSupportedIdentityKeyMultiplicity(options, supportsSingleKeyPerIdentity: false, nameof(CreateBigIntScalar8Index));
+        ValidateIdentityType(typeof(TIdentity), CatalogIndexIdentityFamily.Scalar, nameof(CreateBigIntScalar8Index));
         LibraDexBigIntCodec.ValidateMaxBytes(maxBytes, nameof(maxBytes));
 
-        int maxKeyLength = checked(maxBytes + 3);
+        int maxKeyLength = GetBigIntScalarPhysicalMaxKeyLength(maxBytes, storage);
         CatalogIndexMetadata metadata = CreateBigIntMetadata<TIdentity>(group, name, maxKeyLength, storage, options);
         if (storage == LibraDexBigIntKeyStorage.FixedWidth)
         {
@@ -688,6 +727,7 @@ public sealed class Catalog : IDisposable
         LibraDexBigIntKeyStorage expectedStorage)
     {
         ThrowIfDisposed();
+        ValidateIdentityType(typeof(TIdentity), CatalogIndexIdentityFamily.Scalar, nameof(OpenBigIntScalar8Index));
         if (info.KeyFamily != CatalogIndexKeyFamily.BigInt ||
             info.IdentityFamily != CatalogIndexIdentityFamily.Scalar ||
             info.VarKeyMaxKeyLength < 4)
@@ -709,7 +749,7 @@ public sealed class Catalog : IDisposable
             throw new InvalidDataException($"The requested BigInt identity type {typeof(TIdentity).FullName} does not match persisted metadata type {identityType.FullName}.");
         }
 
-        int maxBytes = info.VarKeyMaxKeyLength - 3;
+        int maxBytes = GetBigIntScalarMaxBytes(info.VarKeyMaxKeyLength, expectedStorage);
         LibraDexBigIntCodec.ValidateMaxBytes(maxBytes, nameof(info.VarKeyMaxKeyLength));
         if (expectedStorage == LibraDexBigIntKeyStorage.FixedWidth)
         {
@@ -748,6 +788,8 @@ public sealed class Catalog : IDisposable
         IndexOptions options)
     {
         ThrowIfDisposed();
+        EnsureSupportedIdentityKeyMultiplicity(options, supportsSingleKeyPerIdentity: false, nameof(CreateBigIntVarIdentityIndex));
+        ValidateIdentityType(typeof(byte[]), CatalogIndexIdentityFamily.Blob, nameof(CreateBigIntVarIdentityIndex));
         LibraDexBigIntCodec.ValidateMaxBytes(maxBytes, nameof(maxBytes));
         int maxKeyLength = checked(maxBytes + 3);
         FixedNVarIdentityProfile profile = FixedNVarIdentityProfile.Default64KiB(maxKeyLength, maxIdentityBytes);
@@ -763,6 +805,7 @@ public sealed class Catalog : IDisposable
     internal LibraDexBigIntVarIdentityIndex OpenBigIntVarIdentityIndex(CatalogIndexInfo info)
     {
         ThrowIfDisposed();
+        ValidateIdentityType(typeof(byte[]), CatalogIndexIdentityFamily.Blob, nameof(OpenBigIntVarIdentityIndex));
         if (info.KeyFamily != CatalogIndexKeyFamily.BigInt ||
             info.IdentityFamily != CatalogIndexIdentityFamily.Blob ||
             info.Projections.Count == 0 ||
@@ -779,6 +822,182 @@ public sealed class Catalog : IDisposable
         FixedNVarIdentityIndexHandle handle = new(info.RootRouterOffset, profile, IsRouted: true);
         FixedNVarIdentityIndex inner = new(session, handle, info.SlotIndex);
         return new LibraDexBigIntVarIdentityIndex(info.Group, info.Name, inner, maxBytes, info.VarIdentityMaxLength, info.KeyContract);
+    }
+
+    /// <summary>
+    /// Creates a metadata-backed UInt64-key variable-identity index over routed `SV8` storage.<br/>
+    /// The catalog metadata marks the identity family as blob with a variable identity cap, distinguishing this shape from fixed-width byte-array identities.<br/>
+    /// </summary>
+    /// <param name="group">The identity group that owns the index.</param>
+    /// <param name="name">The logical index name inside the group.</param>
+    /// <param name="slotIndex">The fixed catalog slot used for the root router.</param>
+    /// <param name="maxIdentityBytes">The maximum raw identity byte count accepted by this index.</param>
+    /// <param name="options">The index options for duplicate-key behavior.</param>
+    /// <returns>A catalog-owned UInt64/SV8 variable-identity index facade.</returns>
+    internal LibraDexUInt64VarIdentityIndex CreateUInt64VarIdentityIndex(
+        string group,
+        string name,
+        int slotIndex,
+        int maxIdentityBytes,
+        IndexOptions options)
+    {
+        ThrowIfDisposed();
+        EnsureSupportedIdentityKeyMultiplicity(options, supportsSingleKeyPerIdentity: false, nameof(CreateUInt64VarIdentityIndex));
+        ValidateIdentityType(typeof(byte[]), CatalogIndexIdentityFamily.Blob, nameof(CreateUInt64VarIdentityIndex));
+        if (TryFindSlot(session, slotIndex, out _))
+        {
+            throw new InvalidOperationException("The requested LibraDex UInt64 variable-identity index slot is already active.");
+        }
+
+        Scalar8VarIdentityProfile.Create(Scalar8VarIdentityProfile.Default8KiB.ShelfExtentSize, maxIdentityBytes);
+        CatalogIndexMetadata metadata = CreateUInt64VarIdentityMetadata(group, name, maxIdentityBytes, options);
+        (RouterSnapshot root, _) = session.CreateRootRouterIndex(CreateGenericSlot(slotIndex, name), metadata);
+        Scalar8VarIdentityIndex inner = new(session, slotIndex, name, root.Offset, maxIdentityBytes, ownsSession: false);
+        return new LibraDexUInt64VarIdentityIndex(group, name, inner, options.Keys);
+    }
+
+    /// <summary>
+    /// Opens a metadata-backed UInt64-key variable-identity index over routed `SV8` storage.<br/>
+    /// Reopen validates the persisted key family and variable identity cap before returning the condition-builder facade.<br/>
+    /// </summary>
+    /// <param name="info">The persisted catalog metadata for the index.</param>
+    /// <returns>A catalog-owned UInt64/SV8 variable-identity index facade.</returns>
+    internal LibraDexUInt64VarIdentityIndex OpenUInt64VarIdentityIndex(CatalogIndexInfo info)
+    {
+        ThrowIfDisposed();
+        ValidateIdentityType(typeof(byte[]), CatalogIndexIdentityFamily.Blob, nameof(OpenUInt64VarIdentityIndex));
+        if (info.KeyFamily != CatalogIndexKeyFamily.Scalar ||
+            info.IdentityFamily != CatalogIndexIdentityFamily.Blob ||
+            info.VarIdentityMaxLength <= 0 ||
+            ResolvePersistedType(info.KeyTypeName) != typeof(ulong) ||
+            ResolvePersistedType(info.IdentityTypeName) != typeof(byte[]))
+        {
+            throw new InvalidDataException("The persisted catalog entry is not a reopenable UInt64 variable-identity index.");
+        }
+
+        Scalar8VarIdentityIndex inner = new(session, info.SlotIndex, info.Name, info.RootRouterOffset, info.VarIdentityMaxLength, ownsSession: false);
+        return new LibraDexUInt64VarIdentityIndex(info.Group, info.Name, inner, info.KeyContract);
+    }
+
+    /// <summary>
+    /// Creates a metadata-backed raw-byte variable-key/variable-identity index over routed `VV` storage.<br/>
+    /// The catalog metadata carries both physical byte caps so file-backed catalogs can reopen the same raw tuple index for workbench and adapter paths.<br/>
+    /// </summary>
+    /// <param name="group">The identity group that owns the index.<br/></param>
+    /// <param name="name">The logical index name inside the group.<br/></param>
+    /// <param name="slotIndex">The fixed catalog slot used for the root router.<br/></param>
+    /// <param name="maxKeyBytes">The maximum physical variable-key bytes, including the internal sentinel byte.<br/></param>
+    /// <param name="maxIdentityBytes">The maximum raw identity byte count accepted by this index.<br/></param>
+    /// <param name="options">The index options for duplicate-key behavior.<br/></param>
+    /// <returns>A catalog-owned raw `VV` index facade.</returns>
+    internal VarKeyVarIdentityIndex CreateVarKeyVarIdentityIndex(
+        string group,
+        string name,
+        int slotIndex,
+        int maxKeyBytes,
+        int maxIdentityBytes,
+        IndexOptions options)
+    {
+        ThrowIfDisposed();
+        EnsureSupportedIdentityKeyMultiplicity(options, supportsSingleKeyPerIdentity: false, nameof(CreateVarKeyVarIdentityIndex));
+        ValidateIdentityType(typeof(byte[]), CatalogIndexIdentityFamily.Blob, nameof(CreateVarKeyVarIdentityIndex));
+        if (TryFindSlot(session, slotIndex, out _))
+        {
+            throw new InvalidOperationException("The requested LibraDex VV index slot is already active.");
+        }
+
+        VarKeyVarIdentityProfile.Create(VarKeyVarIdentityProfile.Default8KiB.ShelfExtentSize, maxKeyBytes, maxIdentityBytes);
+        CatalogIndexMetadata metadata = CreateVarKeyVarIdentityMetadata(group, name, maxKeyBytes, maxIdentityBytes, options);
+        (RouterSnapshot root, _) = session.CreateRootRouterIndex(CreateGenericSlot(slotIndex, name), metadata);
+        return new VarKeyVarIdentityIndex(session, slotIndex, name, root.Offset, maxKeyBytes, maxIdentityBytes, ownsSession: false);
+    }
+
+    /// <summary>
+    /// Opens a metadata-backed raw-byte variable-key/variable-identity index over routed `VV` storage.<br/>
+    /// Reopen validates the persisted byte caps before returning the catalog-owned raw tuple facade.<br/>
+    /// </summary>
+    /// <param name="info">The persisted catalog metadata for the index.<br/></param>
+    /// <returns>A catalog-owned raw `VV` index facade.</returns>
+    internal VarKeyVarIdentityIndex OpenVarKeyVarIdentityIndex(CatalogIndexInfo info)
+    {
+        ThrowIfDisposed();
+        ValidateIdentityType(typeof(byte[]), CatalogIndexIdentityFamily.Blob, nameof(OpenVarKeyVarIdentityIndex));
+        if (info.KeyFamily != CatalogIndexKeyFamily.Blob ||
+            info.IdentityFamily != CatalogIndexIdentityFamily.Blob ||
+            info.VarKeyMaxKeyLength <= 0 ||
+            info.VarIdentityMaxLength <= 0 ||
+            ResolvePersistedType(info.KeyTypeName) != typeof(byte[]) ||
+            ResolvePersistedType(info.IdentityTypeName) != typeof(byte[]))
+        {
+            throw new InvalidDataException("The persisted catalog entry is not a reopenable raw VV index.");
+        }
+
+        return new VarKeyVarIdentityIndex(session, info.SlotIndex, info.Name, info.RootRouterOffset, info.VarKeyMaxKeyLength, info.VarIdentityMaxLength, ownsSession: false);
+    }
+
+    /// <summary>
+    /// Validates every existing rich-metadata index against the catalog-level required identity type.<br/>
+    /// This runs only for constrained catalogs, so ordinary mixed-identity LibraDex catalogs do not pay for an open-time scan.<br/>
+    /// </summary>
+    private void ValidateExistingIdentityContracts()
+    {
+        Type? required = Options.RequiredIdentityType;
+        if (required is null)
+        {
+            return;
+        }
+
+        ReadOnlySpan<IndexDirectorySlotSnapshot> activeSlots = session.IndexDirectory.ActiveSlots;
+        for (int i = 0; i < activeSlots.Length; i++)
+        {
+            IndexDirectorySlotSnapshot slot = activeSlots[i];
+            if (!session.TryReadCatalogIndexMetadata(slot, out CatalogIndexMetadata metadata))
+            {
+                throw new InvalidDataException($"Catalog identity policy requires {required.FullName}, but slot {slot.SlotIndex} has no rich identity metadata.");
+            }
+
+            ValidateIdentityType(ResolvePersistedType(metadata.IdentityTypeName), metadata.IdentityFamily, "Open");
+        }
+    }
+
+    /// <summary>
+    /// Enforces the catalog-level required identity type for create, open, and adapter-bound identity surfaces.<br/>
+    /// The check is intentionally centralized so Abraxas can constrain a whole catalog to UInt64 identities without repeating guards at every index call site.<br/>
+    /// </summary>
+    /// <param name="identityType">The CLR identity type requested by the operation.<br/></param>
+    /// <param name="identityFamily">The persisted identity family requested by the operation.<br/></param>
+    /// <param name="operationName">The calling operation name used in the exception message.<br/></param>
+    internal void ValidateIdentityType(Type identityType, CatalogIndexIdentityFamily identityFamily, string operationName)
+    {
+        Type? required = Options.RequiredIdentityType;
+        if (required is null)
+        {
+            return;
+        }
+
+        if (identityFamily != CatalogIndexIdentityFamily.Scalar || identityType != required)
+        {
+            throw new InvalidOperationException($"Catalog operation '{operationName}' requires scalar identity type {required.FullName}, but received {identityFamily} identity type {identityType.FullName}.");
+        }
+    }
+
+    /// <summary>
+    /// Verifies that a requested identity-to-key multiplicity contract is enforced before catalog metadata records it.<br/>
+    /// This keeps `SingleKeyPerIdentity` from becoming a metadata-only promise on index facades whose mutation paths do not yet maintain that invariant.<br/>
+    /// </summary>
+    /// <param name="options">The resolved index options for the create path.</param>
+    /// <param name="supportsSingleKeyPerIdentity">Whether the create path enforces <see cref="IdentityKeyMultiplicity.SingleKeyPerIdentity"/>.</param>
+    /// <param name="operationName">The operation name used in failure messages.</param>
+    private static void EnsureSupportedIdentityKeyMultiplicity(
+        IndexOptions options,
+        bool supportsSingleKeyPerIdentity,
+        string operationName)
+    {
+        if (options.IdentityKeyMultiplicity == IdentityKeyMultiplicity.SingleKeyPerIdentity &&
+            !supportsSingleKeyPerIdentity)
+        {
+            throw new NotSupportedException($"Catalog operation '{operationName}' does not enforce {nameof(IdentityKeyMultiplicity.SingleKeyPerIdentity)} yet.");
+        }
     }
 
     private void ThrowIfDisposed()
@@ -918,7 +1137,8 @@ public sealed class Catalog : IDisposable
             options.StringComparisonPolicy?.CompareOptions ?? System.Globalization.CompareOptions.None,
             options.StringComparisonPolicy?.CultureName ?? string.Empty,
             options.StringComparisonPolicy?.CustomComparerTypeName ?? string.Empty,
-            logicalShape is not null);
+            logicalShape is not null,
+            IdentityKeyMultiplicity: options.IdentityKeyMultiplicity);
     }
 
     private static LibraDexScalarWidth ResolvePersistedBlobWidth(int width, string side)
@@ -969,7 +1189,8 @@ public sealed class Catalog : IDisposable
             options.StringComparisonPolicy?.CompareOptions ?? System.Globalization.CompareOptions.None,
             options.StringComparisonPolicy?.CultureName ?? string.Empty,
             options.StringComparisonPolicy?.CustomComparerTypeName ?? string.Empty,
-            true);
+            true,
+            IdentityKeyMultiplicity: options.IdentityKeyMultiplicity);
     }
 
     private static CatalogIndexMetadata CreateBigIntMetadata<TIdentity>(
@@ -1010,7 +1231,39 @@ public sealed class Catalog : IDisposable
             options.StringComparisonPolicy?.CompareOptions ?? System.Globalization.CompareOptions.None,
             options.StringComparisonPolicy?.CultureName ?? string.Empty,
             options.StringComparisonPolicy?.CustomComparerTypeName ?? string.Empty,
-            true);
+            true,
+            IdentityKeyMultiplicity: options.IdentityKeyMultiplicity);
+    }
+
+    /// <summary>
+    /// Gets the persisted physical key limit for a BigInteger/scalar index.<br/>
+    /// Fixed-width storage persists LibraDex's sortable BigInt bytes directly, while variable-width storage wraps those bytes in the var-key sentinel contract and therefore needs one extra byte.<br/>
+    /// </summary>
+    /// <param name="maxBytes">The developer-facing maximum BigInteger magnitude byte count.<br/></param>
+    /// <param name="storage">The BigInteger key storage shape.<br/></param>
+    /// <returns>The physical maximum key length stored in catalog metadata.<br/></returns>
+    private static int GetBigIntScalarPhysicalMaxKeyLength(int maxBytes, LibraDexBigIntKeyStorage storage)
+    {
+        LibraDexBigIntCodec.ValidateMaxBytes(maxBytes, nameof(maxBytes));
+        return storage == LibraDexBigIntKeyStorage.VariableWidth
+            ? checked(maxBytes + 4)
+            : LibraDexBigIntCodec.GetFixedEncodedLength(maxBytes);
+    }
+
+    /// <summary>
+    /// Gets the developer-facing BigInteger magnitude limit from a persisted BigInteger/scalar physical key limit.<br/>
+    /// Variable-width scalar indexes reserve one physical byte for the var-key sentinel in addition to LibraDex's sortable BigInt header bytes.<br/>
+    /// </summary>
+    /// <param name="maxKeyLength">The persisted physical maximum key length from catalog metadata.<br/></param>
+    /// <param name="storage">The BigInteger key storage shape.<br/></param>
+    /// <returns>The developer-facing maximum BigInteger magnitude byte count.<br/></returns>
+    private static int GetBigIntScalarMaxBytes(int maxKeyLength, LibraDexBigIntKeyStorage storage)
+    {
+        int maxBytes = storage == LibraDexBigIntKeyStorage.VariableWidth
+            ? maxKeyLength - 4
+            : maxKeyLength - 3;
+        LibraDexBigIntCodec.ValidateMaxBytes(maxBytes, nameof(maxKeyLength));
+        return maxBytes;
     }
 
     private static CatalogIndexMetadata CreateBigIntVarIdentityMetadata(
@@ -1048,7 +1301,104 @@ public sealed class Catalog : IDisposable
             options.StringComparisonPolicy?.CompareOptions ?? System.Globalization.CompareOptions.None,
             options.StringComparisonPolicy?.CultureName ?? string.Empty,
             options.StringComparisonPolicy?.CustomComparerTypeName ?? string.Empty,
-            true);
+            true,
+            IdentityKeyMultiplicity: options.IdentityKeyMultiplicity);
+    }
+
+    /// <summary>
+    /// Creates catalog metadata for a UInt64-key variable-identity `SV8` index.<br/>
+    /// The exact projection kind describes the scalar key route while `VarIdentityMaxLength` carries the raw identity byte cap used by the physical shelf profile.<br/>
+    /// </summary>
+    /// <param name="group">The identity group that owns the index.</param>
+    /// <param name="name">The logical index name inside the group.</param>
+    /// <param name="maxIdentityBytes">The maximum raw identity byte count accepted by this index.</param>
+    /// <param name="options">The resolved index options.</param>
+    /// <returns>A catalog metadata record ready to persist beside the root-router slot.</returns>
+    private static CatalogIndexMetadata CreateUInt64VarIdentityMetadata(
+        string group,
+        string name,
+        int maxIdentityBytes,
+        IndexOptions options)
+    {
+        return new CatalogIndexMetadata(
+            group,
+            name,
+            GetStableTypeName(typeof(ulong)),
+            GetStableTypeName(typeof(byte[])),
+            CatalogIndexKeyFamily.Scalar,
+            CatalogIndexIdentityFamily.Blob,
+            options.Keys,
+            options.StringKeys,
+            options.GuidKeys,
+            options.DateKeys,
+            options.DateTimeKeyEncoding,
+            LibraDexProjectionDirectionSet.Forward,
+            LibraDexIndexSortOrder.Ascending,
+            new[] { new LibraDexIndexProjectionSpec(LibraDexIndexProjectionKind.Exact, LibraDexIndexByteDirection.Forward, LibraDexIndexSortOrder.Ascending) },
+            Array.Empty<LibraDexCompositeKeyPartSpec>(),
+            0,
+            maxIdentityBytes,
+            -1,
+            -1,
+            -1,
+            -1,
+            string.Empty,
+            string.Empty,
+            options.StringComparisonPolicy?.Kind ?? LibraDexStringComparisonPolicyKind.Invariant,
+            options.StringComparisonPolicy?.CompareOptions ?? System.Globalization.CompareOptions.None,
+            options.StringComparisonPolicy?.CultureName ?? string.Empty,
+            options.StringComparisonPolicy?.CustomComparerTypeName ?? string.Empty,
+            true,
+            IdentityKeyMultiplicity: options.IdentityKeyMultiplicity);
+    }
+
+    /// <summary>
+    /// Creates catalog metadata for a raw-byte variable-key/variable-identity `VV` index.<br/>
+    /// The exact projection marks normal forward key ordering while `VarKeyMaxKeyLength` and `VarIdentityMaxLength` carry the physical tuple caps.<br/>
+    /// </summary>
+    /// <param name="group">The identity group that owns the index.<br/></param>
+    /// <param name="name">The logical index name inside the group.<br/></param>
+    /// <param name="maxKeyBytes">The maximum physical variable-key bytes, including the internal sentinel byte.<br/></param>
+    /// <param name="maxIdentityBytes">The maximum raw identity byte count accepted by this index.<br/></param>
+    /// <param name="options">The resolved index options.<br/></param>
+    /// <returns>A catalog metadata record ready to persist beside the root-router slot.</returns>
+    private static CatalogIndexMetadata CreateVarKeyVarIdentityMetadata(
+        string group,
+        string name,
+        int maxKeyBytes,
+        int maxIdentityBytes,
+        IndexOptions options)
+    {
+        return new CatalogIndexMetadata(
+            group,
+            name,
+            GetStableTypeName(typeof(byte[])),
+            GetStableTypeName(typeof(byte[])),
+            CatalogIndexKeyFamily.Blob,
+            CatalogIndexIdentityFamily.Blob,
+            options.Keys,
+            options.StringKeys,
+            options.GuidKeys,
+            options.DateKeys,
+            options.DateTimeKeyEncoding,
+            LibraDexProjectionDirectionSet.Forward,
+            LibraDexIndexSortOrder.Ascending,
+            new[] { new LibraDexIndexProjectionSpec(LibraDexIndexProjectionKind.Exact, LibraDexIndexByteDirection.Forward, LibraDexIndexSortOrder.Ascending) },
+            Array.Empty<LibraDexCompositeKeyPartSpec>(),
+            maxKeyBytes,
+            maxIdentityBytes,
+            -1,
+            -1,
+            -1,
+            -1,
+            string.Empty,
+            string.Empty,
+            options.StringComparisonPolicy?.Kind ?? LibraDexStringComparisonPolicyKind.Invariant,
+            options.StringComparisonPolicy?.CompareOptions ?? System.Globalization.CompareOptions.None,
+            options.StringComparisonPolicy?.CultureName ?? string.Empty,
+            options.StringComparisonPolicy?.CustomComparerTypeName ?? string.Empty,
+            true,
+            IdentityKeyMultiplicity: options.IdentityKeyMultiplicity);
     }
 
     private static LibraDexIndexShapeSpec? CreateLogicalShape(CatalogIndexMetadata metadata)
@@ -1075,7 +1425,8 @@ public sealed class Catalog : IDisposable
             metadata.Directions,
             metadata.SortOrder,
             metadata.Projections,
-            metadata.CompositeParts);
+            metadata.CompositeParts,
+            metadata.IdentityKeyMultiplicity);
     }
 
     private static string GetStableTypeName(Type type)
@@ -1086,7 +1437,7 @@ public sealed class Catalog : IDisposable
     private static DataKernelOptions CreateDefaultDataKernelOptions()
     {
         return new DataKernelOptions(
-            AppendBufferSize: 1024 * 1024,
+            AppendBufferSize: DataKernelOptions.DefaultAppendBufferSize,
             ReservedPrefixBytes: 0,
             FlushToDiskOnCommit: false,
             MaxCommitGapCoalesceBytes: 512);

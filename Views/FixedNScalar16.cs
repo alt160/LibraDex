@@ -104,9 +104,79 @@ internal ref struct FixedNScalar16
         return FixedNScalarInsertResult.Inserted;
     }
 
+    /// <summary>
+    /// Deletes one exact encoded fixed-width key and scalar-16 identity tuple from the shelf.<br/>
+    /// The shelf is compacted immediately so published fixed-N shelf bytes retain the dense sorted-slot and dense payload contract expected by range readers and future inserts.<br/>
+    /// </summary>
+    /// <param name="key">The encoded fixed-width key bytes.<br/></param>
+    /// <param name="encodedIdentity">The encoded sortable scalar-16 identity bytes.<br/></param>
+    /// <returns><see langword="true"/> when the tuple was present and removed.<br/></returns>
+    public bool Delete(ReadOnlySpan<byte> key, ReadOnlySpan<byte> encodedIdentity)
+    {
+        ValidateKey(key);
+        if (encodedIdentity.Length != FixedNScalar16Layout.IdentitySize)
+        {
+            throw new ArgumentException("FSN-16 encoded identity length must be sixteen bytes.", nameof(encodedIdentity));
+        }
+
+        ushort count = ItemCount;
+        FixedNScalar16ReadOnly readOnly = AsReadOnly();
+        int deleteIndex = readOnly.LowerBound(key, encodedIdentity);
+        if (deleteIndex >= count)
+        {
+            return false;
+        }
+
+        ushort existingOffset = FixedNScalar16Layout.ReadSlot(bytes, profile, deleteIndex);
+        if (FixedNScalar16Layout.CompareItemTuple(bytes, existingOffset, profile, key, encodedIdentity) != 0)
+        {
+            return false;
+        }
+
+        CompactWithoutSlot(deleteIndex, count);
+        return true;
+    }
+
     private FixedNScalar16ReadOnly AsReadOnly()
     {
         return new FixedNScalar16ReadOnly(bytes, profile);
+    }
+
+    private void CompactWithoutSlot(int deleteIndex, ushort count)
+    {
+        ushort removedItemOffset = FixedNScalar16Layout.ReadSlot(bytes, profile, deleteIndex);
+        int lastItemOffset = FixedNScalar16Layout.GetItemOffset(profile, count - 1);
+        if (removedItemOffset != lastItemOffset)
+        {
+            bytes.Slice(lastItemOffset, profile.ItemSize)
+                .CopyTo(bytes.Slice(removedItemOffset, profile.ItemSize));
+        }
+
+        int remainingCount = count - 1;
+        if (deleteIndex < remainingCount)
+        {
+            Span<byte> slotTail = bytes.Slice(
+                FixedNScalar16Layout.GetSlotOffset(profile, deleteIndex + 1),
+                (remainingCount - deleteIndex) * FixedNScalar16Layout.SlotSize);
+            slotTail.CopyTo(bytes.Slice(FixedNScalar16Layout.GetSlotOffset(profile, deleteIndex), slotTail.Length));
+        }
+
+        if (removedItemOffset != lastItemOffset)
+        {
+            for (int slotIndex = 0; slotIndex < remainingCount; slotIndex++)
+            {
+                ushort itemOffset = FixedNScalar16Layout.ReadSlot(bytes, profile, slotIndex);
+                if (itemOffset == lastItemOffset)
+                {
+                    FixedNScalar16Layout.WriteSlot(bytes, profile, slotIndex, removedItemOffset);
+                    break;
+                }
+            }
+        }
+
+        bytes.Slice(lastItemOffset, profile.ItemSize).Clear();
+        FixedNScalar16Layout.WriteSlot(bytes, profile, count - 1, FixedNScalar16Layout.DeletedSlotOffset);
+        FixedNScalar16Layout.WriteItemCount(bytes, checked((ushort)(count - 1)));
     }
 
     private void ValidateKey(ReadOnlySpan<byte> key)
@@ -242,6 +312,33 @@ internal readonly ref struct FixedNScalar16ReadOnly
         }
 
         return copied;
+    }
+
+    /// <summary>
+    /// Counts tuples whose fixed-width keys are inside an inclusive encoded key range.<br/>
+    /// The method uses the sorted slot array only: it binary-searches the lower key and then walks slot offsets until the upper key is exceeded, without reading or decoding identities.<br/>
+    /// </summary>
+    /// <param name="lowerKey">The inclusive lower encoded fixed-width key.<br/></param>
+    /// <param name="upperKey">The inclusive upper encoded fixed-width key.<br/></param>
+    /// <returns>The number of shelf tuples whose keys fall inside the requested range.<br/></returns>
+    public int CountItemsInKeyRange(ReadOnlySpan<byte> lowerKey, ReadOnlySpan<byte> upperKey)
+    {
+        int slotIndex = LowerBoundKey(lowerKey);
+        int counted = 0;
+        ushort count = ItemCount;
+        while (slotIndex < count)
+        {
+            ushort itemOffset = FixedNScalar16Layout.ReadSlot(bytes, profile, slotIndex);
+            if (FixedNScalar16Layout.CompareItemKey(bytes, itemOffset, profile, upperKey) > 0)
+            {
+                break;
+            }
+
+            counted++;
+            slotIndex++;
+        }
+
+        return counted;
     }
 
     /// <summary>

@@ -15,6 +15,8 @@ internal readonly record struct Scalar8VarIdentityProfile(
     int ShelfExtentSize,
     int MaxIdentityLength)
 {
+    public static readonly Scalar8VarIdentityProfile Default4KiB = Create(4 * 1024, 1024);
+    public static readonly Scalar8VarIdentityProfile Default8KiB = Create(8 * 1024, 1024);
     public static readonly Scalar8VarIdentityProfile Default16KiB = Create(16 * 1024, 1024);
     public static readonly Scalar8VarIdentityProfile Default32KiB = Create(32 * 1024, 1024);
     public static readonly Scalar8VarIdentityProfile Default64KiB = Create(64 * 1024, 1024);
@@ -43,11 +45,14 @@ internal readonly record struct Scalar8VarIdentityProfile(
             return this;
         }
 
-        int nextSize = ShelfExtentSize <= 16 * 1024
-            ? 32 * 1024
-            : ShelfExtentSize <= 32 * 1024
-                ? 64 * 1024
-                : 128 * 1024;
+        int nextSize = ShelfExtentSize switch
+        {
+            <= 4 * 1024 => 8 * 1024,
+            <= 8 * 1024 => 16 * 1024,
+            <= 16 * 1024 => 32 * 1024,
+            <= 32 * 1024 => 64 * 1024,
+            _ => 128 * 1024
+        };
         return Create(nextSize, MaxIdentityLength);
     }
 }
@@ -56,7 +61,8 @@ internal enum Scalar8VarIdentityRouteTargetKind
 {
     None = 0,
     Router = 1,
-    Shelf = 2
+    Shelf = 2,
+    TerminalVarIdentityRoot = 3
 }
 
 internal readonly record struct Scalar8VarIdentityRouteTarget(
@@ -83,6 +89,22 @@ internal enum Scalar8VarIdentityRoutedInsertKind
     WalkedDuplicateRunOverflow = 7
 }
 
+internal enum Scalar8VarIdentityInsertDiagnosticPath
+{
+    None = 0,
+    HeaderTailFast = 1,
+    DuplicateRunChainInsert = 2,
+    DuplicateRunTailAppend = 3,
+    OverflowTailAppend = 4,
+    TerminalTailAppend = 5,
+    TerminalChainInsert = 6,
+    TerminalFullRewrite = 7,
+    OverflowChainLocal = 8,
+    OverflowChainRewrite = 9,
+    TerminalTailInPlace = 10,
+    TerminalTailNewShelf = 11
+}
+
 internal readonly record struct Scalar8VarIdentityRoutedInsertResult(
     Scalar8VarIdentityRoutedInsertKind Kind,
     Scalar8VarIdentityInsertResult InsertResult,
@@ -92,7 +114,9 @@ internal readonly record struct Scalar8VarIdentityRoutedInsertResult(
     int TargetShelfItemCount = 0,
     int TargetShelfExtentSize = 0,
     ushort TargetRouterDepth = 0,
-    ushort StructuralRouterDepth = 0);
+    ushort StructuralRouterDepth = 0,
+    Scalar8VarIdentityInsertDiagnosticPath DiagnosticPath = Scalar8VarIdentityInsertDiagnosticPath.None,
+    long DiagnosticAllocatedBytes = 0);
 
 /// <summary>
 /// Attributes elapsed Stopwatch ticks inside one walked `SV8` write operation.<br/>
@@ -146,6 +170,8 @@ internal readonly record struct Scalar16VarIdentityProfile(
     int ShelfExtentSize,
     int MaxIdentityLength)
 {
+    public static readonly Scalar16VarIdentityProfile Default4KiB = Create(4 * 1024, 1024);
+    public static readonly Scalar16VarIdentityProfile Default8KiB = Create(8 * 1024, 1024);
     public static readonly Scalar16VarIdentityProfile Default16KiB = Create(16 * 1024, 1024);
     public static readonly Scalar16VarIdentityProfile Default32KiB = Create(32 * 1024, 1024);
     public static readonly Scalar16VarIdentityProfile Default64KiB = Create(64 * 1024, 1024);

@@ -6,7 +6,7 @@ namespace LibraDex;
 /// </summary>
 /// <param name="AttemptedInsertCount">The number of encoded insert calls attempted before abort.</param>
 /// <param name="DeferredCommitRequests">The number of lower-level commit requests abandoned by the abort.</param>
-public readonly record struct Scalar8Scalar8BatchAbortResult(
+internal readonly record struct Scalar8Scalar8BatchAbortResult(
     long AttemptedInsertCount,
     long DeferredCommitRequests);
 
@@ -50,7 +50,7 @@ internal struct Scalar8Scalar8BatchCommitAttributionTelemetry
 /// <param name="InitialShelfRouteCreateCount">The number of first-prefix shelf routes initialized by the batch.</param>
 /// <param name="DeferredCommitRequests">The number of lower-level commit requests folded into this batch commit.</param>
 /// <param name="Commit">The DataKernel commit telemetry for the batch publication.</param>
-public readonly record struct Scalar8Scalar8BatchCommitResult(
+internal readonly record struct Scalar8Scalar8BatchCommitResult(
     long AttemptedInsertCount,
     long InsertedCount,
     long AlreadyPresentCount,
@@ -119,7 +119,7 @@ internal struct Scalar8Scalar8BatchPublicationAttributionTelemetry
 /// Describes the public encoded insert outcome for the first `SS8-8` index wrapper.<br/>
 /// The values intentionally stay operation-facing rather than exposing every internal routed split kind.<br/>
 /// </summary>
-public enum Scalar8Scalar8EncodedInsertOutcome
+internal enum Scalar8Scalar8EncodedInsertOutcome
 {
     /// <summary>
     /// The encoded tuple was physically inserted into the index.<br/>
@@ -138,6 +138,33 @@ public enum Scalar8Scalar8EncodedInsertOutcome
 }
 
 /// <summary>
+/// Identifies which internal path a queued `SS8-8` writer used to publish an encoded insert.<br/>
+/// This keeps queued-writer attribution visible to harnesses and integration code without changing the operation-facing insert outcome.<br/>
+/// </summary>
+internal enum Scalar8Scalar8QueuedInsertPath
+{
+    /// <summary>
+    /// The insert did not run through the queued writer facade, or no queued-writer attribution was recorded.<br/>
+    /// </summary>
+    None = 0,
+
+    /// <summary>
+    /// The queued writer published a shelf-local no-split insert through a writer context.<br/>
+    /// </summary>
+    WriterContext = 1,
+
+    /// <summary>
+    /// The queued writer used a narrowed topology publisher after writer-context staging found a route shape that was not shelf-local.<br/>
+    /// </summary>
+    NarrowTopologyPublisher = 2,
+
+    /// <summary>
+    /// The queued writer serialized the insert and used the existing insert path because writer-context staging and narrowed topology publishers could not handle the route shape.<br/>
+    /// </summary>
+    SerializedFallback = 3
+}
+
+/// <summary>
 /// Reports the public result of inserting one encoded tuple through a `Scalar8Scalar8Index` wrapper.<br/>
 /// First-in-prefix inserts may create an empty routed shelf before inserting the tuple; both commit shapes are reported so convenience does not hide structural I/O.<br/>
 /// </summary>
@@ -145,7 +172,7 @@ public enum Scalar8Scalar8EncodedInsertOutcome
 /// <param name="CreatedInitialShelfRoute">Whether the wrapper created the first shelf route for the tuple's root prefix before inserting.</param>
 /// <param name="RouteCreateCommit">Commit telemetry for initial shelf-route creation, or default when no route was created.</param>
 /// <param name="InsertCommit">Commit telemetry for the insert mutation, or default when the tuple already existed or was rejected.</param>
-public readonly record struct Scalar8Scalar8EncodedInsertResult(
+internal readonly record struct Scalar8Scalar8EncodedInsertResult(
     Scalar8Scalar8EncodedInsertOutcome Outcome,
     bool CreatedInitialShelfRoute,
     DataKernelCommitTelemetry RouteCreateCommit,
@@ -174,6 +201,12 @@ public readonly record struct Scalar8Scalar8EncodedInsertResult(
     /// The value is zero for no-split inserts and for rejected or no-op inserts.<br/>
     /// </summary>
     internal long RightShelfOffset { get; init; }
+
+    /// <summary>
+    /// Gets queued-writer path attribution when the insert ran through `Scalar8Scalar8QueuedWriter`.<br/>
+    /// The value remains `None` for normal inserts, batch inserts, and direct writer-context inserts.<br/>
+    /// </summary>
+    internal Scalar8Scalar8QueuedInsertPath QueuedInsertPath { get; init; }
 }
 
 /// <summary>
@@ -184,7 +217,7 @@ public readonly record struct Scalar8Scalar8EncodedInsertResult(
 /// <param name="UsedPooledScratch">Whether the convenience read rented scratch from the shared array pool.</param>
 /// <param name="CoalescingEnabled">Whether adjacent shelf coalescing was enabled for the read.</param>
 /// <param name="RangeScratchShelfCapacity">The number of profiled shelf extents represented by the range scratch path.</param>
-public readonly record struct Scalar8Scalar8EncodedRangeReadResult(
+internal readonly record struct Scalar8Scalar8EncodedRangeReadResult(
     int IdentityCount,
     bool UsedPooledScratch,
     bool CoalescingEnabled,

@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Globalization;
 using LibraDex.Layouts;
 using LibraDex.Views;
 
@@ -7,6 +8,7 @@ namespace LibraDex;
 /// <summary>
 /// Provides the first generic public wrapper over routed fixed-scalar LibraDex indexes.<br/>
 /// The wrapper owns a concrete physical shape selected from `TKey`, `TIdentity`, and any required `byte[]` scalar-width options while keeping the call site in familiar .NET generic form.<br/>
+/// Index handles share their owning catalog session, so overlapping writes through the same active session must be serialized by the caller or by an outer owner such as Abraxas.<br/>
 /// </summary>
 /// <typeparam name="TKey">The public key type.</typeparam>
 /// <typeparam name="TIdentity">The public identity type.</typeparam>
@@ -16,10 +18,21 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     private readonly LibraDexGenericScalarShape shape;
     private readonly bool ownsSession;
     private readonly IndexKeys keyContract;
+    private readonly IdentityKeyMultiplicity identityKeyMultiplicity;
     private readonly Catalog? catalog;
     private readonly LibraDexIndex<TKey, TIdentity>? exactReversedProjection;
     private readonly DateTimeKeyEncoding dateTimeKeyEncoding;
+    private readonly object internalScalar8Scalar8IndexSync = new();
+    private readonly object internalQueuedWriterSync = new();
+    private Scalar8Scalar8Index? internalScalar8Scalar8Index;
+    private LibraDexQueuedWriter<TKey, TIdentity>? internalQueuedWriter;
     private bool disposed;
+    private static readonly Scalar8Scalar8Profile MemoryScalar8Scalar8Profile = CreateMemoryScalar8Scalar8Profile();
+    private static readonly Scalar16Scalar8Profile MemoryScalar16Scalar8Profile = CreateMemoryScalar16Scalar8Profile();
+    private static readonly Scalar8Scalar16Profile MemoryScalar8Scalar16Profile = CreateMemoryScalar8Scalar16Profile();
+    private static readonly Scalar16Scalar16Profile MemoryScalar16Scalar16Profile = CreateMemoryScalar16Scalar16Profile();
+    private static readonly Fixed32Scalar8Profile MemoryFixed32Scalar8Profile = CreateMemoryFixed32Scalar8Profile();
+    private static readonly Fixed32Scalar16Profile MemoryFixed32Scalar16Profile = CreateMemoryFixed32Scalar16Profile();
 
     internal LibraDexIndex(
         LibraDexFileSession session,
@@ -29,18 +42,26 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
         LibraDexGenericScalarShape shape,
         bool ownsSession,
         IndexKeys keyContract = IndexKeys.NonUnique,
+        IdentityKeyMultiplicity identityKeyMultiplicity = IdentityKeyMultiplicity.MultipleKeysPerIdentity,
         Catalog? catalog = null,
         string group = "",
         CatalogIndexKeyFamily keyFamily = CatalogIndexKeyFamily.Unknown,
         CatalogIndexIdentityFamily identityFamily = CatalogIndexIdentityFamily.Unknown,
         LibraDexIndexShapeSpec? logicalShape = null,
         LibraDexIndex<TKey, TIdentity>? exactReversedProjection = null,
-        DateTimeKeyEncoding dateTimeKeyEncoding = DateTimeKeyEncoding.CalendarSdt)
+        DateTimeKeyEncoding dateTimeKeyEncoding = DateTimeKeyEncoding.CalendarSdt,
+        long readCacheMaxBytes = 0)
     {
+        if (readCacheMaxBytes < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(readCacheMaxBytes), readCacheMaxBytes, "The per-index read-cache limit cannot be negative.");
+        }
+
         this.session = session;
         this.shape = shape;
         this.ownsSession = ownsSession;
         this.keyContract = keyContract;
+        this.identityKeyMultiplicity = identityKeyMultiplicity;
         this.catalog = catalog;
         Group = group;
         KeyFamily = keyFamily;
@@ -51,6 +72,16 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
         SlotIndex = slotIndex;
         Name = name;
         RootRouterOffset = rootRouterOffset;
+        ReadCacheMaxBytes = readCacheMaxBytes;
+        if (shape == LibraDexGenericScalarShape.FS328)
+        {
+            session.ConfigureFixed32Scalar8ReadCache(rootRouterOffset, readCacheMaxBytes);
+        }
+        else if (shape == LibraDexGenericScalarShape.FS3216)
+        {
+            session.ConfigureFixed32Scalar16ReadCache(rootRouterOffset, readCacheMaxBytes);
+        }
+
         BatchManager = new IndexBatchManager<TKey, TIdentity>(this);
         Stats = new LibraDexIndexStats<TKey, TIdentity>(this);
         Maintenance = new LibraDexIndexMaintenance<TKey, TIdentity>(this);
@@ -174,10 +205,218 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     public long RootRouterOffset { get; }
 
     /// <summary>
+    /// Gets the session-local immutable-shelf read-cache ceiling for this index.<br/>
+    /// Zero means no limit; positive values currently apply to the `FS32-8` and `FS32-16` physical shelf families.<br/>
+    /// </summary>
+    public long ReadCacheMaxBytes { get; }
+
+    /// <summary>
     /// Gets the DataKernel backing kind used by the owning session.<br/>
     /// File-backed indexes can be reopened after disposal, while memory-backed indexes are temporary and process-local.<br/>
     /// </summary>
-    public DataKernelBackingKind BackingKind => session.BackingKind;
+    internal DataKernelBackingKind BackingKind => session.BackingKind;
+
+    /// <summary>
+    /// Gets the runtime `SS8-8` shelf profile for this index backing kind.<br/>
+    /// File-backed catalogs keep the 32 KiB SSD-oriented profile, while memory-backed catalogs use the process-level memory profile selected for heap/slack tuning.<br/>
+    /// </summary>
+    /// <returns>The runtime `SS8-8` shelf profile for reads, writes, and delete range plans.</returns>
+    internal Scalar8Scalar8Profile GetScalar8Scalar8Profile()
+    {
+        return BackingKind == DataKernelBackingKind.Memory
+            ? MemoryScalar8Scalar8Profile
+            : Scalar8Scalar8Profile.Default32KiB;
+    }
+
+    /// <summary>
+    /// Creates the process-level memory `SS8-8` shelf profile.<br/>
+    /// `LIBRADEX_MEMORY_SS88_SHELF_KB` is intentionally read once per closed generic index type so sweep runs can vary the profile without adding per-insert environment lookup cost.<br/>
+    /// </summary>
+    /// <returns>The selected memory-backed `SS8-8` shelf profile.</returns>
+    private static Scalar8Scalar8Profile CreateMemoryScalar8Scalar8Profile()
+    {
+        string? value = Environment.GetEnvironmentVariable("LIBRADEX_MEMORY_SS88_SHELF_KB");
+        if (int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int kib))
+        {
+            return kib switch
+            {
+                4 => Scalar8Scalar8Profile.Default4KiB,
+                8 => Scalar8Scalar8Profile.Default8KiB,
+                16 => Scalar8Scalar8Profile.Default16KiB,
+                24 => Scalar8Scalar8Profile.Default24KiB,
+                32 => Scalar8Scalar8Profile.Default32KiB,
+                48 => Scalar8Scalar8Profile.Default48KiB,
+                64 => Scalar8Scalar8Profile.Default64KiB,
+                _ => Scalar8Scalar8Profile.Default8KiB
+            };
+        }
+
+        return Scalar8Scalar8Profile.Default8KiB;
+    }
+
+    /// <summary>
+    /// Gets the runtime `SS16-8` shelf profile for this index backing kind.<br/>
+    /// File-backed catalogs keep the disk-oriented 32 KiB profile, while memory-backed catalogs use the process-level memory profile selected for retained-slack tuning.<br/>
+    /// </summary>
+    /// <returns>The runtime `SS16-8` shelf profile for reads, writes, and range plans.</returns>
+    internal Scalar16Scalar8Profile GetScalar16Scalar8Profile()
+    {
+        return BackingKind == DataKernelBackingKind.Memory
+            ? MemoryScalar16Scalar8Profile
+            : Scalar16Scalar8Profile.Default32KiB;
+    }
+
+    /// <summary>
+    /// Gets the runtime `SS8-16` shelf profile for this index backing kind.<br/>
+    /// File-backed catalogs keep the disk-oriented 32 KiB profile, while memory-backed catalogs use the process-level memory profile selected for retained-slack tuning.<br/>
+    /// </summary>
+    /// <returns>The runtime `SS8-16` shelf profile for reads, writes, and range plans.</returns>
+    internal Scalar8Scalar16Profile GetScalar8Scalar16Profile()
+    {
+        return BackingKind == DataKernelBackingKind.Memory
+            ? MemoryScalar8Scalar16Profile
+            : Scalar8Scalar16Profile.Default32KiB;
+    }
+
+    /// <summary>
+    /// Gets the runtime `SS16-16` shelf profile for this index backing kind.<br/>
+    /// File-backed catalogs keep the read-leaning balanced 24 KiB profile, while memory-backed catalogs use the process-level memory profile selected for retained-slack tuning.<br/>
+    /// </summary>
+    /// <returns>The runtime `SS16-16` shelf profile for reads, writes, and range plans.</returns>
+    internal Scalar16Scalar16Profile GetScalar16Scalar16Profile()
+    {
+        return BackingKind == DataKernelBackingKind.Memory
+            ? MemoryScalar16Scalar16Profile
+            : Scalar16Scalar16Profile.Default24KiB;
+    }
+
+    /// <summary>
+    /// Gets the runtime `FS32-8` shelf profile for this index backing kind.<br/>
+    /// File-backed catalogs keep the tuned 40 KiB wide-key profile, while memory-backed catalogs use the process-level memory profile selected for retained-slack tuning.<br/>
+    /// </summary>
+    /// <returns>The runtime `FS32-8` shelf profile for reads, writes, and range plans.</returns>
+    internal Fixed32Scalar8Profile GetFixed32Scalar8Profile()
+    {
+        return BackingKind == DataKernelBackingKind.Memory
+            ? MemoryFixed32Scalar8Profile
+            : Fixed32Scalar8Profile.Default40KiB;
+    }
+
+    /// <summary>
+    /// Gets the runtime `FS32-16` shelf profile for this index backing kind.<br/>
+    /// File-backed catalogs keep the tuned 40 KiB wide-key profile, while memory-backed catalogs use the process-level memory profile selected for retained-slack tuning.<br/>
+    /// </summary>
+    /// <returns>The runtime `FS32-16` shelf profile for reads, writes, and range plans.</returns>
+    internal Fixed32Scalar16Profile GetFixed32Scalar16Profile()
+    {
+        return BackingKind == DataKernelBackingKind.Memory
+            ? MemoryFixed32Scalar16Profile
+            : Fixed32Scalar16Profile.Default40KiB;
+    }
+
+    /// <summary>
+    /// Creates the process-level memory `SS16-8` shelf profile.<br/>
+    /// `LIBRADEX_MEMORY_SS168_SHELF_KB` is read once per closed generic index type so sweeps avoid per-insert environment lookups.<br/>
+    /// </summary>
+    /// <returns>The selected memory-backed `SS16-8` shelf profile.</returns>
+    private static Scalar16Scalar8Profile CreateMemoryScalar16Scalar8Profile()
+    {
+        return ParseMemoryShelfKiB("LIBRADEX_MEMORY_SS168_SHELF_KB", 8) switch
+        {
+            4 => Scalar16Scalar8Profile.Default4KiB,
+            8 => Scalar16Scalar8Profile.Default8KiB,
+            32 => Scalar16Scalar8Profile.Default32KiB,
+            _ => Scalar16Scalar8Profile.Default8KiB
+        };
+    }
+
+    /// <summary>
+    /// Creates the process-level memory `SS8-16` shelf profile.<br/>
+    /// `LIBRADEX_MEMORY_SS816_SHELF_KB` is read once per closed generic index type so sweeps avoid per-insert environment lookups.<br/>
+    /// </summary>
+    /// <returns>The selected memory-backed `SS8-16` shelf profile.</returns>
+    private static Scalar8Scalar16Profile CreateMemoryScalar8Scalar16Profile()
+    {
+        return ParseMemoryShelfKiB("LIBRADEX_MEMORY_SS816_SHELF_KB", 8) switch
+        {
+            4 => Scalar8Scalar16Profile.Default4KiB,
+            8 => Scalar8Scalar16Profile.Default8KiB,
+            16 => Scalar8Scalar16Profile.Default16KiB,
+            24 => Scalar8Scalar16Profile.Default24KiB,
+            32 => Scalar8Scalar16Profile.Default32KiB,
+            48 => Scalar8Scalar16Profile.Default48KiB,
+            64 => Scalar8Scalar16Profile.Default64KiB,
+            _ => Scalar8Scalar16Profile.Default8KiB
+        };
+    }
+
+    /// <summary>
+    /// Creates the process-level memory `SS16-16` shelf profile.<br/>
+    /// `LIBRADEX_MEMORY_SS1616_SHELF_KB` is read once per closed generic index type so sweeps avoid per-insert environment lookups.<br/>
+    /// </summary>
+    /// <returns>The selected memory-backed `SS16-16` shelf profile.</returns>
+    private static Scalar16Scalar16Profile CreateMemoryScalar16Scalar16Profile()
+    {
+        return ParseMemoryShelfKiB("LIBRADEX_MEMORY_SS1616_SHELF_KB", 8) switch
+        {
+            4 => Scalar16Scalar16Profile.Default4KiB,
+            8 => Scalar16Scalar16Profile.Default8KiB,
+            24 => Scalar16Scalar16Profile.Default24KiB,
+            32 => Scalar16Scalar16Profile.Default32KiB,
+            _ => Scalar16Scalar16Profile.Default8KiB
+        };
+    }
+
+    /// <summary>
+    /// Creates the process-level memory `FS32-8` shelf profile.<br/>
+    /// `LIBRADEX_MEMORY_FS328_SHELF_KB` is read once per closed generic index type so sweeps avoid per-insert environment lookups.<br/>
+    /// </summary>
+    /// <returns>The selected memory-backed `FS32-8` shelf profile.</returns>
+    private static Fixed32Scalar8Profile CreateMemoryFixed32Scalar8Profile()
+    {
+        return ParseMemoryShelfKiB("LIBRADEX_MEMORY_FS328_SHELF_KB", 8) switch
+        {
+            4 => Fixed32Scalar8Profile.Default4KiB,
+            8 => Fixed32Scalar8Profile.Default8KiB,
+            32 => Fixed32Scalar8Profile.Default32KiB,
+            40 => Fixed32Scalar8Profile.Default40KiB,
+            64 => Fixed32Scalar8Profile.Default64KiB,
+            _ => Fixed32Scalar8Profile.Default8KiB
+        };
+    }
+
+    /// <summary>
+    /// Creates the process-level memory `FS32-16` shelf profile.<br/>
+    /// `LIBRADEX_MEMORY_FS3216_SHELF_KB` is read once per closed generic index type so sweeps avoid per-insert environment lookups.<br/>
+    /// </summary>
+    /// <returns>The selected memory-backed `FS32-16` shelf profile.</returns>
+    private static Fixed32Scalar16Profile CreateMemoryFixed32Scalar16Profile()
+    {
+        return ParseMemoryShelfKiB("LIBRADEX_MEMORY_FS3216_SHELF_KB", 8) switch
+        {
+            4 => Fixed32Scalar16Profile.Default4KiB,
+            8 => Fixed32Scalar16Profile.Default8KiB,
+            32 => Fixed32Scalar16Profile.Default32KiB,
+            40 => Fixed32Scalar16Profile.Default40KiB,
+            64 => Fixed32Scalar16Profile.Default64KiB,
+            _ => Fixed32Scalar16Profile.Default8KiB
+        };
+    }
+
+    /// <summary>
+    /// Parses one memory shelf-size environment override in KiB.<br/>
+    /// Shape-specific overrides stay process-level tuning knobs and intentionally avoid hot-path reads; invalid values fall back to the supplied default.<br/>
+    /// </summary>
+    /// <param name="environmentVariableName">The environment variable that carries the KiB value.</param>
+    /// <param name="defaultKiB">The KiB value to use when the environment variable is absent or invalid.</param>
+    /// <returns>The parsed KiB value, or <paramref name="defaultKiB"/>.</returns>
+    private static int ParseMemoryShelfKiB(string environmentVariableName, int defaultKiB)
+    {
+        string? value = Environment.GetEnvironmentVariable(environmentVariableName);
+        return int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int kib)
+            ? kib
+            : defaultKiB;
+    }
 
     /// <summary>
     /// Gets the index-wide key uniqueness contract selected when the index was opened or created through the public facade.<br/>
@@ -186,14 +425,20 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     public IndexKeys KeyContract => keyContract;
 
     /// <summary>
+    /// Gets whether this index allows one identity to be associated with multiple keys.<br/>
+    /// `SingleKeyPerIdentity` is enforced by immediate generic-scalar writes and generic staged writer facades before planners may use it as an identity-set proof.<br/>
+    /// </summary>
+    public IdentityKeyMultiplicity IdentityKeyMultiplicity => identityKeyMultiplicity;
+
+    /// <summary>
     /// Gets the index-global batch manager used to control durability cadence without replacing the index mutation surface.<br/>
     /// When enabled, normal insert calls stage writes until `Commit` or `CommitAndDisable` publishes them; the manager is not a SQL transaction and does not provide rollback semantics.<br/>
     /// </summary>
-    public IndexBatchManager<TKey, TIdentity> BatchManager { get; }
+    internal IndexBatchManager<TKey, TIdentity> BatchManager { get; }
 
     /// <summary>
     /// Gets the index-global batch controller used to control durability cadence without replacing the index mutation surface.<br/>
-    /// This is the preferred short public spelling for handwritten code; `BatchManager` remains an alias for compatibility while the public scaffold settles.<br/>
+    /// This is the preferred short public spelling for handwritten code.<br/>
     /// </summary>
     public IndexBatchManager<TKey, TIdentity> Batch => BatchManager;
 
@@ -238,11 +483,52 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
         TKey reversedKey = CreateExactReversedProjectionKey(key);
         var sharedBatch = new LibraDexBatch<TKey, TIdentity>(exactReversedProjection, durabilityBatch, ownsDurabilityBatch: false);
         _ = sharedBatch.Insert(reversedKey, identity);
+        sharedBatch.PrepareSharedDurabilityCommit();
+    }
+
+    /// <summary>
+    /// Inserts the reversed-key companion tuple through the projection index's ordinary immediate write path when no explicit batch owns projection publication.<br/>
+    /// This keeps no-ceremony primary writes eligible for writer-context/narrow-topology admission while preserving the explicit batch path for callers that requested a shared publication boundary.<br/>
+    /// LibraDex is an identity index over external source data, so a projection failure after primary publication should be handled as stale/incomplete index state rather than database rollback.<br/>
+    /// </summary>
+    /// <param name="key">The original forward key supplied to the logical index.<br/></param>
+    /// <param name="identity">The identity associated with the key.<br/></param>
+    private void InsertExactReversedProjectionImmediate(TKey key, TIdentity identity)
+    {
+        if (exactReversedProjection is null)
+        {
+            return;
+        }
+
+        _ = exactReversedProjection.Insert(CreateExactReversedProjectionKey(key), identity);
+    }
+
+    /// <summary>
+    /// Completes a no-batch insert by publishing any maintained projection tuple after the primary tuple has been accepted.<br/>
+    /// The primary result is returned unchanged so queued-writer attribution continues to describe the caller-visible index mutation path.<br/>
+    /// Projection publication is deliberately separate from public batch publication; callers that need a shared publication boundary should use an explicit batch.<br/>
+    /// </summary>
+    /// <param name="result">The primary index insert result.<br/></param>
+    /// <param name="key">The original forward key supplied to the logical index.<br/></param>
+    /// <param name="identity">The identity associated with the key.<br/></param>
+    /// <returns>The unchanged primary insert result.</returns>
+    internal LibraDexGenericInsertResult CompleteImmediateInsertProjection(
+        LibraDexGenericInsertResult result,
+        TKey key,
+        TIdentity identity)
+    {
+        if (result.Inserted)
+        {
+            InsertExactReversedProjectionImmediate(key, identity);
+        }
+
+        return result;
     }
 
     /// <summary>
     /// Starts a typed generic durability batch for bulk mutation.<br/>
     /// Batch inserts use developer-facing generic values and defer lower-level commit requests until the returned batch commits or aborts.<br/>
+    /// The batch controls durability cadence for one owner; it is not a transaction-isolation or concurrent-writer domain.<br/>
     /// Write intent is an optional optimization hint and `default` preserves the normal shape behavior.<br/>
     /// </summary>
     /// <param name="writeIntent">Optional coarse write-pattern hints for the batch.</param>
@@ -254,10 +540,158 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
         ThrowIfDisposed();
         if (BatchManager.IsEnabled)
         {
-            throw new InvalidOperationException("The index BatchManager is already enabled; use BatchManager.Commit or BatchManager.CommitAndDisable to control the active batch.");
+            throw new InvalidOperationException("The index batch is already enabled; use Batch.Commit or Batch.CommitAndDisable to control the active batch.");
         }
 
         return new LibraDexBatch<TKey, TIdentity>(this, session.BeginDurabilityBatch(writeIntent));
+    }
+
+    /// <summary>
+    /// Starts a public concurrent-write period for this index.<br/>
+    /// Ordinary <see cref="Insert(TKey, TIdentity)"/> calls remain optimized for the default single-owner case, while this writer accepts overlapping caller submissions and uses primitive shelf/router-domain admission where the physical shape supports it.<br/>
+    /// The returned writer is not a transaction or durability batch; it is an admission facade for a period where the caller expects multiple threads may submit writes.<br/>
+    /// </summary>
+    /// <param name="options">Optional concurrency options; defaults to queued-writer mode for this explicit concurrent-writer factory.<br/></param>
+    /// <param name="cancellationToken">A token that an unrelated thread may cancel to stop queued or subsequent writer operations.<br/></param>
+    /// <returns>A concurrent writer facade for this index.<br/></returns>
+    /// <exception cref="ObjectDisposedException">Thrown when the index has already been disposed.<br/></exception>
+    /// <exception cref="NotSupportedException">Thrown when this index is not backed by a supported concurrent-writer shape.<br/></exception>
+    /// <exception cref="InvalidOperationException">Thrown when index-level batch mode or a session durability batch is active.<br/></exception>
+    public LibraDexQueuedWriter<TKey, TIdentity> BeginConcurrentWriter(
+        LibraDexConcurrencyOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        return BeginQueuedWriter(
+            options ?? LibraDexConcurrencyOptions.QueuedWriter,
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// Starts a public concurrent batch for a period where multiple callers may write independent `SS8-8` shelves.<br/>
+    /// The batch stages shelf-local insert, exact delete, and rekey work in a writer context and publishes that context once, releasing and retrying when another writer owns a needed shelf.<br/>
+    /// This first slice is intentionally limited to primary `SS8-8` indexes without maintained projection ownership so projection publication cannot outrun primary batch visibility.<br/>
+    /// </summary>
+    /// <param name="options">Optional concurrency options; defaults to queued-writer mode for this explicit concurrent-batch factory.<br/></param>
+    /// <param name="cancellationToken">A token that an unrelated thread may cancel before the batch begins publication.<br/></param>
+    /// <returns>A concurrent batch facade for this index.<br/></returns>
+    /// <exception cref="ObjectDisposedException">Thrown when the index has already been disposed.<br/></exception>
+    /// <exception cref="NotSupportedException">Thrown when this index is not a supported primary `SS8-8` index.<br/></exception>
+    /// <exception cref="InvalidOperationException">Thrown when index-level batch mode or a session durability batch is active.<br/></exception>
+    public LibraDexConcurrentBatch<TKey, TIdentity> BeginConcurrentBatch(
+        LibraDexConcurrencyOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        ThrowIfDisposed();
+        LibraDexConcurrencyMode mode = options?.Mode ?? LibraDexConcurrencyMode.QueuedWriter;
+        if (mode != LibraDexConcurrencyMode.QueuedWriter)
+        {
+            throw new NotSupportedException($"The generic concurrent batch requires {nameof(LibraDexConcurrencyMode.QueuedWriter)} mode, not {mode}.");
+        }
+
+        if (BatchManager.IsEnabled)
+        {
+            throw new InvalidOperationException("The generic concurrent batch cannot start while index batch mode is enabled.");
+        }
+
+        ThrowIfSessionDurabilityBatchActiveForConcurrentWriter();
+        if (shape is not (LibraDexGenericScalarShape.SS88 or LibraDexGenericScalarShape.FS328))
+        {
+            throw new NotSupportedException($"The generic concurrent batch currently supports primary SS8-8 and FS32-8 indexes only, not {shape}.");
+        }
+
+        if (exactReversedProjection is not null &&
+            shape != LibraDexGenericScalarShape.FS328)
+        {
+            throw new NotSupportedException("The generic concurrent batch currently supports maintained exact reversed projections only for FS32-8 indexes.");
+        }
+
+        if (shape == LibraDexGenericScalarShape.FS328)
+        {
+            return new LibraDexConcurrentBatch<TKey, TIdentity>(this, options, cancellationToken);
+        }
+
+        Scalar8Scalar8Index encodedIndex = new(
+            session,
+            new Scalar8Scalar8IndexHandle(RootRouterOffset, GetScalar8Scalar8Profile()),
+            SlotIndex,
+            Name,
+            ownsSession: false);
+        return new LibraDexConcurrentBatch<TKey, TIdentity>(this, encodedIndex, options, cancellationToken);
+    }
+
+    /// <summary>
+    /// Starts an internal concurrent-write admission facade for overlapping generic callers on supported fixed-scalar indexes.<br/>
+    /// The facade keeps caller code on generic key and identity values while letting the shape-specific path choose independent shelf-local staging, retryable same-shelf contention, or serialized fallback.<br/>
+    /// This is an Abraxas-integration bridge, not a public all-shape concurrency contract; unsupported shapes are rejected explicitly.<br/>
+    /// </summary>
+    /// <param name="options">Optional concurrency options; defaults to queued-writer mode for this explicit queued-writer factory.<br/></param>
+    /// <returns>A generic queued writer facade for this index.<br/></returns>
+    /// <exception cref="ObjectDisposedException">Thrown when the index has already been disposed.<br/></exception>
+    /// <exception cref="NotSupportedException">Thrown when this index is not backed by a supported queued-writer shape.<br/></exception>
+    /// <exception cref="InvalidOperationException">Thrown when index-level batch mode is active.<br/></exception>
+    internal LibraDexQueuedWriter<TKey, TIdentity> BeginQueuedWriter(
+        LibraDexConcurrencyOptions? options = null,
+        CancellationToken cancellationToken = default,
+        bool admissionAlreadyHeld = false)
+    {
+        ThrowIfDisposed();
+        return BeginQueuedWriterAfterSingleKeyBatchCheck(options, cancellationToken, admissionAlreadyHeld);
+    }
+
+    /// <summary>
+    /// Starts the queued-writer facade after the caller has already handled single-key-per-identity batch restrictions.<br/>
+    /// Public/deferred writer entry points call this only after rejection; immediate mutation internals use it for shelf-local delete/rekey plumbing that remains part of one synchronous operation.<br/>
+    /// </summary>
+    /// <param name="options">Optional concurrency options for the underlying queued writer.</param>
+    /// <returns>A generic queued writer facade for this index.</returns>
+    private LibraDexQueuedWriter<TKey, TIdentity> BeginQueuedWriterAfterSingleKeyBatchCheck(
+        LibraDexConcurrencyOptions? options = null,
+        CancellationToken cancellationToken = default,
+        bool admissionAlreadyHeld = false)
+    {
+        if (BatchManager.IsEnabled)
+        {
+            throw new InvalidOperationException("The generic queued writer cannot start while index batch mode is enabled.");
+        }
+
+        ThrowIfSessionDurabilityBatchActiveForConcurrentWriter();
+
+        if (shape is LibraDexGenericScalarShape.SS168 or
+            LibraDexGenericScalarShape.SS816 or
+            LibraDexGenericScalarShape.SS1616 or
+            LibraDexGenericScalarShape.FS328 or
+            LibraDexGenericScalarShape.FS3216)
+        {
+            return new LibraDexQueuedWriter<TKey, TIdentity>(
+                this,
+                options?.MaxActiveWriters ?? 1,
+                options?.MaxQueuedWriters ?? 1024,
+                options?.QueueTimeout ?? Timeout.InfiniteTimeSpan,
+                options?.MaxActionItems ?? 1000,
+                cancellationToken,
+                admissionAlreadyHeld);
+        }
+
+        if (shape != LibraDexGenericScalarShape.SS88)
+        {
+            throw new NotSupportedException($"The generic queued writer currently supports SS8-8, SS16-8, SS8-16, SS16-16, FS32-8, and FS32-16 indexes only, not {shape}.");
+        }
+
+        Scalar8Scalar8Index encodedIndex = new(
+            session,
+            new Scalar8Scalar8IndexHandle(RootRouterOffset, GetScalar8Scalar8Profile()),
+            SlotIndex,
+            Name,
+            ownsSession: false);
+        return new LibraDexQueuedWriter<TKey, TIdentity>(
+            this,
+            encodedIndex.BeginQueuedWriter(options),
+            options?.MaxActiveWriters ?? 1,
+            options?.MaxQueuedWriters ?? 1024,
+            options?.QueueTimeout ?? Timeout.InfiniteTimeSpan,
+            options?.MaxActionItems ?? 1000,
+            cancellationToken,
+            admissionAlreadyHeld);
     }
 
     /// <summary>
@@ -270,7 +704,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     public LibraDexGenericInsertResult Insert(TKey key, TIdentity identity)
     {
         ThrowIfDisposed();
-        if (TryClassifyNullKeyRouteKey(key, out NullKey keyState))
+        if (SupportsNullKeyRoute() && TryClassifyNullKeyRouteKey(key, out NullKey keyState))
         {
             return Insert(keyState, identity);
         }
@@ -280,9 +714,71 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
             return groupBatch.Insert(this, key, identity);
         }
 
-        if (BatchManager.IsEnabled)
+        LibraDexBatch<TKey, TIdentity>? activeBatch = BatchManager.ActiveBatch;
+        if (activeBatch is not null)
         {
-            return BatchManager.Insert(key, identity);
+            return activeBatch.Insert(key, identity);
+        }
+
+        if (identityKeyMultiplicity == IdentityKeyMultiplicity.SingleKeyPerIdentity &&
+            !CanInsertIdentityAtKey(identity, key))
+        {
+            return new LibraDexGenericInsertResult(false, false, default, default);
+        }
+
+        return InsertAfterIdentityKeyMultiplicityCheck(key, identity);
+    }
+
+    /// <summary>
+    /// Inserts one ordinary typed key and identity after the caller has already enforced the identity-key multiplicity contract.<br/>
+    /// Direct insert calls use this after <see cref="CanInsertIdentityAtKey(TIdentity, object)"/>; rekey calls use it after allowing the old key as the one association being replaced.<br/>
+    /// </summary>
+    /// <param name="key">The typed key value to insert.</param>
+    /// <param name="identity">The typed identity value associated with the key.</param>
+    /// <returns>The insert result plus any route-create and insert commit telemetry.</returns>
+    private LibraDexGenericInsertResult InsertAfterIdentityKeyMultiplicityCheck(TKey key, TIdentity identity)
+    {
+        if (catalog?.TryGetActiveIdentityGroupBatch(Group, out CatalogIdentityGroupBatchManager? groupBatch) == true)
+        {
+            return groupBatch.Insert(this, key, identity);
+        }
+
+        LibraDexBatch<TKey, TIdentity>? activeBatch = BatchManager.ActiveBatch;
+        if (activeBatch is not null)
+        {
+            return activeBatch.Insert(key, identity);
+        }
+
+        ThrowIfSessionDurabilityBatchActiveForImmediateMutation();
+
+        if (CanUseInternalQueuedWriterForPrimaryMutation())
+        {
+            return CompleteImmediateInsertProjection(InsertScalar8Scalar8UsingAdaptiveAdmission(key, identity), key, identity);
+        }
+
+        if (CanUseInternalScalar16Scalar8WriterContextForPrimaryMutation())
+        {
+            return CompleteImmediateInsertProjection(InsertScalar16Scalar8UsingWriterContextOrFallback(key, identity), key, identity);
+        }
+
+        if (CanUseInternalScalar8Scalar16WriterContextForPrimaryMutation())
+        {
+            return CompleteImmediateInsertProjection(InsertScalar8Scalar16UsingWriterContextOrFallback(key, identity), key, identity);
+        }
+
+        if (CanUseInternalScalar16Scalar16WriterContextForPrimaryMutation())
+        {
+            return CompleteImmediateInsertProjection(InsertScalar16Scalar16UsingWriterContextOrFallback(key, identity), key, identity);
+        }
+
+        if (CanUseInternalFixed32Scalar8WriterContextForPrimaryMutation())
+        {
+            return CompleteImmediateInsertProjection(InsertFixed32Scalar8UsingWriterContextOrFallback(key, identity), key, identity);
+        }
+
+        if (CanUseInternalFixed32Scalar16WriterContextForPrimaryMutation())
+        {
+            return CompleteImmediateInsertProjection(InsertFixed32Scalar16UsingWriterContextOrFallback(key, identity), key, identity);
         }
 
         using LibraDexBatch<TKey, TIdentity> batch = BeginBatch();
@@ -329,6 +825,13 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
             throw new NotSupportedException("Scalar null route inserts are not connected to index batch publication yet.");
         }
 
+        ThrowIfSessionDurabilityBatchActiveForImmediateMutation();
+
+        if (!CanInsertIdentityAtKey(identity, ScalarNull.Null))
+        {
+            return new LibraDexGenericInsertResult(false, false, default, default);
+        }
+
         return InsertScalarNullIdentity(identity);
     }
 
@@ -371,6 +874,13 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
             throw new NotSupportedException("NullKey route inserts are not connected to index batch publication yet.");
         }
 
+        ThrowIfSessionDurabilityBatchActiveForImmediateMutation();
+
+        if (!CanInsertIdentityAtKey(identity, keyState))
+        {
+            return new LibraDexGenericInsertResult(false, false, default, default);
+        }
+
         return InsertNullKeyIdentity(keyState, identity);
     }
 
@@ -410,6 +920,31 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
             ResolveOwnIndex,
             ResolveOwnProjectionIndex);
         return criterion.IDsWith(ordering, deduplication, skip, take, bookmark).ToList<TIdentity>();
+    }
+
+    /// <summary>
+    /// Counts the physical key/identity tuples currently visible through this generic scalar index.<br/>
+    /// The count uses the same primitive count path as condition execution, so fixed scalar shapes count from index metadata, key-state route metadata, and range-reader shelf counts instead of decoding identities.<br/>
+    /// </summary>
+    /// <returns>The number of stored index tuples.</returns>
+    public long Count()
+    {
+        return CountIdentityPrimitive(new LibraDexIdentityPrimitiveRequest(LibraDexCriteriaKind.All, Array.Empty<object?>()));
+    }
+
+    /// <summary>
+    /// Counts physical key/identity tuples matched by a completed condition rooted at this index.<br/>
+    /// This is tuple-oriented LibraDex counting: single-index range predicates use shelf/range count metadata, while distinct-identity semantics remain available through condition terminals that explicitly request distinct deduplication.<br/>
+    /// </summary>
+    /// <param name="condition">The completed condition to count.</param>
+    /// <returns>The number of stored tuples matched by the condition.</returns>
+    public long Count(LibraDexConditionEndCondition condition)
+    {
+        ArgumentNullException.ThrowIfNull(condition);
+        IIdentityCriterion criterion = condition.MaterializeWithProjectionBridge(
+            ResolveOwnIndex,
+            ResolveOwnProjectionIndex);
+        return LibraDexIdentityExecutionPlanner.Count(criterion, IdentityDeduplication.Preserve);
     }
 
     /// <summary>
@@ -547,7 +1082,12 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
 
         if (!ContainsExactTuple(typedNewKey, typedIdentity))
         {
-            LibraDexGenericInsertResult insert = Insert(typedNewKey, typedIdentity);
+            if (!CanInsertIdentityAtKeyReplacingOldKey(typedIdentity, typedNewKey, typedOldKey))
+            {
+                return false;
+            }
+
+            LibraDexGenericInsertResult insert = InsertAfterIdentityKeyMultiplicityCheck(typedNewKey, typedIdentity);
             if (!insert.Inserted && !ContainsExactTuple(typedNewKey, typedIdentity))
             {
                 throw new InvalidOperationException("Rekey could not create the replacement tuple; the original tuple was left unchanged.");
@@ -654,7 +1194,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
         {
             changed++;
         }
-        else if (SupportsNullKeyRoute())
+        else if (SupportsStoredNullKeyRoutes())
         {
             if (ContainsNullKeyIdentity(NullKey.Null, typedIdentity) &&
                 Rekey(typedIdentity, NullKey.Null, typedNewKey))
@@ -724,6 +1264,29 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     long IIdentityPrimitiveExecutor.CountIdentityPrimitive(LibraDexIdentityPrimitiveRequest request)
     {
         return CountIdentityPrimitive(request);
+    }
+
+    /// <summary>
+    /// Executes count as a generic scalar aggregate over the condition-materialized primitive.<br/>
+    /// Null-key route counts use existing route-root metadata, while ordinary scalar criteria use the shape-native range readers and count paths.<br/>
+    /// </summary>
+    /// <param name="request">The aggregate request to execute.<br/></param>
+    /// <returns>The aggregate count result and physical plan classification.<br/></returns>
+    LibraDexPrimitiveAggregateResult IIdentityPrimitiveAggregateExecutor.ExecuteIdentityPrimitiveAggregate(LibraDexPrimitiveAggregateRequest request)
+    {
+        if (request.Kind != LibraDexPrimitiveAggregateKind.Count)
+        {
+            throw new NotSupportedException($"{request.Kind} is not connected to generic scalar aggregation yet.");
+        }
+
+        if (request.Scope != AggregateScope.Tuples)
+        {
+            throw new NotSupportedException($"{request.Scope} aggregate scope is not connected to generic scalar aggregation yet.");
+        }
+
+        return LibraDexPrimitiveAggregateResult.ForCount(
+            CountIdentityPrimitive(request.PrimitiveRequest),
+            ClassifyGenericScalarAggregatePlan(request.PrimitiveRequest));
     }
 
     LibraDexIdentityMutationResult IIdentityPrimitiveMutator.DeleteIdentityPrimitive(LibraDexIdentityPrimitiveRequest request)
@@ -1008,16 +1571,16 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
         return request.CriteriaKind switch
         {
             LibraDexCriteriaKind.All => CountAllIdentityObjects(),
-            LibraDexCriteriaKind.Find => CountIdentityObjects(OpenRangeReader(
+            LibraDexCriteriaKind.Find => CountOrderedIdentityRange(
                 RequireObjectKey(RequireCriterionValue(request.Values, 0), nameof(request.Values)),
-                RequireObjectKey(RequireCriterionValue(request.Values, 0), nameof(request.Values)))),
-            LibraDexCriteriaKind.Between => CountIdentityObjects(OpenRangeReader(
+                RequireObjectKey(RequireCriterionValue(request.Values, 0), nameof(request.Values))),
+            LibraDexCriteriaKind.Between => CountOrderedIdentityRange(
                 RequireObjectKey(RequireCriterionValue(request.Values, 0), nameof(request.Values)),
-                RequireObjectKey(RequireCriterionValue(request.Values, 1), nameof(request.Values)))),
-            LibraDexCriteriaKind.Before => CountIdentityObjects(OpenBeforeRangeReader(RequireObjectKey(RequireCriterionValue(request.Values, 0), nameof(request.Values)))),
-            LibraDexCriteriaKind.AtOrBefore => CountIdentityObjects(OpenAtOrBeforeRangeReader(RequireObjectKey(RequireCriterionValue(request.Values, 0), nameof(request.Values)))),
-            LibraDexCriteriaKind.After => CountIdentityObjects(OpenAfterRangeReader(RequireObjectKey(RequireCriterionValue(request.Values, 0), nameof(request.Values)))),
-            LibraDexCriteriaKind.AtOrAfter => CountIdentityObjects(OpenAtOrAfterRangeReader(RequireObjectKey(RequireCriterionValue(request.Values, 0), nameof(request.Values)))),
+                RequireObjectKey(RequireCriterionValue(request.Values, 1), nameof(request.Values))),
+            LibraDexCriteriaKind.Before => CountBeforeIdentityRange(RequireObjectKey(RequireCriterionValue(request.Values, 0), nameof(request.Values)), inclusive: false),
+            LibraDexCriteriaKind.AtOrBefore => CountBeforeIdentityRange(RequireObjectKey(RequireCriterionValue(request.Values, 0), nameof(request.Values)), inclusive: true),
+            LibraDexCriteriaKind.After => CountAfterIdentityRange(RequireObjectKey(RequireCriterionValue(request.Values, 0), nameof(request.Values)), inclusive: false),
+            LibraDexCriteriaKind.AtOrAfter => CountAfterIdentityRange(RequireObjectKey(RequireCriterionValue(request.Values, 0), nameof(request.Values)), inclusive: true),
             LibraDexCriteriaKind.In => CountMembershipIdentityObjects(request.Values),
             LibraDexCriteriaKind.InSet => CountMembershipIdentityObjects(request.Values),
             LibraDexCriteriaKind.MultiRange => CountMultiRangeIdentityObjects(request.Values),
@@ -1033,6 +1596,184 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     }
 
     /// <summary>
+    /// Counts one inclusive ordered key extent through the most direct physical count primitive available for the resolved generic scalar shape.<br/>
+    /// Shapes without a count-only range primitive keep the existing range-reader fallback so this helper can be widened shape by shape without changing condition semantics.<br/>
+    /// </summary>
+    /// <param name="lowerKey">The inclusive lower public key.<br/></param>
+    /// <param name="upperKey">The inclusive upper public key.<br/></param>
+    /// <returns>The number of identities in the ordered key extent.<br/></returns>
+    private long CountOrderedIdentityRange(TKey lowerKey, TKey upperKey)
+    {
+        return shape switch
+        {
+            LibraDexGenericScalarShape.SS88 => session.CountScalar8Scalar8IdentityRange(
+                RootRouterOffset,
+                GetScalar8Scalar8Profile(),
+                EncodeKey8(lowerKey),
+                EncodeKey8(upperKey)),
+            LibraDexGenericScalarShape.SS168 => CountScalar16Scalar8IdentityRange(lowerKey, upperKey),
+            LibraDexGenericScalarShape.SS816 => session.CountScalar8Scalar16IdentityRange(
+                RootRouterOffset,
+                GetScalar8Scalar16Profile(),
+                EncodeKey8(lowerKey),
+                EncodeKey8(upperKey)),
+            LibraDexGenericScalarShape.SS1616 => CountScalar16Scalar16IdentityRange(lowerKey, upperKey),
+            LibraDexGenericScalarShape.FS328 => CountFixed32Scalar8IdentityRange(lowerKey, upperKey),
+            LibraDexGenericScalarShape.FS3216 => CountFixed32Scalar16IdentityRange(lowerKey, upperKey),
+            _ => CountIdentityObjects(OpenRangeReader(lowerKey, upperKey))
+        };
+    }
+
+    /// <summary>
+    /// Counts one inclusive `SS16-8` ordered key extent through the session's count-only routed primitive.<br/>
+    /// The helper keeps scalar-16 key encoding local to this generic index layer while letting the file session operate only on encoded lanes.<br/>
+    /// </summary>
+    /// <param name="lowerKey">The inclusive lower public key.<br/></param>
+    /// <param name="upperKey">The inclusive upper public key.<br/></param>
+    /// <returns>The number of identities in the ordered key extent.<br/></returns>
+    private long CountScalar16Scalar8IdentityRange(TKey lowerKey, TKey upperKey)
+    {
+        LibraDexGenericScalarCodec<TKey>.Encode16(lowerKey, out ulong lowerHigh, out ulong lowerLow);
+        LibraDexGenericScalarCodec<TKey>.Encode16(upperKey, out ulong upperHigh, out ulong upperLow);
+        return session.CountScalar16Scalar8IdentityRange(
+            RootRouterOffset,
+            GetScalar16Scalar8Profile(),
+            lowerHigh,
+            lowerLow,
+            upperHigh,
+            upperLow);
+    }
+
+    /// <summary>
+    /// Counts one inclusive `SS16-16` ordered key extent through the session's count-only routed primitive.<br/>
+    /// The helper mirrors the existing scalar-16 range-reader encoding path so public condition semantics remain owned by the generic scalar codec.<br/>
+    /// </summary>
+    /// <param name="lowerKey">The inclusive lower public key.<br/></param>
+    /// <param name="upperKey">The inclusive upper public key.<br/></param>
+    /// <returns>The number of identities in the ordered key extent.<br/></returns>
+    private long CountScalar16Scalar16IdentityRange(TKey lowerKey, TKey upperKey)
+    {
+        LibraDexGenericScalarCodec<TKey>.Encode16(lowerKey, out ulong lowerHigh, out ulong lowerLow);
+        LibraDexGenericScalarCodec<TKey>.Encode16(upperKey, out ulong upperHigh, out ulong upperLow);
+        return session.CountScalar16Scalar16IdentityRange(
+            RootRouterOffset,
+            GetScalar16Scalar16Profile(),
+            lowerHigh,
+            lowerLow,
+            upperHigh,
+            upperLow);
+    }
+
+    /// <summary>
+    /// Counts one inclusive `FS32-8` ordered key extent through the session's count-only routed primitive.<br/>
+    /// The bridge keeps fixed32 public-key encoding in the generic layer and passes only four persisted key lanes to the file-session count path.<br/>
+    /// </summary>
+    /// <param name="lowerKey">The inclusive lower public key.<br/></param>
+    /// <param name="upperKey">The inclusive upper public key.<br/></param>
+    /// <returns>The number of identities in the ordered key extent.<br/></returns>
+    private long CountFixed32Scalar8IdentityRange(TKey lowerKey, TKey upperKey)
+    {
+        LibraDexGenericScalarCodec<TKey>.Encode32(lowerKey, out ulong lower0, out ulong lower1, out ulong lower2, out ulong lower3);
+        LibraDexGenericScalarCodec<TKey>.Encode32(upperKey, out ulong upper0, out ulong upper1, out ulong upper2, out ulong upper3);
+        return session.CountFixed32Scalar8IdentityRange(
+            RootRouterOffset,
+            GetFixed32Scalar8Profile(),
+            lower0,
+            lower1,
+            lower2,
+            lower3,
+            upper0,
+            upper1,
+            upper2,
+            upper3);
+    }
+
+    /// <summary>
+    /// Counts one inclusive `FS32-16` ordered key extent through the session's count-only routed primitive.<br/>
+    /// This mirrors the fixed32 range-reader encoding path while avoiding reader materialization for count-only condition execution.<br/>
+    /// </summary>
+    /// <param name="lowerKey">The inclusive lower public key.<br/></param>
+    /// <param name="upperKey">The inclusive upper public key.<br/></param>
+    /// <returns>The number of identities in the ordered key extent.<br/></returns>
+    private long CountFixed32Scalar16IdentityRange(TKey lowerKey, TKey upperKey)
+    {
+        LibraDexGenericScalarCodec<TKey>.Encode32(lowerKey, out ulong lower0, out ulong lower1, out ulong lower2, out ulong lower3);
+        LibraDexGenericScalarCodec<TKey>.Encode32(upperKey, out ulong upper0, out ulong upper1, out ulong upper2, out ulong upper3);
+        return session.CountFixed32Scalar16IdentityRange(
+            RootRouterOffset,
+            GetFixed32Scalar16Profile(),
+            lower0,
+            lower1,
+            lower2,
+            lower3,
+            upper0,
+            upper1,
+            upper2,
+            upper3);
+    }
+
+    /// <summary>
+    /// Counts identities before one ordered key boundary by translating the developer-facing condition into an inclusive physical extent.<br/>
+    /// Exclusive boundaries use the same predecessor helper as the range reader path so the count-only path preserves existing scalar ordering semantics.<br/>
+    /// </summary>
+    /// <param name="key">The boundary key.<br/></param>
+    /// <param name="inclusive">True when identities at <paramref name="key"/> should be included.<br/></param>
+    /// <returns>The number of identities before the boundary.<br/></returns>
+    private long CountBeforeIdentityRange(TKey key, bool inclusive)
+    {
+        GetFullKeyBounds(out TKey lowerKey, out _);
+        if (inclusive)
+        {
+            return CountOrderedIdentityRange(lowerKey, key);
+        }
+
+        return TryGetPreviousKey(key, out TKey upperKey)
+            ? CountOrderedIdentityRange(lowerKey, upperKey)
+            : 0;
+    }
+
+    /// <summary>
+    /// Counts identities after one ordered key boundary by translating the developer-facing condition into an inclusive physical extent.<br/>
+    /// Exclusive boundaries use the same successor helper as the range reader path so the count-only path preserves existing scalar ordering semantics.<br/>
+    /// </summary>
+    /// <param name="key">The boundary key.<br/></param>
+    /// <param name="inclusive">True when identities at <paramref name="key"/> should be included.<br/></param>
+    /// <returns>The number of identities after the boundary.<br/></returns>
+    private long CountAfterIdentityRange(TKey key, bool inclusive)
+    {
+        GetFullKeyBounds(out _, out TKey upperKey);
+        if (inclusive)
+        {
+            return CountOrderedIdentityRange(key, upperKey);
+        }
+
+        return TryGetNextKey(key, out TKey lowerKey)
+            ? CountOrderedIdentityRange(lowerKey, upperKey)
+            : 0;
+    }
+
+    /// <summary>
+    /// Classifies the physical plan used by a generic scalar aggregate primitive.<br/>
+    /// Null-key route counts read existing route metadata, direct ordered criteria use shape-native range counts, and residual predicates are classified as key scans.<br/>
+    /// </summary>
+    /// <param name="request">The primitive request being aggregated.<br/></param>
+    /// <returns>The conservative physical plan classification.</returns>
+    private static LibraDexPrimitiveAggregatePlanKind ClassifyGenericScalarAggregatePlan(LibraDexIdentityPrimitiveRequest request)
+    {
+        return request.CriteriaKind switch
+        {
+            LibraDexCriteriaKind.ScalarNull or
+            LibraDexCriteriaKind.KeyState => LibraDexPrimitiveAggregatePlanKind.Metadata,
+            LibraDexCriteriaKind.StructuredComponent or
+            LibraDexCriteriaKind.GuidPattern or
+            LibraDexCriteriaKind.BinaryPattern or
+            LibraDexCriteriaKind.BinaryTypedSlice or
+            LibraDexCriteriaKind.Bitmask => LibraDexPrimitiveAggregatePlanKind.KeyScan,
+            _ => LibraDexPrimitiveAggregatePlanKind.RangeSlots
+        };
+    }
+
+    /// <summary>
     /// Deletes tuples matched by one normalized condition primitive when the selected generic physical shape has a connected shelf-local delete path.<br/>
     /// This keeps condition-driven mutation on the same primitive spine as retrieval while exposing missing physical delete implementations as explicit shape gaps.<br/>
     /// Connected fixed scalar shapes compact and rewrite only affected shelves for the requested key range.<br/>
@@ -1042,6 +1783,29 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     private LibraDexIdentityMutationResult DeleteIdentityPrimitive(LibraDexIdentityPrimitiveRequest request)
     {
         ThrowIfDisposed();
+        ThrowIfSessionDurabilityBatchActiveForImmediateMutation();
+
+        if (CanUseInternalExactTupleDeleteForPrimaryMutation() &&
+            CanDeleteIdentityPrimitiveUsingQueuedExactTuples(request))
+        {
+            IReadOnlyList<LibraDexObjectTuple> tuples = ExecuteTuplePrimitive(request);
+            long queuedDeleted = 0;
+            for (int i = 0; i < tuples.Count; i++)
+            {
+                LibraDexObjectTuple tuple = tuples[i];
+                if (((IIdentityExactTupleMutator)this).DeleteExactTuple(tuple.Key, tuple.Identity))
+                {
+                    queuedDeleted++;
+                }
+            }
+
+            return new LibraDexIdentityMutationResult(
+                LibraDexCriteriaMutationKind.Delete,
+                tuples.Count,
+                queuedDeleted,
+                new LibraDexQueryDiagnostics(LibraDexExecutionKind.FastPath, RowsScanned: tuples.Count, RowsReturned: queuedDeleted));
+        }
+
         long deleted = request.CriteriaKind switch
         {
             LibraDexCriteriaKind.All => DeleteAllIdentityPrimitive(),
@@ -1081,7 +1845,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
         ThrowIfDisposed();
         return request.CriteriaKind switch
         {
-            LibraDexCriteriaKind.All => MaterializeTupleObjects(OpenAllRangeReader(request.Direction)),
+            LibraDexCriteriaKind.All => MaterializeAllTupleObjects(request.Direction),
             LibraDexCriteriaKind.Find => MaterializeTupleObjects(OpenRangeReader(
                 RequireObjectKey(RequireCriterionValue(request.Values, 0), nameof(request.Values)),
                 RequireObjectKey(RequireCriterionValue(request.Values, 0), nameof(request.Values)),
@@ -1115,7 +1879,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
         ThrowIfDisposed();
         return request.CriteriaKind switch
         {
-            LibraDexCriteriaKind.All => IterateTupleObjects(OpenAllRangeReader(request.Direction), request.TakeLimit),
+            LibraDexCriteriaKind.All => MaterializeAllTupleObjects(request.Direction).Take(request.TakeLimit ?? int.MaxValue),
             LibraDexCriteriaKind.Find => IterateTupleObjects(OpenRangeReader(
                 RequireObjectKey(RequireCriterionValue(request.Values, 0), nameof(request.Values)),
                 RequireObjectKey(RequireCriterionValue(request.Values, 0), nameof(request.Values)),
@@ -1165,13 +1929,15 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
         {
             deleted += DeleteScalarNullRouteIdentities();
         }
-        else if (SupportsNullKeyRoute())
+        else if (SupportsStoredNullKeyRoutes())
         {
             deleted += DeleteNullKeyRouteIdentities(NullKey.Null);
             deleted += DeleteNullKeyRouteIdentities(NullKey.Empty);
         }
 
-        deleted += DeleteIdentityPrimitiveRange(GetLowerFullKeyBound(), GetUpperFullKeyBound());
+        deleted += CanUseInternalExactTupleDeleteForPrimaryMutation()
+            ? DeleteIdentityPrimitiveValueTuplesUsingExactTupleBridge(new LibraDexIdentityPrimitiveRequest(LibraDexCriteriaKind.All, Array.Empty<object?>()))
+            : DeleteIdentityPrimitiveRange(GetLowerFullKeyBound(), GetUpperFullKeyBound());
         return deleted;
     }
 
@@ -1248,7 +2014,9 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
         ScalarNull state = RequireScalarNullState(values);
         return state == ScalarNull.Null
             ? DeleteScalarNullRouteIdentities()
-            : DeleteIdentityPrimitiveRange(GetLowerFullKeyBound(), GetUpperFullKeyBound());
+            : CanUseInternalExactTupleDeleteForPrimaryMutation()
+                ? DeleteIdentityPrimitiveValueTuplesUsingExactTupleBridge(new LibraDexIdentityPrimitiveRequest(LibraDexCriteriaKind.All, Array.Empty<object?>()))
+                : DeleteIdentityPrimitiveRange(GetLowerFullKeyBound(), GetUpperFullKeyBound());
     }
 
     private long DeleteIdentityPrimitiveRange(TKey lowerKey, TKey upperKey)
@@ -1282,10 +2050,21 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
             return 0;
         }
 
-        using Scalar8Scalar8RangePlan plan = session.BuildScalar8Scalar8RangePlan(RootRouterOffset, Scalar8Scalar8Profile.Default32KiB, lowerEncodedKey, upperEncodedKey);
+        using Scalar8Scalar8RangePlan plan = session.BuildScalar8Scalar8RangePlan(RootRouterOffset, GetScalar8Scalar8Profile(), lowerEncodedKey, upperEncodedKey);
         long deleted = 0;
         for (int i = 0; i < plan.ShelfCount; i++)
         {
+            if (plan.TerminalShelfFlags[i] != 0)
+            {
+                int removedFromTerminal = session.DeleteScalar8Scalar8TerminalIdentities(
+                    plan.TerminalRootOffsets[i],
+                    plan.Profile,
+                    plan.TerminalScalarKeys[i],
+                    encodedIdentity: null);
+                deleted += removedFromTerminal;
+                continue;
+            }
+
             byte[] shelfBytes = session.IsDurabilityBatchActive
                 ? session.ReadScalar8Scalar8ShelfBytesForBatch(plan.ShelfOffsets[i], plan.Profile)
                 : plan.Shelves[i];
@@ -1432,6 +2211,338 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     }
 
     /// <summary>
+    /// Rejects ordinary immediate mutation while any explicit session durability batch is active.<br/>
+    /// The session batch owns the mutable dirty-shelf overlay, so unrelated no-ceremony callers must not accidentally publish into that batch by observing only their own index-level batch flag.<br/>
+    /// </summary>
+    /// <exception cref="InvalidOperationException">Thrown when the owning session already has an active durability batch.<br/></exception>
+    private void ThrowIfSessionDurabilityBatchActiveForImmediateMutation()
+    {
+        if (session.IsDurabilityBatchActive)
+        {
+            throw new InvalidOperationException("Immediate LibraDex mutation cannot run while another session durability batch is active; publish, abort, or disable the active batch before issuing unrelated no-batch writes.");
+        }
+    }
+
+    /// <summary>
+    /// Rejects queued-writer mutation while any explicit session durability batch is active.<br/>
+    /// Queued writers use writer-local staging and serialized publication, while durability batches use the session-owned dirty-shelf overlay; mixing them would make caller ownership ambiguous.<br/>
+    /// </summary>
+    /// <exception cref="InvalidOperationException">Thrown when the owning session already has an active durability batch.<br/></exception>
+    internal void ThrowIfSessionDurabilityBatchActiveForConcurrentWriter()
+    {
+        if (session.IsDurabilityBatchActive)
+        {
+            throw new InvalidOperationException("The generic queued writer cannot run while a session durability batch is active; publish, abort, or disable the active batch before starting concurrent writer work.");
+        }
+    }
+
+    /// <summary>
+    /// Tests whether an identity may be inserted at the requested key under this index's identity-key multiplicity contract.<br/>
+    /// The permissive default returns immediately; the single-key contract scans visible ordinary tuples and key-state routes to ensure the identity is not already associated with a different key in this logical index.<br/>
+    /// </summary>
+    /// <param name="identity">The identity being inserted.</param>
+    /// <param name="candidateKey">The concrete key or key-state route requested for the insert.</param>
+    /// <returns><see langword="true"/> when the insert does not violate the identity-key multiplicity contract.</returns>
+    private bool CanInsertIdentityAtKey(TIdentity identity, object? candidateKey)
+    {
+        return identityKeyMultiplicity != IdentityKeyMultiplicity.SingleKeyPerIdentity ||
+            !IdentityHasDifferentKey(identity, candidateKey);
+    }
+
+    /// <summary>
+    /// Tests whether an identity may be inserted at a replacement key while one known old key still contains the same identity.<br/>
+    /// Rekey uses this to remain lossless: the replacement tuple is created before the old tuple is deleted, but any third association still blocks the mutation.<br/>
+    /// </summary>
+    /// <param name="identity">The identity being re-keyed.</param>
+    /// <param name="candidateKey">The replacement key or key-state route requested for the rekey.</param>
+    /// <param name="oldKey">The old key or key-state route allowed to contain the identity until the replacement is committed.</param>
+    /// <returns><see langword="true"/> when the replacement does not violate the identity-key multiplicity contract.</returns>
+    private bool CanInsertIdentityAtKeyReplacingOldKey(TIdentity identity, object? candidateKey, object? oldKey)
+    {
+        return identityKeyMultiplicity != IdentityKeyMultiplicity.SingleKeyPerIdentity ||
+            !IdentityHasDifferentKey(identity, candidateKey, oldKey);
+    }
+
+    /// <summary>
+    /// Tests whether a staged writer may insert an identity at the requested key under this index's identity-key multiplicity contract.<br/>
+    /// Batch and queued writer facades call this before accepting a staged write so the persisted contract is enforced before publication.<br/>
+    /// </summary>
+    /// <param name="identity">The identity being inserted.</param>
+    /// <param name="candidateKey">The concrete key or key-state route requested for the insert.</param>
+    /// <returns><see langword="true"/> when the insert does not violate committed identity-key ownership.</returns>
+    internal bool CanStageInsertIdentityAtKey(TIdentity identity, object? candidateKey)
+    {
+        return CanInsertIdentityAtKey(identity, candidateKey);
+    }
+
+    /// <summary>
+    /// Tests whether a staged writer may insert a replacement key while the old key still contains the same identity.<br/>
+    /// Rekey facades use this to keep replacement-before-delete behavior without allowing a third identity-key association.<br/>
+    /// </summary>
+    /// <param name="identity">The identity being re-keyed.</param>
+    /// <param name="candidateKey">The replacement key or key-state route requested for the rekey.</param>
+    /// <param name="oldKey">The old key or key-state route allowed until the replacement is published.</param>
+    /// <returns><see langword="true"/> when the replacement does not violate committed identity-key ownership.</returns>
+    internal bool CanStageInsertIdentityAtKeyReplacingOldKey(TIdentity identity, object? candidateKey, object? oldKey)
+    {
+        return CanInsertIdentityAtKeyReplacingOldKey(identity, candidateKey, oldKey);
+    }
+
+    /// <summary>
+    /// Tests staged identity equality with the same tuple semantics used by stored LibraDex rows.<br/>
+    /// This keeps staged byte-array identities content-based instead of reference-based.<br/>
+    /// </summary>
+    /// <param name="left">The first identity.</param>
+    /// <param name="right">The second identity.</param>
+    /// <returns><see langword="true"/> when both identities compare equal as tuple components.</returns>
+    internal bool StagedIdentityEquals(TIdentity left, TIdentity right)
+    {
+        return TupleComponentEquals(left, right);
+    }
+
+    /// <summary>
+    /// Tests staged ordinary-key equality with the same tuple semantics used by stored LibraDex rows.<br/>
+    /// This keeps staged byte-array keys content-based instead of reference-based.<br/>
+    /// </summary>
+    /// <param name="left">The first ordinary key.</param>
+    /// <param name="right">The second ordinary key.</param>
+    /// <returns><see langword="true"/> when both keys compare equal as tuple components.</returns>
+    internal bool StagedOrdinaryKeyEquals(TKey left, TKey right)
+    {
+        return TupleComponentEquals(left, right);
+    }
+
+    /// <summary>
+    /// Inserts one ordinary tuple through the already checked immediate insert core for queued-writer rekey replacement.<br/>
+    /// The queued writer calls this only after its staged identity-key guard has allowed the old key as the association being replaced.<br/>
+    /// </summary>
+    /// <param name="key">The replacement key to insert.</param>
+    /// <param name="identity">The identity associated with the replacement key.</param>
+    /// <returns>The insert result plus any route-create and insert commit telemetry.</returns>
+    internal LibraDexGenericInsertResult InsertAfterIdentityKeyMultiplicityCheckForQueuedWriter(TKey key, TIdentity identity)
+    {
+        return InsertAfterIdentityKeyMultiplicityCheck(key, identity);
+    }
+
+    /// <summary>
+    /// Finds whether an identity is already stored under any key other than the allowed candidate key.<br/>
+    /// This is intentionally a correctness guard, not a hot-path optimization: callers opt into it when they need planner-visible single-key identity semantics.<br/>
+    /// </summary>
+    /// <param name="identity">The identity to search for.</param>
+    /// <param name="allowedKey">The primary key or key-state route that is allowed to already contain the identity.</param>
+    /// <param name="alternateAllowedKey">The optional second key or key-state route that is also allowed, used for lossless rekey replacement.</param>
+    /// <returns><see langword="true"/> when the identity is associated with a different key.</returns>
+    private bool IdentityHasDifferentKey(TIdentity identity, object? allowedKey, object? alternateAllowedKey = null)
+    {
+        if (catalog is not null && SupportsScalarNullKeyRoute() &&
+            !IsAllowedScalarNullKey(allowedKey) &&
+            (alternateAllowedKey is null || !IsAllowedScalarNullKey(alternateAllowedKey)) &&
+            ContainsOptionalScalarNullIdentity(identity))
+        {
+            return true;
+        }
+
+        if (catalog is not null && SupportsNullKeyRoute())
+        {
+            if (!IsAllowedNullKey(allowedKey, NullKey.Null) &&
+                (alternateAllowedKey is null || !IsAllowedNullKey(alternateAllowedKey, NullKey.Null)) &&
+                ContainsOptionalNullKeyIdentity(NullKey.Null, identity))
+            {
+                return true;
+            }
+
+            if (!IsAllowedNullKey(allowedKey, NullKey.Empty) &&
+                (alternateAllowedKey is null || !IsAllowedNullKey(alternateAllowedKey, NullKey.Empty)) &&
+                ContainsOptionalNullKeyIdentity(NullKey.Empty, identity))
+            {
+                return true;
+            }
+        }
+
+        using LibraDexRangeReader<TKey, TIdentity> reader = OpenAllRangeReader();
+        while (reader.TryReadNext(out TKey key, out TIdentity currentIdentity))
+        {
+            if (TupleComponentEquals(currentIdentity, identity) &&
+                !IsAllowedOrdinaryKey(allowedKey, key) &&
+                (alternateAllowedKey is null || !IsAllowedOrdinaryKey(alternateAllowedKey, key)))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Tests scalar-null route membership when optional route metadata exists, treating absent route metadata as empty.<br/>
+    /// Standalone indexes can predate catalog key-state metadata, and the single-key guard should not turn absent optional route metadata into a hard insert failure.<br/>
+    /// </summary>
+    /// <param name="identity">The identity to test.</param>
+    /// <returns><see langword="true"/> when the scalar-null route contains the identity.</returns>
+    private bool ContainsOptionalScalarNullIdentity(TIdentity identity)
+    {
+        try
+        {
+            return ContainsScalarNullIdentity(identity);
+        }
+        catch (InvalidDataException ex) when (IsMissingKeyStateRouteMetadata(ex))
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Tests null or empty binary key-state membership when optional route metadata exists, treating absent route metadata as empty.<br/>
+    /// This mirrors count-all's optional key-state behavior while keeping explicit key-state operations strict elsewhere.<br/>
+    /// </summary>
+    /// <param name="keyState">The key-state route to inspect.</param>
+    /// <param name="identity">The identity to test.</param>
+    /// <returns><see langword="true"/> when the selected route contains the identity.</returns>
+    private bool ContainsOptionalNullKeyIdentity(NullKey keyState, TIdentity identity)
+    {
+        try
+        {
+            return ContainsNullKeyIdentity(keyState, identity);
+        }
+        catch (InvalidDataException ex) when (IsMissingKeyStateRouteMetadata(ex))
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Tests whether an allowed key token represents the scalar-null key-state route.<br/>
+    /// This keeps scalar key-state comparisons out of the ordinary typed-key equality path.<br/>
+    /// </summary>
+    /// <param name="allowedKey">The allowed key token to inspect.</param>
+    /// <returns><see langword="true"/> when the token is <see cref="ScalarNull.Null"/>.</returns>
+    private static bool IsAllowedScalarNullKey(object? allowedKey)
+        => allowedKey is ScalarNull scalarNull && scalarNull == ScalarNull.Null;
+
+    /// <summary>
+    /// Tests whether an allowed key token represents one concrete binary null-key route.<br/>
+    /// Predicate-only states such as <see cref="NullKey.NullOrEmpty"/> are intentionally not accepted here.<br/>
+    /// </summary>
+    /// <param name="allowedKey">The allowed key token to inspect.</param>
+    /// <param name="keyState">The concrete null-key route being compared.</param>
+    /// <returns><see langword="true"/> when both tokens name the same concrete route.</returns>
+    private static bool IsAllowedNullKey(object? allowedKey, NullKey keyState)
+        => allowedKey is NullKey allowedNullKey && allowedNullKey == keyState;
+
+    /// <summary>
+    /// Tests whether an allowed key token is the same ordinary typed key as a stored tuple key.<br/>
+    /// This comparison uses LibraDex tuple equality so byte-array keys compare by content instead of reference identity.<br/>
+    /// </summary>
+    /// <param name="allowedKey">The allowed key token to inspect.</param>
+    /// <param name="key">The stored ordinary key to compare.</param>
+    /// <returns><see langword="true"/> when both keys are equal under tuple equality.</returns>
+    private static bool IsAllowedOrdinaryKey(object? allowedKey, TKey key)
+        => allowedKey is TKey allowedOrdinaryKey && TupleComponentEquals(allowedOrdinaryKey, key);
+
+    /// <summary>
+    /// Tests one exact typed key/identity tuple for the public concurrent batch facade.<br/>
+    /// The batch facade is outside this generic index type, so this narrow bridge keeps rekey semantics aligned with immediate rekey without exposing tuple membership as a broad public API.<br/>
+    /// </summary>
+    /// <param name="key">The key side of the tuple to test.<br/></param>
+    /// <param name="identity">The identity side of the tuple to test.<br/></param>
+    /// <returns><see langword="true"/> when the exact tuple exists.</returns>
+    internal bool ContainsExactTupleForConcurrentBatch(TKey key, TIdentity identity)
+    {
+        return ContainsExactTuple(key, identity);
+    }
+
+    /// <summary>
+    /// Gets whether this index owns a maintained exact reversed projection for concurrent batch maintenance.<br/>
+    /// This narrow bridge lets the public concurrent batch avoid reflection or broad projection APIs while keeping projection ownership private to the index.<br/>
+    /// </summary>
+    /// <returns><see langword="true"/> when the index has a maintained exact reversed projection.</returns>
+    internal bool HasExactReversedProjectionForConcurrentBatch()
+    {
+        return exactReversedProjection is not null;
+    }
+
+    /// <summary>
+    /// Creates the maintained exact reversed projection key for concurrent batch staging.<br/>
+    /// The transformation is the same one used by immediate and durability-batch projection maintenance.<br/>
+    /// </summary>
+    /// <param name="key">The original forward key.<br/></param>
+    /// <returns>The reversed projection key.</returns>
+    internal TKey CreateExactReversedProjectionKeyForConcurrentBatch(TKey key)
+    {
+        return CreateExactReversedProjectionKey(key);
+    }
+
+    /// <summary>
+    /// Stages one exact reversed projection insert through a shared `FS32-8` concurrent batch context.<br/>
+    /// The caller owns the context and publication boundary so primary and projection shelves can be flushed together when both remain shelf-local.<br/>
+    /// </summary>
+    /// <param name="writeContext">The shared writer context for the concurrent batch.<br/></param>
+    /// <param name="key">The original forward key.<br/></param>
+    /// <param name="identity">The identity associated with the key.<br/></param>
+    /// <returns>The staged projection insert result.</returns>
+    internal LibraDexGenericInsertResult InsertExactReversedProjectionForConcurrentBatch(
+        LibraDexWriteContext writeContext,
+        TKey key,
+        TIdentity identity)
+    {
+        if (exactReversedProjection is null)
+        {
+            return new LibraDexGenericInsertResult(false, false, default, default);
+        }
+
+        return exactReversedProjection.InsertFixed32Scalar8ForConcurrentBatch(
+            writeContext,
+            CreateExactReversedProjectionKey(key),
+            identity);
+    }
+
+    /// <summary>
+    /// Stages one exact reversed projection delete through a shared `FS32-8` concurrent batch context.<br/>
+    /// The caller owns the context and publication boundary so primary and projection shelves can be flushed together when both remain shelf-local.<br/>
+    /// </summary>
+    /// <param name="writeContext">The shared writer context for the concurrent batch.<br/></param>
+    /// <param name="key">The original forward key.<br/></param>
+    /// <param name="identity">The identity associated with the key.<br/></param>
+    /// <returns>The staged projection delete result.</returns>
+    internal LibraDexGenericDeleteResult DeleteExactReversedProjectionForConcurrentBatch(
+        LibraDexWriteContext writeContext,
+        TKey key,
+        TIdentity identity)
+    {
+        if (exactReversedProjection is null)
+        {
+            return new LibraDexGenericDeleteResult(false, default);
+        }
+
+        return exactReversedProjection.DeleteFixed32Scalar8ForConcurrentBatch(
+            writeContext,
+            CreateExactReversedProjectionKey(key),
+            identity);
+    }
+
+    /// <summary>
+    /// Publishes this index's exact reversed projection insert through its immediate path after a concurrent batch had to publish primary staged work early.<br/>
+    /// This fallback is used only for topology-changing projection cases; warmed shelf-local projection work stays in the shared writer context.<br/>
+    /// </summary>
+    /// <param name="key">The original forward key.<br/></param>
+    /// <param name="identity">The identity associated with the key.<br/></param>
+    internal void InsertExactReversedProjectionFallbackForConcurrentBatch(TKey key, TIdentity identity)
+    {
+        InsertExactReversedProjectionImmediate(key, identity);
+    }
+
+    /// <summary>
+    /// Publishes this index's exact reversed projection delete through its immediate path after a concurrent batch had to publish primary staged work early.<br/>
+    /// This fallback is used only for topology-changing projection cases; warmed shelf-local projection work stays in the shared writer context.<br/>
+    /// </summary>
+    /// <param name="key">The original forward key.<br/></param>
+    /// <param name="identity">The identity associated with the key.<br/></param>
+    internal void DeleteExactReversedProjectionFallbackForConcurrentBatch(TKey key, TIdentity identity)
+    {
+        DeleteExactReversedProjection(key, identity);
+    }
+
+    /// <summary>
     /// Tests one exact typed key/identity tuple through an equality range over the key.<br/>
     /// This avoids relying on insert result ambiguity, where an uninserted replacement can mean either "already present" or "blocked by uniqueness".<br/>
     /// </summary>
@@ -1461,6 +2572,8 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     /// <returns><see langword="true"/> when one tuple was removed.</returns>
     private bool DeleteExactTuple(TKey key, TIdentity identity)
     {
+        ThrowIfSessionDurabilityBatchActiveForImmediateMutation();
+
         bool deleted = shape switch
         {
             LibraDexGenericScalarShape.SS88 => DeleteExactScalar8Scalar8Tuple(key, identity),
@@ -1516,11 +2629,25 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
 
     private bool DeleteExactScalar8Scalar8Tuple(TKey key, TIdentity identity)
     {
+        if (CanUseInternalQueuedWriterForPrimaryMutation())
+        {
+            return GetOrCreateInternalQueuedWriter().Delete(key, identity).Deleted;
+        }
+
         ulong encodedKey = EncodeKey8(key);
         ulong encodedIdentity = LibraDexGenericScalarCodec<TIdentity>.Encode8(identity);
-        using Scalar8Scalar8RangePlan plan = session.BuildScalar8Scalar8RangePlan(RootRouterOffset, Scalar8Scalar8Profile.Default32KiB, encodedKey, encodedKey);
+        using Scalar8Scalar8RangePlan plan = session.BuildScalar8Scalar8RangePlan(RootRouterOffset, GetScalar8Scalar8Profile(), encodedKey, encodedKey);
         for (int i = 0; i < plan.ShelfCount; i++)
         {
+            if (plan.TerminalShelfFlags[i] != 0)
+            {
+                return session.DeleteScalar8Scalar8TerminalIdentities(
+                    plan.TerminalRootOffsets[i],
+                    plan.Profile,
+                    plan.TerminalScalarKeys[i],
+                    encodedIdentity) == 1;
+            }
+
             Scalar8Scalar8ReadOnly readOnly = new(plan.Shelves[i], plan.Profile);
             for (int slot = plan.StartSlots[i]; slot < plan.EndSlots[i]; slot++)
             {
@@ -1539,39 +2666,1883 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
         return false;
     }
 
+    /// <summary>
+    /// Gets whether ordinary primary `SS8-8` mutation can use the index-owned queued writer without changing batch or projection semantics.<br/>
+    /// Active batches stay on the older explicit durability path; maintained reversed projections publish through a separate immediate projection update after the primary tuple is accepted.<br/>
+    /// </summary>
+    /// <returns><see langword="true"/> when the internal queued writer is safe for this mutation.</returns>
+    private bool CanUseInternalQueuedWriterForPrimaryMutation()
+    {
+        return shape == LibraDexGenericScalarShape.SS88 &&
+            !BatchManager.IsEnabled &&
+            !session.IsDurabilityBatchActive &&
+            catalog?.TryGetActiveIdentityGroupBatch(Group, out _) != true;
+    }
+
+    /// <summary>
+    /// Gets whether ordinary primary `SS16-8` mutation can try a writer-context path without changing batch or projection semantics.<br/>
+    /// The first `SS16-8` slice is narrower than `SS8-8`: warmed shelf-local insert/delete can stage independently, while route setup, split, transform, and public batch state stay on existing serialized paths.<br/>
+    /// </summary>
+    /// <returns><see langword="true"/> when the internal `SS16-8` writer context is eligible for this mutation.</returns>
+    private bool CanUseInternalScalar16Scalar8WriterContextForPrimaryMutation()
+    {
+        return shape == LibraDexGenericScalarShape.SS168 &&
+            !BatchManager.IsEnabled &&
+            !session.IsDurabilityBatchActive &&
+            catalog?.TryGetActiveIdentityGroupBatch(Group, out _) != true;
+    }
+
+    /// <summary>
+    /// Gets whether ordinary primary `SS8-16` mutation can try a writer-context path without changing batch or projection semantics.<br/>
+    /// The first `SS8-16` slice is bounded to warmed shelf-local insert/delete; route setup, split, transform, and public batch state stay on existing serialized paths.<br/>
+    /// </summary>
+    /// <returns><see langword="true"/> when the internal `SS8-16` writer context is eligible for this mutation.</returns>
+    private bool CanUseInternalScalar8Scalar16WriterContextForPrimaryMutation()
+    {
+        return shape == LibraDexGenericScalarShape.SS816 &&
+            !BatchManager.IsEnabled &&
+            !session.IsDurabilityBatchActive &&
+            catalog?.TryGetActiveIdentityGroupBatch(Group, out _) != true;
+    }
+
+    /// <summary>
+    /// Gets whether ordinary primary `SS16-16` mutation can try a writer-context path without changing batch or projection semantics.<br/>
+    /// The first `SS16-16` slice is bounded to warmed shelf-local insert/delete; route setup, split, transform, and public batch state stay on existing serialized paths.<br/>
+    /// </summary>
+    /// <returns><see langword="true"/> when the internal `SS16-16` writer context is eligible for this mutation.</returns>
+    private bool CanUseInternalScalar16Scalar16WriterContextForPrimaryMutation()
+    {
+        return shape == LibraDexGenericScalarShape.SS1616 &&
+            !BatchManager.IsEnabled &&
+            !session.IsDurabilityBatchActive &&
+            catalog?.TryGetActiveIdentityGroupBatch(Group, out _) != true;
+    }
+
+    /// <summary>
+    /// Gets whether ordinary primary `FS32-8` mutation can try a writer-context path without changing batch or projection semantics.<br/>
+    /// The first `FS32-8` slice is bounded to warmed shelf-local insert; route setup, split, transform, and public batch state stay on existing serialized paths.<br/>
+    /// </summary>
+    /// <returns><see langword="true"/> when the internal `FS32-8` writer context is eligible for this mutation.</returns>
+    private bool CanUseInternalFixed32Scalar8WriterContextForPrimaryMutation()
+    {
+        return shape == LibraDexGenericScalarShape.FS328 &&
+            !BatchManager.IsEnabled &&
+            !session.IsDurabilityBatchActive &&
+            catalog?.TryGetActiveIdentityGroupBatch(Group, out _) != true;
+    }
+
+    /// <summary>
+    /// Gets whether ordinary primary `FS32-16` mutation can try a writer-context path without changing batch or projection semantics.<br/>
+    /// The first `FS32-16` slice is bounded to warmed shelf-local insert; route setup, split, transform, and public batch state stay on existing serialized paths.<br/>
+    /// </summary>
+    /// <returns><see langword="true"/> when the internal `FS32-16` writer context is eligible for this mutation.</returns>
+    private bool CanUseInternalFixed32Scalar16WriterContextForPrimaryMutation()
+    {
+        return shape == LibraDexGenericScalarShape.FS3216 &&
+            !BatchManager.IsEnabled &&
+            !session.IsDurabilityBatchActive &&
+            catalog?.TryGetActiveIdentityGroupBatch(Group, out _) != true;
+    }
+
+    /// <summary>
+    /// Gets whether criteria-scoped value-route deletion can be expressed as captured exact tuples for the current shape.<br/>
+    /// `SS8-8` uses the queued writer facade; `SS16-8` uses the first widened-key writer-context slice for warmed shelf-local exact deletes with serialized fallback for unsupported shapes.<br/>
+    /// </summary>
+    /// <returns><see langword="true"/> when exact tuple deletion should replace range rewrite for eligible primitives.</returns>
+    private bool CanUseInternalExactTupleDeleteForPrimaryMutation()
+    {
+        return CanUseInternalQueuedWriterForPrimaryMutation() ||
+            CanUseInternalScalar16Scalar8WriterContextForPrimaryMutation() ||
+            CanUseInternalScalar8Scalar16WriterContextForPrimaryMutation() ||
+            CanUseInternalScalar16Scalar16WriterContextForPrimaryMutation() ||
+            CanUseInternalFixed32Scalar8WriterContextForPrimaryMutation() ||
+            CanUseInternalFixed32Scalar16WriterContextForPrimaryMutation();
+    }
+
+    /// <summary>
+    /// Inserts one `SS8-8` tuple through the encoded index's adaptive admission path.<br/>
+    /// The encoded wrapper uses direct serialized insertion for the uncontended single-owner case and only admits the queued writer path when concurrent callers overlap on this public index handle.<br/>
+    /// This keeps ordinary one-thread writes on the low-overhead path while preserving the existing shelf-local concurrent writer behavior when real overlap occurs.<br/>
+    /// </summary>
+    /// <param name="key">The typed key to insert.<br/></param>
+    /// <param name="identity">The typed identity to insert.<br/></param>
+    /// <returns>The generic insert result with the path attribution reported by the encoded insert.</returns>
+    private LibraDexGenericInsertResult InsertScalar8Scalar8UsingAdaptiveAdmission(TKey key, TIdentity identity)
+    {
+        bool allowDuplicateKeys = KeyContract == IndexKeys.NonUnique;
+        Scalar8Scalar8EncodedInsertResult result = GetOrCreateInternalScalar8Scalar8Index().InsertEncoded(
+            EncodeKey8(key),
+            LibraDexGenericScalarCodec<TIdentity>.Encode8(identity),
+            allowDuplicateKeys);
+        LibraDexGenericInsertResult genericResult = new(
+            result.Outcome == Scalar8Scalar8EncodedInsertOutcome.Inserted,
+            result.CreatedInitialShelfRoute,
+            LibraDexOperationDiagnostics.FromDataKernel(result.RouteCreateCommit),
+            LibraDexOperationDiagnostics.FromDataKernel(result.InsertCommit))
+        {
+            QueuedInsertPath = result.QueuedInsertPath
+        };
+        RecordSingleInsertPublication(genericResult);
+        return genericResult;
+    }
+
+    /// <summary>
+    /// Gets the encoded `SS8-8` wrapper used by default public generic `SS8-8` insertion.<br/>
+    /// The wrapper is cached so its adaptive admission lock is shared by all one-shot inserts on this opened public index handle.<br/>
+    /// </summary>
+    /// <returns>The cached encoded wrapper for the public index.</returns>
+    private Scalar8Scalar8Index GetOrCreateInternalScalar8Scalar8Index()
+    {
+        Scalar8Scalar8Index? encodedIndex = internalScalar8Scalar8Index;
+        if (encodedIndex is not null)
+        {
+            return encodedIndex;
+        }
+
+        lock (internalScalar8Scalar8IndexSync)
+        {
+            encodedIndex = internalScalar8Scalar8Index;
+            if (encodedIndex is not null)
+            {
+                return encodedIndex;
+            }
+
+            encodedIndex = new Scalar8Scalar8Index(
+                session,
+                new Scalar8Scalar8IndexHandle(RootRouterOffset, GetScalar8Scalar8Profile()),
+                SlotIndex,
+                Name,
+                ownsSession: false);
+            internalScalar8Scalar8Index = encodedIndex;
+            return encodedIndex;
+        }
+    }
+
+    /// <summary>
+    /// Inserts one `SS16-8` tuple through a writer-local shelf context when the route is already warmed and shelf-local.<br/>
+    /// Same-shelf ownership contention waits and retries inside the method; topology-changing cases fall back to the direct serialized topology path so the first transfer does not broaden route-publication semantics.<br/>
+    /// </summary>
+    /// <param name="key">The typed key to insert.</param>
+    /// <param name="identity">The typed identity to insert.</param>
+    /// <returns>The generic insert result with writer-context path attribution when the shelf-local path succeeds.</returns>
+    private LibraDexGenericInsertResult InsertScalar16Scalar8UsingWriterContextOrFallback(TKey key, TIdentity identity)
+    {
+        LibraDexGenericScalarCodec<TKey>.Encode16(key, out ulong keyHigh, out ulong keyLow);
+        ulong encodedIdentity = LibraDexGenericScalarCodec<TIdentity>.Encode8(identity);
+        Scalar16Scalar8Profile profile = GetScalar16Scalar8Profile();
+        bool allowDuplicateKeys = KeyContract == IndexKeys.NonUnique;
+        byte rootPrefix = (byte)(keyHigh >> 56);
+        if (session.FindRouterTarget(RootRouterOffset, rootPrefix) == 0)
+        {
+            if (session.TryInsertScalar16Scalar8DirectColdRootRoute(
+                RootRouterOffset,
+                rootPrefix,
+                profile,
+                keyHigh,
+                keyLow,
+                encodedIdentity,
+                allowDuplicateKeys,
+                out Scalar16Scalar8RoutedInsertResult coldRouteResult))
+            {
+                LibraDexGenericInsertResult genericResult = new(
+                    true,
+                    true,
+                    default,
+                    LibraDexOperationDiagnostics.FromDataKernel(coldRouteResult.Commit))
+                {
+                    QueuedInsertPath = Scalar8Scalar8QueuedInsertPath.NarrowTopologyPublisher
+                };
+                RecordSingleInsertPublication(genericResult);
+                return genericResult;
+            }
+
+            return InsertScalar16Scalar8UsingSerializedTopologyFallback(
+                profile,
+                keyHigh,
+                keyLow,
+                encodedIdentity,
+                allowDuplicateKeys);
+        }
+
+        while (true)
+        {
+            LibraDexWriteContext writeContext = session.BeginScalar16Scalar8WriteContext();
+            try
+            {
+                Scalar16Scalar8RoutedInsertResult result = session.InsertWalkedRoutedScalar16Scalar8NoSplitForWriteContext(
+                    writeContext,
+                    RootRouterOffset,
+                    profile,
+                    keyHigh,
+                    keyLow,
+                    encodedIdentity,
+                    allowDuplicateKeys,
+                    maxRouterHops: 8);
+
+                if (result.InsertResult != Scalar16Scalar8InsertResult.Inserted)
+                {
+                    session.AbortScalar16Scalar8WriteContext(writeContext);
+                    return new LibraDexGenericInsertResult(false, false, default, default)
+                    {
+                        QueuedInsertPath = Scalar8Scalar8QueuedInsertPath.None
+                    };
+                }
+
+                DataKernelCommitTelemetry telemetry = session.PublishScalar16Scalar8WriteContext(writeContext);
+                LibraDexGenericInsertResult genericResult = new(
+                    true,
+                    false,
+                    default,
+                    LibraDexOperationDiagnostics.FromDataKernel(telemetry))
+                {
+                    QueuedInsertPath = Scalar8Scalar8QueuedInsertPath.WriterContext
+                };
+                RecordSingleInsertPublication(genericResult);
+                return genericResult;
+            }
+            catch (LibraDexWriteContextScalar16Scalar8ShelfOwnershipException ex)
+            {
+                session.AbortScalar16Scalar8WriteContext(writeContext);
+                session.WaitForWriteContextShelfRelease(ex.ShelfOffset, CancellationToken.None);
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or InvalidDataException)
+            {
+                session.AbortScalar16Scalar8WriteContext(writeContext);
+                if (session.TrySplitScalar16Scalar8DirectParentRoute(
+                    RootRouterOffset,
+                    profile,
+                    keyHigh,
+                    keyLow,
+                    encodedIdentity,
+                    maxRouterHops: 8,
+                    out Scalar16Scalar8RoutedInsertResult parentRouteSplitResult))
+                {
+                    bool inserted = parentRouteSplitResult.InsertResult == Scalar16Scalar8InsertResult.Inserted;
+                    LibraDexGenericInsertResult genericResult = new(
+                        inserted,
+                        false,
+                        default,
+                        LibraDexOperationDiagnostics.FromDataKernel(parentRouteSplitResult.Commit))
+                    {
+                        QueuedInsertPath = inserted
+                            ? Scalar8Scalar8QueuedInsertPath.NarrowTopologyPublisher
+                            : Scalar8Scalar8QueuedInsertPath.None
+                    };
+                    if (inserted)
+                    {
+                        RecordSingleInsertPublication(genericResult);
+                    }
+
+                    return genericResult;
+                }
+
+                if (session.TryTransformScalar16Scalar8DirectShelf(
+                    RootRouterOffset,
+                    profile,
+                    keyHigh,
+                    keyLow,
+                    encodedIdentity,
+                    maxRouterHops: 8,
+                    out Scalar16Scalar8RoutedInsertResult shelfTransformResult))
+                {
+                    bool inserted = shelfTransformResult.InsertResult == Scalar16Scalar8InsertResult.Inserted;
+                    LibraDexGenericInsertResult genericResult = new(
+                        inserted,
+                        false,
+                        default,
+                        LibraDexOperationDiagnostics.FromDataKernel(shelfTransformResult.Commit))
+                    {
+                        QueuedInsertPath = inserted
+                            ? Scalar8Scalar8QueuedInsertPath.NarrowTopologyPublisher
+                            : Scalar8Scalar8QueuedInsertPath.None
+                    };
+                    if (inserted)
+                    {
+                        RecordSingleInsertPublication(genericResult);
+                    }
+
+                    return genericResult;
+                }
+
+                return InsertScalar16Scalar8UsingSerializedTopologyFallback(
+                    profile,
+                    keyHigh,
+                    keyLow,
+                    encodedIdentity,
+                    allowDuplicateKeys);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Inserts one `SS16-8` tuple through the serialized topology path after writer-context staging rejects the route as non-shelf-local.<br/>
+    /// Full-shelf splits and transforms are still serialized for topology safety, but the fallback no longer uses session batch state for a one-item direct insert.<br/>
+    /// </summary>
+    /// <param name="profile">The `SS16-8` shelf profile for the routed index.<br/></param>
+    /// <param name="keyHigh">The encoded high key half.<br/></param>
+    /// <param name="keyLow">The encoded low key half.<br/></param>
+    /// <param name="encodedIdentity">The encoded scalar identity.<br/></param>
+    /// <param name="allowDuplicateKeys">Whether duplicate keys are accepted by this index.<br/></param>
+    /// <returns>The generic insert result with serialized-fallback attribution.</returns>
+    private LibraDexGenericInsertResult InsertScalar16Scalar8UsingSerializedTopologyFallback(
+        Scalar16Scalar8Profile profile,
+        ulong keyHigh,
+        ulong keyLow,
+        ulong encodedIdentity,
+        bool allowDuplicateKeys)
+    {
+        Scalar16Scalar8RoutedInsertResult routedResult = session.InsertScalar16Scalar8DirectSerializedTopologyFallback(
+            RootRouterOffset,
+            profile,
+            keyHigh,
+            keyLow,
+            encodedIdentity,
+            allowDuplicateKeys,
+            maxRouterHops: 8);
+        bool inserted = routedResult.InsertResult == Scalar16Scalar8InsertResult.Inserted;
+        LibraDexGenericInsertResult genericResult = new(
+            inserted,
+            false,
+            default,
+            LibraDexOperationDiagnostics.FromDataKernel(routedResult.Commit))
+        {
+            QueuedInsertPath = inserted
+                ? Scalar8Scalar8QueuedInsertPath.SerializedFallback
+                : Scalar8Scalar8QueuedInsertPath.None
+        };
+        if (inserted)
+        {
+            RecordSingleInsertPublication(genericResult);
+        }
+
+        return genericResult;
+    }
+
+    /// <summary>
+    /// Inserts one `SS8-16` tuple through a writer-local shelf context when the route is already warmed and shelf-local.<br/>
+    /// Same-shelf ownership contention waits and retries inside the method; topology-changing cases fall back to the direct serialized topology path for this first wide-identity slice.<br/>
+    /// </summary>
+    /// <param name="key">The typed key to insert.</param>
+    /// <param name="identity">The typed identity to insert.</param>
+    /// <returns>The generic insert result with writer-context path attribution when the shelf-local path succeeds.</returns>
+    private LibraDexGenericInsertResult InsertScalar8Scalar16UsingWriterContextOrFallback(TKey key, TIdentity identity)
+    {
+        ulong encodedKey = LibraDexGenericScalarCodec<TKey>.Encode8(key);
+        LibraDexGenericScalarCodec<TIdentity>.Encode16(identity, out ulong identityHigh, out ulong identityLow);
+        Scalar8Scalar16Profile profile = GetScalar8Scalar16Profile();
+        bool allowDuplicateKeys = KeyContract == IndexKeys.NonUnique;
+        byte rootPrefix = (byte)(encodedKey >> 56);
+        if (session.FindRouterTarget(RootRouterOffset, rootPrefix) == 0)
+        {
+            if (session.TryInsertScalar8Scalar16DirectColdRootRoute(
+                RootRouterOffset,
+                rootPrefix,
+                profile,
+                encodedKey,
+                identityHigh,
+                identityLow,
+                allowDuplicateKeys,
+                out Scalar8Scalar16RoutedInsertResult coldRouteResult))
+            {
+                LibraDexGenericInsertResult genericResult = new(
+                    true,
+                    true,
+                    default,
+                    LibraDexOperationDiagnostics.FromDataKernel(coldRouteResult.Commit))
+                {
+                    QueuedInsertPath = Scalar8Scalar8QueuedInsertPath.NarrowTopologyPublisher
+                };
+                RecordSingleInsertPublication(genericResult);
+                return genericResult;
+            }
+
+            return InsertScalar8Scalar16UsingSerializedTopologyFallback(
+                profile,
+                encodedKey,
+                identityHigh,
+                identityLow,
+                allowDuplicateKeys);
+        }
+
+        while (true)
+        {
+            LibraDexWriteContext writeContext = session.BeginScalar8Scalar16WriteContext();
+            try
+            {
+                Scalar8Scalar16RoutedInsertResult result = session.InsertWalkedRoutedScalar8Scalar16NoSplitForWriteContext(
+                    writeContext,
+                    RootRouterOffset,
+                    profile,
+                    encodedKey,
+                    identityHigh,
+                    identityLow,
+                    allowDuplicateKeys,
+                    maxRouterHops: 8);
+
+                if (result.InsertResult != Scalar8Scalar16InsertResult.Inserted)
+                {
+                    session.AbortScalar8Scalar16WriteContext(writeContext);
+                    return new LibraDexGenericInsertResult(false, false, default, default)
+                    {
+                        QueuedInsertPath = Scalar8Scalar8QueuedInsertPath.None
+                    };
+                }
+
+                DataKernelCommitTelemetry telemetry = session.PublishScalar8Scalar16WriteContext(writeContext);
+                LibraDexGenericInsertResult genericResult = new(
+                    true,
+                    false,
+                    default,
+                    LibraDexOperationDiagnostics.FromDataKernel(telemetry))
+                {
+                    QueuedInsertPath = Scalar8Scalar8QueuedInsertPath.WriterContext
+                };
+                RecordSingleInsertPublication(genericResult);
+                return genericResult;
+            }
+            catch (LibraDexWriteContextScalar8Scalar16ShelfOwnershipException ex)
+            {
+                session.AbortScalar8Scalar16WriteContext(writeContext);
+                session.WaitForWriteContextShelfRelease(ex.ShelfOffset, CancellationToken.None);
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or InvalidDataException)
+            {
+                session.AbortScalar8Scalar16WriteContext(writeContext);
+                if (session.TrySplitScalar8Scalar16DirectParentRoute(
+                    RootRouterOffset,
+                    profile,
+                    encodedKey,
+                    identityHigh,
+                    identityLow,
+                    maxRouterHops: 8,
+                    out Scalar8Scalar16RoutedInsertResult parentRouteSplitResult))
+                {
+                    bool inserted = parentRouteSplitResult.InsertResult == Scalar8Scalar16InsertResult.Inserted;
+                    LibraDexGenericInsertResult genericResult = new(
+                        inserted,
+                        false,
+                        default,
+                        LibraDexOperationDiagnostics.FromDataKernel(parentRouteSplitResult.Commit))
+                    {
+                        QueuedInsertPath = inserted
+                            ? Scalar8Scalar8QueuedInsertPath.NarrowTopologyPublisher
+                            : Scalar8Scalar8QueuedInsertPath.None
+                    };
+                    if (inserted)
+                    {
+                        RecordSingleInsertPublication(genericResult);
+                    }
+
+                    return genericResult;
+                }
+
+                if (session.TryTransformScalar8Scalar16DirectShelf(
+                    RootRouterOffset,
+                    profile,
+                    encodedKey,
+                    identityHigh,
+                    identityLow,
+                    maxRouterHops: 8,
+                    out Scalar8Scalar16RoutedInsertResult shelfTransformResult))
+                {
+                    bool inserted = shelfTransformResult.InsertResult == Scalar8Scalar16InsertResult.Inserted;
+                    LibraDexGenericInsertResult genericResult = new(
+                        inserted,
+                        false,
+                        default,
+                        LibraDexOperationDiagnostics.FromDataKernel(shelfTransformResult.Commit))
+                    {
+                        QueuedInsertPath = inserted
+                            ? Scalar8Scalar8QueuedInsertPath.NarrowTopologyPublisher
+                            : Scalar8Scalar8QueuedInsertPath.None
+                    };
+                    if (inserted)
+                    {
+                        RecordSingleInsertPublication(genericResult);
+                    }
+
+                    return genericResult;
+                }
+
+                return InsertScalar8Scalar16UsingSerializedTopologyFallback(
+                    profile,
+                    encodedKey,
+                    identityHigh,
+                    identityLow,
+                    allowDuplicateKeys);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Inserts one `SS8-16` tuple through the serialized topology path after writer-context staging rejects the route as non-shelf-local.<br/>
+    /// Full-shelf splits and transforms are still serialized for topology safety, but the fallback no longer uses session batch state for a one-item direct insert.<br/>
+    /// </summary>
+    /// <param name="profile">The `SS8-16` shelf profile for the routed index.<br/></param>
+    /// <param name="encodedKey">The encoded scalar key.<br/></param>
+    /// <param name="identityHigh">The encoded high identity half.<br/></param>
+    /// <param name="identityLow">The encoded low identity half.<br/></param>
+    /// <param name="allowDuplicateKeys">Whether duplicate keys are accepted by this index.<br/></param>
+    /// <returns>The generic insert result with serialized-fallback attribution.</returns>
+    private LibraDexGenericInsertResult InsertScalar8Scalar16UsingSerializedTopologyFallback(
+        Scalar8Scalar16Profile profile,
+        ulong encodedKey,
+        ulong identityHigh,
+        ulong identityLow,
+        bool allowDuplicateKeys)
+    {
+        Scalar8Scalar16RoutedInsertResult routedResult = session.InsertScalar8Scalar16DirectSerializedTopologyFallback(
+            RootRouterOffset,
+            profile,
+            encodedKey,
+            identityHigh,
+            identityLow,
+            allowDuplicateKeys,
+            maxRouterHops: 8);
+        bool inserted = routedResult.InsertResult == Scalar8Scalar16InsertResult.Inserted;
+        LibraDexGenericInsertResult genericResult = new(
+            inserted,
+            false,
+            default,
+            LibraDexOperationDiagnostics.FromDataKernel(routedResult.Commit))
+        {
+            QueuedInsertPath = inserted
+                ? Scalar8Scalar8QueuedInsertPath.SerializedFallback
+                : Scalar8Scalar8QueuedInsertPath.None
+        };
+        if (inserted)
+        {
+            RecordSingleInsertPublication(genericResult);
+        }
+
+        return genericResult;
+    }
+
+    /// <summary>
+    /// Inserts one `SS16-16` tuple through a writer-local shelf context when the route is already warmed and shelf-local.<br/>
+    /// Same-shelf ownership contention waits and retries inside the method; topology-changing cases fall back to the direct serialized topology path for this first wide-key/wide-identity slice.<br/>
+    /// </summary>
+    /// <param name="key">The typed key to insert.</param>
+    /// <param name="identity">The typed identity to insert.</param>
+    /// <returns>The generic insert result with writer-context path attribution when the shelf-local path succeeds.</returns>
+    private LibraDexGenericInsertResult InsertScalar16Scalar16UsingWriterContextOrFallback(TKey key, TIdentity identity)
+    {
+        LibraDexGenericScalarCodec<TKey>.Encode16(key, out ulong keyHigh, out ulong keyLow);
+        LibraDexGenericScalarCodec<TIdentity>.Encode16(identity, out ulong identityHigh, out ulong identityLow);
+        Scalar16Scalar16Profile profile = GetScalar16Scalar16Profile();
+        bool allowDuplicateKeys = KeyContract == IndexKeys.NonUnique;
+        byte rootPrefix = (byte)(keyHigh >> 56);
+        if (session.FindRouterTarget(RootRouterOffset, rootPrefix) == 0)
+        {
+            if (session.TryInsertScalar16Scalar16DirectColdRootRoute(
+                RootRouterOffset,
+                rootPrefix,
+                profile,
+                keyHigh,
+                keyLow,
+                identityHigh,
+                identityLow,
+                allowDuplicateKeys,
+                out Scalar16Scalar16RoutedInsertResult coldRouteResult))
+            {
+                LibraDexGenericInsertResult genericResult = new(
+                    true,
+                    true,
+                    default,
+                    LibraDexOperationDiagnostics.FromDataKernel(coldRouteResult.Commit))
+                {
+                    QueuedInsertPath = Scalar8Scalar8QueuedInsertPath.NarrowTopologyPublisher
+                };
+                RecordSingleInsertPublication(genericResult);
+                return genericResult;
+            }
+
+            return InsertScalar16Scalar16UsingSerializedTopologyFallback(
+                profile,
+                keyHigh,
+                keyLow,
+                identityHigh,
+                identityLow,
+                allowDuplicateKeys);
+        }
+
+        while (true)
+        {
+            LibraDexWriteContext writeContext = session.BeginScalar16Scalar16WriteContext();
+            try
+            {
+                Scalar16Scalar16RoutedInsertResult result = session.InsertWalkedRoutedScalar16Scalar16NoSplitForWriteContext(
+                    writeContext,
+                    RootRouterOffset,
+                    profile,
+                    keyHigh,
+                    keyLow,
+                    identityHigh,
+                    identityLow,
+                    allowDuplicateKeys,
+                    maxRouterHops: 8);
+
+                if (result.InsertResult != Scalar16Scalar16InsertResult.Inserted)
+                {
+                    session.AbortScalar16Scalar16WriteContext(writeContext);
+                    return new LibraDexGenericInsertResult(false, false, default, default)
+                    {
+                        QueuedInsertPath = Scalar8Scalar8QueuedInsertPath.None
+                    };
+                }
+
+                DataKernelCommitTelemetry telemetry = session.PublishScalar16Scalar16WriteContext(writeContext);
+                LibraDexGenericInsertResult genericResult = new(
+                    true,
+                    false,
+                    default,
+                    LibraDexOperationDiagnostics.FromDataKernel(telemetry))
+                {
+                    QueuedInsertPath = Scalar8Scalar8QueuedInsertPath.WriterContext
+                };
+                RecordSingleInsertPublication(genericResult);
+                return genericResult;
+            }
+            catch (LibraDexWriteContextScalar16Scalar16ShelfOwnershipException ex)
+            {
+                session.AbortScalar16Scalar16WriteContext(writeContext);
+                session.WaitForWriteContextShelfRelease(ex.ShelfOffset, CancellationToken.None);
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or InvalidDataException)
+            {
+                session.AbortScalar16Scalar16WriteContext(writeContext);
+                if (session.TrySplitScalar16Scalar16DirectParentRoute(
+                    RootRouterOffset,
+                    profile,
+                    keyHigh,
+                    keyLow,
+                    identityHigh,
+                    identityLow,
+                    maxRouterHops: 8,
+                    out Scalar16Scalar16RoutedInsertResult parentRouteSplitResult))
+                {
+                    bool inserted = parentRouteSplitResult.InsertResult == Scalar16Scalar16InsertResult.Inserted;
+                    LibraDexGenericInsertResult genericResult = new(
+                        inserted,
+                        false,
+                        default,
+                        LibraDexOperationDiagnostics.FromDataKernel(parentRouteSplitResult.Commit))
+                    {
+                        QueuedInsertPath = inserted
+                            ? Scalar8Scalar8QueuedInsertPath.NarrowTopologyPublisher
+                            : Scalar8Scalar8QueuedInsertPath.None
+                    };
+                    if (inserted)
+                    {
+                        RecordSingleInsertPublication(genericResult);
+                    }
+
+                    return genericResult;
+                }
+
+                if (session.TryTransformScalar16Scalar16DirectShelf(
+                    RootRouterOffset,
+                    profile,
+                    keyHigh,
+                    keyLow,
+                    identityHigh,
+                    identityLow,
+                    maxRouterHops: 8,
+                    out Scalar16Scalar16RoutedInsertResult shelfTransformResult))
+                {
+                    bool inserted = shelfTransformResult.InsertResult == Scalar16Scalar16InsertResult.Inserted;
+                    LibraDexGenericInsertResult genericResult = new(
+                        inserted,
+                        false,
+                        default,
+                        LibraDexOperationDiagnostics.FromDataKernel(shelfTransformResult.Commit))
+                    {
+                        QueuedInsertPath = inserted
+                            ? Scalar8Scalar8QueuedInsertPath.NarrowTopologyPublisher
+                            : Scalar8Scalar8QueuedInsertPath.None
+                    };
+                    if (inserted)
+                    {
+                        RecordSingleInsertPublication(genericResult);
+                    }
+
+                    return genericResult;
+                }
+
+                return InsertScalar16Scalar16UsingSerializedTopologyFallback(
+                    profile,
+                    keyHigh,
+                    keyLow,
+                    identityHigh,
+                    identityLow,
+                    allowDuplicateKeys);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Inserts one `SS16-16` tuple through the serialized topology path after writer-context staging rejects the route as non-shelf-local.<br/>
+    /// Full-shelf splits and transforms are still serialized for topology safety, but the fallback no longer uses session batch state for a one-item direct insert.<br/>
+    /// </summary>
+    /// <param name="profile">The `SS16-16` shelf profile for the routed index.<br/></param>
+    /// <param name="keyHigh">The encoded high key half.<br/></param>
+    /// <param name="keyLow">The encoded low key half.<br/></param>
+    /// <param name="identityHigh">The encoded high identity half.<br/></param>
+    /// <param name="identityLow">The encoded low identity half.<br/></param>
+    /// <param name="allowDuplicateKeys">Whether duplicate keys are accepted by this index.<br/></param>
+    /// <returns>The generic insert result with serialized-fallback attribution.</returns>
+    private LibraDexGenericInsertResult InsertScalar16Scalar16UsingSerializedTopologyFallback(
+        Scalar16Scalar16Profile profile,
+        ulong keyHigh,
+        ulong keyLow,
+        ulong identityHigh,
+        ulong identityLow,
+        bool allowDuplicateKeys)
+    {
+        Scalar16Scalar16RoutedInsertResult routedResult = session.InsertScalar16Scalar16DirectSerializedTopologyFallback(
+            RootRouterOffset,
+            profile,
+            keyHigh,
+            keyLow,
+            identityHigh,
+            identityLow,
+            allowDuplicateKeys,
+            maxRouterHops: 8);
+        bool inserted = routedResult.InsertResult == Scalar16Scalar16InsertResult.Inserted;
+        LibraDexGenericInsertResult genericResult = new(
+            inserted,
+            false,
+            default,
+            LibraDexOperationDiagnostics.FromDataKernel(routedResult.Commit))
+        {
+            QueuedInsertPath = inserted
+                ? Scalar8Scalar8QueuedInsertPath.SerializedFallback
+                : Scalar8Scalar8QueuedInsertPath.None
+        };
+        if (inserted)
+        {
+            RecordSingleInsertPublication(genericResult);
+        }
+
+        return genericResult;
+    }
+
+    /// <summary>
+    /// Inserts one `FS32-8` tuple through a writer-local shelf context when the route is already warmed and shelf-local.<br/>
+    /// Same-shelf ownership contention waits and retries inside the method; topology-changing cases fall back to the direct serialized topology path for this first 32-byte-key slice.<br/>
+    /// </summary>
+    /// <param name="key">The typed key to insert.</param>
+    /// <param name="identity">The typed identity to insert.</param>
+    /// <returns>The generic insert result with writer-context path attribution when the shelf-local path succeeds.</returns>
+    private LibraDexGenericInsertResult InsertFixed32Scalar8UsingWriterContextOrFallback(TKey key, TIdentity identity)
+    {
+        LibraDexGenericScalarCodec<TKey>.Encode32(key, out ulong key0, out ulong key1, out ulong key2, out ulong key3);
+        ulong encodedIdentity = LibraDexGenericScalarCodec<TIdentity>.Encode8(identity);
+        Fixed32Scalar8Profile profile = GetFixed32Scalar8Profile();
+        bool allowDuplicateKeys = KeyContract == IndexKeys.NonUnique;
+        byte rootPrefix = (byte)(key0 >> 56);
+        if (session.FindRouterTarget(RootRouterOffset, rootPrefix) == 0)
+        {
+            if (session.TryInsertFixed32Scalar8DirectColdRootRoute(
+                RootRouterOffset,
+                rootPrefix,
+                profile,
+                key0,
+                key1,
+                key2,
+                key3,
+                encodedIdentity,
+                allowDuplicateKeys,
+                out Fixed32Scalar8RoutedInsertResult coldRouteResult))
+            {
+                LibraDexGenericInsertResult genericResult = new(
+                    true,
+                    true,
+                    default,
+                    LibraDexOperationDiagnostics.FromDataKernel(coldRouteResult.Commit))
+                {
+                    QueuedInsertPath = Scalar8Scalar8QueuedInsertPath.NarrowTopologyPublisher
+                };
+                RecordSingleInsertPublication(genericResult);
+                return genericResult;
+            }
+
+            return InsertFixed32Scalar8UsingSerializedTopologyFallback(
+                profile,
+                key0,
+                key1,
+                key2,
+                key3,
+                encodedIdentity,
+                allowDuplicateKeys);
+        }
+
+        while (true)
+        {
+            LibraDexWriteContext writeContext = session.BeginFixed32Scalar8WriteContext();
+            try
+            {
+                Fixed32Scalar8RoutedInsertResult result = session.InsertWalkedRoutedFixed32Scalar8NoSplitForWriteContext(
+                    writeContext,
+                    RootRouterOffset,
+                    profile,
+                    key0,
+                    key1,
+                    key2,
+                    key3,
+                    encodedIdentity,
+                    allowDuplicateKeys,
+                    maxRouterHops: 32);
+
+                if (result.InsertResult != Fixed32Scalar8InsertResult.Inserted)
+                {
+                    session.AbortFixed32Scalar8WriteContext(writeContext);
+                    return new LibraDexGenericInsertResult(false, false, default, default)
+                    {
+                        QueuedInsertPath = Scalar8Scalar8QueuedInsertPath.None
+                    };
+                }
+
+                DataKernelCommitTelemetry telemetry = session.PublishFixed32Scalar8WriteContext(writeContext);
+                LibraDexGenericInsertResult genericResult = new(
+                    true,
+                    false,
+                    default,
+                    LibraDexOperationDiagnostics.FromDataKernel(telemetry))
+                {
+                    QueuedInsertPath = Scalar8Scalar8QueuedInsertPath.WriterContext
+                };
+                RecordSingleInsertPublication(genericResult);
+                return genericResult;
+            }
+            catch (LibraDexWriteContextFixed32Scalar8ShelfOwnershipException ex)
+            {
+                session.AbortFixed32Scalar8WriteContext(writeContext);
+                session.WaitForWriteContextShelfRelease(ex.ShelfOffset, CancellationToken.None);
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or InvalidDataException)
+            {
+                session.AbortFixed32Scalar8WriteContext(writeContext);
+                if (session.TrySplitFixed32Scalar8DirectParentRoute(
+                    RootRouterOffset,
+                    profile,
+                    key0,
+                    key1,
+                    key2,
+                    key3,
+                    encodedIdentity,
+                    maxRouterHops: 32,
+                    out Fixed32Scalar8RoutedInsertResult parentRouteSplitResult))
+                {
+                    bool inserted = parentRouteSplitResult.InsertResult == Fixed32Scalar8InsertResult.Inserted;
+                    LibraDexGenericInsertResult genericResult = new(
+                        inserted,
+                        false,
+                        default,
+                        LibraDexOperationDiagnostics.FromDataKernel(parentRouteSplitResult.Commit))
+                    {
+                        QueuedInsertPath = inserted
+                            ? Scalar8Scalar8QueuedInsertPath.NarrowTopologyPublisher
+                            : Scalar8Scalar8QueuedInsertPath.None
+                    };
+                    if (inserted)
+                    {
+                        RecordSingleInsertPublication(genericResult);
+                    }
+
+                    return genericResult;
+                }
+
+                if (session.TryTransformFixed32Scalar8DirectShelf(
+                    RootRouterOffset,
+                    profile,
+                    key0,
+                    key1,
+                    key2,
+                    key3,
+                    encodedIdentity,
+                    maxRouterHops: 32,
+                    out Fixed32Scalar8RoutedInsertResult shelfTransformResult))
+                {
+                    bool inserted = shelfTransformResult.InsertResult == Fixed32Scalar8InsertResult.Inserted;
+                    LibraDexGenericInsertResult genericResult = new(
+                        inserted,
+                        false,
+                        default,
+                        LibraDexOperationDiagnostics.FromDataKernel(shelfTransformResult.Commit))
+                    {
+                        QueuedInsertPath = inserted
+                            ? Scalar8Scalar8QueuedInsertPath.NarrowTopologyPublisher
+                            : Scalar8Scalar8QueuedInsertPath.None
+                    };
+                    if (inserted)
+                    {
+                        RecordSingleInsertPublication(genericResult);
+                    }
+
+                    return genericResult;
+                }
+
+                return InsertFixed32Scalar8UsingSerializedTopologyFallback(
+                    profile,
+                    key0,
+                    key1,
+                    key2,
+                    key3,
+                    encodedIdentity,
+                    allowDuplicateKeys);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Inserts one `FS32-8` tuple through the serialized topology path after writer-context staging rejects the route as non-shelf-local.<br/>
+    /// Full-shelf splits and transforms are still serialized for topology safety, but the fallback no longer uses session batch state for a one-item direct insert.<br/>
+    /// </summary>
+    /// <param name="profile">The `FS32-8` shelf profile for the routed index.<br/></param>
+    /// <param name="key0">The first encoded key lane.<br/></param>
+    /// <param name="key1">The second encoded key lane.<br/></param>
+    /// <param name="key2">The third encoded key lane.<br/></param>
+    /// <param name="key3">The fourth encoded key lane.<br/></param>
+    /// <param name="encodedIdentity">The encoded scalar identity.<br/></param>
+    /// <param name="allowDuplicateKeys">Whether duplicate keys are accepted by this index.<br/></param>
+    /// <returns>The generic insert result with serialized-fallback attribution when insertion succeeds.</returns>
+    private LibraDexGenericInsertResult InsertFixed32Scalar8UsingSerializedTopologyFallback(
+        Fixed32Scalar8Profile profile,
+        ulong key0,
+        ulong key1,
+        ulong key2,
+        ulong key3,
+        ulong encodedIdentity,
+        bool allowDuplicateKeys)
+    {
+        Fixed32Scalar8RoutedInsertResult routedResult = session.InsertFixed32Scalar8DirectSerializedTopologyFallback(
+            RootRouterOffset,
+            profile,
+            key0,
+            key1,
+            key2,
+            key3,
+            encodedIdentity,
+            allowDuplicateKeys,
+            maxRouterHops: 32);
+        bool inserted = routedResult.InsertResult == Fixed32Scalar8InsertResult.Inserted;
+        LibraDexGenericInsertResult genericResult = new(
+            inserted,
+            false,
+            default,
+            LibraDexOperationDiagnostics.FromDataKernel(routedResult.Commit))
+        {
+            QueuedInsertPath = inserted
+                ? Scalar8Scalar8QueuedInsertPath.SerializedFallback
+                : Scalar8Scalar8QueuedInsertPath.None
+        };
+        if (inserted)
+        {
+            RecordSingleInsertPublication(genericResult);
+        }
+
+        return genericResult;
+    }
+
+    /// <summary>
+    /// Stages one `FS32-8` tuple in a caller-owned concurrent batch writer context.<br/>
+    /// The method accepts only warmed shelf-local inserts; topology-changing cases throw so the batch can publish current staged work and route the single operation through the existing topology-safe fallback.<br/>
+    /// </summary>
+    /// <param name="writeContext">The shared concurrent batch writer context.<br/></param>
+    /// <param name="key">The typed key to insert.<br/></param>
+    /// <param name="identity">The typed identity to insert.<br/></param>
+    /// <returns>The staged insert result with writer-context attribution when a tuple was added.</returns>
+    internal LibraDexGenericInsertResult InsertFixed32Scalar8ForConcurrentBatch(
+        LibraDexWriteContext writeContext,
+        TKey key,
+        TIdentity identity)
+    {
+        LibraDexGenericScalarCodec<TKey>.Encode32(key, out ulong key0, out ulong key1, out ulong key2, out ulong key3);
+        ulong encodedIdentity = LibraDexGenericScalarCodec<TIdentity>.Encode8(identity);
+        Fixed32Scalar8RoutedInsertResult result = session.InsertWalkedRoutedFixed32Scalar8NoSplitForWriteContext(
+            writeContext,
+            RootRouterOffset,
+            GetFixed32Scalar8Profile(),
+            key0,
+            key1,
+            key2,
+            key3,
+            encodedIdentity,
+            KeyContract == IndexKeys.NonUnique,
+            maxRouterHops: 32);
+        bool inserted = result.InsertResult == Fixed32Scalar8InsertResult.Inserted;
+        return new LibraDexGenericInsertResult(
+            inserted,
+            false,
+            default,
+            default)
+        {
+            QueuedInsertPath = inserted
+                ? Scalar8Scalar8QueuedInsertPath.WriterContext
+                : Scalar8Scalar8QueuedInsertPath.None
+        };
+    }
+
+    /// <summary>
+    /// Stages one exact `FS32-8` tuple delete in a caller-owned concurrent batch writer context.<br/>
+    /// The method accepts only warmed shelf-local deletes; unsupported route shapes throw so the batch can publish current staged work and route the single operation through the existing fallback.<br/>
+    /// </summary>
+    /// <param name="writeContext">The shared concurrent batch writer context.<br/></param>
+    /// <param name="key">The typed key side of the tuple to delete.<br/></param>
+    /// <param name="identity">The typed identity side of the tuple to delete.<br/></param>
+    /// <returns>The staged delete result with writer-context attribution when a tuple was removed.</returns>
+    internal LibraDexGenericDeleteResult DeleteFixed32Scalar8ForConcurrentBatch(
+        LibraDexWriteContext writeContext,
+        TKey key,
+        TIdentity identity)
+    {
+        LibraDexGenericScalarCodec<TKey>.Encode32(key, out ulong key0, out ulong key1, out ulong key2, out ulong key3);
+        bool deleted = session.DeleteWalkedRoutedFixed32Scalar8ExactForWriteContext(
+            writeContext,
+            RootRouterOffset,
+            GetFixed32Scalar8Profile(),
+            key0,
+            key1,
+            key2,
+            key3,
+            LibraDexGenericScalarCodec<TIdentity>.Encode8(identity),
+            maxRouterHops: 32);
+        return new LibraDexGenericDeleteResult(
+            deleted,
+            default)
+        {
+            QueuedInsertPath = deleted
+                ? Scalar8Scalar8QueuedInsertPath.WriterContext
+                : Scalar8Scalar8QueuedInsertPath.None
+        };
+    }
+
+    /// <summary>
+    /// Creates a caller-owned `FS32-8` concurrent batch writer context.<br/>
+    /// The context can stage primary and maintained projection shelves together because ownership is claimed by physical shelf offset.<br/>
+    /// </summary>
+    /// <returns>A new `FS32-8` writer context.</returns>
+    internal LibraDexWriteContext BeginFixed32Scalar8ConcurrentBatchContext()
+    {
+        return session.BeginFixed32Scalar8WriteContext();
+    }
+
+    /// <summary>
+    /// Publishes a caller-owned `FS32-8` concurrent batch writer context.<br/>
+    /// Publication is serialized at the DataKernel boundary while the expensive shelf mutation work has already happened outside that boundary.<br/>
+    /// </summary>
+    /// <param name="writeContext">The writer context to publish.<br/></param>
+    /// <returns>The publication telemetry.</returns>
+    internal DataKernelCommitTelemetry PublishFixed32Scalar8ConcurrentBatchContext(LibraDexWriteContext writeContext)
+    {
+        return session.PublishFixed32Scalar8WriteContext(writeContext);
+    }
+
+    /// <summary>
+    /// Aborts a caller-owned `FS32-8` concurrent batch writer context.<br/>
+    /// Staged shelf bytes are discarded and physical shelf ownership claims are released without writing to DataKernel.<br/>
+    /// </summary>
+    /// <param name="writeContext">The writer context to abort.<br/></param>
+    internal void AbortFixed32Scalar8ConcurrentBatchContext(LibraDexWriteContext writeContext)
+    {
+        session.AbortFixed32Scalar8WriteContext(writeContext);
+    }
+
+    /// <summary>
+    /// Inserts one `FS32-16` tuple through a writer-local shelf context when the route is already warmed and shelf-local.<br/>
+    /// Same-shelf ownership contention waits and retries inside the method; topology-changing cases fall back to the direct serialized topology path for this first 32-byte-key/wide-identity slice.<br/>
+    /// </summary>
+    /// <param name="key">The typed key to insert.</param>
+    /// <param name="identity">The typed identity to insert.</param>
+    /// <returns>The generic insert result with writer-context path attribution when the shelf-local path succeeds.</returns>
+    private LibraDexGenericInsertResult InsertFixed32Scalar16UsingWriterContextOrFallback(TKey key, TIdentity identity)
+    {
+        LibraDexGenericScalarCodec<TKey>.Encode32(key, out ulong key0, out ulong key1, out ulong key2, out ulong key3);
+        LibraDexGenericScalarCodec<TIdentity>.Encode16(identity, out ulong identityHigh, out ulong identityLow);
+        Fixed32Scalar16Profile profile = GetFixed32Scalar16Profile();
+        bool allowDuplicateKeys = KeyContract == IndexKeys.NonUnique;
+        byte rootPrefix = (byte)(key0 >> 56);
+        if (session.FindRouterTarget(RootRouterOffset, rootPrefix) == 0)
+        {
+            if (session.TryInsertFixed32Scalar16DirectColdRootRoute(
+                RootRouterOffset,
+                rootPrefix,
+                profile,
+                key0,
+                key1,
+                key2,
+                key3,
+                identityHigh,
+                identityLow,
+                allowDuplicateKeys,
+                out Fixed32Scalar16RoutedInsertResult coldRouteResult))
+            {
+                LibraDexGenericInsertResult genericResult = new(
+                    true,
+                    true,
+                    default,
+                    LibraDexOperationDiagnostics.FromDataKernel(coldRouteResult.Commit))
+                {
+                    QueuedInsertPath = Scalar8Scalar8QueuedInsertPath.NarrowTopologyPublisher
+                };
+                RecordSingleInsertPublication(genericResult);
+                return genericResult;
+            }
+
+            return InsertFixed32Scalar16UsingSerializedTopologyFallback(
+                profile,
+                key0,
+                key1,
+                key2,
+                key3,
+                identityHigh,
+                identityLow,
+                allowDuplicateKeys);
+        }
+
+        while (true)
+        {
+            LibraDexWriteContext writeContext = session.BeginFixed32Scalar16WriteContext();
+            try
+            {
+                Fixed32Scalar16RoutedInsertResult result = session.InsertWalkedRoutedFixed32Scalar16NoSplitForWriteContext(
+                    writeContext,
+                    RootRouterOffset,
+                    profile,
+                    key0,
+                    key1,
+                    key2,
+                    key3,
+                    identityHigh,
+                    identityLow,
+                    allowDuplicateKeys,
+                    maxRouterHops: 32);
+
+                if (result.InsertResult != Fixed32Scalar16InsertResult.Inserted)
+                {
+                    session.AbortFixed32Scalar16WriteContext(writeContext);
+                    return new LibraDexGenericInsertResult(false, false, default, default)
+                    {
+                        QueuedInsertPath = Scalar8Scalar8QueuedInsertPath.None
+                    };
+                }
+
+                DataKernelCommitTelemetry telemetry = session.PublishFixed32Scalar16WriteContext(writeContext);
+                LibraDexGenericInsertResult genericResult = new(
+                    true,
+                    false,
+                    default,
+                    LibraDexOperationDiagnostics.FromDataKernel(telemetry))
+                {
+                    QueuedInsertPath = Scalar8Scalar8QueuedInsertPath.WriterContext
+                };
+                RecordSingleInsertPublication(genericResult);
+                return genericResult;
+            }
+            catch (LibraDexWriteContextFixed32Scalar16ShelfOwnershipException ex)
+            {
+                session.AbortFixed32Scalar16WriteContext(writeContext);
+                session.WaitForWriteContextShelfRelease(ex.ShelfOffset, CancellationToken.None);
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or InvalidDataException)
+            {
+                session.AbortFixed32Scalar16WriteContext(writeContext);
+                if (session.TrySplitFixed32Scalar16DirectParentRoute(
+                    RootRouterOffset,
+                    profile,
+                    key0,
+                    key1,
+                    key2,
+                    key3,
+                    identityHigh,
+                    identityLow,
+                    maxRouterHops: 32,
+                    out Fixed32Scalar16RoutedInsertResult parentRouteSplitResult))
+                {
+                    bool inserted = parentRouteSplitResult.InsertResult == Fixed32Scalar16InsertResult.Inserted;
+                    LibraDexGenericInsertResult genericResult = new(
+                        inserted,
+                        false,
+                        default,
+                        LibraDexOperationDiagnostics.FromDataKernel(parentRouteSplitResult.Commit))
+                    {
+                        QueuedInsertPath = inserted
+                            ? Scalar8Scalar8QueuedInsertPath.NarrowTopologyPublisher
+                            : Scalar8Scalar8QueuedInsertPath.None
+                    };
+                    if (inserted)
+                    {
+                        RecordSingleInsertPublication(genericResult);
+                    }
+
+                    return genericResult;
+                }
+
+                if (session.TryTransformFixed32Scalar16DirectShelf(
+                    RootRouterOffset,
+                    profile,
+                    key0,
+                    key1,
+                    key2,
+                    key3,
+                    identityHigh,
+                    identityLow,
+                    maxRouterHops: 32,
+                    out Fixed32Scalar16RoutedInsertResult shelfTransformResult))
+                {
+                    bool inserted = shelfTransformResult.InsertResult == Fixed32Scalar16InsertResult.Inserted;
+                    LibraDexGenericInsertResult genericResult = new(
+                        inserted,
+                        false,
+                        default,
+                        LibraDexOperationDiagnostics.FromDataKernel(shelfTransformResult.Commit))
+                    {
+                        QueuedInsertPath = inserted
+                            ? Scalar8Scalar8QueuedInsertPath.NarrowTopologyPublisher
+                            : Scalar8Scalar8QueuedInsertPath.None
+                    };
+                    if (inserted)
+                    {
+                        RecordSingleInsertPublication(genericResult);
+                    }
+
+                    return genericResult;
+                }
+
+                return InsertFixed32Scalar16UsingSerializedTopologyFallback(
+                    profile,
+                    key0,
+                    key1,
+                    key2,
+                    key3,
+                    identityHigh,
+                    identityLow,
+                    allowDuplicateKeys);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Inserts one `FS32-16` tuple through the serialized topology path after writer-context staging rejects the route as non-shelf-local.<br/>
+    /// Full-shelf splits and transforms are still serialized for topology safety, but the fallback no longer uses session batch state for a one-item direct insert.<br/>
+    /// </summary>
+    /// <param name="profile">The `FS32-16` shelf profile for the routed index.<br/></param>
+    /// <param name="key0">The first encoded key lane.<br/></param>
+    /// <param name="key1">The second encoded key lane.<br/></param>
+    /// <param name="key2">The third encoded key lane.<br/></param>
+    /// <param name="key3">The fourth encoded key lane.<br/></param>
+    /// <param name="identityHigh">The encoded high identity half.<br/></param>
+    /// <param name="identityLow">The encoded low identity half.<br/></param>
+    /// <param name="allowDuplicateKeys">Whether duplicate keys are accepted by this index.<br/></param>
+    /// <returns>The generic insert result with serialized-fallback attribution when insertion succeeds.</returns>
+    private LibraDexGenericInsertResult InsertFixed32Scalar16UsingSerializedTopologyFallback(
+        Fixed32Scalar16Profile profile,
+        ulong key0,
+        ulong key1,
+        ulong key2,
+        ulong key3,
+        ulong identityHigh,
+        ulong identityLow,
+        bool allowDuplicateKeys)
+    {
+        Fixed32Scalar16RoutedInsertResult routedResult = session.InsertFixed32Scalar16DirectSerializedTopologyFallback(
+            RootRouterOffset,
+            profile,
+            key0,
+            key1,
+            key2,
+            key3,
+            identityHigh,
+            identityLow,
+            allowDuplicateKeys,
+            maxRouterHops: 32);
+        bool inserted = routedResult.InsertResult == Fixed32Scalar16InsertResult.Inserted;
+        LibraDexGenericInsertResult genericResult = new(
+            inserted,
+            false,
+            default,
+            LibraDexOperationDiagnostics.FromDataKernel(routedResult.Commit))
+        {
+            QueuedInsertPath = inserted
+                ? Scalar8Scalar8QueuedInsertPath.SerializedFallback
+                : Scalar8Scalar8QueuedInsertPath.None
+        };
+        if (inserted)
+        {
+            RecordSingleInsertPublication(genericResult);
+        }
+
+        return genericResult;
+    }
+
+    /// <summary>
+    /// Records stats for one immediately-published queued insert so ordinary direct `Insert` counters remain aligned with the legacy one-item batch path.<br/>
+    /// The queued writer publishes inside the insert call, so this helper records both the insert outcome and one publication boundary without requiring a temporary batch object.<br/>
+    /// </summary>
+    /// <param name="result">The queued insert result to record.</param>
+    private void RecordSingleInsertPublication(LibraDexGenericInsertResult result)
+    {
+        Stats.RecordInsert(result);
+        Catalog?.Stats.RecordInsert(result);
+        LibraDexGenericBatchCommitResult commitResult = new(
+            AttemptedInsertCount: 1,
+            InsertedCount: result.Inserted ? 1 : 0,
+            InitialShelfRouteCreateCount: result.CreatedInitialShelfRoute ? 1 : 0,
+            DeferredCommitRequests: result.Inserted ? 1 : 0,
+            result.InsertDiagnostics,
+            default);
+        Stats.RecordCommit(commitResult);
+        Catalog?.Stats.RecordCommit(commitResult);
+    }
+
+    /// <summary>
+    /// Gets whether a condition primitive can be safely rewritten as captured value-route tuples followed by exact tuple deletes.<br/>
+    /// `All`, scalar-null, and key-state primitives retain their specialized route deletion path because they can include metadata-backed null routes that are not ordinary fixed-scalar value shelves.<br/>
+    /// </summary>
+    /// <param name="request">The normalized condition primitive request.</param>
+    /// <returns><see langword="true"/> when exact tuple deletion can replace the older range rewrite for this primitive.</returns>
+    private bool CanDeleteIdentityPrimitiveUsingQueuedExactTuples(LibraDexIdentityPrimitiveRequest request)
+    {
+        if (request.CriteriaKind == LibraDexCriteriaKind.ScalarNull)
+        {
+            return RequireScalarNullState(request.Values) == ScalarNull.NonNull;
+        }
+
+        return request.CriteriaKind is not LibraDexCriteriaKind.All and
+            not LibraDexCriteriaKind.KeyState;
+    }
+
+    /// <summary>
+    /// Deletes captured value-route tuples through the shape's exact tuple bridge.<br/>
+    /// This keeps broad value-route condition deletes on the same no-ceremony mutation path as direct exact deletes while leaving scalar/key-state route mutation to its dedicated route gate.<br/>
+    /// </summary>
+    /// <param name="request">The primitive request used to capture value-route tuples.</param>
+    /// <returns>The number of exact value-route tuples removed.</returns>
+    private long DeleteIdentityPrimitiveValueTuplesUsingExactTupleBridge(LibraDexIdentityPrimitiveRequest request)
+    {
+        IReadOnlyList<LibraDexObjectTuple> tuples = ExecuteTuplePrimitive(request);
+        long deleted = 0;
+        for (int i = 0; i < tuples.Count; i++)
+        {
+            LibraDexObjectTuple tuple = tuples[i];
+            if (((IIdentityExactTupleMutator)this).DeleteExactTuple(tuple.Key, tuple.Identity))
+            {
+                deleted++;
+            }
+        }
+
+        return deleted;
+    }
+
+    /// <summary>
+    /// Gets the lazily-created queued writer used by default primary `SS8-8` mutation paths.<br/>
+    /// The writer is cached per opened index handle so direct inserts, direct exact deletes, and condition-driven exact tuple deletion share the same admission facade without caller ceremony.<br/>
+    /// </summary>
+    /// <returns>The cached queued writer for this index.</returns>
+    private LibraDexQueuedWriter<TKey, TIdentity> GetOrCreateInternalQueuedWriter()
+    {
+        LibraDexQueuedWriter<TKey, TIdentity>? writer = internalQueuedWriter;
+        if (writer is not null)
+        {
+            return writer;
+        }
+
+        lock (internalQueuedWriterSync)
+        {
+            writer = internalQueuedWriter;
+            if (writer is not null)
+            {
+                return writer;
+            }
+
+            writer = BeginQueuedWriterAfterSingleKeyBatchCheck(LibraDexConcurrencyOptions.QueuedWriter);
+            internalQueuedWriter = writer;
+            return writer;
+        }
+    }
+
     private bool DeleteExactScalar16Scalar8Tuple(TKey key, TIdentity identity)
     {
+        if (CanUseInternalScalar16Scalar8WriterContextForPrimaryMutation())
+        {
+            return DeleteExactScalar16Scalar8TupleUsingWriterContextOrFallback(key, identity).Deleted;
+        }
+
         ulong encodedIdentity = LibraDexGenericScalarCodec<TIdentity>.Encode8(identity);
         using Scalar16Scalar8RangeReader reader = OpenScalar16Scalar8RangeReader(key, key);
         return reader.DeleteFirstMatchingEncodedIdentity(encodedIdentity);
     }
 
+    /// <summary>
+    /// Deletes one exact tuple through the `SS16-8` queued-writer facade and reports the path actually used.<br/>
+    /// This keeps facade diagnostics aligned with direct delete behavior instead of inferring writer-context attribution from a Boolean result.<br/>
+    /// </summary>
+    /// <param name="key">The typed key side of the tuple to delete.<br/></param>
+    /// <param name="identity">The typed identity side of the tuple to delete.<br/></param>
+    /// <returns>The generic delete result with writer-context or fallback attribution.</returns>
+    internal LibraDexGenericDeleteResult DeleteScalar16Scalar8TupleForQueuedWriterFacade(TKey key, TIdentity identity)
+    {
+        if (!CanUseInternalScalar16Scalar8WriterContextForPrimaryMutation())
+        {
+            bool deleted = DeleteExactScalar16Scalar8Tuple(key, identity);
+            return new LibraDexGenericDeleteResult(
+                deleted,
+                default)
+            {
+                QueuedInsertPath = deleted
+                    ? Scalar8Scalar8QueuedInsertPath.SerializedFallback
+                    : Scalar8Scalar8QueuedInsertPath.None
+            };
+        }
+
+        return DeleteExactScalar16Scalar8TupleUsingWriterContextOrFallback(key, identity);
+    }
+
+    /// <summary>
+    /// Deletes one exact tuple through the queued-writer facade and reports the path actually used by the current supported shape.<br/>
+    /// Shape-specific dispatch keeps facade diagnostics aligned with direct delete behavior instead of inferring writer-context attribution from a Boolean result.<br/>
+    /// </summary>
+    /// <param name="key">The typed key side of the tuple to delete.<br/></param>
+    /// <param name="identity">The typed identity side of the tuple to delete.<br/></param>
+    /// <returns>The generic delete result with writer-context or fallback attribution.</returns>
+    internal LibraDexGenericDeleteResult DeleteTupleForQueuedWriterFacade(TKey key, TIdentity identity)
+    {
+        LibraDexGenericDeleteResult result = shape switch
+        {
+            LibraDexGenericScalarShape.SS168 => DeleteScalar16Scalar8TupleForQueuedWriterFacade(key, identity),
+            LibraDexGenericScalarShape.SS816 => DeleteExactScalar8Scalar16TupleUsingWriterContextOrFallback(key, identity),
+            LibraDexGenericScalarShape.SS1616 => DeleteExactScalar16Scalar16TupleUsingWriterContextOrFallback(key, identity),
+            LibraDexGenericScalarShape.FS328 => DeleteExactFixed32Scalar8TupleUsingWriterContextOrFallback(key, identity),
+            LibraDexGenericScalarShape.FS3216 => DeleteExactFixed32Scalar16TupleUsingWriterContextOrFallback(key, identity),
+            _ => throw new NotSupportedException($"The generic queued writer delete currently supports SS16-8, SS8-16, SS16-16, FS32-8, and FS32-16 direct-shape dispatch, not {shape}.")
+        };
+        if (result.Deleted)
+        {
+            DeleteExactReversedProjection(key, identity);
+            RecordDelete();
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Deletes one exact `SS16-8` tuple through a writer-local shelf context when the route is already warmed and shelf-local.<br/>
+    /// Same-shelf ownership contention waits and retries inside the method; unsupported route shapes fall back to the existing exact range-reader delete path.<br/>
+    /// </summary>
+    /// <param name="key">The typed key side of the tuple to delete.</param>
+    /// <param name="identity">The typed identity side of the tuple to delete.</param>
+    /// <returns>The generic delete result with writer-context or fallback attribution.</returns>
+    private LibraDexGenericDeleteResult DeleteExactScalar16Scalar8TupleUsingWriterContextOrFallback(TKey key, TIdentity identity)
+    {
+        LibraDexGenericScalarCodec<TKey>.Encode16(key, out ulong keyHigh, out ulong keyLow);
+        ulong encodedIdentity = LibraDexGenericScalarCodec<TIdentity>.Encode8(identity);
+        Scalar16Scalar8Profile profile = GetScalar16Scalar8Profile();
+        byte rootPrefix = (byte)(keyHigh >> 56);
+        if (session.FindRouterTarget(RootRouterOffset, rootPrefix) == 0)
+        {
+            return new LibraDexGenericDeleteResult(false, default)
+            {
+                QueuedInsertPath = Scalar8Scalar8QueuedInsertPath.None
+            };
+        }
+
+        while (true)
+        {
+            LibraDexWriteContext writeContext = session.BeginScalar16Scalar8WriteContext();
+            try
+            {
+                bool deleted = session.DeleteWalkedRoutedScalar16Scalar8ExactForWriteContext(
+                    writeContext,
+                    RootRouterOffset,
+                    profile,
+                    keyHigh,
+                    keyLow,
+                    encodedIdentity,
+                    maxRouterHops: 8);
+                if (!deleted)
+                {
+                    session.AbortScalar16Scalar8WriteContext(writeContext);
+                    return new LibraDexGenericDeleteResult(false, default)
+                    {
+                        QueuedInsertPath = Scalar8Scalar8QueuedInsertPath.None
+                    };
+                }
+
+                DataKernelCommitTelemetry telemetry = session.PublishScalar16Scalar8WriteContext(writeContext);
+                return new LibraDexGenericDeleteResult(
+                    true,
+                    LibraDexOperationDiagnostics.FromDataKernel(telemetry))
+                {
+                    QueuedInsertPath = Scalar8Scalar8QueuedInsertPath.WriterContext
+                };
+            }
+            catch (LibraDexWriteContextScalar16Scalar8ShelfOwnershipException ex)
+            {
+                session.AbortScalar16Scalar8WriteContext(writeContext);
+                session.WaitForWriteContextShelfRelease(ex.ShelfOffset, CancellationToken.None);
+            }
+            catch (InvalidOperationException)
+            {
+                session.AbortScalar16Scalar8WriteContext(writeContext);
+                using Scalar16Scalar8RangeReader reader = OpenScalar16Scalar8RangeReader(key, key);
+                bool deleted = reader.DeleteFirstMatchingEncodedIdentity(encodedIdentity);
+                return new LibraDexGenericDeleteResult(
+                    deleted,
+                    default)
+                {
+                    QueuedInsertPath = deleted
+                        ? Scalar8Scalar8QueuedInsertPath.SerializedFallback
+                        : Scalar8Scalar8QueuedInsertPath.None
+                };
+            }
+        }
+    }
+
     private bool DeleteExactScalar8Scalar16Tuple(TKey key, TIdentity identity)
     {
+        if (CanUseInternalScalar8Scalar16WriterContextForPrimaryMutation())
+        {
+            return DeleteExactScalar8Scalar16TupleUsingWriterContextOrFallback(key, identity).Deleted;
+        }
+
         LibraDexGenericScalarCodec<TIdentity>.Encode16(identity, out ulong identityHigh, out ulong identityLow);
         using Scalar8Scalar16RangeReader reader = OpenScalar8Scalar16RangeReader(key, key);
         return reader.DeleteFirstMatchingEncodedIdentity(identityHigh, identityLow);
     }
 
+    /// <summary>
+    /// Deletes one exact `SS8-16` tuple through a writer-local shelf context when the route is already warmed and shelf-local.<br/>
+    /// Same-shelf ownership contention waits and retries inside the method; unsupported route shapes fall back to the existing exact range-reader delete path.<br/>
+    /// </summary>
+    /// <param name="key">The typed key side of the tuple to delete.</param>
+    /// <param name="identity">The typed identity side of the tuple to delete.</param>
+    /// <returns>The generic delete result with writer-context or fallback attribution.</returns>
+    private LibraDexGenericDeleteResult DeleteExactScalar8Scalar16TupleUsingWriterContextOrFallback(TKey key, TIdentity identity)
+    {
+        ulong encodedKey = LibraDexGenericScalarCodec<TKey>.Encode8(key);
+        LibraDexGenericScalarCodec<TIdentity>.Encode16(identity, out ulong identityHigh, out ulong identityLow);
+        Scalar8Scalar16Profile profile = GetScalar8Scalar16Profile();
+        byte rootPrefix = (byte)(encodedKey >> 56);
+        if (session.FindRouterTarget(RootRouterOffset, rootPrefix) == 0)
+        {
+            return new LibraDexGenericDeleteResult(false, default)
+            {
+                QueuedInsertPath = Scalar8Scalar8QueuedInsertPath.None
+            };
+        }
+
+        while (true)
+        {
+            LibraDexWriteContext writeContext = session.BeginScalar8Scalar16WriteContext();
+            try
+            {
+                bool deleted = session.DeleteWalkedRoutedScalar8Scalar16ExactForWriteContext(
+                    writeContext,
+                    RootRouterOffset,
+                    profile,
+                    encodedKey,
+                    identityHigh,
+                    identityLow,
+                    maxRouterHops: 8);
+                if (!deleted)
+                {
+                    session.AbortScalar8Scalar16WriteContext(writeContext);
+                    return new LibraDexGenericDeleteResult(false, default)
+                    {
+                        QueuedInsertPath = Scalar8Scalar8QueuedInsertPath.None
+                    };
+                }
+
+                DataKernelCommitTelemetry telemetry = session.PublishScalar8Scalar16WriteContext(writeContext);
+                return new LibraDexGenericDeleteResult(
+                    true,
+                    LibraDexOperationDiagnostics.FromDataKernel(telemetry))
+                {
+                    QueuedInsertPath = Scalar8Scalar8QueuedInsertPath.WriterContext
+                };
+            }
+            catch (LibraDexWriteContextScalar8Scalar16ShelfOwnershipException ex)
+            {
+                session.AbortScalar8Scalar16WriteContext(writeContext);
+                session.WaitForWriteContextShelfRelease(ex.ShelfOffset, CancellationToken.None);
+            }
+            catch (InvalidOperationException)
+            {
+                session.AbortScalar8Scalar16WriteContext(writeContext);
+                using Scalar8Scalar16RangeReader reader = OpenScalar8Scalar16RangeReader(key, key);
+                bool deleted = reader.DeleteFirstMatchingEncodedIdentity(identityHigh, identityLow);
+                return new LibraDexGenericDeleteResult(
+                    deleted,
+                    default)
+                {
+                    QueuedInsertPath = deleted
+                        ? Scalar8Scalar8QueuedInsertPath.SerializedFallback
+                        : Scalar8Scalar8QueuedInsertPath.None
+                };
+            }
+        }
+    }
+
     private bool DeleteExactScalar16Scalar16Tuple(TKey key, TIdentity identity)
     {
+        if (CanUseInternalScalar16Scalar16WriterContextForPrimaryMutation())
+        {
+            return DeleteExactScalar16Scalar16TupleUsingWriterContextOrFallback(key, identity).Deleted;
+        }
+
         LibraDexGenericScalarCodec<TIdentity>.Encode16(identity, out ulong identityHigh, out ulong identityLow);
         using Scalar16Scalar16RangeReader reader = OpenScalar16Scalar16RangeReader(key, key);
         return reader.DeleteFirstMatchingEncodedIdentity(identityHigh, identityLow);
     }
 
+    /// <summary>
+    /// Deletes one exact `SS16-16` tuple through a writer-local shelf context when the route is already warmed and shelf-local.<br/>
+    /// Same-shelf ownership contention waits and retries inside the method; unsupported route shapes fall back to the existing exact range-reader delete path.<br/>
+    /// </summary>
+    /// <param name="key">The typed key side of the tuple to delete.</param>
+    /// <param name="identity">The typed identity side of the tuple to delete.</param>
+    /// <returns>The generic delete result with writer-context or fallback attribution.</returns>
+    private LibraDexGenericDeleteResult DeleteExactScalar16Scalar16TupleUsingWriterContextOrFallback(TKey key, TIdentity identity)
+    {
+        LibraDexGenericScalarCodec<TKey>.Encode16(key, out ulong keyHigh, out ulong keyLow);
+        LibraDexGenericScalarCodec<TIdentity>.Encode16(identity, out ulong identityHigh, out ulong identityLow);
+        Scalar16Scalar16Profile profile = GetScalar16Scalar16Profile();
+        byte rootPrefix = (byte)(keyHigh >> 56);
+        if (session.FindRouterTarget(RootRouterOffset, rootPrefix) == 0)
+        {
+            return new LibraDexGenericDeleteResult(false, default)
+            {
+                QueuedInsertPath = Scalar8Scalar8QueuedInsertPath.None
+            };
+        }
+
+        while (true)
+        {
+            LibraDexWriteContext writeContext = session.BeginScalar16Scalar16WriteContext();
+            try
+            {
+                bool deleted = session.DeleteWalkedRoutedScalar16Scalar16ExactForWriteContext(
+                    writeContext,
+                    RootRouterOffset,
+                    profile,
+                    keyHigh,
+                    keyLow,
+                    identityHigh,
+                    identityLow,
+                    maxRouterHops: 8);
+                if (!deleted)
+                {
+                    session.AbortScalar16Scalar16WriteContext(writeContext);
+                    return new LibraDexGenericDeleteResult(false, default)
+                    {
+                        QueuedInsertPath = Scalar8Scalar8QueuedInsertPath.None
+                    };
+                }
+
+                DataKernelCommitTelemetry telemetry = session.PublishScalar16Scalar16WriteContext(writeContext);
+                return new LibraDexGenericDeleteResult(
+                    true,
+                    LibraDexOperationDiagnostics.FromDataKernel(telemetry))
+                {
+                    QueuedInsertPath = Scalar8Scalar8QueuedInsertPath.WriterContext
+                };
+            }
+            catch (LibraDexWriteContextScalar16Scalar16ShelfOwnershipException ex)
+            {
+                session.AbortScalar16Scalar16WriteContext(writeContext);
+                session.WaitForWriteContextShelfRelease(ex.ShelfOffset, CancellationToken.None);
+            }
+            catch (InvalidOperationException)
+            {
+                session.AbortScalar16Scalar16WriteContext(writeContext);
+                using Scalar16Scalar16RangeReader reader = OpenScalar16Scalar16RangeReader(key, key);
+                bool deleted = reader.DeleteFirstMatchingEncodedIdentity(identityHigh, identityLow);
+                return new LibraDexGenericDeleteResult(
+                    deleted,
+                    default)
+                {
+                    QueuedInsertPath = deleted
+                        ? Scalar8Scalar8QueuedInsertPath.SerializedFallback
+                        : Scalar8Scalar8QueuedInsertPath.None
+                };
+            }
+        }
+    }
+
     private bool DeleteExactFixed32Scalar8Tuple(TKey key, TIdentity identity)
     {
+        if (CanUseInternalFixed32Scalar8WriterContextForPrimaryMutation())
+        {
+            return DeleteExactFixed32Scalar8TupleUsingWriterContextOrFallback(key, identity).Deleted;
+        }
+
         ulong encodedIdentity = LibraDexGenericScalarCodec<TIdentity>.Encode8(identity);
         using Fixed32Scalar8RangeReader reader = OpenFixed32Scalar8RangeReader(key, key);
         return reader.DeleteFirstMatchingEncodedIdentity(encodedIdentity);
     }
 
+    /// <summary>
+    /// Deletes one exact `FS32-8` tuple through a writer-local shelf context when the route is already warmed and shelf-local.<br/>
+    /// Same-shelf ownership contention waits and retries inside the method; unsupported route shapes fall back to the existing exact range-reader delete path.<br/>
+    /// </summary>
+    /// <param name="key">The typed key side of the tuple to delete.</param>
+    /// <param name="identity">The typed identity side of the tuple to delete.</param>
+    /// <returns>The generic delete result with writer-context or fallback attribution.</returns>
+    private LibraDexGenericDeleteResult DeleteExactFixed32Scalar8TupleUsingWriterContextOrFallback(TKey key, TIdentity identity)
+    {
+        LibraDexGenericScalarCodec<TKey>.Encode32(key, out ulong key0, out ulong key1, out ulong key2, out ulong key3);
+        ulong encodedIdentity = LibraDexGenericScalarCodec<TIdentity>.Encode8(identity);
+        Fixed32Scalar8Profile profile = GetFixed32Scalar8Profile();
+        byte rootPrefix = (byte)(key0 >> 56);
+        if (session.FindRouterTarget(RootRouterOffset, rootPrefix) == 0)
+        {
+            return new LibraDexGenericDeleteResult(false, default)
+            {
+                QueuedInsertPath = Scalar8Scalar8QueuedInsertPath.None
+            };
+        }
+
+        while (true)
+        {
+            LibraDexWriteContext writeContext = session.BeginFixed32Scalar8WriteContext();
+            try
+            {
+                bool deleted = session.DeleteWalkedRoutedFixed32Scalar8ExactForWriteContext(
+                    writeContext,
+                    RootRouterOffset,
+                    profile,
+                    key0,
+                    key1,
+                    key2,
+                    key3,
+                    encodedIdentity,
+                    maxRouterHops: 32);
+                if (!deleted)
+                {
+                    session.AbortFixed32Scalar8WriteContext(writeContext);
+                    return new LibraDexGenericDeleteResult(false, default)
+                    {
+                        QueuedInsertPath = Scalar8Scalar8QueuedInsertPath.None
+                    };
+                }
+
+                DataKernelCommitTelemetry telemetry = session.PublishFixed32Scalar8WriteContext(writeContext);
+                return new LibraDexGenericDeleteResult(
+                    true,
+                    LibraDexOperationDiagnostics.FromDataKernel(telemetry))
+                {
+                    QueuedInsertPath = Scalar8Scalar8QueuedInsertPath.WriterContext
+                };
+            }
+            catch (LibraDexWriteContextFixed32Scalar8ShelfOwnershipException ex)
+            {
+                session.AbortFixed32Scalar8WriteContext(writeContext);
+                session.WaitForWriteContextShelfRelease(ex.ShelfOffset, CancellationToken.None);
+            }
+            catch (InvalidOperationException)
+            {
+                session.AbortFixed32Scalar8WriteContext(writeContext);
+                using Fixed32Scalar8RangeReader reader = OpenFixed32Scalar8RangeReader(key, key);
+                bool deleted = reader.DeleteFirstMatchingEncodedIdentity(encodedIdentity);
+                return new LibraDexGenericDeleteResult(
+                    deleted,
+                    default)
+                {
+                    QueuedInsertPath = deleted
+                        ? Scalar8Scalar8QueuedInsertPath.SerializedFallback
+                        : Scalar8Scalar8QueuedInsertPath.None
+                };
+            }
+        }
+    }
+
     private bool DeleteExactFixed32Scalar16Tuple(TKey key, TIdentity identity)
     {
+        if (CanUseInternalFixed32Scalar16WriterContextForPrimaryMutation())
+        {
+            return DeleteExactFixed32Scalar16TupleUsingWriterContextOrFallback(key, identity).Deleted;
+        }
+
         LibraDexGenericScalarCodec<TIdentity>.Encode16(identity, out ulong identityHigh, out ulong identityLow);
         using Fixed32Scalar16RangeReader reader = OpenFixed32Scalar16RangeReader(key, key);
         return reader.DeleteFirstMatchingEncodedIdentity(identityHigh, identityLow);
+    }
+
+    /// <summary>
+    /// Deletes one exact `FS32-16` tuple through a writer-local shelf context when the route is already warmed and shelf-local.<br/>
+    /// Same-shelf ownership contention waits and retries inside the method; unsupported route shapes fall back to the existing exact range-reader delete path.<br/>
+    /// </summary>
+    /// <param name="key">The typed key side of the tuple to delete.</param>
+    /// <param name="identity">The typed identity side of the tuple to delete.</param>
+    /// <returns>The generic delete result with writer-context or fallback attribution.</returns>
+    private LibraDexGenericDeleteResult DeleteExactFixed32Scalar16TupleUsingWriterContextOrFallback(TKey key, TIdentity identity)
+    {
+        LibraDexGenericScalarCodec<TKey>.Encode32(key, out ulong key0, out ulong key1, out ulong key2, out ulong key3);
+        LibraDexGenericScalarCodec<TIdentity>.Encode16(identity, out ulong identityHigh, out ulong identityLow);
+        Fixed32Scalar16Profile profile = GetFixed32Scalar16Profile();
+        byte rootPrefix = (byte)(key0 >> 56);
+        if (session.FindRouterTarget(RootRouterOffset, rootPrefix) == 0)
+        {
+            return new LibraDexGenericDeleteResult(false, default)
+            {
+                QueuedInsertPath = Scalar8Scalar8QueuedInsertPath.None
+            };
+        }
+
+        while (true)
+        {
+            LibraDexWriteContext writeContext = session.BeginFixed32Scalar16WriteContext();
+            try
+            {
+                bool deleted = session.DeleteWalkedRoutedFixed32Scalar16ExactForWriteContext(
+                    writeContext,
+                    RootRouterOffset,
+                    profile,
+                    key0,
+                    key1,
+                    key2,
+                    key3,
+                    identityHigh,
+                    identityLow,
+                    maxRouterHops: 32);
+                if (!deleted)
+                {
+                    session.AbortFixed32Scalar16WriteContext(writeContext);
+                    return new LibraDexGenericDeleteResult(false, default)
+                    {
+                        QueuedInsertPath = Scalar8Scalar8QueuedInsertPath.None
+                    };
+                }
+
+                DataKernelCommitTelemetry telemetry = session.PublishFixed32Scalar16WriteContext(writeContext);
+                return new LibraDexGenericDeleteResult(
+                    true,
+                    LibraDexOperationDiagnostics.FromDataKernel(telemetry))
+                {
+                    QueuedInsertPath = Scalar8Scalar8QueuedInsertPath.WriterContext
+                };
+            }
+            catch (LibraDexWriteContextFixed32Scalar16ShelfOwnershipException ex)
+            {
+                session.AbortFixed32Scalar16WriteContext(writeContext);
+                session.WaitForWriteContextShelfRelease(ex.ShelfOffset, CancellationToken.None);
+            }
+            catch (InvalidOperationException)
+            {
+                session.AbortFixed32Scalar16WriteContext(writeContext);
+                using Fixed32Scalar16RangeReader reader = OpenFixed32Scalar16RangeReader(key, key);
+                bool deleted = reader.DeleteFirstMatchingEncodedIdentity(identityHigh, identityLow);
+                return new LibraDexGenericDeleteResult(
+                    deleted,
+                    default)
+                {
+                    QueuedInsertPath = deleted
+                        ? Scalar8Scalar8QueuedInsertPath.SerializedFallback
+                        : Scalar8Scalar8QueuedInsertPath.None
+                };
+            }
+        }
     }
 
     private static bool TupleComponentEquals<TValue>(TValue left, TValue right)
@@ -1594,6 +4565,8 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     public void Rekey(TIdentity identity, TKey oldKey, TKey newKey)
     {
         ThrowIfDisposed();
+        ThrowIfSessionDurabilityBatchActiveForImmediateMutation();
+
         bool oldIsNullKey = TryClassifyNullKeyRouteKey(oldKey, out NullKey oldNullKeyState);
         bool newIsNullKey = TryClassifyNullKeyRouteKey(newKey, out NullKey newNullKeyState);
         if (oldIsNullKey || newIsNullKey)
@@ -1626,7 +4599,12 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
 
         if (!ContainsExactTuple(newKey, identity))
         {
-            LibraDexGenericInsertResult insert = Insert(newKey, identity);
+            if (!CanInsertIdentityAtKeyReplacingOldKey(identity, newKey, oldKey))
+            {
+                return;
+            }
+
+            LibraDexGenericInsertResult insert = InsertAfterIdentityKeyMultiplicityCheck(newKey, identity);
             if (!insert.Inserted && !ContainsExactTuple(newKey, identity))
             {
                 throw new InvalidOperationException("Rekey could not create the replacement tuple; the original tuple was left unchanged.");
@@ -1648,6 +4626,8 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     public bool Rekey(TIdentity identity, ScalarNull oldKeyState, TKey newKey)
     {
         ThrowIfDisposed();
+        ThrowIfSessionDurabilityBatchActiveForImmediateMutation();
+
         if (oldKeyState != ScalarNull.Null)
         {
             throw new ArgumentOutOfRangeException(nameof(oldKeyState), oldKeyState, "Only ScalarNull.Null is a concrete scalar key state for rekey.");
@@ -1660,7 +4640,12 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
 
         if (!ContainsExactTuple(newKey, identity))
         {
-            LibraDexGenericInsertResult insert = Insert(newKey, identity);
+            if (!CanInsertIdentityAtKeyReplacingOldKey(identity, newKey, oldKeyState))
+            {
+                return false;
+            }
+
+            LibraDexGenericInsertResult insert = InsertAfterIdentityKeyMultiplicityCheck(newKey, identity);
             if (!insert.Inserted && !ContainsExactTuple(newKey, identity))
             {
                 throw new InvalidOperationException("Scalar-null rekey could not create the replacement tuple; the null-route identity was left unchanged.");
@@ -1687,6 +4672,8 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     public bool Rekey(TIdentity identity, TKey oldKey, ScalarNull newKeyState)
     {
         ThrowIfDisposed();
+        ThrowIfSessionDurabilityBatchActiveForImmediateMutation();
+
         if (newKeyState != ScalarNull.Null)
         {
             throw new ArgumentOutOfRangeException(nameof(newKeyState), newKeyState, "Only ScalarNull.Null is a concrete scalar key state for rekey.");
@@ -1699,7 +4686,12 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
 
         if (!ContainsScalarNullIdentity(identity))
         {
-            LibraDexGenericInsertResult insert = Insert(ScalarNull.Null, identity);
+            if (!CanInsertIdentityAtKeyReplacingOldKey(identity, ScalarNull.Null, oldKey))
+            {
+                return false;
+            }
+
+            LibraDexGenericInsertResult insert = InsertScalarNullIdentity(identity);
             if (!insert.Inserted && !ContainsScalarNullIdentity(identity))
             {
                 throw new InvalidOperationException("Scalar-null rekey could not create the null-route identity; the original tuple was left unchanged.");
@@ -1726,6 +4718,8 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     public bool Rekey(TIdentity identity, NullKey oldKeyState, TKey newKey)
     {
         ThrowIfDisposed();
+        ThrowIfSessionDurabilityBatchActiveForImmediateMutation();
+
         EnsureConcreteNullKeyState(oldKeyState, nameof(oldKeyState));
         if (TryClassifyNullKeyRouteKey(newKey, out NullKey newKeyState))
         {
@@ -1739,7 +4733,12 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
 
         if (!ContainsExactTuple(newKey, identity))
         {
-            LibraDexGenericInsertResult insert = Insert(newKey, identity);
+            if (!CanInsertIdentityAtKeyReplacingOldKey(identity, newKey, oldKeyState))
+            {
+                return false;
+            }
+
+            LibraDexGenericInsertResult insert = InsertAfterIdentityKeyMultiplicityCheck(newKey, identity);
             if (!insert.Inserted && !ContainsExactTuple(newKey, identity))
             {
                 throw new InvalidOperationException("NullKey rekey could not create the replacement tuple; the key-state identity was left unchanged.");
@@ -1766,6 +4765,8 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     public bool Rekey(TIdentity identity, TKey oldKey, NullKey newKeyState)
     {
         ThrowIfDisposed();
+        ThrowIfSessionDurabilityBatchActiveForImmediateMutation();
+
         EnsureConcreteNullKeyState(newKeyState, nameof(newKeyState));
         if (TryClassifyNullKeyRouteKey(oldKey, out NullKey oldKeyState))
         {
@@ -1779,7 +4780,12 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
 
         if (!ContainsNullKeyIdentity(newKeyState, identity))
         {
-            LibraDexGenericInsertResult insert = Insert(newKeyState, identity);
+            if (!CanInsertIdentityAtKeyReplacingOldKey(identity, newKeyState, oldKey))
+            {
+                return false;
+            }
+
+            LibraDexGenericInsertResult insert = InsertNullKeyIdentity(newKeyState, identity);
             if (!insert.Inserted && !ContainsNullKeyIdentity(newKeyState, identity))
             {
                 throw new InvalidOperationException("NullKey rekey could not create the key-state identity; the original tuple was left unchanged.");
@@ -1806,6 +4812,8 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     public bool Rekey(TIdentity identity, NullKey oldKeyState, NullKey newKeyState)
     {
         ThrowIfDisposed();
+        ThrowIfSessionDurabilityBatchActiveForImmediateMutation();
+
         EnsureConcreteNullKeyState(oldKeyState, nameof(oldKeyState));
         EnsureConcreteNullKeyState(newKeyState, nameof(newKeyState));
         if (oldKeyState == newKeyState)
@@ -1820,7 +4828,12 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
 
         if (!ContainsNullKeyIdentity(newKeyState, identity))
         {
-            LibraDexGenericInsertResult insert = Insert(newKeyState, identity);
+            if (!CanInsertIdentityAtKeyReplacingOldKey(identity, newKeyState, oldKeyState))
+            {
+                return false;
+            }
+
+            LibraDexGenericInsertResult insert = InsertNullKeyIdentity(newKeyState, identity);
             if (!insert.Inserted && !ContainsNullKeyIdentity(newKeyState, identity))
             {
                 throw new InvalidOperationException("NullKey rekey could not create the replacement key-state identity; the original route identity was left unchanged.");
@@ -1855,9 +4868,14 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
                 return new LibraDexGenericInsertResult(false, false, default, default);
             }
 
+            if (!CanInsertIdentityAtKeyReplacingOldKey(identity, newKeyState, oldKey))
+            {
+                return new LibraDexGenericInsertResult(false, false, default, default);
+            }
+
             LibraDexGenericInsertResult keyStateInsert = ContainsNullKeyIdentity(newKeyState, identity)
                 ? new LibraDexGenericInsertResult(false, false, default, default)
-                : Insert(newKeyState, identity);
+                : InsertNullKeyIdentity(newKeyState, identity);
             if (!keyStateInsert.Inserted && !ContainsNullKeyIdentity(newKeyState, identity))
             {
                 throw new InvalidOperationException("Cursor-local SetKey could not create the key-state replacement tuple; the original tuple was left unchanged.");
@@ -1881,9 +4899,14 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
             return new LibraDexGenericInsertResult(false, false, default, default);
         }
 
+        if (!CanInsertIdentityAtKeyReplacingOldKey(identity, newKey, oldKey))
+        {
+            return new LibraDexGenericInsertResult(false, false, default, default);
+        }
+
         LibraDexGenericInsertResult insert = ContainsExactTuple(newKey, identity)
             ? new LibraDexGenericInsertResult(false, false, default, default)
-            : Insert(newKey, identity);
+            : InsertAfterIdentityKeyMultiplicityCheck(newKey, identity);
         if (!insert.Inserted && !ContainsExactTuple(newKey, identity))
         {
             throw new InvalidOperationException("Cursor-local SetKey could not create the replacement tuple; the original tuple was left unchanged.");
@@ -1907,6 +4930,8 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     public void Rekey(TIdentity identity, TKey newKey)
     {
         ThrowIfDisposed();
+        ThrowIfSessionDurabilityBatchActiveForImmediateMutation();
+
         List<TKey> oldKeys = new();
         using (LibraDexRangeReader<TKey, TIdentity> reader = OpenAllRangeReader())
         {
@@ -1929,7 +4954,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
         {
             _ = Rekey(identity, ScalarNull.Null, newKey);
         }
-        else if (SupportsNullKeyRoute())
+        else if (SupportsStoredNullKeyRoutes())
         {
             if (ContainsNullKeyIdentity(NullKey.Null, identity))
             {
@@ -1952,6 +4977,8 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     public void Delete(TKey key, TIdentity identity)
     {
         ThrowIfDisposed();
+        ThrowIfSessionDurabilityBatchActiveForImmediateMutation();
+
         if (TryClassifyNullKeyRouteKey(key, out NullKey keyState))
         {
             _ = DeleteNullKeyIdentity(keyState, identity);
@@ -1971,6 +4998,8 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     public bool Delete(ScalarNull keyState, TIdentity identity)
     {
         ThrowIfDisposed();
+        ThrowIfSessionDurabilityBatchActiveForImmediateMutation();
+
         if (keyState != ScalarNull.Null)
         {
             throw new ArgumentOutOfRangeException(nameof(keyState), keyState, "Only ScalarNull.Null is a concrete scalar key state for deletion.");
@@ -1989,6 +5018,8 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     public bool Delete(NullKey keyState, TIdentity identity)
     {
         ThrowIfDisposed();
+        ThrowIfSessionDurabilityBatchActiveForImmediateMutation();
+
         EnsureConcreteNullKeyState(keyState, nameof(keyState));
         return DeleteNullKeyIdentity(keyState, identity);
     }
@@ -2052,28 +5083,40 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
         QueryDirection direction = QueryDirection.Ascending)
     {
         ThrowIfDisposed();
-        object reader = shape switch
-        {
-            LibraDexGenericScalarShape.SS88 => OpenScalar8Scalar8RangeReader(lowerKey, upperKey, direction),
-            LibraDexGenericScalarShape.SS168 => OpenScalar16Scalar8RangeReader(lowerKey, upperKey, direction),
-            LibraDexGenericScalarShape.SS816 => OpenScalar8Scalar16RangeReader(lowerKey, upperKey, direction),
-            LibraDexGenericScalarShape.SS1616 => OpenScalar16Scalar16RangeReader(lowerKey, upperKey, direction),
-            LibraDexGenericScalarShape.FS328 => OpenFixed32Scalar8RangeReader(lowerKey, upperKey, direction),
-            LibraDexGenericScalarShape.FS3216 => OpenFixed32Scalar16RangeReader(lowerKey, upperKey, direction),
-            _ => throw new NotSupportedException($"Generic LibraDex range readers do not support resolved shape {shape}.")
-        };
-
         if (direction != QueryDirection.Ascending && direction != QueryDirection.Descending)
         {
             throw new ArgumentOutOfRangeException(nameof(direction), direction, "Unknown query direction.");
         }
 
-        return new LibraDexRangeReader<TKey, TIdentity>(
-            reader,
-            shape,
-            direction: direction,
-            recordDelete: RecordDelete,
-            rekeyTuple: RekeyForCursor);
+        DataKernel.CoherentReadLease? coherentRead = session.EnterCoherentRead();
+        try
+        {
+            object reader = shape switch
+            {
+                LibraDexGenericScalarShape.SS88 => OpenScalar8Scalar8RangeReader(lowerKey, upperKey, direction),
+                LibraDexGenericScalarShape.SS168 => OpenScalar16Scalar8RangeReader(lowerKey, upperKey, direction),
+                LibraDexGenericScalarShape.SS816 => OpenScalar8Scalar16RangeReader(lowerKey, upperKey, direction),
+                LibraDexGenericScalarShape.SS1616 => OpenScalar16Scalar16RangeReader(lowerKey, upperKey, direction),
+                LibraDexGenericScalarShape.FS328 => OpenFixed32Scalar8RangeReader(lowerKey, upperKey, direction),
+                LibraDexGenericScalarShape.FS3216 => OpenFixed32Scalar16RangeReader(lowerKey, upperKey, direction),
+                _ => throw new NotSupportedException($"Generic LibraDex range readers do not support resolved shape {shape}.")
+            };
+            coherentRead.Pause();
+            LibraDexRangeReader<TKey, TIdentity> result = new(
+                reader,
+                shape,
+                direction: direction,
+                recordDelete: RecordDelete,
+                deleteTuple: DeleteExactTuple,
+                rekeyTuple: RekeyForCursor,
+                coherentRead: coherentRead);
+            coherentRead = null;
+            return result;
+        }
+        finally
+        {
+            coherentRead?.Dispose();
+        }
     }
 
     private LibraDexRangeReader<TKey, TIdentity> OpenAllRangeReader(QueryDirection direction = QueryDirection.Ascending)
@@ -2581,7 +5624,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
                 }
             }
         }
-        else if (SupportsNullKeyRoute())
+        else if (SupportsStoredNullKeyRoutes())
         {
             foreach (object identity in IterateNullKeyRouteIdentityObjects(NullKey.Null, takeLimit))
             {
@@ -2619,18 +5662,88 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     /// <returns>The total identity count.</returns>
     private long CountAllIdentityObjects()
     {
-        long count = CountIdentityObjects(OpenAllRangeReader());
-        if (SupportsScalarNullKeyRoute())
+        long count = CountOrdinaryIdentityObjects();
+        if (catalog is not null && SupportsScalarNullKeyRoute())
         {
-            count += CountScalarNullRouteIdentityObjects();
+            count += CountOptionalScalarNullRouteIdentityObjects();
         }
-        else if (SupportsNullKeyRoute())
+        else if (catalog is not null && SupportsStoredNullKeyRoutes())
         {
-            count += CountNullKeyRouteIdentityObjects(NullKey.Null);
-            count += CountNullKeyRouteIdentityObjects(NullKey.Empty);
+            count += CountOptionalNullKeyRouteIdentityObjects(NullKey.Null);
+            count += CountOptionalNullKeyRouteIdentityObjects(NullKey.Empty);
         }
 
         return count;
+    }
+
+    /// <summary>
+    /// Counts ordinary non-key-state identities through the fastest physical count path available for the resolved shape.<br/>
+    /// Shapes with a dedicated route-count primitive use it directly so count-all does not retain cursor shelf images or allocate reader extent arrays.<br/>
+    /// Shapes without a dedicated primitive continue to use range-reader shelf counts, which still avoid identity decoding.<br/>
+    /// </summary>
+    /// <returns>The number of ordinary non-null/non-empty key tuples in this index.</returns>
+    private long CountOrdinaryIdentityObjects()
+    {
+        return shape switch
+        {
+            LibraDexGenericScalarShape.SS88 => session.CountScalar8Scalar8Identities(RootRouterOffset, GetScalar8Scalar8Profile()),
+            LibraDexGenericScalarShape.SS168 => session.CountScalar16Scalar8Identities(RootRouterOffset, GetScalar16Scalar8Profile()),
+            LibraDexGenericScalarShape.SS816 => session.CountScalar8Scalar16Identities(RootRouterOffset, GetScalar8Scalar16Profile()),
+            LibraDexGenericScalarShape.SS1616 => session.CountScalar16Scalar16Identities(RootRouterOffset, GetScalar16Scalar16Profile()),
+            LibraDexGenericScalarShape.FS328 => session.CountFixed32Scalar8Identities(RootRouterOffset, GetFixed32Scalar8Profile()),
+            LibraDexGenericScalarShape.FS3216 => session.CountFixed32Scalar16Identities(RootRouterOffset, GetFixed32Scalar16Profile()),
+            _ => CountIdentityObjects(OpenAllRangeReader())
+        };
+    }
+
+    /// <summary>
+    /// Counts the scalar-null route when the index metadata contains that optional route, otherwise returns zero.<br/>
+    /// Standalone generic indexes can predate catalog key-state metadata, and count-all should still report ordinary shelf rows instead of failing before returning them.<br/>
+    /// Explicit ScalarNull criteria continue to use <see cref="CountScalarNullRouteIdentityObjects"/> so missing route metadata remains visible when the caller asks for that route specifically.<br/>
+    /// </summary>
+    /// <returns>The scalar-null route identity count, or zero when the optional route metadata is absent.</returns>
+    private long CountOptionalScalarNullRouteIdentityObjects()
+    {
+        try
+        {
+            return CountScalarNullRouteIdentityObjects();
+        }
+        catch (InvalidDataException ex) when (IsMissingKeyStateRouteMetadata(ex))
+        {
+            return 0;
+        }
+    }
+
+    /// <summary>
+    /// Counts one binary key-state route when optional route metadata is present, otherwise returns zero.<br/>
+    /// This keeps count-all compatible with standalone fixed-byte indexes that have no catalog key-state route metadata while preserving strict failures for direct NullKey criteria.<br/>
+    /// </summary>
+    /// <param name="keyState">The concrete null or empty binary key-state route to count.</param>
+    /// <returns>The selected route identity count, or zero when the optional route metadata is absent.</returns>
+    private long CountOptionalNullKeyRouteIdentityObjects(NullKey keyState)
+    {
+        try
+        {
+            return CountNullKeyRouteIdentityObjects(keyState);
+        }
+        catch (InvalidDataException ex) when (IsMissingKeyStateRouteMetadata(ex))
+        {
+            return 0;
+        }
+    }
+
+    /// <summary>
+    /// Identifies the file-session signal used when an index has no catalog metadata for optional key-state routes.<br/>
+    /// The check is intentionally narrow so count-all does not mask unrelated storage corruption or route read failures.<br/>
+    /// </summary>
+    /// <param name="ex">The storage exception raised while reading a key-state route.</param>
+    /// <returns><see langword="true"/> when the exception represents absent optional key-state route metadata.</returns>
+    private static bool IsMissingKeyStateRouteMetadata(InvalidDataException ex)
+    {
+        return string.Equals(
+            ex.Message,
+            "The requested index slot does not have decodable catalog metadata for key-state routes.",
+            StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -2948,10 +6061,10 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
         {
             LibraDexGenericScalarShape.SS88 or
             LibraDexGenericScalarShape.SS168 or
-            LibraDexGenericScalarShape.FS328 => session.ReadScalar8KeyStateIdentities(SlotIndex, KeyStateRoute.Null).LongLength,
+            LibraDexGenericScalarShape.FS328 => session.CountScalar8KeyStateIdentities(SlotIndex, KeyStateRoute.Null),
             LibraDexGenericScalarShape.SS816 or
             LibraDexGenericScalarShape.SS1616 or
-            LibraDexGenericScalarShape.FS3216 => session.ReadScalar16KeyStateIdentities(SlotIndex, KeyStateRoute.Null).Highs.LongLength,
+            LibraDexGenericScalarShape.FS3216 => session.CountScalar16KeyStateIdentities(SlotIndex, KeyStateRoute.Null),
             _ => throw new NotSupportedException($"Scalar null routes do not support resolved shape {shape}.")
         };
     }
@@ -2973,6 +6086,29 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
         return IterateScalarNullRouteIdentityObjects()
             .Select(static identity => new LibraDexObjectTuple(null, identity))
             .ToList();
+    }
+
+    /// <summary>
+    /// Materializes every physical tuple visible through this index, including metadata-backed null and empty key routes.<br/>
+    /// Target-owned mutation uses this capture before changing tuples, so its <c>All</c> meaning must match identity retrieval rather than only the ordinary value router.<br/>
+    /// </summary>
+    /// <param name="direction">The requested ordinary value-route traversal direction.<br/></param>
+    /// <returns>Null/empty route tuples followed by ordinary value-route tuples.<br/></returns>
+    private IReadOnlyList<LibraDexObjectTuple> MaterializeAllTupleObjects(QueryDirection direction)
+    {
+        List<LibraDexObjectTuple> tuples = new();
+        if (catalog is not null && SupportsScalarNullKeyRoute())
+        {
+            tuples.AddRange(IterateScalarNullRouteIdentityObjects().Select(static identity => new LibraDexObjectTuple(null, identity)));
+        }
+        else if (catalog is not null && SupportsStoredNullKeyRoutes())
+        {
+            tuples.AddRange(IterateNullKeyRouteIdentityObjects(NullKey.Null).Select(static identity => new LibraDexObjectTuple(null, identity)));
+            tuples.AddRange(IterateNullKeyRouteIdentityObjects(NullKey.Empty).Select(static identity => new LibraDexObjectTuple(Array.Empty<byte>(), identity)));
+        }
+
+        tuples.AddRange(MaterializeTupleObjects(OpenAllRangeReader(direction)));
+        return tuples;
     }
 
     private static bool SupportsScalarNullKeyRoute()
@@ -3275,8 +6411,8 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
         KeyStateRoute route = ToKeyStateRoute(keyState);
         return shape switch
         {
-            LibraDexGenericScalarShape.FS328 => session.ReadScalar8KeyStateIdentities(SlotIndex, route).LongLength,
-            LibraDexGenericScalarShape.FS3216 => session.ReadScalar16KeyStateIdentities(SlotIndex, route).Highs.LongLength,
+            LibraDexGenericScalarShape.FS328 => session.CountScalar8KeyStateIdentities(SlotIndex, route),
+            LibraDexGenericScalarShape.FS3216 => session.CountScalar16KeyStateIdentities(SlotIndex, route),
             _ => throw new NotSupportedException($"NullKey routes do not support resolved shape {shape}.")
         };
     }
@@ -3339,6 +6475,11 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     private static bool SupportsNullKeyRoute()
     {
         return typeof(TKey) == typeof(byte[]);
+    }
+
+    private bool SupportsStoredNullKeyRoutes()
+    {
+        return shape is LibraDexGenericScalarShape.FS328 or LibraDexGenericScalarShape.FS3216;
     }
 
     private static void EnsureNullKeyRouteSupported()
@@ -3600,11 +6741,18 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
             : throw new InvalidOperationException("The direct criteria descriptor is missing a required operand.");
     }
 
+    /// <summary>
+    /// Counts identities selected by a membership criterion operand.<br/>
+    /// The count path treats membership operands as set membership, so repeated operand keys do not count the same physical key extent more than once.<br/>
+    /// Ordinary keys fan out through <see cref="CountOrderedIdentityRange(TKey, TKey)"/> so equality membership can reuse the shape-native count-only range primitives.<br/>
+    /// </summary>
+    /// <param name="values">The primitive operand list captured from the condition builder.<br/></param>
+    /// <returns>The count of identities whose key is contained in the membership set.<br/></returns>
     private long CountMembershipIdentityObjects(IReadOnlyList<object?> values)
     {
         if (values.Count > 1)
         {
-            return CountMembershipIdentityObjects(values);
+            return CountMembershipIdentityObjects((IEnumerable<object?>)values);
         }
 
         object value = RequireCriterionValue(values, 0);
@@ -3619,21 +6767,37 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
         return CountMembershipIdentityObjects(keys);
     }
 
+    /// <summary>
+    /// Counts identities selected by an enumerable membership operand using one direct count extent per distinct key.<br/>
+    /// Null-key route states are deduplicated separately from ordinary encoded keys because they live outside the ordered key routes.<br/>
+    /// </summary>
+    /// <param name="keys">The captured membership keys.<br/></param>
+    /// <returns>The count of identities whose key is contained in the membership set.<br/></returns>
     private long CountMembershipIdentityObjects(IEnumerable<object?> keys)
     {
         long count = 0;
+        HashSet<NullKey> seenNullKeys = new();
+        HashSet<TKey> seenKeys = new(LibraDexKeyEquality<TKey>.Comparer);
         foreach (object? keyValue in keys)
         {
             if (TryClassifyNullKeyRouteKey(keyValue, out NullKey keyState))
             {
+                if (!seenNullKeys.Add(keyState))
+                {
+                    continue;
+                }
+
                 count += CountNullKeyIdentityObjects(new object?[] { keyState });
                 continue;
             }
 
-            using LibraDexRangeReader<TKey, TIdentity> reader = OpenRangeReader(
-                RequireObjectKey(keyValue!, nameof(keys)),
-                RequireObjectKey(keyValue!, nameof(keys)));
-            count += reader.Count;
+            TKey key = RequireObjectKey(keyValue!, nameof(keys));
+            if (!seenKeys.Add(key))
+            {
+                continue;
+            }
+
+            count += CountOrderedIdentityRange(key, key);
         }
 
         return count;
@@ -3726,20 +6890,137 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
         }
     }
 
+    /// <summary>
+    /// Counts identities selected by a condition-derived multi-range operand.<br/>
+    /// Overlapping inclusive ranges are sorted and merged before counting so OR-style range criteria do not double count the same physical key extent.<br/>
+    /// Each merged extent is dispatched through <see cref="CountOrderedIdentityRange(TKey, TKey)"/> to preserve the shape-native count fast path.<br/>
+    /// </summary>
+    /// <param name="values">The primitive operand list containing one range array.<br/></param>
+    /// <returns>The count of identities whose key falls inside any requested range.<br/></returns>
     private long CountMultiRangeIdentityObjects(IReadOnlyList<object?> values)
     {
         LibraDexIdentityKeyRange[] ranges = RequireIdentityKeyRanges(values);
-        long count = 0;
-        for (int i = 0; i < ranges.Length; i++)
+        if (ranges.Length == 0)
         {
-            using LibraDexRangeReader<TKey, TIdentity> reader = OpenRangeReader(
-                RequireObjectKey(ranges[i].LowerKey, nameof(values)),
-                RequireObjectKey(ranges[i].UpperKey, nameof(values)));
-            count += reader.Count;
+            return 0;
         }
 
+        CountKeyRange[] typedRanges = new CountKeyRange[ranges.Length];
+        for (int i = 0; i < ranges.Length; i++)
+        {
+            TKey lowerKey = RequireObjectKey(ranges[i].LowerKey, nameof(values));
+            TKey upperKey = RequireObjectKey(ranges[i].UpperKey, nameof(values));
+            if (CompareCountKeys(lowerKey, upperKey) > 0)
+            {
+                throw new ArgumentException("Multi-range identity count requires each lower key to be less than or equal to its upper key.", nameof(values));
+            }
+
+            typedRanges[i] = new CountKeyRange(lowerKey, upperKey);
+        }
+
+        Array.Sort(typedRanges, (left, right) =>
+        {
+            int lowerComparison = CompareCountKeys(left.LowerKey, right.LowerKey);
+            return lowerComparison != 0
+                ? lowerComparison
+                : CompareCountKeys(left.UpperKey, right.UpperKey);
+        });
+
+        long count = 0;
+        TKey currentLower = typedRanges[0].LowerKey;
+        TKey currentUpper = typedRanges[0].UpperKey;
+        for (int i = 1; i < typedRanges.Length; i++)
+        {
+            if (CompareCountKeys(typedRanges[i].LowerKey, currentUpper) <= 0)
+            {
+                if (CompareCountKeys(typedRanges[i].UpperKey, currentUpper) > 0)
+                {
+                    currentUpper = typedRanges[i].UpperKey;
+                }
+
+                continue;
+            }
+
+            count += CountOrderedIdentityRange(currentLower, currentUpper);
+            currentLower = typedRanges[i].LowerKey;
+            currentUpper = typedRanges[i].UpperKey;
+        }
+
+        count += CountOrderedIdentityRange(currentLower, currentUpper);
         return count;
     }
+
+    /// <summary>
+    /// Compares two public keys according to this index's encoded physical key order.<br/>
+    /// Count range merging uses encoded order instead of CLR comparer order so DateTime-like encodings and fixed32 byte-array keys match routed shelf traversal semantics.<br/>
+    /// </summary>
+    /// <param name="left">The first public key.<br/></param>
+    /// <param name="right">The second public key.<br/></param>
+    /// <returns>A negative value when <paramref name="left"/> sorts before <paramref name="right"/>, zero when equal, or a positive value when after.<br/></returns>
+    private int CompareCountKeys(TKey left, TKey right)
+    {
+        return shape switch
+        {
+            LibraDexGenericScalarShape.SS88 or LibraDexGenericScalarShape.SS816 => EncodeKey8(left).CompareTo(EncodeKey8(right)),
+            LibraDexGenericScalarShape.SS168 or LibraDexGenericScalarShape.SS1616 => CompareScalar16CountKeys(left, right),
+            LibraDexGenericScalarShape.FS328 or LibraDexGenericScalarShape.FS3216 => CompareFixed32CountKeys(left, right),
+            _ => throw new NotSupportedException($"Generic LibraDex criteria counts do not support resolved shape {shape}.")
+        };
+    }
+
+    /// <summary>
+    /// Compares two scalar16 public keys according to their encoded high/low key lanes.<br/>
+    /// The method is kept separate from the range reader so count fan-out can sort and merge ranges before opening physical readers.<br/>
+    /// </summary>
+    /// <param name="left">The first public key.<br/></param>
+    /// <param name="right">The second public key.<br/></param>
+    /// <returns>The encoded scalar16 ordering comparison.<br/></returns>
+    private static int CompareScalar16CountKeys(TKey left, TKey right)
+    {
+        LibraDexGenericScalarCodec<TKey>.Encode16(left, out ulong leftHigh, out ulong leftLow);
+        LibraDexGenericScalarCodec<TKey>.Encode16(right, out ulong rightHigh, out ulong rightLow);
+        int highComparison = leftHigh.CompareTo(rightHigh);
+        return highComparison != 0
+            ? highComparison
+            : leftLow.CompareTo(rightLow);
+    }
+
+    /// <summary>
+    /// Compares two fixed32 public keys according to their encoded four-lane big-endian key order.<br/>
+    /// This avoids CLR array reference ordering and matches the route order used by fixed32 shelves.<br/>
+    /// </summary>
+    /// <param name="left">The first public key.<br/></param>
+    /// <param name="right">The second public key.<br/></param>
+    /// <returns>The encoded fixed32 ordering comparison.<br/></returns>
+    private static int CompareFixed32CountKeys(TKey left, TKey right)
+    {
+        LibraDexGenericScalarCodec<TKey>.Encode32(left, out ulong left0, out ulong left1, out ulong left2, out ulong left3);
+        LibraDexGenericScalarCodec<TKey>.Encode32(right, out ulong right0, out ulong right1, out ulong right2, out ulong right3);
+        int comparison = left0.CompareTo(right0);
+        if (comparison != 0)
+        {
+            return comparison;
+        }
+
+        comparison = left1.CompareTo(right1);
+        if (comparison != 0)
+        {
+            return comparison;
+        }
+
+        comparison = left2.CompareTo(right2);
+        return comparison != 0
+            ? comparison
+            : left3.CompareTo(right3);
+    }
+
+    /// <summary>
+    /// Stores one typed inclusive key range while count planning sorts and merges multi-range operands.<br/>
+    /// The struct intentionally stores public keys so the final count dispatch still uses the normal shape-specific bridge path.<br/>
+    /// </summary>
+    /// <param name="LowerKey">The inclusive lower public key.<br/></param>
+    /// <param name="UpperKey">The inclusive upper public key.<br/></param>
+    private readonly record struct CountKeyRange(TKey LowerKey, TKey UpperKey);
 
     private IReadOnlyList<object> MaterializeStructuredComponentIdentityObjects(IReadOnlyList<object?> values, int? takeLimit = null)
     {
@@ -4181,7 +7462,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
                 ? Scalar8Scalar8RangeReadOptions.CoalescingCached with { CoalescedShelfScratchCount = coalescedShelfScratchCount }
                 : Scalar8Scalar8RangeReadOptions.ConservativeCached;
             Scalar8Scalar8RangeReadResult result = session.ReadEncodedScalar8Scalar8IdentityRangePooled(
-                new Scalar8Scalar8IndexHandle(RootRouterOffset, Scalar8Scalar8Profile.Default32KiB),
+                new Scalar8Scalar8IndexHandle(RootRouterOffset, GetScalar8Scalar8Profile()),
                 lowerEncodedKey,
                 upperEncodedKey,
                 options,
@@ -4209,7 +7490,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     {
         ulong lowerEncodedKey = EncodeKey8(lowerKey);
         ulong upperEncodedKey = EncodeKey8(upperKey);
-        return session.OpenScalar8Scalar8RangeReader(RootRouterOffset, Scalar8Scalar8Profile.Default32KiB, lowerEncodedKey, upperEncodedKey, direction);
+        return session.OpenScalar8Scalar8RangeReader(RootRouterOffset, GetScalar8Scalar8Profile(), lowerEncodedKey, upperEncodedKey, direction);
     }
 
     private LibraDexGenericRangeReadResult ReadScalar16Scalar8Range(
@@ -4219,21 +7500,22 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     {
         LibraDexGenericScalarCodec<TKey>.Encode16(lowerKey, out ulong lowerHigh, out ulong lowerLow);
         LibraDexGenericScalarCodec<TKey>.Encode16(upperKey, out ulong upperHigh, out ulong upperLow);
+        Scalar16Scalar8Profile profile = GetScalar16Scalar8Profile();
         ulong[] encodedIdentities = ArrayPool<ulong>.Shared.Rent(identities.Length);
-        byte[] shelfScratch = ArrayPool<byte>.Shared.Rent(Scalar16Scalar8Profile.Default32KiB.ShelfExtentSize);
+        byte[] shelfScratch = ArrayPool<byte>.Shared.Rent(profile.ShelfExtentSize);
         using RouteTargetKindCache targetKindCache = RouteTargetKindCache.Rent();
         try
         {
             int count = session.ReadScalar16Scalar8IdentityRange(
                 RootRouterOffset,
-                Scalar16Scalar8Profile.Default32KiB,
+                profile,
                 lowerHigh,
                 lowerLow,
                 upperHigh,
                 upperLow,
                 maxRouterHops: 8,
                 encodedIdentities.AsSpan(0, identities.Length),
-                shelfScratch.AsSpan(0, Scalar16Scalar8Profile.Default32KiB.ShelfExtentSize),
+                shelfScratch.AsSpan(0, profile.ShelfExtentSize),
                 targetKindCache);
 
             for (int i = 0; i < count; i++)
@@ -4254,7 +7536,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     {
         LibraDexGenericScalarCodec<TKey>.Encode16(lowerKey, out ulong lowerHigh, out ulong lowerLow);
         LibraDexGenericScalarCodec<TKey>.Encode16(upperKey, out ulong upperHigh, out ulong upperLow);
-        return session.OpenScalar16Scalar8RangeReader(RootRouterOffset, Scalar16Scalar8Profile.Default32KiB, lowerHigh, lowerLow, upperHigh, upperLow, direction);
+        return session.OpenScalar16Scalar8RangeReader(RootRouterOffset, GetScalar16Scalar8Profile(), lowerHigh, lowerLow, upperHigh, upperLow, direction);
     }
 
     private LibraDexGenericRangeReadResult ReadScalar8Scalar16Range(
@@ -4264,21 +7546,22 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     {
         ulong lowerEncodedKey = EncodeKey8(lowerKey);
         ulong upperEncodedKey = EncodeKey8(upperKey);
+        Scalar8Scalar16Profile profile = GetScalar8Scalar16Profile();
         ulong[] identityHighs = ArrayPool<ulong>.Shared.Rent(identities.Length);
         ulong[] identityLows = ArrayPool<ulong>.Shared.Rent(identities.Length);
-        byte[] shelfScratch = ArrayPool<byte>.Shared.Rent(Scalar8Scalar16Profile.Default32KiB.ShelfExtentSize);
+        byte[] shelfScratch = ArrayPool<byte>.Shared.Rent(profile.ShelfExtentSize);
         using RouteTargetKindCache targetKindCache = RouteTargetKindCache.Rent();
         try
         {
             int count = session.ReadScalar8Scalar16IdentityRange(
                 RootRouterOffset,
-                Scalar8Scalar16Profile.Default32KiB,
+                profile,
                 lowerEncodedKey,
                 upperEncodedKey,
                 maxRouterHops: 8,
                 identityHighs.AsSpan(0, identities.Length),
                 identityLows.AsSpan(0, identities.Length),
-                shelfScratch.AsSpan(0, Scalar8Scalar16Profile.Default32KiB.ShelfExtentSize),
+                shelfScratch.AsSpan(0, profile.ShelfExtentSize),
                 targetKindCache);
 
             for (int i = 0; i < count; i++)
@@ -4300,7 +7583,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     {
         ulong lowerEncodedKey = EncodeKey8(lowerKey);
         ulong upperEncodedKey = EncodeKey8(upperKey);
-        return session.OpenScalar8Scalar16RangeReader(RootRouterOffset, Scalar8Scalar16Profile.Default32KiB, lowerEncodedKey, upperEncodedKey, direction);
+        return session.OpenScalar8Scalar16RangeReader(RootRouterOffset, GetScalar8Scalar16Profile(), lowerEncodedKey, upperEncodedKey, direction);
     }
 
     private LibraDexGenericRangeReadResult ReadScalar16Scalar16Range(
@@ -4310,15 +7593,16 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     {
         LibraDexGenericScalarCodec<TKey>.Encode16(lowerKey, out ulong lowerHigh, out ulong lowerLow);
         LibraDexGenericScalarCodec<TKey>.Encode16(upperKey, out ulong upperHigh, out ulong upperLow);
+        Scalar16Scalar16Profile profile = GetScalar16Scalar16Profile();
         ulong[] identityHighs = ArrayPool<ulong>.Shared.Rent(identities.Length);
         ulong[] identityLows = ArrayPool<ulong>.Shared.Rent(identities.Length);
-        byte[] shelfScratch = ArrayPool<byte>.Shared.Rent(Scalar16Scalar16Profile.Default32KiB.ShelfExtentSize);
+        byte[] shelfScratch = ArrayPool<byte>.Shared.Rent(profile.ShelfExtentSize);
         using RouteTargetKindCache targetKindCache = RouteTargetKindCache.Rent();
         try
         {
             int count = session.ReadScalar16Scalar16IdentityRange(
                 RootRouterOffset,
-                Scalar16Scalar16Profile.Default32KiB,
+                profile,
                 lowerHigh,
                 lowerLow,
                 upperHigh,
@@ -4326,7 +7610,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
                 maxRouterHops: 8,
                 identityHighs.AsSpan(0, identities.Length),
                 identityLows.AsSpan(0, identities.Length),
-                shelfScratch.AsSpan(0, Scalar16Scalar16Profile.Default32KiB.ShelfExtentSize),
+                shelfScratch.AsSpan(0, profile.ShelfExtentSize),
                 targetKindCache);
 
             for (int i = 0; i < count; i++)
@@ -4348,7 +7632,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     {
         LibraDexGenericScalarCodec<TKey>.Encode16(lowerKey, out ulong lowerHigh, out ulong lowerLow);
         LibraDexGenericScalarCodec<TKey>.Encode16(upperKey, out ulong upperHigh, out ulong upperLow);
-        return session.OpenScalar16Scalar16RangeReader(RootRouterOffset, Scalar16Scalar16Profile.Default32KiB, lowerHigh, lowerLow, upperHigh, upperLow, direction);
+        return session.OpenScalar16Scalar16RangeReader(RootRouterOffset, GetScalar16Scalar16Profile(), lowerHigh, lowerLow, upperHigh, upperLow, direction);
     }
 
     private LibraDexGenericRangeReadResult ReadFixed32Scalar8Range(
@@ -4358,14 +7642,15 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     {
         LibraDexGenericScalarCodec<TKey>.Encode32(lowerKey, out ulong lower0, out ulong lower1, out ulong lower2, out ulong lower3);
         LibraDexGenericScalarCodec<TKey>.Encode32(upperKey, out ulong upper0, out ulong upper1, out ulong upper2, out ulong upper3);
+        Fixed32Scalar8Profile profile = GetFixed32Scalar8Profile();
         ulong[] encodedIdentities = ArrayPool<ulong>.Shared.Rent(identities.Length);
-        byte[] shelfScratch = ArrayPool<byte>.Shared.Rent(Fixed32Scalar8Profile.Default64KiB.ShelfExtentSize);
+        byte[] shelfScratch = ArrayPool<byte>.Shared.Rent(profile.ShelfExtentSize);
         using RouteTargetKindCache targetKindCache = RouteTargetKindCache.Rent();
         try
         {
             int count = session.ReadFixed32Scalar8IdentityRange(
                 RootRouterOffset,
-                Fixed32Scalar8Profile.Default64KiB,
+                profile,
                 lower0,
                 lower1,
                 lower2,
@@ -4376,7 +7661,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
                 upper3,
                 maxRouterHops: 32,
                 encodedIdentities.AsSpan(0, identities.Length),
-                shelfScratch.AsSpan(0, Fixed32Scalar8Profile.Default64KiB.ShelfExtentSize),
+                shelfScratch.AsSpan(0, profile.ShelfExtentSize),
                 targetKindCache);
 
             for (int i = 0; i < count; i++)
@@ -4397,7 +7682,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     {
         LibraDexGenericScalarCodec<TKey>.Encode32(lowerKey, out ulong lower0, out ulong lower1, out ulong lower2, out ulong lower3);
         LibraDexGenericScalarCodec<TKey>.Encode32(upperKey, out ulong upper0, out ulong upper1, out ulong upper2, out ulong upper3);
-        return session.OpenFixed32Scalar8RangeReader(RootRouterOffset, Fixed32Scalar8Profile.Default64KiB, lower0, lower1, lower2, lower3, upper0, upper1, upper2, upper3, direction);
+        return session.OpenFixed32Scalar8RangeReader(RootRouterOffset, GetFixed32Scalar8Profile(), lower0, lower1, lower2, lower3, upper0, upper1, upper2, upper3, direction);
     }
 
     /// <summary>
@@ -4416,15 +7701,16 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     {
         LibraDexGenericScalarCodec<TKey>.Encode32(lowerKey, out ulong lower0, out ulong lower1, out ulong lower2, out ulong lower3);
         LibraDexGenericScalarCodec<TKey>.Encode32(upperKey, out ulong upper0, out ulong upper1, out ulong upper2, out ulong upper3);
+        Fixed32Scalar16Profile profile = GetFixed32Scalar16Profile();
         ulong[] identityHighs = ArrayPool<ulong>.Shared.Rent(identities.Length);
         ulong[] identityLows = ArrayPool<ulong>.Shared.Rent(identities.Length);
-        byte[] shelfScratch = ArrayPool<byte>.Shared.Rent(Fixed32Scalar16Profile.Default64KiB.ShelfExtentSize);
+        byte[] shelfScratch = ArrayPool<byte>.Shared.Rent(profile.ShelfExtentSize);
         using RouteTargetKindCache targetKindCache = RouteTargetKindCache.Rent();
         try
         {
             int count = session.ReadFixed32Scalar16IdentityRange(
                 RootRouterOffset,
-                Fixed32Scalar16Profile.Default64KiB,
+                profile,
                 lower0,
                 lower1,
                 lower2,
@@ -4436,7 +7722,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
                 maxRouterHops: 32,
                 identityHighs.AsSpan(0, identities.Length),
                 identityLows.AsSpan(0, identities.Length),
-                shelfScratch.AsSpan(0, Fixed32Scalar16Profile.Default64KiB.ShelfExtentSize),
+                shelfScratch.AsSpan(0, profile.ShelfExtentSize),
                 targetKindCache);
 
             for (int i = 0; i < count; i++)
@@ -4458,6 +7744,1344 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IIdentityPrimitiveE
     {
         LibraDexGenericScalarCodec<TKey>.Encode32(lowerKey, out ulong lower0, out ulong lower1, out ulong lower2, out ulong lower3);
         LibraDexGenericScalarCodec<TKey>.Encode32(upperKey, out ulong upper0, out ulong upper1, out ulong upper2, out ulong upper3);
-        return session.OpenFixed32Scalar16RangeReader(RootRouterOffset, Fixed32Scalar16Profile.Default64KiB, lower0, lower1, lower2, lower3, upper0, upper1, upper2, upper3, direction);
+        return session.OpenFixed32Scalar16RangeReader(RootRouterOffset, GetFixed32Scalar16Profile(), lower0, lower1, lower2, lower3, upper0, upper1, upper2, upper3, direction);
+    }
+}
+
+/// <summary>
+/// Tracks accepted staged identity-key associations for a single generic writer facade.<br/>
+/// The guard combines committed-index checks from the owning index with staged reservations so unpublished batch or queued-writer inserts cannot create a second key for the same identity.<br/>
+/// </summary>
+/// <typeparam name="TKey">The public key type accepted by the owning index.</typeparam>
+/// <typeparam name="TIdentity">The public identity type associated with the owning index.</typeparam>
+internal sealed class LibraDexStagedIdentityKeyGuard<TKey, TIdentity>
+{
+    private readonly LibraDexIndex<TKey, TIdentity> index;
+    private readonly List<Entry> entries = [];
+
+    internal LibraDexStagedIdentityKeyGuard(LibraDexIndex<TKey, TIdentity> index)
+    {
+        this.index = index;
+    }
+
+    /// <summary>
+    /// Tests whether the identity may be staged at a new key.<br/>
+    /// This checks both committed rows and already accepted staged rows owned by this guard.<br/>
+    /// </summary>
+    /// <param name="identity">The identity requested for staging.</param>
+    /// <param name="key">The ordinary key requested for staging.</param>
+    /// <returns><see langword="true"/> when the staged insert does not violate `SingleKeyPerIdentity`.</returns>
+    internal bool CanInsert(TIdentity identity, TKey key)
+    {
+        return !HasDifferentStagedKey(identity, key) &&
+            index.CanStageInsertIdentityAtKey(identity, key);
+    }
+
+    /// <summary>
+    /// Tests whether the identity may be staged at a replacement key while one old key is being replaced.<br/>
+    /// Rekey uses this to preserve replacement-before-delete semantics without accepting a third staged or committed association.<br/>
+    /// </summary>
+    /// <param name="identity">The identity requested for staging.</param>
+    /// <param name="newKey">The replacement ordinary key requested for staging.</param>
+    /// <param name="oldKey">The old ordinary key allowed during the staged replacement.</param>
+    /// <returns><see langword="true"/> when the staged replacement does not violate `SingleKeyPerIdentity`.</returns>
+    internal bool CanReplace(TIdentity identity, TKey newKey, TKey oldKey)
+    {
+        return !HasDifferentStagedKey(identity, newKey, oldKey) &&
+            index.CanStageInsertIdentityAtKeyReplacingOldKey(identity, newKey, oldKey);
+    }
+
+    /// <summary>
+    /// Records an accepted staged association.<br/>
+    /// Only successful inserts are recorded so failed unique-key conflicts or no-op duplicate inserts do not reserve a key they did not publish.<br/>
+    /// </summary>
+    /// <param name="identity">The accepted staged identity.</param>
+    /// <param name="key">The accepted staged key.</param>
+    internal void RecordInserted(TIdentity identity, TKey key)
+    {
+        entries.Add(new Entry(identity, key));
+    }
+
+    /// <summary>
+    /// Finds whether the identity already has a staged key other than the allowed key set.<br/>
+    /// This intentionally performs a short linear scan so byte-array tuple equality can stay owned by the index instead of hidden inside a default dictionary comparer.<br/>
+    /// </summary>
+    /// <param name="identity">The identity being inspected.</param>
+    /// <param name="allowedKey">The primary allowed key.</param>
+    /// <param name="alternateAllowedKey">The optional second allowed key for rekey replacement.</param>
+    /// <returns><see langword="true"/> when a conflicting staged key exists.</returns>
+    private bool HasDifferentStagedKey(TIdentity identity, TKey allowedKey, TKey? alternateAllowedKey = default)
+    {
+        bool hasAlternate = alternateAllowedKey is not null;
+        for (int i = 0; i < entries.Count; i++)
+        {
+            Entry entry = entries[i];
+            if (!index.StagedIdentityEquals(entry.Identity, identity))
+            {
+                continue;
+            }
+
+            if (index.StagedOrdinaryKeyEquals(entry.Key, allowedKey) ||
+                (hasAlternate && index.StagedOrdinaryKeyEquals(entry.Key, alternateAllowedKey!)))
+            {
+                continue;
+            }
+
+            return true;
+        }
+
+        return false;
+    }
+
+    private readonly record struct Entry(TIdentity Identity, TKey Key);
+}
+
+/// <summary>
+/// Provides a writer-context-backed concurrent batch for generic `SS8-8` indexes.<br/>
+/// The batch is optimized for bulk periods where each caller can stage many shelf-local insert, delete, and rekey operations before one publication boundary, while still releasing owned shelves before retrying a contended operation.<br/>
+/// It is not a SQL transaction: replacement tuples may be published before old tuple deletion during rekey, and fallback topology work may publish before the final batch boundary.<br/>
+/// </summary>
+/// <typeparam name="TKey">The public key type accepted by the owning index.<br/></typeparam>
+/// <typeparam name="TIdentity">The public identity type associated with the owning index.<br/></typeparam>
+public sealed class LibraDexConcurrentBatch<TKey, TIdentity> : IDisposable
+{
+    private readonly LibraDexIndex<TKey, TIdentity> index;
+    private readonly Scalar8Scalar8Index? encodedIndex;
+    private readonly LibraDexQueuedWriter<TKey, TIdentity> fallbackWriter;
+    private readonly int? maximumActiveWriters;
+    private readonly int maximumQueuedWriters;
+    private readonly TimeSpan queueTimeout;
+    private readonly CancellationToken cancellationToken;
+    private readonly object admissionSync = new();
+    private readonly object singleKeySync = new();
+    private LibraDexStagedIdentityKeyGuard<TKey, TIdentity>? stagedIdentityKeyGuard;
+    private Scalar8Scalar8Writer? writer;
+    private LibraDexWriteContext? fixed32Scalar8Writer;
+    private long attemptedInsertCount;
+    private long insertedCount;
+    private long attemptedDeleteCount;
+    private long deletedCount;
+    private long attemptedRekeyCount;
+    private long changedRekeyCount;
+    private long publishedContextCount;
+    private long ownershipConflictCount;
+    private long conflictPublicationCount;
+    private long emptyContextAbortCount;
+    private long topologyFallbackCount;
+    private long currentStagedMutationCount;
+    private long maximumStagedMutationCount;
+    private long stagedMutationCountBeforeConflictPublication;
+    private DataKernelCommitTelemetry lastPublishTelemetry;
+    private LibraDexWriteAdmissionLease? admission;
+    private bool completed;
+
+    internal LibraDexConcurrentBatch(
+        LibraDexIndex<TKey, TIdentity> index,
+        Scalar8Scalar8Index encodedIndex,
+        LibraDexConcurrencyOptions? options,
+        CancellationToken cancellationToken)
+    {
+        this.index = index;
+        this.encodedIndex = encodedIndex;
+        maximumActiveWriters = options?.MaxActiveWriters;
+        maximumQueuedWriters = options?.MaxQueuedWriters ?? 1024;
+        queueTimeout = options?.QueueTimeout ?? Timeout.InfiniteTimeSpan;
+        this.cancellationToken = cancellationToken;
+        fallbackWriter = index.BeginQueuedWriter(
+            options ?? LibraDexConcurrencyOptions.QueuedWriter,
+            cancellationToken,
+            admissionAlreadyHeld: true);
+    }
+
+    internal LibraDexConcurrentBatch(
+        LibraDexIndex<TKey, TIdentity> index,
+        LibraDexConcurrencyOptions? options,
+        CancellationToken cancellationToken)
+    {
+        this.index = index;
+        maximumActiveWriters = options?.MaxActiveWriters;
+        maximumQueuedWriters = options?.MaxQueuedWriters ?? 1024;
+        queueTimeout = options?.QueueTimeout ?? Timeout.InfiniteTimeSpan;
+        this.cancellationToken = cancellationToken;
+        fallbackWriter = index.BeginQueuedWriter(
+            options ?? LibraDexConcurrencyOptions.QueuedWriter,
+            cancellationToken,
+            admissionAlreadyHeld: true);
+    }
+
+    /// <summary>
+    /// Inserts one key/identity tuple into this concurrent batch.<br/>
+    /// Shelf-local inserts are staged in the batch writer context; topology-changing inserts publish any current staged context and then use the normal concurrent writer fallback for that one operation.<br/>
+    /// </summary>
+    /// <param name="key">The typed key value to insert.<br/></param>
+    /// <param name="identity">The typed identity value associated with the key.<br/></param>
+    /// <returns>The generic insert result; writer-context results become visible when the batch publishes.<br/></returns>
+    public LibraDexGenericInsertResult Insert(TKey key, TIdentity identity)
+    {
+        ThrowIfCompleted();
+        index.ThrowIfSessionDurabilityBatchActiveForConcurrentWriter();
+        EnsureAdmission();
+        attemptedInsertCount++;
+        LibraDexGenericInsertResult result;
+        lock (singleKeySync)
+        {
+            LibraDexStagedIdentityKeyGuard<TKey, TIdentity>? stagedGuard = GetStagedIdentityKeyGuard();
+            if (stagedGuard is not null &&
+                !stagedGuard.CanInsert(identity, key))
+            {
+                return new LibraDexGenericInsertResult(false, false, default, default);
+            }
+
+            result = InsertCore(key, identity);
+            if (result.Inserted)
+            {
+                stagedGuard?.RecordInserted(identity, key);
+            }
+        }
+
+        if (result.Inserted)
+        {
+            insertedCount++;
+            RecordStagedMutation(result.QueuedInsertPath);
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Deletes one exact key/identity tuple through this concurrent batch.<br/>
+    /// Shelf-local deletes are staged in the batch writer context; unsupported delete shapes publish any current staged context and then use the normal concurrent writer fallback for that one operation.<br/>
+    /// </summary>
+    /// <param name="key">The typed key value to delete.<br/></param>
+    /// <param name="identity">The typed identity value associated with the key.<br/></param>
+    /// <returns>The generic delete result; writer-context results become visible when the batch publishes.<br/></returns>
+    public LibraDexGenericDeleteResult Delete(TKey key, TIdentity identity)
+    {
+        ThrowIfCompleted();
+        index.ThrowIfSessionDurabilityBatchActiveForConcurrentWriter();
+        EnsureAdmission();
+        attemptedDeleteCount++;
+        LibraDexGenericDeleteResult result = DeleteCore(key, identity);
+        if (result.Deleted)
+        {
+            deletedCount++;
+            RecordStagedMutation(result.QueuedInsertPath);
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Moves one identity from an old key to a new key through this concurrent batch.<br/>
+    /// Rekey is modeled as replacement insert followed by old tuple delete, matching LibraDex identity-index semantics rather than database transaction semantics.<br/>
+    /// </summary>
+    /// <param name="identity">The typed identity to move between keys.<br/></param>
+    /// <param name="oldKey">The old typed key value.<br/></param>
+    /// <param name="newKey">The replacement typed key value.<br/></param>
+    /// <returns>The generic rekey result with replacement and removal leg results.<br/></returns>
+    public LibraDexGenericRekeyResult Rekey(
+        TIdentity identity,
+        TKey oldKey,
+        TKey newKey)
+    {
+        ThrowIfCompleted();
+        index.ThrowIfSessionDurabilityBatchActiveForConcurrentWriter();
+        EnsureAdmission();
+        attemptedRekeyCount++;
+        if (EqualityComparer<TKey>.Default.Equals(oldKey, newKey))
+        {
+            return new LibraDexGenericRekeyResult(false, default, default);
+        }
+
+        if (!index.ContainsExactTupleForConcurrentBatch(oldKey, identity))
+        {
+            return new LibraDexGenericRekeyResult(false, default, default);
+        }
+
+        LibraDexGenericInsertResult replacement;
+        LibraDexGenericDeleteResult removal;
+        lock (singleKeySync)
+        {
+            LibraDexStagedIdentityKeyGuard<TKey, TIdentity>? stagedGuard = GetStagedIdentityKeyGuard();
+            if (stagedGuard is not null &&
+                !stagedGuard.CanReplace(identity, newKey, oldKey))
+            {
+                return new LibraDexGenericRekeyResult(false, default, default);
+            }
+
+            replacement = InsertCore(newKey, identity);
+            if (replacement.Inserted)
+            {
+                stagedGuard?.RecordInserted(identity, newKey);
+            }
+
+            removal = DeleteCore(oldKey, identity);
+        }
+
+        if (replacement.Inserted)
+        {
+            insertedCount++;
+            RecordStagedMutation(replacement.QueuedInsertPath);
+        }
+
+        if (removal.Deleted)
+        {
+            deletedCount++;
+            changedRekeyCount++;
+            RecordStagedMutation(removal.QueuedInsertPath);
+        }
+
+        return new LibraDexGenericRekeyResult(removal.Deleted, replacement, removal);
+    }
+
+    /// <summary>
+    /// Publishes any staged writer-context work and closes this concurrent batch.<br/>
+    /// Fallback topology operations may already have published before this call; this method publishes the final shelf-local context and reports aggregate batch counters.<br/>
+    /// </summary>
+    /// <returns>The concurrent batch publication result.</returns>
+    public LibraDexConcurrentBatchPublishResult Publish()
+    {
+        ThrowIfCompleted();
+        ThrowIfCancellationRequestedBeforePublication();
+        PublishOrAbortEmptyCurrentWriter(ConcurrentBatchPublicationCause.Final);
+        completed = true;
+        admission?.Dispose();
+        admission = null;
+        return new LibraDexConcurrentBatchPublishResult(
+            attemptedInsertCount,
+            insertedCount,
+            attemptedDeleteCount,
+            deletedCount,
+            attemptedRekeyCount,
+            changedRekeyCount,
+            publishedContextCount,
+            LibraDexOperationDiagnostics.FromDataKernel(lastPublishTelemetry))
+        {
+            OwnershipConflictCount = ownershipConflictCount,
+            ConflictPublicationCount = conflictPublicationCount,
+            EmptyContextAbortCount = emptyContextAbortCount,
+            TopologyFallbackCount = topologyFallbackCount,
+            MaximumStagedMutationCount = maximumStagedMutationCount,
+            StagedMutationCountBeforeConflictPublication = stagedMutationCountBeforeConflictPublication
+        };
+    }
+
+    /// <summary>
+    /// Aborts any unpublished writer-context work and closes this concurrent batch.<br/>
+    /// Fallback topology operations already published through the normal concurrent writer cannot be rolled back by this abort.<br/>
+    /// </summary>
+    public void Abort()
+    {
+        ThrowIfCompleted();
+        AbortCurrentWriter();
+        completed = true;
+        admission?.Dispose();
+        admission = null;
+    }
+
+    /// <summary>
+    /// Aborts unpublished staged work when the batch is disposed without an explicit publish or abort.<br/>
+    /// </summary>
+    public void Dispose()
+    {
+        if (!completed)
+        {
+            Abort();
+        }
+    }
+
+    private LibraDexGenericInsertResult InsertCore(TKey key, TIdentity identity)
+    {
+        return encodedIndex is not null
+            ? InsertScalar8Scalar8Core(key, identity)
+            : InsertFixed32Scalar8Core(key, identity);
+    }
+
+    /// <summary>
+    /// Gets the staged identity-key guard required by `SingleKeyPerIdentity`, or <see langword="null"/> for normal multi-key identity indexes.<br/>
+    /// Concurrent batches lock around the guard and physical mutation so overlapping callers cannot reserve conflicting keys for one identity.<br/>
+    /// </summary>
+    /// <returns>The staged guard when the owning index requires one, otherwise <see langword="null"/>.</returns>
+    private LibraDexStagedIdentityKeyGuard<TKey, TIdentity>? GetStagedIdentityKeyGuard()
+    {
+        if (index.IdentityKeyMultiplicity != IdentityKeyMultiplicity.SingleKeyPerIdentity)
+        {
+            return null;
+        }
+
+        stagedIdentityKeyGuard ??= new LibraDexStagedIdentityKeyGuard<TKey, TIdentity>(index);
+        return stagedIdentityKeyGuard;
+    }
+
+    private LibraDexGenericInsertResult InsertScalar8Scalar8Core(TKey key, TIdentity identity)
+    {
+        bool allowDuplicateKeys = index.KeyContract == IndexKeys.NonUnique;
+        ulong encodedKey = index.EncodeKey8(key);
+        ulong encodedIdentity = LibraDexGenericScalarCodec<TIdentity>.Encode8(identity);
+        while (true)
+        {
+            Scalar8Scalar8Writer current = GetOrCreateWriter();
+            try
+            {
+                Scalar8Scalar8EncodedInsertResult staged = current.InsertEncoded(encodedKey, encodedIdentity, allowDuplicateKeys);
+                return new LibraDexGenericInsertResult(
+                    staged.Outcome == Scalar8Scalar8EncodedInsertOutcome.Inserted,
+                    staged.CreatedInitialShelfRoute,
+                    default,
+                    default)
+                {
+                    QueuedInsertPath = staged.Outcome == Scalar8Scalar8EncodedInsertOutcome.Inserted
+                        ? Scalar8Scalar8QueuedInsertPath.WriterContext
+                        : Scalar8Scalar8QueuedInsertPath.None
+                };
+            }
+            catch (LibraDexWriteContextShelfOwnershipException ex)
+            {
+                ownershipConflictCount++;
+                PublishOrAbortEmptyCurrentWriter(ConcurrentBatchPublicationCause.OwnershipConflict);
+                index.Session.WaitForWriteContextShelfRelease(ex.ShelfOffset, cancellationToken);
+            }
+            catch (LibraDexWriteContextTerminalIdentityShelfOwnershipException ex)
+            {
+                ownershipConflictCount++;
+                PublishOrAbortEmptyCurrentWriter(ConcurrentBatchPublicationCause.OwnershipConflict);
+                index.Session.WaitForWriteContextShelfRelease(ex.ShelfOffset, cancellationToken);
+            }
+            catch (InvalidOperationException)
+            {
+                topologyFallbackCount++;
+                PublishOrAbortEmptyCurrentWriter(ConcurrentBatchPublicationCause.TopologyFallback);
+                return fallbackWriter.Insert(key, identity);
+            }
+        }
+    }
+
+    private LibraDexGenericDeleteResult DeleteCore(TKey key, TIdentity identity)
+    {
+        return encodedIndex is not null
+            ? DeleteScalar8Scalar8Core(key, identity)
+            : DeleteFixed32Scalar8Core(key, identity);
+    }
+
+    private LibraDexGenericDeleteResult DeleteScalar8Scalar8Core(TKey key, TIdentity identity)
+    {
+        ulong encodedKey = index.EncodeKey8(key);
+        ulong encodedIdentity = LibraDexGenericScalarCodec<TIdentity>.Encode8(identity);
+        while (true)
+        {
+            Scalar8Scalar8Writer current = GetOrCreateWriter();
+            try
+            {
+                bool deleted = current.DeleteEncoded(encodedKey, encodedIdentity);
+                return new LibraDexGenericDeleteResult(
+                    deleted,
+                    default)
+                {
+                    QueuedInsertPath = deleted
+                        ? Scalar8Scalar8QueuedInsertPath.WriterContext
+                        : Scalar8Scalar8QueuedInsertPath.None
+                };
+            }
+            catch (LibraDexWriteContextShelfOwnershipException ex)
+            {
+                ownershipConflictCount++;
+                PublishOrAbortEmptyCurrentWriter(ConcurrentBatchPublicationCause.OwnershipConflict);
+                index.Session.WaitForWriteContextShelfRelease(ex.ShelfOffset, cancellationToken);
+            }
+            catch (LibraDexWriteContextTerminalIdentityShelfOwnershipException ex)
+            {
+                ownershipConflictCount++;
+                PublishOrAbortEmptyCurrentWriter(ConcurrentBatchPublicationCause.OwnershipConflict);
+                index.Session.WaitForWriteContextShelfRelease(ex.ShelfOffset, cancellationToken);
+            }
+            catch (InvalidOperationException)
+            {
+                topologyFallbackCount++;
+                PublishOrAbortEmptyCurrentWriter(ConcurrentBatchPublicationCause.TopologyFallback);
+                return fallbackWriter.Delete(key, identity);
+            }
+        }
+    }
+
+    private Scalar8Scalar8Writer GetOrCreateWriter()
+    {
+        writer ??= encodedIndex!.BeginWriter();
+        return writer;
+    }
+
+    private LibraDexGenericInsertResult InsertFixed32Scalar8Core(TKey key, TIdentity identity)
+    {
+        while (true)
+        {
+            LibraDexWriteContext current = GetOrCreateFixed32Scalar8Writer();
+            try
+            {
+                LibraDexGenericInsertResult primary = index.InsertFixed32Scalar8ForConcurrentBatch(current, key, identity);
+                if (primary.Inserted &&
+                    index.HasExactReversedProjectionForConcurrentBatch())
+                {
+                    try
+                    {
+                        _ = index.InsertExactReversedProjectionForConcurrentBatch(current, key, identity);
+                    }
+                    catch (LibraDexWriteContextFixed32Scalar8ShelfOwnershipException)
+                    {
+                        ownershipConflictCount++;
+                        PublishFixed32Scalar8CurrentWriter(ConcurrentBatchPublicationCause.OwnershipConflict);
+                        index.InsertExactReversedProjectionFallbackForConcurrentBatch(key, identity);
+                    }
+                    catch (InvalidOperationException)
+                    {
+                        topologyFallbackCount++;
+                        PublishFixed32Scalar8CurrentWriter(ConcurrentBatchPublicationCause.TopologyFallback);
+                        index.InsertExactReversedProjectionFallbackForConcurrentBatch(key, identity);
+                    }
+                }
+
+                return primary;
+            }
+            catch (LibraDexWriteContextFixed32Scalar8ShelfOwnershipException ex)
+            {
+                ownershipConflictCount++;
+                PublishFixed32Scalar8CurrentWriter(ConcurrentBatchPublicationCause.OwnershipConflict);
+                index.Session.WaitForWriteContextShelfRelease(ex.ShelfOffset, cancellationToken);
+            }
+            catch (InvalidOperationException)
+            {
+                topologyFallbackCount++;
+                PublishFixed32Scalar8CurrentWriter(ConcurrentBatchPublicationCause.TopologyFallback);
+                return fallbackWriter.Insert(key, identity);
+            }
+        }
+    }
+
+    private LibraDexGenericDeleteResult DeleteFixed32Scalar8Core(TKey key, TIdentity identity)
+    {
+        while (true)
+        {
+            LibraDexWriteContext current = GetOrCreateFixed32Scalar8Writer();
+            try
+            {
+                LibraDexGenericDeleteResult primary = index.DeleteFixed32Scalar8ForConcurrentBatch(current, key, identity);
+                if (primary.Deleted &&
+                    index.HasExactReversedProjectionForConcurrentBatch())
+                {
+                    try
+                    {
+                        _ = index.DeleteExactReversedProjectionForConcurrentBatch(current, key, identity);
+                    }
+                    catch (LibraDexWriteContextFixed32Scalar8ShelfOwnershipException)
+                    {
+                        ownershipConflictCount++;
+                        PublishFixed32Scalar8CurrentWriter(ConcurrentBatchPublicationCause.OwnershipConflict);
+                        index.DeleteExactReversedProjectionFallbackForConcurrentBatch(key, identity);
+                    }
+                    catch (InvalidOperationException)
+                    {
+                        topologyFallbackCount++;
+                        PublishFixed32Scalar8CurrentWriter(ConcurrentBatchPublicationCause.TopologyFallback);
+                        index.DeleteExactReversedProjectionFallbackForConcurrentBatch(key, identity);
+                    }
+                }
+
+                return primary;
+            }
+            catch (LibraDexWriteContextFixed32Scalar8ShelfOwnershipException ex)
+            {
+                ownershipConflictCount++;
+                PublishFixed32Scalar8CurrentWriter(ConcurrentBatchPublicationCause.OwnershipConflict);
+                index.Session.WaitForWriteContextShelfRelease(ex.ShelfOffset, cancellationToken);
+            }
+            catch (InvalidOperationException)
+            {
+                topologyFallbackCount++;
+                PublishFixed32Scalar8CurrentWriter(ConcurrentBatchPublicationCause.TopologyFallback);
+                return fallbackWriter.Delete(key, identity);
+            }
+        }
+    }
+
+    private LibraDexWriteContext GetOrCreateFixed32Scalar8Writer()
+    {
+        fixed32Scalar8Writer ??= index.BeginFixed32Scalar8ConcurrentBatchContext();
+        return fixed32Scalar8Writer;
+    }
+
+    private void PublishCurrentWriter(ConcurrentBatchPublicationCause cause)
+    {
+        if (encodedIndex is null)
+        {
+            PublishFixed32Scalar8CurrentWriter(cause);
+            return;
+        }
+
+        Scalar8Scalar8Writer? current = writer;
+        if (current is null)
+        {
+            return;
+        }
+
+        RecordContextPublication(cause);
+        lastPublishTelemetry = current.Publish();
+        publishedContextCount++;
+        writer = null;
+    }
+
+    /// <summary>
+    /// Publishes useful `SS8-8` staged mutations or aborts a context that contains only read/claim state.<br/>
+    /// The decision comes from context-owned dirty shelf state, not completed-operation counters, so an admission exception cannot cause accepted staged bytes to be discarded.<br/>
+    /// Fixed-32 contexts retain unconditional publication because their shared primary/projection mutation boundary is not represented by the `SS8-8` dirty signal.<br/>
+    /// </summary>
+    /// <param name="cause">The reason the current context is being completed.<br/></param>
+    private void PublishOrAbortEmptyCurrentWriter(ConcurrentBatchPublicationCause cause)
+    {
+        if (encodedIndex is not null &&
+            writer is Scalar8Scalar8Writer current &&
+            !current.HasStagedMutations)
+        {
+            current.Abort();
+            writer = null;
+            emptyContextAbortCount++;
+            return;
+        }
+
+        PublishCurrentWriter(cause);
+    }
+
+    private void PublishFixed32Scalar8CurrentWriter(ConcurrentBatchPublicationCause cause)
+    {
+        LibraDexWriteContext? current = fixed32Scalar8Writer;
+        if (current is null)
+        {
+            return;
+        }
+
+        RecordContextPublication(cause);
+        lastPublishTelemetry = index.PublishFixed32Scalar8ConcurrentBatchContext(current);
+        publishedContextCount++;
+        fixed32Scalar8Writer = null;
+    }
+
+    private void RecordStagedMutation(Scalar8Scalar8QueuedInsertPath path)
+    {
+        if (path != Scalar8Scalar8QueuedInsertPath.WriterContext)
+        {
+            return;
+        }
+
+        currentStagedMutationCount++;
+        maximumStagedMutationCount = Math.Max(maximumStagedMutationCount, currentStagedMutationCount);
+    }
+
+    private void RecordContextPublication(ConcurrentBatchPublicationCause cause)
+    {
+        maximumStagedMutationCount = Math.Max(maximumStagedMutationCount, currentStagedMutationCount);
+        if (cause == ConcurrentBatchPublicationCause.OwnershipConflict)
+        {
+            conflictPublicationCount++;
+            stagedMutationCountBeforeConflictPublication += currentStagedMutationCount;
+        }
+
+        currentStagedMutationCount = 0;
+    }
+
+    private void AbortCurrentWriter()
+    {
+        if (encodedIndex is null)
+        {
+            AbortFixed32Scalar8CurrentWriter();
+            return;
+        }
+
+        Scalar8Scalar8Writer? current = writer;
+        if (current is null)
+        {
+            return;
+        }
+
+        current.Abort();
+        writer = null;
+    }
+
+    private void AbortFixed32Scalar8CurrentWriter()
+    {
+        LibraDexWriteContext? current = fixed32Scalar8Writer;
+        if (current is null)
+        {
+            return;
+        }
+
+        index.AbortFixed32Scalar8ConcurrentBatchContext(current);
+        fixed32Scalar8Writer = null;
+    }
+
+    private void ThrowIfCompleted()
+    {
+        if (completed)
+        {
+            throw new InvalidOperationException("The LibraDex concurrent batch has already completed.");
+        }
+    }
+
+    /// <summary>
+    /// Acquires one session admission slot on the batch's first operation and retains it through publish or abort.<br/>
+    /// Holding the lease keeps a batch with unpublished shelf ownership inside the configured active-writer budget.<br/>
+    /// </summary>
+    private void EnsureAdmission()
+    {
+        lock (admissionSync)
+        {
+            if (admission is not null)
+            {
+                ThrowIfCancellationRequestedBeforePublication();
+                return;
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            admission = index.Session.EnterConcurrentWriteAdmission(
+                maximumActiveWriters,
+                maximumQueuedWriters,
+                queueTimeout,
+                cancellationToken);
+            if (cancellationToken.IsCancellationRequested)
+            {
+                admission.Dispose();
+                admission = null;
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Aborts unpublished writer-local state when cancellation is observed before publication begins.<br/>
+    /// Once final publication starts, cancellation no longer changes the outcome and the publish operation wins.<br/>
+    /// </summary>
+    private void ThrowIfCancellationRequestedBeforePublication()
+    {
+        if (!cancellationToken.IsCancellationRequested)
+        {
+            return;
+        }
+
+        AbortCurrentWriter();
+        completed = true;
+        admission?.Dispose();
+        admission = null;
+        cancellationToken.ThrowIfCancellationRequested();
+    }
+
+    private enum ConcurrentBatchPublicationCause : byte
+    {
+        Final = 0,
+        OwnershipConflict = 1,
+        TopologyFallback = 2
+    }
+
+}
+
+/// <summary>
+/// Provides an internal concurrent-write admission facade for supported generic LibraDex indexes.<br/>
+/// The facade accepts developer-facing generic key and identity values, delegates `SS8-8` overlap handling to the encoded writer, and lets widened fixed-scalar shapes use the same direct writer-context path as ordinary inserts/deletes.<br/>
+/// It is deliberately limited by <see cref="LibraDexIndex{TKey, TIdentity}.BeginQueuedWriter"/> so broader shape support has to be added explicitly.<br/>
+/// </summary>
+/// <typeparam name="TKey">The public key type accepted by the owning index.</typeparam>
+/// <typeparam name="TIdentity">The public identity type associated with the owning index.</typeparam>
+public sealed class LibraDexQueuedWriter<TKey, TIdentity>
+{
+    private readonly LibraDexIndex<TKey, TIdentity> index;
+    private readonly Scalar8Scalar8QueuedWriter? encodedWriter;
+    private readonly int? maximumActiveWriters;
+    private readonly int maximumQueuedWriters;
+    private readonly TimeSpan queueTimeout;
+    private readonly int maximumActionItems;
+    private readonly CancellationToken cancellationToken;
+    private readonly bool admissionAlreadyHeld;
+    private readonly object singleKeySync = new();
+    private LibraDexStagedIdentityKeyGuard<TKey, TIdentity>? stagedIdentityKeyGuard;
+
+    internal LibraDexQueuedWriter(
+        LibraDexIndex<TKey, TIdentity> index,
+        int? maximumActiveWriters,
+        int maximumQueuedWriters,
+        TimeSpan queueTimeout,
+        int maximumActionItems,
+        CancellationToken cancellationToken,
+        bool admissionAlreadyHeld)
+    {
+        if (maximumActionItems <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(maximumActionItems));
+        }
+
+        this.index = index;
+        this.maximumActiveWriters = maximumActiveWriters;
+        this.maximumQueuedWriters = maximumQueuedWriters;
+        this.queueTimeout = queueTimeout;
+        this.maximumActionItems = maximumActionItems;
+        this.cancellationToken = cancellationToken;
+        this.admissionAlreadyHeld = admissionAlreadyHeld;
+    }
+
+    internal LibraDexQueuedWriter(
+        LibraDexIndex<TKey, TIdentity> index,
+        Scalar8Scalar8QueuedWriter encodedWriter,
+        int? maximumActiveWriters,
+        int maximumQueuedWriters,
+        TimeSpan queueTimeout,
+        int maximumActionItems,
+        CancellationToken cancellationToken,
+        bool admissionAlreadyHeld)
+    {
+        if (maximumActionItems <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(maximumActionItems));
+        }
+
+        this.index = index;
+        this.encodedWriter = encodedWriter;
+        this.maximumActiveWriters = maximumActiveWriters;
+        this.maximumQueuedWriters = maximumQueuedWriters;
+        this.queueTimeout = queueTimeout;
+        this.maximumActionItems = maximumActionItems;
+        this.cancellationToken = cancellationToken;
+        this.admissionAlreadyHeld = admissionAlreadyHeld;
+    }
+
+    /// <summary>
+    /// Inserts one typed key and identity through the queued generic writer facade.<br/>
+    /// Supported shelf-local writes use writer-context staging, same-shelf conflicts wait and retry, publication is serialized, and unsupported topology shapes fall back to the existing serialized insert path.<br/>
+    /// </summary>
+    /// <param name="key">The typed key value to insert.<br/></param>
+    /// <param name="identity">The typed identity value associated with the key.<br/></param>
+    /// <returns>The generic insert result with queued writer path attribution.<br/></returns>
+    /// <exception cref="InvalidDataException">Thrown when the resolved route graph or shelf bytes are invalid.<br/></exception>
+    public LibraDexGenericInsertResult Insert(TKey key, TIdentity identity)
+    {
+        index.ThrowIfSessionDurabilityBatchActiveForConcurrentWriter();
+        cancellationToken.ThrowIfCancellationRequested();
+        using LibraDexWriteAdmissionLease? operationAdmission = EnterOperationAdmission();
+
+        LibraDexStagedIdentityKeyGuard<TKey, TIdentity>? stagedGuard = GetStagedIdentityKeyGuard();
+        if (stagedGuard is null)
+        {
+            return InsertAfterStagedIdentityKeyGuard(key, identity);
+        }
+
+        lock (singleKeySync)
+        {
+            if (!stagedGuard.CanInsert(identity, key))
+            {
+                return new LibraDexGenericInsertResult(false, false, default, default);
+            }
+
+            LibraDexGenericInsertResult completed = InsertAfterStagedIdentityKeyGuard(key, identity);
+            if (completed.Inserted)
+            {
+                stagedGuard?.RecordInserted(identity, key);
+            }
+
+            return completed;
+        }
+    }
+
+    /// <summary>
+    /// Deletes one exact typed key/identity tuple through the queued generic writer facade.<br/>
+    /// Supported shelf-local deletes use writer-context staging, same-shelf conflicts wait and retry, and unsupported terminal or linked-chain shapes fall back to serialized exact-delete mutation.<br/>
+    /// </summary>
+    /// <param name="key">The typed key value to delete.<br/></param>
+    /// <param name="identity">The typed identity value associated with the key.<br/></param>
+    /// <returns>The generic delete result with queued writer path attribution.<br/></returns>
+    /// <exception cref="InvalidDataException">Thrown when the resolved route graph or shelf bytes are invalid.<br/></exception>
+    public LibraDexGenericDeleteResult Delete(TKey key, TIdentity identity)
+    {
+        index.ThrowIfSessionDurabilityBatchActiveForConcurrentWriter();
+        cancellationToken.ThrowIfCancellationRequested();
+        using LibraDexWriteAdmissionLease? operationAdmission = EnterOperationAdmission();
+        return DeleteAfterAdmission(key, identity);
+    }
+
+    /// <summary>
+    /// Deletes one exact tuple after the caller has entered the session admission domain.<br/>
+    /// Rekey uses this helper so its replacement and removal legs share one permit instead of recursively queuing.<br/>
+    /// </summary>
+    /// <param name="key">The typed key value to delete.<br/></param>
+    /// <param name="identity">The typed identity value associated with the key.<br/></param>
+    /// <returns>The generic delete result with queued writer path attribution.<br/></returns>
+    private LibraDexGenericDeleteResult DeleteAfterAdmission(TKey key, TIdentity identity)
+    {
+        if (encodedWriter is null)
+        {
+            return index.DeleteTupleForQueuedWriterFacade(key, identity);
+        }
+
+        bool deleted = encodedWriter.DeleteEncoded(
+            index.EncodeKey8(key),
+            LibraDexGenericScalarCodec<TIdentity>.Encode8(identity),
+            out DataKernelCommitTelemetry telemetry,
+            out Scalar8Scalar8QueuedInsertPath queuedPath,
+            cancellationToken);
+        return new LibraDexGenericDeleteResult(
+            deleted,
+            LibraDexOperationDiagnostics.FromDataKernel(telemetry))
+        {
+            QueuedInsertPath = queuedPath
+        };
+    }
+
+    /// <summary>
+    /// Inserts one tuple after the queued writer's staged identity-key guard has already accepted it.<br/>
+    /// Direct queued-writer paths use the generic index's checked insert core, while encoded `SS8-8` paths use the queued writer and then maintain projections.<br/>
+    /// </summary>
+    /// <param name="key">The typed key value to insert.<br/></param>
+    /// <param name="identity">The typed identity value associated with the key.<br/></param>
+    /// <returns>The generic insert result with queued writer path attribution when available.<br/></returns>
+    private LibraDexGenericInsertResult InsertAfterStagedIdentityKeyGuard(TKey key, TIdentity identity)
+    {
+        if (encodedWriter is null)
+        {
+            return index.InsertAfterIdentityKeyMultiplicityCheckForQueuedWriter(key, identity);
+        }
+
+        bool allowDuplicateKeys = index.KeyContract == IndexKeys.NonUnique;
+        Scalar8Scalar8EncodedInsertResult result = encodedWriter.InsertEncoded(
+            index.EncodeKey8(key),
+            LibraDexGenericScalarCodec<TIdentity>.Encode8(identity),
+            allowDuplicateKeys,
+            cancellationToken);
+        LibraDexGenericInsertResult genericResult = new(
+            result.Outcome == Scalar8Scalar8EncodedInsertOutcome.Inserted,
+            result.CreatedInitialShelfRoute,
+            LibraDexOperationDiagnostics.FromDataKernel(result.RouteCreateCommit),
+            LibraDexOperationDiagnostics.FromDataKernel(result.InsertCommit))
+        {
+            QueuedInsertPath = result.QueuedInsertPath
+        };
+        return index.CompleteImmediateInsertProjection(genericResult, key, identity);
+    }
+
+    /// <summary>
+    /// Moves one identity from an old key to a new key through the queued generic writer facade.<br/>
+    /// The replacement tuple is submitted first and the old tuple is deleted only after replacement insert succeeds or is already present, matching the existing direct rekey loss-avoidance rule.<br/>
+    /// This is not a rollback transaction: callers should treat partial indexing failure through Abraxas' eventual-indexed/stale-index state model.<br/>
+    /// </summary>
+    /// <param name="identity">The typed identity to move between keys.<br/></param>
+    /// <param name="oldKey">The old typed key value.<br/></param>
+    /// <param name="newKey">The replacement typed key value.<br/></param>
+    /// <returns>The queued rekey result, including the replacement insert and old tuple delete legs.<br/></returns>
+    /// <exception cref="InvalidOperationException">Thrown when the replacement tuple cannot be made available before old tuple deletion.<br/></exception>
+    /// <exception cref="InvalidDataException">Thrown when the resolved route graph or shelf bytes are invalid.<br/></exception>
+    public LibraDexGenericRekeyResult Rekey(
+        TIdentity identity,
+        TKey oldKey,
+        TKey newKey)
+    {
+        index.ThrowIfSessionDurabilityBatchActiveForConcurrentWriter();
+        cancellationToken.ThrowIfCancellationRequested();
+        using LibraDexWriteAdmissionLease? operationAdmission = EnterOperationAdmission();
+
+        lock (singleKeySync)
+        {
+            if (EqualityComparer<TKey>.Default.Equals(oldKey, newKey))
+            {
+                return new LibraDexGenericRekeyResult(
+                    Changed: false,
+                    Replacement: default,
+                    Removal: default);
+            }
+
+            LibraDexStagedIdentityKeyGuard<TKey, TIdentity>? stagedGuard = GetStagedIdentityKeyGuard();
+            if (stagedGuard is not null &&
+                !stagedGuard.CanReplace(identity, newKey, oldKey))
+            {
+                return new LibraDexGenericRekeyResult(false, default, default);
+            }
+
+            if (encodedWriter is null)
+            {
+                LibraDexGenericInsertResult directReplacement = InsertAfterStagedIdentityKeyGuard(newKey, identity);
+                if (directReplacement.Inserted)
+                {
+                    stagedGuard?.RecordInserted(identity, newKey);
+                }
+
+                if (!directReplacement.Inserted)
+                {
+                    bool directReplacementPresent = false;
+                    using (LibraDexRangeReader<TKey, TIdentity> reader = index.OpenRangeReader(newKey, newKey))
+                    {
+                        while (reader.TryReadNext(out _, out TIdentity currentIdentity))
+                        {
+                            if (EqualityComparer<TIdentity>.Default.Equals(currentIdentity, identity))
+                            {
+                                directReplacementPresent = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (!directReplacementPresent)
+                    {
+                        throw new InvalidOperationException("Queued rekey could not create the replacement tuple; the original tuple was left unchanged.");
+                    }
+                }
+
+                LibraDexGenericDeleteResult directRemoval = DeleteAfterAdmission(oldKey, identity);
+                return new LibraDexGenericRekeyResult(
+                    directRemoval.Deleted,
+                    directReplacement,
+                    directRemoval);
+            }
+
+            LibraDexGenericInsertResult replacement = InsertAfterStagedIdentityKeyGuard(newKey, identity);
+            if (replacement.Inserted)
+            {
+                stagedGuard?.RecordInserted(identity, newKey);
+            }
+
+            if (!replacement.Inserted)
+            {
+                bool replacementPresent = false;
+                using (LibraDexRangeReader<TKey, TIdentity> reader = index.OpenRangeReader(newKey, newKey))
+                {
+                    while (reader.TryReadNext(out _, out TIdentity currentIdentity))
+                    {
+                        if (EqualityComparer<TIdentity>.Default.Equals(currentIdentity, identity))
+                        {
+                            replacementPresent = true;
+                            break;
+                        }
+                    }
+                }
+
+                if (!replacementPresent)
+                {
+                    throw new InvalidOperationException("Queued rekey could not create the replacement tuple; the original tuple was left unchanged.");
+                }
+            }
+
+            LibraDexGenericDeleteResult removal = DeleteAfterAdmission(oldKey, identity);
+            return new LibraDexGenericRekeyResult(
+                removal.Deleted,
+                replacement,
+                removal);
+        }
+    }
+
+    /// <summary>
+    /// Gets the staged identity-key guard required by `SingleKeyPerIdentity`, or <see langword="null"/> for normal multi-key identity indexes.<br/>
+    /// Queued writers lock around the guard and physical mutation so overlapping callers cannot reserve conflicting keys for one identity.<br/>
+    /// </summary>
+    /// <returns>The staged guard when the owning index requires one, otherwise <see langword="null"/>.</returns>
+    private LibraDexStagedIdentityKeyGuard<TKey, TIdentity>? GetStagedIdentityKeyGuard()
+    {
+        if (index.IdentityKeyMultiplicity != IdentityKeyMultiplicity.SingleKeyPerIdentity)
+        {
+            return null;
+        }
+
+        stagedIdentityKeyGuard ??= new LibraDexStagedIdentityKeyGuard<TKey, TIdentity>(index);
+        return stagedIdentityKeyGuard;
+    }
+
+    /// <summary>
+    /// Enters one session admission slot for a direct queued-writer operation unless an owning action or concurrent batch already supplied that slot.<br/>
+    /// This keeps the convenient one-call API inside the same bounded queue while avoiding recursive admission for action-scoped and batch-scoped operations.<br/>
+    /// </summary>
+    /// <returns>A lease for this operation, or <see langword="null"/> when admission is already owned by the caller.<br/></returns>
+    private LibraDexWriteAdmissionLease? EnterOperationAdmission()
+    {
+        if (admissionAlreadyHeld)
+        {
+            return null;
+        }
+
+        return index.Session.EnterConcurrentWriteAdmission(
+            maximumActiveWriters,
+            maximumQueuedWriters,
+            queueTimeout,
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// Starts one explicitly bounded threaded write action through this concurrent writer.<br/>
+    /// The action acquires one session admission slot for its lifetime, so a worker loop pays queue admission once rather than on every tuple.<br/>
+    /// The writer-wide cancellation token stops all actions; the optional action token can independently stop only this action.<br/>
+    /// </summary>
+    /// <param name="actionCancellationToken">An optional token used to cancel this action independently of the writer-wide token.<br/></param>
+    /// <returns>A bounded action facade that must be disposed to release its admission slot.<br/></returns>
+    /// <exception cref="InvalidOperationException">Thrown when called from a writer that already inherits an owning action or batch admission slot.<br/></exception>
+    public LibraDexConcurrentWriteAction<TKey, TIdentity> BeginAction(
+        CancellationToken actionCancellationToken = default)
+    {
+        if (admissionAlreadyHeld)
+        {
+            throw new InvalidOperationException("A LibraDex concurrent write action cannot be nested inside an already admitted action or batch.");
+        }
+
+        CancellationTokenSource? linkedCancellation = null;
+        CancellationToken effectiveCancellation;
+        if (!actionCancellationToken.CanBeCanceled)
+        {
+            effectiveCancellation = cancellationToken;
+        }
+        else if (!cancellationToken.CanBeCanceled)
+        {
+            effectiveCancellation = actionCancellationToken;
+        }
+        else
+        {
+            linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+                cancellationToken,
+                actionCancellationToken);
+            effectiveCancellation = linkedCancellation.Token;
+        }
+
+        LibraDexWriteAdmissionLease? admission = null;
+        try
+        {
+            admission = index.Session.EnterConcurrentWriteAdmission(
+                maximumActiveWriters,
+                maximumQueuedWriters,
+                queueTimeout,
+                effectiveCancellation);
+            LibraDexQueuedWriter<TKey, TIdentity> admittedWriter = encodedWriter is null
+                ? new LibraDexQueuedWriter<TKey, TIdentity>(
+                    index,
+                    maximumActiveWriters,
+                    maximumQueuedWriters,
+                    queueTimeout,
+                    maximumActionItems,
+                    effectiveCancellation,
+                    admissionAlreadyHeld: true)
+                : new LibraDexQueuedWriter<TKey, TIdentity>(
+                    index,
+                    encodedWriter,
+                    maximumActiveWriters,
+                    maximumQueuedWriters,
+                    queueTimeout,
+                    maximumActionItems,
+                    effectiveCancellation,
+                    admissionAlreadyHeld: true);
+            return new LibraDexConcurrentWriteAction<TKey, TIdentity>(
+                admittedWriter,
+                admission,
+                maximumActionItems,
+                linkedCancellation);
+        }
+        catch
+        {
+            admission?.Dispose();
+            linkedCancellation?.Dispose();
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Starts one bounded write action without blocking a caller thread while session admission is saturated.<br/>
+    /// The returned action has the same cancellation, automatic rotation, and disposal contract as <see cref="BeginAction(CancellationToken)"/>.<br/>
+    /// </summary>
+    /// <param name="actionCancellationToken">An optional token used to cancel this action independently of the writer-wide token.<br/></param>
+    /// <returns>A value task that completes with an admitted action.<br/></returns>
+    public async ValueTask<LibraDexConcurrentWriteAction<TKey, TIdentity>> BeginActionAsync(
+        CancellationToken actionCancellationToken = default)
+    {
+        if (admissionAlreadyHeld)
+        {
+            throw new InvalidOperationException("A LibraDex concurrent write action cannot be nested inside an already admitted action or batch.");
+        }
+
+        CancellationTokenSource? linkedCancellation = null;
+        CancellationToken effectiveCancellation;
+        if (!actionCancellationToken.CanBeCanceled)
+        {
+            effectiveCancellation = cancellationToken;
+        }
+        else if (!cancellationToken.CanBeCanceled)
+        {
+            effectiveCancellation = actionCancellationToken;
+        }
+        else
+        {
+            linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+                cancellationToken,
+                actionCancellationToken);
+            effectiveCancellation = linkedCancellation.Token;
+        }
+
+        LibraDexWriteAdmissionLease? admission = null;
+        try
+        {
+            admission = await index.Session.EnterConcurrentWriteAdmissionAsync(
+                maximumActiveWriters,
+                maximumQueuedWriters,
+                queueTimeout,
+                effectiveCancellation).ConfigureAwait(false);
+            LibraDexQueuedWriter<TKey, TIdentity> admittedWriter = encodedWriter is null
+                ? new LibraDexQueuedWriter<TKey, TIdentity>(
+                    index,
+                    maximumActiveWriters,
+                    maximumQueuedWriters,
+                    queueTimeout,
+                    maximumActionItems,
+                    effectiveCancellation,
+                    admissionAlreadyHeld: true)
+                : new LibraDexQueuedWriter<TKey, TIdentity>(
+                    index,
+                    encodedWriter,
+                    maximumActiveWriters,
+                    maximumQueuedWriters,
+                    queueTimeout,
+                    maximumActionItems,
+                    effectiveCancellation,
+                    admissionAlreadyHeld: true);
+            return new LibraDexConcurrentWriteAction<TKey, TIdentity>(
+                admittedWriter,
+                admission,
+                maximumActionItems,
+                linkedCancellation);
+        }
+        catch
+        {
+            admission?.Dispose();
+            linkedCancellation?.Dispose();
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Inserts a sequence through automatically rotated bounded actions.<br/>
+    /// This is the low-friction path for a producer loop: LibraDex owns queue admission, action sizing, cancellation, and lease cleanup.<br/>
+    /// </summary>
+    /// <param name="items">The typed key/identity tuples to insert.<br/></param>
+    /// <param name="actionCancellationToken">An optional token used to stop this producer independently.<br/></param>
+    /// <returns>The number of tuples newly inserted.<br/></returns>
+    public long InsertAll(
+        IEnumerable<(TKey Key, TIdentity Identity)> items,
+        CancellationToken actionCancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(items);
+        using LibraDexConcurrentWriteAction<TKey, TIdentity> action = BeginAction(actionCancellationToken);
+        long inserted = 0;
+        foreach ((TKey key, TIdentity identity) in items)
+        {
+            if (action.Insert(key, identity).Inserted)
+            {
+                inserted++;
+            }
+        }
+
+        return inserted;
+    }
+
+    /// <summary>
+    /// Gets the current file-session admission counters shared by this writer, concurrent batches, and other indexes in the same catalog session.<br/>
+    /// </summary>
+    public LibraDexWriteAdmissionDiagnostics GetAdmissionDiagnostics()
+        => index.Session.GetConcurrentWriteAdmissionDiagnostics();
+
+    /// <summary>
+    /// Reenters admission after an action reaches its cooperative item budget.<br/>
+    /// </summary>
+    internal LibraDexWriteAdmissionLease ReenterActionAdmission()
+        => index.Session.EnterConcurrentWriteAdmission(
+            maximumActiveWriters,
+            maximumQueuedWriters,
+            queueTimeout,
+            cancellationToken);
+}
+
+/// <summary>
+/// Represents one CPU-budgeted concurrent writer action, normally one worker's write loop.<br/>
+/// The action holds one session admission slot until disposal and delegates tuple operations to the existing shape-specific concurrent writer.<br/>
+/// </summary>
+/// <typeparam name="TKey">The public key type accepted by the owning index.<br/></typeparam>
+/// <typeparam name="TIdentity">The public identity type associated with the owning index.<br/></typeparam>
+public sealed class LibraDexConcurrentWriteAction<TKey, TIdentity> : IDisposable
+{
+    private readonly LibraDexQueuedWriter<TKey, TIdentity> writer;
+    private readonly CancellationTokenSource? linkedCancellation;
+    private readonly int maximumActionItems;
+    private LibraDexWriteAdmissionLease? admission;
+    private int actionItems;
+
+    internal LibraDexConcurrentWriteAction(
+        LibraDexQueuedWriter<TKey, TIdentity> writer,
+        LibraDexWriteAdmissionLease admission,
+        int maximumActionItems,
+        CancellationTokenSource? linkedCancellation)
+    {
+        this.writer = writer;
+        this.admission = admission;
+        this.maximumActionItems = maximumActionItems;
+        this.linkedCancellation = linkedCancellation;
+    }
+
+    /// <summary>
+    /// Inserts one tuple while this action owns a session admission slot.<br/>
+    /// </summary>
+    /// <param name="key">The typed key value to insert.<br/></param>
+    /// <param name="identity">The typed identity value associated with the key.<br/></param>
+    /// <returns>The generic insert result with queued writer path attribution.<br/></returns>
+    public LibraDexGenericInsertResult Insert(TKey key, TIdentity identity)
+    {
+        PrepareOperation();
+        return writer.Insert(key, identity);
+    }
+
+    /// <summary>
+    /// Deletes one exact tuple while this action owns a session admission slot.<br/>
+    /// </summary>
+    /// <param name="key">The typed key value to delete.<br/></param>
+    /// <param name="identity">The typed identity value associated with the key.<br/></param>
+    /// <returns>The generic delete result with queued writer path attribution.<br/></returns>
+    public LibraDexGenericDeleteResult Delete(TKey key, TIdentity identity)
+    {
+        PrepareOperation();
+        return writer.Delete(key, identity);
+    }
+
+    /// <summary>
+    /// Rekeys one identity while this action owns a session admission slot.<br/>
+    /// </summary>
+    /// <param name="identity">The typed identity to move.<br/></param>
+    /// <param name="oldKey">The old typed key.<br/></param>
+    /// <param name="newKey">The replacement typed key.<br/></param>
+    /// <returns>The generic rekey result for the replacement and removal legs.<br/></returns>
+    public LibraDexGenericRekeyResult Rekey(TIdentity identity, TKey oldKey, TKey newKey)
+    {
+        PrepareOperation();
+        return writer.Rekey(identity, oldKey, newKey);
+    }
+
+    /// <summary>
+    /// Releases this worker action's session admission slot.<br/>
+    /// Disposal is idempotent and does not cancel or roll back operations that already published.<br/>
+    /// </summary>
+    public void Dispose()
+    {
+        Interlocked.Exchange(ref admission, null)?.Dispose();
+        linkedCancellation?.Dispose();
+    }
+
+    /// <summary>
+    /// Rejects tuple operations after this action has released its admission slot.<br/>
+    /// </summary>
+    private void PrepareOperation()
+    {
+        if (Volatile.Read(ref admission) is null)
+        {
+            throw new ObjectDisposedException(nameof(LibraDexConcurrentWriteAction<TKey, TIdentity>));
+        }
+
+        actionItems++;
+        if (actionItems <= maximumActionItems)
+        {
+            return;
+        }
+
+        LibraDexWriteAdmissionLease current = Interlocked.Exchange(ref admission, null)!;
+        current.Dispose();
+        admission = writer.ReenterActionAdmission();
+        actionItems = 1;
     }
 }

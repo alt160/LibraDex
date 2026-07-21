@@ -9,15 +9,14 @@ namespace LibraDex;
 /// The reader stores only matching shelf ranges, then advances slot-by-slot on demand so result rows are not materialized into arrays or per-row references.<br/>
 /// This avoids `byte[][]` materialization while still giving callers ergonomic row-wise access, skip control, and explicit copy points for identities they choose to keep.<br/>
 /// </summary>
-public sealed class Scalar16VarIdentityRangeReader : IDisposable
+internal sealed class Scalar16VarIdentityRangeReader : IDisposable
 {
     private const int DefaultShelfCapacity = 8;
 
     private Scalar16VarIdentityReadOnly[] shelves;
     private int[] startSlots;
     private int[] endSlots;
-    private long[]? pendingOffsets;
-    private int[]? pendingHops;
+    private PendingTarget[]? pendingTargets;
     private RouteVisitedOffsetSet? visitedShelves;
     private RouteVisitedOffsetSet? visitedRouters;
     private LibraDexFileSession? session;
@@ -28,6 +27,7 @@ public sealed class Scalar16VarIdentityRangeReader : IDisposable
     private int currentSlotIndex = -1;
     private int ordinal = -1;
     private int maxIdentityLength;
+    private long indexRootOffset;
     private ulong lowerEncodedKeyHigh;
     private ulong lowerEncodedKeyLow;
     private ulong upperEncodedKeyHigh;
@@ -53,16 +53,37 @@ public sealed class Scalar16VarIdentityRangeReader : IDisposable
         : this()
     {
         this.session = session;
+        indexRootOffset = rootRouterOffset;
         this.maxIdentityLength = maxIdentityLength;
         this.lowerEncodedKeyHigh = lowerEncodedKeyHigh;
         this.lowerEncodedKeyLow = lowerEncodedKeyLow;
         this.upperEncodedKeyHigh = upperEncodedKeyHigh;
         this.upperEncodedKeyLow = upperEncodedKeyLow;
-        pendingOffsets = ArrayPool<long>.Shared.Rent(DefaultShelfCapacity);
-        pendingHops = ArrayPool<int>.Shared.Rent(DefaultShelfCapacity);
+        pendingTargets = ArrayPool<PendingTarget>.Shared.Rent(DefaultShelfCapacity);
         visitedShelves = RouteVisitedOffsetSet.Rent();
         visitedRouters = RouteVisitedOffsetSet.Rent();
         traversalComplete = false;
+
+        if (lowerEncodedKeyHigh == upperEncodedKeyHigh && lowerEncodedKeyLow == upperEncodedKeyLow)
+        {
+            if (session.TryWalkScalar16VarIdentityExactShelf(
+                rootRouterOffset,
+                lowerEncodedKeyHigh,
+                lowerEncodedKeyLow,
+                LibraDexFileSession.DefaultScalar16VarIdentityMaxRouterHops,
+                out long exactShelfOffset))
+            {
+                PushTarget(
+                    exactShelfOffset,
+                    LibraDexFileSession.DefaultScalar16VarIdentityMaxRouterHops,
+                    lowerEncodedKeyHigh,
+                    lowerEncodedKeyLow,
+                    upperEncodedKeyHigh,
+                    upperEncodedKeyLow);
+            }
+
+            return;
+        }
 
         byte lowerPrefix = LibraDexFileSession.GetScalar16VarIdentityPrefix(lowerEncodedKeyHigh, lowerEncodedKeyLow, 0);
         byte upperPrefix = LibraDexFileSession.GetScalar16VarIdentityPrefix(upperEncodedKeyHigh, upperEncodedKeyLow, 0);
@@ -71,7 +92,25 @@ public sealed class Scalar16VarIdentityRangeReader : IDisposable
             long targetOffset = session.FindRouterTarget(rootRouterOffset, (byte)prefix);
             if (targetOffset != 0)
             {
-                PushTarget(targetOffset, 8);
+                CreateScalar16RouteBounds(
+                    lowerEncodedKeyHigh,
+                    lowerEncodedKeyLow,
+                    upperEncodedKeyHigh,
+                    upperEncodedKeyLow,
+                    keyDepth: 0,
+                    (byte)prefix,
+                    (byte)prefix,
+                    out ulong targetLowerHigh,
+                    out ulong targetLowerLow,
+                    out ulong targetUpperHigh,
+                    out ulong targetUpperLow);
+                PushTarget(
+                    targetOffset,
+                    LibraDexFileSession.DefaultScalar16VarIdentityMaxRouterHops,
+                    targetLowerHigh,
+                    targetLowerLow,
+                    targetUpperHigh,
+                    targetUpperLow);
             }
         }
     }
@@ -219,19 +258,12 @@ public sealed class Scalar16VarIdentityRangeReader : IDisposable
     }
 
     internal void AddShelfRange(
-        byte[] shelfBytes,
-        Scalar16VarIdentityProfile profile,
+        Scalar16VarIdentityReadOnly shelf,
         ulong lowerEncodedKeyHigh,
         ulong lowerEncodedKeyLow,
         ulong upperEncodedKeyHigh,
         ulong upperEncodedKeyLow)
     {
-        Scalar16VarIdentityReadOnly shelf = new(shelfBytes, profile, validateRecords: false);
-        if (!shelf.IsValid)
-        {
-            throw new InvalidDataException("The routed SV16 range target shelf is invalid.");
-        }
-
         int startSlot = shelf.LowerBoundKey(lowerEncodedKeyHigh, lowerEncodedKeyLow);
         int endSlot = startSlot;
         while (endSlot < shelf.ItemCount && CompareKeys(shelf.ReadKeyHighAt(endSlot), shelf.ReadKeyLowAt(endSlot), upperEncodedKeyHigh, upperEncodedKeyLow) <= 0)
@@ -257,20 +289,14 @@ public sealed class Scalar16VarIdentityRangeReader : IDisposable
         ArrayPool<Scalar16VarIdentityReadOnly>.Shared.Return(shelves, clearArray: true);
         ArrayPool<int>.Shared.Return(startSlots, clearArray: false);
         ArrayPool<int>.Shared.Return(endSlots, clearArray: false);
-        if (pendingOffsets is not null)
+        if (pendingTargets is not null)
         {
-            ArrayPool<long>.Shared.Return(pendingOffsets, clearArray: false);
-        }
-
-        if (pendingHops is not null)
-        {
-            ArrayPool<int>.Shared.Return(pendingHops, clearArray: false);
+            ArrayPool<PendingTarget>.Shared.Return(pendingTargets, clearArray: false);
         }
 
         visitedShelves?.Dispose();
         visitedRouters?.Dispose();
-        pendingOffsets = null;
-        pendingHops = null;
+        pendingTargets = null;
         visitedShelves = null;
         visitedRouters = null;
         session = null;
@@ -329,7 +355,13 @@ public sealed class Scalar16VarIdentityRangeReader : IDisposable
         Span<byte> routerBytes = stackalloc byte[RouterLayout.Size];
         while (pendingCount > 0)
         {
-            PopTarget(out long targetOffset, out int remainingHops);
+            PopTarget(
+                out long targetOffset,
+                out int remainingHops,
+                out ulong targetLowerHigh,
+                out ulong targetLowerLow,
+                out ulong targetUpperHigh,
+                out ulong targetUpperLow);
             if (remainingHops <= 0)
             {
                 throw new InvalidDataException("The routed SV16 range read exceeded the configured router hop count.");
@@ -346,14 +378,23 @@ public sealed class Scalar16VarIdentityRangeReader : IDisposable
                         break;
                     }
 
-                    byte[] shelfBytes = localSession.ReadScalar16VarIdentityShelfBytes(currentShelfOffset, maxIdentityLength, out Scalar16VarIdentityProfile profile);
-                    AddShelfRange(shelfBytes, profile, lowerEncodedKeyHigh, lowerEncodedKeyLow, upperEncodedKeyHigh, upperEncodedKeyLow);
-                    currentShelfOffset = Scalar16VarIdentityLayout.ReadNextShelfOffset(shelfBytes);
+                    Scalar16VarIdentityReadOnly shelf = localSession.ReadScalar16VarIdentityReadOnlyShelf(
+                        indexRootOffset,
+                        currentShelfOffset,
+                        maxIdentityLength);
+                    AddShelfRange(shelf, targetLowerHigh, targetLowerLow, targetUpperHigh, targetUpperLow);
+                    currentShelfOffset = shelf.NextShelfOffset;
                     if (rowCount > previousRowCount)
                     {
                         if (currentShelfOffset != 0)
                         {
-                            PushTarget(currentShelfOffset, remainingHops);
+                            PushTarget(
+                                currentShelfOffset,
+                                remainingHops,
+                                targetLowerHigh,
+                                targetLowerLow,
+                                targetUpperHigh,
+                                targetUpperLow);
                         }
 
                         return true;
@@ -375,20 +416,177 @@ public sealed class Scalar16VarIdentityRangeReader : IDisposable
                 throw new InvalidDataException("The routed SV16 range target router is invalid.");
             }
 
-            byte lowerPrefix = LibraDexFileSession.GetScalar16VarIdentityPrefix(lowerEncodedKeyHigh, lowerEncodedKeyLow, router.KeyDepth);
-            byte upperPrefix = LibraDexFileSession.GetScalar16VarIdentityPrefix(upperEncodedKeyHigh, upperEncodedKeyLow, router.KeyDepth);
-            for (int prefix = upperPrefix; prefix >= lowerPrefix; prefix--)
+            bool sharedStem = KeysShareScalar16PrefixBeforeDepth(
+                targetLowerHigh,
+                targetLowerLow,
+                targetUpperHigh,
+                targetUpperLow,
+                router.KeyDepth);
+            byte lowerPrefix = sharedStem
+                ? LibraDexFileSession.GetScalar16VarIdentityPrefix(targetLowerHigh, targetLowerLow, router.KeyDepth)
+                : byte.MinValue;
+            byte upperPrefix = sharedStem
+                ? LibraDexFileSession.GetScalar16VarIdentityPrefix(targetUpperHigh, targetUpperLow, router.KeyDepth)
+                : byte.MaxValue;
+            int prefix = upperPrefix;
+            while (prefix >= lowerPrefix)
             {
                 long routeTarget = router.FindTarget((byte)prefix);
-                if (routeTarget != 0)
+                if (routeTarget == 0)
                 {
-                    PushTarget(routeTarget, remainingHops - 1);
+                    prefix--;
+                    continue;
                 }
+
+                int runEnd = prefix;
+                int runStart = prefix;
+                while (runStart > lowerPrefix && router.FindTarget((byte)(runStart - 1)) == routeTarget)
+                {
+                    runStart--;
+                }
+
+                CreateScalar16RouteBounds(
+                    targetLowerHigh,
+                    targetLowerLow,
+                    targetUpperHigh,
+                    targetUpperLow,
+                    router.KeyDepth,
+                    (byte)runStart,
+                    (byte)runEnd,
+                    out ulong childLowerHigh,
+                    out ulong childLowerLow,
+                    out ulong childUpperHigh,
+                    out ulong childUpperLow);
+                PushTarget(
+                    routeTarget,
+                    remainingHops - 1,
+                    childLowerHigh,
+                    childLowerLow,
+                    childUpperHigh,
+                    childUpperLow);
+                prefix = runStart - 1;
             }
         }
 
         traversalComplete = true;
         return false;
+    }
+
+    /// <summary>
+    /// Determines whether two encoded SV16 keys share every router byte preceding <paramref name="keyDepth"/>.<br/>
+    /// A router may restrict its child-prefix scan to the endpoint bytes only while both endpoints remain under the same preceding key stem.<br/>
+    /// When an earlier byte differs, the current byte can roll over inside the range and the router must visit its complete child-prefix domain.<br/>
+    /// </summary>
+    /// <param name="lowerHigh">The high half of the inclusive lower encoded key.<br/></param>
+    /// <param name="lowerLow">The low half of the inclusive lower encoded key.<br/></param>
+    /// <param name="upperHigh">The high half of the inclusive upper encoded key.<br/></param>
+    /// <param name="upperLow">The low half of the inclusive upper encoded key.<br/></param>
+    /// <param name="keyDepth">The zero-based router byte depth whose preceding stem is compared.<br/></param>
+    /// <returns><see langword="true"/> when bounded child-prefix traversal is safe at this depth; otherwise <see langword="false"/>.<br/></returns>
+    internal static bool KeysShareScalar16PrefixBeforeDepth(
+        ulong lowerHigh,
+        ulong lowerLow,
+        ulong upperHigh,
+        ulong upperLow,
+        int keyDepth)
+    {
+        if ((uint)keyDepth >= Scalar16VarIdentityLayout.KeySize)
+        {
+            throw new ArgumentOutOfRangeException(nameof(keyDepth), keyDepth, "The SV16 router key depth is outside the encoded key.");
+        }
+
+        if (keyDepth == 0)
+        {
+            return true;
+        }
+
+        if (keyDepth <= sizeof(ulong))
+        {
+            int shift = (sizeof(ulong) - keyDepth) * 8;
+            return (lowerHigh >> shift) == (upperHigh >> shift);
+        }
+
+        if (lowerHigh != upperHigh)
+        {
+            return false;
+        }
+
+        int lowShift = (Scalar16VarIdentityLayout.KeySize - keyDepth) * 8;
+        return (lowerLow >> lowShift) == (upperLow >> lowShift);
+    }
+
+    /// <summary>
+    /// Intersects one parent `SV16` key interval with a contiguous router-prefix run and returns the target-local inclusive bounds.<br/>
+    /// Bytes before <paramref name="keyDepth"/> retain the parent route context, the selected prefix run constrains the current byte, and trailing bytes expand to their minimum or maximum values.<br/>
+    /// The final max/min intersection preserves caller-supplied range edges while preventing physically overlapping shelves from returning tuples owned by neighboring routes.<br/>
+    /// </summary>
+    /// <param name="parentLowerHigh">The high half of the parent target's inclusive lower bound.<br/></param>
+    /// <param name="parentLowerLow">The low half of the parent target's inclusive lower bound.<br/></param>
+    /// <param name="parentUpperHigh">The high half of the parent target's inclusive upper bound.<br/></param>
+    /// <param name="parentUpperLow">The low half of the parent target's inclusive upper bound.<br/></param>
+    /// <param name="keyDepth">The router byte depth constrained by this route run.<br/></param>
+    /// <param name="routeStart">The first byte owned by the contiguous route run.<br/></param>
+    /// <param name="routeEnd">The last byte owned by the contiguous route run.<br/></param>
+    /// <param name="lowerHigh">Receives the high half of the intersected inclusive lower bound.<br/></param>
+    /// <param name="lowerLow">Receives the low half of the intersected inclusive lower bound.<br/></param>
+    /// <param name="upperHigh">Receives the high half of the intersected inclusive upper bound.<br/></param>
+    /// <param name="upperLow">Receives the low half of the intersected inclusive upper bound.<br/></param>
+    internal static void CreateScalar16RouteBounds(
+        ulong parentLowerHigh,
+        ulong parentLowerLow,
+        ulong parentUpperHigh,
+        ulong parentUpperLow,
+        int keyDepth,
+        byte routeStart,
+        byte routeEnd,
+        out ulong lowerHigh,
+        out ulong lowerLow,
+        out ulong upperHigh,
+        out ulong upperLow)
+    {
+        if ((uint)keyDepth >= Scalar16VarIdentityLayout.KeySize || routeStart > routeEnd)
+        {
+            throw new ArgumentOutOfRangeException(nameof(keyDepth), keyDepth, "The SV16 route-bound depth or prefix run is invalid.");
+        }
+
+        if (keyDepth < sizeof(ulong))
+        {
+            int shift = (sizeof(ulong) - 1 - keyDepth) * 8;
+            ulong precedingMask = keyDepth == 0 ? 0 : ulong.MaxValue << (shift + 8);
+            ulong trailingMask = shift == 0 ? 0 : (1UL << shift) - 1;
+            lowerHigh = (parentLowerHigh & precedingMask) | ((ulong)routeStart << shift);
+            lowerLow = 0;
+            upperHigh = (parentUpperHigh & precedingMask) | ((ulong)routeEnd << shift) | trailingMask;
+            upperLow = ulong.MaxValue;
+        }
+        else
+        {
+            int lowDepth = keyDepth - sizeof(ulong);
+            int shift = (sizeof(ulong) - 1 - lowDepth) * 8;
+            ulong precedingMask = lowDepth == 0 ? 0 : ulong.MaxValue << (shift + 8);
+            ulong trailingMask = shift == 0 ? 0 : (1UL << shift) - 1;
+            lowerHigh = parentLowerHigh;
+            lowerLow = (parentLowerLow & precedingMask) | ((ulong)routeStart << shift);
+            upperHigh = parentUpperHigh;
+            upperLow = (parentUpperLow & precedingMask) | ((ulong)routeEnd << shift) | trailingMask;
+        }
+
+        if (CompareKeys(lowerHigh, lowerLow, parentLowerHigh, parentLowerLow) < 0)
+        {
+            lowerHigh = parentLowerHigh;
+            lowerLow = parentLowerLow;
+        }
+
+        if (CompareKeys(upperHigh, upperLow, parentUpperHigh, parentUpperLow) > 0)
+        {
+            upperHigh = parentUpperHigh;
+            upperLow = parentUpperLow;
+        }
+
+        if (CompareKeys(lowerHigh, lowerLow, upperHigh, upperLow) > 0)
+        {
+            throw new InvalidDataException("The routed SV16 target-local key interval is empty.");
+        }
     }
 
     private void EnsureAllRangesLoaded()
@@ -398,37 +596,46 @@ public sealed class Scalar16VarIdentityRangeReader : IDisposable
         }
     }
 
-    private void PushTarget(long offset, int remainingHops)
+    private void PushTarget(
+        long offset,
+        int remainingHops,
+        ulong lowerHigh,
+        ulong lowerLow,
+        ulong upperHigh,
+        ulong upperLow)
     {
-        long[] localOffsets = pendingOffsets ?? throw new ObjectDisposedException(nameof(Scalar16VarIdentityRangeReader));
-        int[] localHops = pendingHops ?? throw new ObjectDisposedException(nameof(Scalar16VarIdentityRangeReader));
-        if (pendingCount == localOffsets.Length)
+        PendingTarget[] localTargets = pendingTargets ?? throw new ObjectDisposedException(nameof(Scalar16VarIdentityRangeReader));
+        if (pendingCount == localTargets.Length)
         {
-            int newLength = checked(localOffsets.Length * 2);
-            long[] newOffsets = ArrayPool<long>.Shared.Rent(newLength);
-            int[] newHops = ArrayPool<int>.Shared.Rent(newLength);
-            localOffsets.AsSpan(0, pendingCount).CopyTo(newOffsets);
-            localHops.AsSpan(0, pendingCount).CopyTo(newHops);
-            ArrayPool<long>.Shared.Return(localOffsets, clearArray: false);
-            ArrayPool<int>.Shared.Return(localHops, clearArray: false);
-            pendingOffsets = newOffsets;
-            pendingHops = newHops;
-            localOffsets = newOffsets;
-            localHops = newHops;
+            int newLength = checked(localTargets.Length * 2);
+            PendingTarget[] newTargets = ArrayPool<PendingTarget>.Shared.Rent(newLength);
+            localTargets.AsSpan(0, pendingCount).CopyTo(newTargets);
+            ArrayPool<PendingTarget>.Shared.Return(localTargets, clearArray: false);
+            pendingTargets = newTargets;
+            localTargets = newTargets;
         }
 
-        localOffsets[pendingCount] = offset;
-        localHops[pendingCount] = remainingHops;
+        localTargets[pendingCount] = new PendingTarget(offset, remainingHops, lowerHigh, lowerLow, upperHigh, upperLow);
         pendingCount++;
     }
 
-    private void PopTarget(out long offset, out int remainingHops)
+    private void PopTarget(
+        out long offset,
+        out int remainingHops,
+        out ulong lowerHigh,
+        out ulong lowerLow,
+        out ulong upperHigh,
+        out ulong upperLow)
     {
-        long[] localOffsets = pendingOffsets ?? throw new ObjectDisposedException(nameof(Scalar16VarIdentityRangeReader));
-        int[] localHops = pendingHops ?? throw new ObjectDisposedException(nameof(Scalar16VarIdentityRangeReader));
+        PendingTarget[] localTargets = pendingTargets ?? throw new ObjectDisposedException(nameof(Scalar16VarIdentityRangeReader));
         pendingCount--;
-        offset = localOffsets[pendingCount];
-        remainingHops = localHops[pendingCount];
+        PendingTarget target = localTargets[pendingCount];
+        offset = target.Offset;
+        remainingHops = target.RemainingHops;
+        lowerHigh = target.LowerHigh;
+        lowerLow = target.LowerLow;
+        upperHigh = target.UpperHigh;
+        upperLow = target.UpperLow;
     }
 
     private void GrowShelves()
@@ -497,5 +704,23 @@ public sealed class Scalar16VarIdentityRangeReader : IDisposable
 
         return leftLow > rightLow ? 1 : 0;
     }
+
+    /// <summary>
+    /// Stores one pending `SV16` route target and its route-owned inclusive scalar bounds in a single pooled frontier entry.<br/>
+    /// Consolidating the target state avoids multiple pool rentals for every exact or range reader while keeping bound propagation allocation-free after the initial rent.<br/>
+    /// </summary>
+    /// <param name="Offset">The routed shelf or router offset.<br/></param>
+    /// <param name="RemainingHops">The remaining router-hop safety budget.<br/></param>
+    /// <param name="LowerHigh">The high half of the target-local inclusive lower bound.<br/></param>
+    /// <param name="LowerLow">The low half of the target-local inclusive lower bound.<br/></param>
+    /// <param name="UpperHigh">The high half of the target-local inclusive upper bound.<br/></param>
+    /// <param name="UpperLow">The low half of the target-local inclusive upper bound.<br/></param>
+    private readonly record struct PendingTarget(
+        long Offset,
+        int RemainingHops,
+        ulong LowerHigh,
+        ulong LowerLow,
+        ulong UpperHigh,
+        ulong UpperLow);
 }
 

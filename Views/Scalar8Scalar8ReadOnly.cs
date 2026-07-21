@@ -41,6 +41,10 @@ internal readonly ref struct Scalar8Scalar8ReadOnly
 
     public uint Flags => Scalar8Scalar8Layout.ReadFlags(bytes);
 
+    public bool IsDuplicateRun => Scalar8Scalar8Layout.HasDuplicateRunFlag(bytes);
+
+    public long DuplicateRunNextOffset => IsDuplicateRun ? Scalar8Scalar8Layout.ReadDuplicateRunNextOffset(bytes) : 0;
+
     public ushort ItemCount => Scalar8Scalar8Layout.ReadItemCount(bytes);
 
     public ushort PhysicalItemCount => ItemCount;
@@ -54,7 +58,7 @@ internal readonly ref struct Scalar8Scalar8ReadOnly
         Magic == Scalar8Scalar8Layout.Magic &&
         FormatVersion == Scalar8Scalar8Layout.FormatVersion &&
         HeaderSize == Scalar8Scalar8Layout.HeaderSize &&
-        ItemCount <= profile.MaxItemCount;
+        ItemCount <= (IsDuplicateRun ? Scalar8Scalar8Layout.GetDuplicateRunCapacity(profile) : profile.MaxItemCount);
 
     /// <summary>
     /// Counts fixed deleted-slot sentinels in the physical slot table.<br/>
@@ -64,6 +68,11 @@ internal readonly ref struct Scalar8Scalar8ReadOnly
     /// <returns>The number of slot entries currently marked deleted.</returns>
     private ushort CountDeletedSlots(ushort physicalCount)
     {
+        if (IsDuplicateRun)
+        {
+            return 0;
+        }
+
         ushort deleted = 0;
         for (int slotIndex = 0; slotIndex < physicalCount; slotIndex++)
         {
@@ -84,6 +93,11 @@ internal readonly ref struct Scalar8Scalar8ReadOnly
     /// <returns>The encoded sortable key.</returns>
     public ulong ReadKeyAt(int slotIndex)
     {
+        if (IsDuplicateRun)
+        {
+            return Scalar8Scalar8Layout.ReadDuplicateRunKey(bytes);
+        }
+
         ushort itemOffset = Scalar8Scalar8Layout.ReadSlot(bytes, profile, slotIndex);
         return Scalar8Scalar8Layout.ReadItemKey(bytes, itemOffset);
     }
@@ -96,6 +110,11 @@ internal readonly ref struct Scalar8Scalar8ReadOnly
     /// <returns>The encoded sortable identity.</returns>
     public ulong ReadIdentityAt(int slotIndex)
     {
+        if (IsDuplicateRun)
+        {
+            return Scalar8Scalar8Layout.ReadDuplicateRunIdentity(bytes, slotIndex);
+        }
+
         ushort itemOffset = Scalar8Scalar8Layout.ReadSlot(bytes, profile, slotIndex);
         return Scalar8Scalar8Layout.ReadItemIdentity(bytes, itemOffset);
     }
@@ -109,6 +128,38 @@ internal readonly ref struct Scalar8Scalar8ReadOnly
     /// <returns>The lower-bound slot index, or `ItemCount` when all items sort before the tuple.</returns>
     public int LowerBound(ulong encodedKey, ulong encodedIdentity)
     {
+        if (IsDuplicateRun)
+        {
+            ulong runKey = Scalar8Scalar8Layout.ReadDuplicateRunKey(bytes);
+            if (runKey < encodedKey)
+            {
+                return ItemCount;
+            }
+
+            if (runKey > encodedKey)
+            {
+                return 0;
+            }
+
+            int runLow = 0;
+            int runHigh = ItemCount;
+            while (runLow < runHigh)
+            {
+                int middle = runLow + ((runHigh - runLow) >> 1);
+                ulong identity = Scalar8Scalar8Layout.ReadDuplicateRunIdentity(bytes, middle);
+                if (identity < encodedIdentity)
+                {
+                    runLow = middle + 1;
+                }
+                else
+                {
+                    runHigh = middle;
+                }
+            }
+
+            return runLow;
+        }
+
         int low = 0;
         int high = ItemCount;
         ReadOnlySpan<byte> localBytes = bytes;
@@ -140,6 +191,12 @@ internal readonly ref struct Scalar8Scalar8ReadOnly
     /// <returns>The first slot index at or after the key.</returns>
     public int LowerBoundKey(ulong encodedKey)
     {
+        if (IsDuplicateRun)
+        {
+            ulong runKey = Scalar8Scalar8Layout.ReadDuplicateRunKey(bytes);
+            return runKey < encodedKey ? ItemCount : 0;
+        }
+
         int low = 0;
         int high = ItemCount;
         ReadOnlySpan<byte> localBytes = bytes;
@@ -173,6 +230,18 @@ internal readonly ref struct Scalar8Scalar8ReadOnly
     /// <returns>True when the key exists in the shelf; otherwise false.</returns>
     public bool TryFindFirstIdentity(ulong encodedKey, out ulong encodedIdentity)
     {
+        if (IsDuplicateRun)
+        {
+            if (ItemCount == 0 || Scalar8Scalar8Layout.ReadDuplicateRunKey(bytes) != encodedKey)
+            {
+                encodedIdentity = 0;
+                return false;
+            }
+
+            encodedIdentity = Scalar8Scalar8Layout.ReadDuplicateRunIdentity(bytes, 0);
+            return true;
+        }
+
         int slotIndex = LowerBoundKey(encodedKey);
         ushort count = ItemCount;
         if (slotIndex >= count)
@@ -212,6 +281,28 @@ internal readonly ref struct Scalar8Scalar8ReadOnly
             throw new ArgumentException("The upper encoded key must be greater than or equal to the lower encoded key.", nameof(upperEncodedKey));
         }
 
+        if (IsDuplicateRun)
+        {
+            ulong runKey = Scalar8Scalar8Layout.ReadDuplicateRunKey(bytes);
+            if (runKey < lowerEncodedKey || runKey > upperEncodedKey)
+            {
+                return 0;
+            }
+
+            ushort duplicateRunCount = ItemCount;
+            if (duplicateRunCount > encodedIdentities.Length)
+            {
+                throw new ArgumentException("The identity output span is too small for the requested range.", nameof(encodedIdentities));
+            }
+
+            for (int i = 0; i < duplicateRunCount; i++)
+            {
+                encodedIdentities[i] = Scalar8Scalar8Layout.ReadDuplicateRunIdentity(bytes, i);
+            }
+
+            return duplicateRunCount;
+        }
+
         int copied = 0;
         int slotIndex = LowerBoundKey(lowerEncodedKey);
         ushort count = ItemCount;
@@ -246,6 +337,17 @@ internal readonly ref struct Scalar8Scalar8ReadOnly
     /// <returns>True when the exact tuple is present; otherwise false.</returns>
     public bool Contains(ulong encodedKey, ulong encodedIdentity)
     {
+        if (IsDuplicateRun)
+        {
+            if (Scalar8Scalar8Layout.ReadDuplicateRunKey(bytes) != encodedKey)
+            {
+                return false;
+            }
+
+            int duplicateRunSlotIndex = LowerBound(encodedKey, encodedIdentity);
+            return duplicateRunSlotIndex < ItemCount && Scalar8Scalar8Layout.ReadDuplicateRunIdentity(bytes, duplicateRunSlotIndex) == encodedIdentity;
+        }
+
         int slotIndex = LowerBound(encodedKey, encodedIdentity);
         if (slotIndex >= ItemCount)
         {

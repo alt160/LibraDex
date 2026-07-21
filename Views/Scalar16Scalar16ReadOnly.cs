@@ -17,7 +17,7 @@ internal readonly ref struct Scalar16Scalar16ReadOnly
     /// </summary>
     /// <param name="bytes">The shelf bytes to project.</param>
     public Scalar16Scalar16ReadOnly(ReadOnlySpan<byte> bytes)
-        : this(bytes, Scalar16Scalar16Profile.Default32KiB)
+        : this(bytes, Scalar16Scalar16Profile.Default24KiB)
     {
     }
 

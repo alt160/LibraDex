@@ -1,4 +1,5 @@
 using LibraDex.Layouts;
+using System.Buffers.Binary;
 using System.Diagnostics;
 
 namespace LibraDex.Views;
@@ -144,6 +145,62 @@ internal ref struct Scalar8Scalar8
     }
 
     /// <summary>
+    /// Inserts one encoded identity into a single-shelf `SS8-8` duplicate run when no linked duplicate-run tail is present.<br/>
+    /// The operation is shelf-local: it validates the duplicate-run key, preserves sorted identity order by shifting identity cells inside the current shelf, and updates only the shelf item count.<br/>
+    /// Callers must fall back to the serialized topology/publication path when the duplicate run has a linked tail or no remaining capacity.<br/>
+    /// </summary>
+    /// <param name="encodedKey">The encoded scalar key expected on the duplicate-run shelf.<br/></param>
+    /// <param name="encodedIdentity">The encoded scalar identity to insert into sorted identity order.<br/></param>
+    /// <param name="allowDuplicateKeys">Whether multiple identities may share the duplicate-run key.<br/></param>
+    /// <returns>The structural result of the shelf-local insert attempt.</returns>
+    /// <exception cref="InvalidDataException">Thrown when the shelf is not a valid duplicate-run shelf for <paramref name="encodedKey"/>.</exception>
+    internal Scalar8Scalar8InsertResult InsertIntoSingleShelfDuplicateRun(
+        ulong encodedKey,
+        ulong encodedIdentity,
+        bool allowDuplicateKeys)
+    {
+        Scalar8Scalar8ReadOnly readOnly = AsReadOnly();
+        if (!readOnly.IsValid || !readOnly.IsDuplicateRun)
+        {
+            throw new InvalidDataException("The SS8-8 duplicate-run writer-context insert requires a valid duplicate-run shelf.");
+        }
+
+        if (Scalar8Scalar8Layout.ReadDuplicateRunKey(bytes) != encodedKey)
+        {
+            throw new InvalidDataException("The SS8-8 duplicate-run writer-context insert key does not match the routed shelf.");
+        }
+
+        ushort count = ItemCount;
+        if (!allowDuplicateKeys && count != 0)
+        {
+            return Scalar8Scalar8InsertResult.KeyConflict;
+        }
+
+        if (Scalar8Scalar8Layout.ReadDuplicateRunNextOffset(bytes) != 0 ||
+            count >= Scalar8Scalar8Layout.GetDuplicateRunCapacity(profile))
+        {
+            return Scalar8Scalar8InsertResult.Full;
+        }
+
+        int insertIndex = readOnly.LowerBound(encodedKey, encodedIdentity);
+        if (insertIndex < count &&
+            Scalar8Scalar8Layout.ReadDuplicateRunIdentity(bytes, insertIndex) == encodedIdentity)
+        {
+            return Scalar8Scalar8InsertResult.AlreadyPresent;
+        }
+
+        for (int i = count; i > insertIndex; i--)
+        {
+            ulong existingIdentity = Scalar8Scalar8Layout.ReadDuplicateRunIdentity(bytes, i - 1);
+            Scalar8Scalar8Layout.WriteDuplicateRunIdentity(bytes, i, existingIdentity);
+        }
+
+        Scalar8Scalar8Layout.WriteDuplicateRunIdentity(bytes, insertIndex, encodedIdentity);
+        BinaryPrimitives.WriteUInt16LittleEndian(bytes.Slice(Scalar8Scalar8Layout.ItemCountOffset, sizeof(ushort)), checked((ushort)(count + 1)));
+        return Scalar8Scalar8InsertResult.Inserted;
+    }
+
+    /// <summary>
     /// Inserts an encoded `(key, identity)` tuple while attributing shelf-local CPU work to smaller phases.<br/>
     /// This method intentionally mirrors `Insert` so the harness can measure lower-bound search, duplicate checks, slot movement, and payload/header writes without changing public behavior.<br/>
     /// </summary>
@@ -264,6 +321,11 @@ internal ref struct Scalar8Scalar8
     {
         ushort count = ItemCount;
         int marked = MarkSlotRangeDeleted(startSlot, removeCount);
+        if (Scalar8Scalar8Layout.HasDuplicateRunFlag(bytes))
+        {
+            return marked;
+        }
+
         if (marked == 0)
         {
             return 0;
@@ -283,6 +345,37 @@ internal ref struct Scalar8Scalar8
     internal int MarkSlotRangeDeleted(int startSlot, int removeCount)
     {
         ushort count = ItemCount;
+        if (Scalar8Scalar8Layout.HasDuplicateRunFlag(bytes))
+        {
+            if (startSlot < 0 || startSlot > count)
+            {
+                throw new ArgumentOutOfRangeException(nameof(startSlot), startSlot, "The SS8-8 duplicate-run remove start slot must be inside the identity array.");
+            }
+
+            if (removeCount < 0 || removeCount > count - startSlot)
+            {
+                throw new ArgumentOutOfRangeException(nameof(removeCount), removeCount, "The SS8-8 duplicate-run remove count must fit inside the identity array.");
+            }
+
+            if (removeCount == 0)
+            {
+                return 0;
+            }
+
+            int readSlot = startSlot + removeCount;
+            int writeSlot = startSlot;
+            while (readSlot < count)
+            {
+                ulong identity = Scalar8Scalar8Layout.ReadDuplicateRunIdentity(bytes, readSlot);
+                Scalar8Scalar8Layout.WriteDuplicateRunIdentity(bytes, writeSlot, identity);
+                readSlot++;
+                writeSlot++;
+            }
+
+            Scalar8Scalar8Layout.WriteItemCount(bytes, checked((ushort)(count - removeCount)));
+            return removeCount;
+        }
+
         if (startSlot < 0 || startSlot > count)
         {
             throw new ArgumentOutOfRangeException(nameof(startSlot), startSlot, "The SS8-8 remove start slot must be inside the physical slot table.");
@@ -315,6 +408,11 @@ internal ref struct Scalar8Scalar8
     /// <returns>The number of tombstoned slots removed during normalization.</returns>
     internal int NormalizeDeletedSlotsForPublication()
     {
+        if (Scalar8Scalar8Layout.HasDuplicateRunFlag(bytes))
+        {
+            return 0;
+        }
+
         return NormalizeDeletedSlots(ItemCount);
     }
 
@@ -346,6 +444,11 @@ internal ref struct Scalar8Scalar8
     /// <returns>The number of tombstoned slots removed during normalization.</returns>
     private int NormalizeDeletedSlots(ushort physicalCount)
     {
+        if (CountDeletedSlots(physicalCount) == 0)
+        {
+            return 0;
+        }
+
         byte[] compacted = new byte[physicalCount * Scalar8Scalar8Layout.ItemSize];
         int writeIndex = 0;
         for (int slotIndex = 0; slotIndex < physicalCount; slotIndex++)

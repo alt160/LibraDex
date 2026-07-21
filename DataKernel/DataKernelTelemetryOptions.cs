@@ -1,19 +1,26 @@
 namespace LibraDex;
 
 /// <summary>
-/// Controls whether the raw DataKernel records telemetry for issued operations.<br/>
-/// Telemetry is toggleable so baseline runs can compare enabled and disabled overhead.<br/>
+/// Controls whether the raw DataKernel records diagnostics for issued operations.<br/>
+/// The storage layer keeps a cheap `Enabled` check so hot paths do not need to understand public diagnostics semantics.<br/>
 /// </summary>
-/// <param name="Enabled">Whether telemetry counters should be collected.</param>
-public readonly record struct DataKernelTelemetryOptions(bool Enabled)
+/// <param name="Level">The diagnostics level requested by the owning LibraDex surface.</param>
+internal readonly record struct DataKernelTelemetryOptions(LibraDexDiagnosticsLevel Level)
 {
+    public bool Enabled => Level != LibraDexDiagnosticsLevel.Off;
+
     /// <summary>
     /// Gets telemetry options with counters disabled.<br/>
     /// </summary>
-    public static DataKernelTelemetryOptions Disabled { get; } = new(false);
+    public static DataKernelTelemetryOptions Disabled { get; } = new(LibraDexDiagnosticsLevel.Off);
 
     /// <summary>
     /// Gets telemetry options with counters enabled.<br/>
     /// </summary>
-    public static DataKernelTelemetryOptions EnabledOptions { get; } = new(true);
+    public static DataKernelTelemetryOptions EnabledOptions { get; } = new(LibraDexDiagnosticsLevel.Counters);
+
+    internal static DataKernelTelemetryOptions FromLevel(LibraDexDiagnosticsLevel level)
+    {
+        return new DataKernelTelemetryOptions(level);
+    }
 }

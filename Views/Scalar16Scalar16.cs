@@ -17,7 +17,7 @@ internal ref struct Scalar16Scalar16
     /// </summary>
     /// <param name="bytes">The writable shelf bytes to project.</param>
     public Scalar16Scalar16(Span<byte> bytes)
-        : this(bytes, Scalar16Scalar16Profile.Default32KiB)
+        : this(bytes, Scalar16Scalar16Profile.Default24KiB)
     {
     }
 
@@ -241,6 +241,11 @@ internal ref struct Scalar16Scalar16
 
     private int NormalizeDeletedSlots(ushort physicalCount)
     {
+        if (CountDeletedSlots(physicalCount) == 0)
+        {
+            return 0;
+        }
+
         byte[] compacted = new byte[physicalCount * Scalar16Scalar16Layout.ItemSize];
         int writeIndex = 0;
         for (int slotIndex = 0; slotIndex < physicalCount; slotIndex++)

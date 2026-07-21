@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Buffers.Binary;
 using LibraDex.Layouts;
 using LibraDex.Views;
 
@@ -9,18 +10,20 @@ namespace LibraDex;
 /// The reader keeps routed traversal state and shelf-local slot ranges so callers can stream keys, identities, or full tuples without per-row materialization.<br/>
 /// Shelf bytes are retained for the reader lifetime because the fixed shelf projection is stack-only; row access recreates that projection over the retained shelf buffer.<br/>
 /// </summary>
-public sealed class Scalar8Scalar8RangeReader : IDisposable
+internal sealed class Scalar8Scalar8RangeReader : IDisposable
 {
     private const int DefaultShelfCapacity = 8;
 
     private byte[][] shelves;
     private int[] startSlots;
     private int[] endSlots;
+    private byte[]? terminalShelfFlags;
+    private ulong[]? terminalScalarKeys;
     private long[]? pendingOffsets;
     private int[]? pendingHops;
     private byte[]? pendingFlags;
     private RouteVisitedOffsetSet? visitedShelves;
-    private RouteVisitedOffsetSet? visitedRouters;
+    private RouteVisitedContextSet? visitedRouters;
     private Scalar8Scalar8RangePlan? plan;
     private LibraDexFileSession? session;
     private Scalar8Scalar8Profile profile;
@@ -42,6 +45,8 @@ public sealed class Scalar8Scalar8RangeReader : IDisposable
         shelves = ArrayPool<byte[]>.Shared.Rent(DefaultShelfCapacity);
         startSlots = ArrayPool<int>.Shared.Rent(DefaultShelfCapacity);
         endSlots = ArrayPool<int>.Shared.Rent(DefaultShelfCapacity);
+        terminalShelfFlags = ArrayPool<byte>.Shared.Rent(DefaultShelfCapacity);
+        terminalScalarKeys = ArrayPool<ulong>.Shared.Rent(DefaultShelfCapacity);
     }
 
     /// <summary>
@@ -57,6 +62,8 @@ public sealed class Scalar8Scalar8RangeReader : IDisposable
         shelves = plan.Shelves;
         startSlots = plan.StartSlots;
         endSlots = plan.EndSlots;
+        terminalShelfFlags = plan.TerminalShelfFlags;
+        terminalScalarKeys = plan.TerminalScalarKeys;
         shelfCount = plan.ShelfCount;
         rowCount = plan.RowCount;
         traversalComplete = true;
@@ -86,7 +93,7 @@ public sealed class Scalar8Scalar8RangeReader : IDisposable
         pendingHops = ArrayPool<int>.Shared.Rent(DefaultShelfCapacity);
         pendingFlags = ArrayPool<byte>.Shared.Rent(DefaultShelfCapacity);
         visitedShelves = RouteVisitedOffsetSet.Rent();
-        visitedRouters = RouteVisitedOffsetSet.Rent();
+        visitedRouters = RouteVisitedContextSet.Rent();
         traversalComplete = false;
 
         byte lowerPrefix = GetPrefix(lowerEncodedKey, keyDepth: 0);
@@ -139,13 +146,38 @@ public sealed class Scalar8Scalar8RangeReader : IDisposable
     /// Gets the encoded scalar key for the current row.<br/>
     /// The value is the persisted sortable scalar representation used by the `SS8-8` shelf.<br/>
     /// </summary>
-    public ulong CurrentEncodedKey => CurrentShelf.ReadKeyAt(currentSlotIndex);
+    public ulong CurrentEncodedKey
+    {
+        get
+        {
+            byte[]? localFlags = terminalShelfFlags;
+            if (localFlags is not null && localFlags[currentShelfIndex] != 0)
+            {
+                ulong[] localKeys = terminalScalarKeys ?? throw new ObjectDisposedException(nameof(Scalar8Scalar8RangeReader));
+                return localKeys[currentShelfIndex];
+            }
+
+            return CurrentShelf.ReadKeyAt(currentSlotIndex);
+        }
+    }
 
     /// <summary>
     /// Gets the encoded scalar identity for the current row.<br/>
     /// The value is the persisted sortable scalar representation used by the `SS8-8` shelf.<br/>
     /// </summary>
-    public ulong CurrentEncodedIdentity => CurrentShelf.ReadIdentityAt(currentSlotIndex);
+    public ulong CurrentEncodedIdentity
+    {
+        get
+        {
+            byte[]? localFlags = terminalShelfFlags;
+            if (localFlags is not null && localFlags[currentShelfIndex] != 0)
+            {
+                return TerminalIdentity8ShelfLayout.ReadIdentity(shelves[currentShelfIndex], currentSlotIndex);
+            }
+
+            return CurrentShelf.ReadIdentityAt(currentSlotIndex);
+        }
+    }
 
     /// <summary>
     /// Advances the reader and returns the next encoded identity without a separate current-row property read.<br/>
@@ -162,8 +194,7 @@ public sealed class Scalar8Scalar8RangeReader : IDisposable
             return false;
         }
 
-        Scalar8Scalar8ReadOnly shelf = new(shelves[currentShelfIndex], profile);
-        encodedIdentity = shelf.ReadIdentityAt(currentSlotIndex);
+        encodedIdentity = CurrentEncodedIdentity;
         return true;
     }
 
@@ -320,9 +351,8 @@ public sealed class Scalar8Scalar8RangeReader : IDisposable
             return false;
         }
 
-        Scalar8Scalar8ReadOnly shelf = new(shelves[currentShelfIndex], profile);
-        encodedKey = shelf.ReadKeyAt(currentSlotIndex);
-        encodedIdentity = shelf.ReadIdentityAt(currentSlotIndex);
+        encodedKey = CurrentEncodedKey;
+        encodedIdentity = CurrentEncodedIdentity;
         return true;
     }
 
@@ -431,6 +461,8 @@ public sealed class Scalar8Scalar8RangeReader : IDisposable
             shelves = Array.Empty<byte[]>();
             startSlots = Array.Empty<int>();
             endSlots = Array.Empty<int>();
+            terminalShelfFlags = null;
+            terminalScalarKeys = null;
             shelfCount = 0;
             rowCount = 0;
             pendingCount = 0;
@@ -460,11 +492,23 @@ public sealed class Scalar8Scalar8RangeReader : IDisposable
             ArrayPool<byte>.Shared.Return(pendingFlags, clearArray: false);
         }
 
+        if (terminalShelfFlags is not null)
+        {
+            ArrayPool<byte>.Shared.Return(terminalShelfFlags, clearArray: false);
+        }
+
+        if (terminalScalarKeys is not null)
+        {
+            ArrayPool<ulong>.Shared.Return(terminalScalarKeys, clearArray: false);
+        }
+
         visitedShelves?.Dispose();
         visitedRouters?.Dispose();
         pendingOffsets = null;
         pendingHops = null;
         pendingFlags = null;
+        terminalShelfFlags = null;
+        terminalScalarKeys = null;
         visitedShelves = null;
         visitedRouters = null;
         session = null;
@@ -585,8 +629,38 @@ public sealed class Scalar8Scalar8RangeReader : IDisposable
         shelves[shelfCount] = shelfBytes;
         startSlots[shelfCount] = startSlot;
         endSlots[shelfCount] = endSlot;
+        terminalShelfFlags![shelfCount] = 0;
         shelfCount++;
         rowCount = checked(rowCount + endSlot - startSlot);
+    }
+
+    private void AddTerminalIdentityShelfRange(byte[] shelfBytes, ulong encodedKey)
+    {
+        if (encodedKey < lowerEncodedKey || encodedKey > upperEncodedKey)
+        {
+            ArrayPool<byte>.Shared.Return(shelfBytes, clearArray: false);
+            return;
+        }
+
+        int itemCount = TerminalIdentity8ShelfLayout.ReadItemCount(shelfBytes);
+        if (itemCount <= 0)
+        {
+            ArrayPool<byte>.Shared.Return(shelfBytes, clearArray: false);
+            return;
+        }
+
+        if (shelfCount == shelves.Length)
+        {
+            GrowShelves();
+        }
+
+        shelves[shelfCount] = shelfBytes;
+        startSlots[shelfCount] = 0;
+        endSlots[shelfCount] = itemCount;
+        terminalShelfFlags![shelfCount] = 1;
+        terminalScalarKeys![shelfCount] = encodedKey;
+        shelfCount++;
+        rowCount = checked(rowCount + itemCount);
     }
 
     private bool LoadNextShelfRange()
@@ -598,7 +672,7 @@ public sealed class Scalar8Scalar8RangeReader : IDisposable
 
         LibraDexFileSession localSession = session ?? throw new ObjectDisposedException(nameof(Scalar8Scalar8RangeReader));
         RouteVisitedOffsetSet localVisitedShelves = visitedShelves ?? throw new ObjectDisposedException(nameof(Scalar8Scalar8RangeReader));
-        RouteVisitedOffsetSet localVisitedRouters = visitedRouters ?? throw new ObjectDisposedException(nameof(Scalar8Scalar8RangeReader));
+        RouteVisitedContextSet localVisitedRouters = visitedRouters ?? throw new ObjectDisposedException(nameof(Scalar8Scalar8RangeReader));
         int previousRowCount = rowCount;
         byte[] routerBytes = new byte[RouterLayout.Size];
         while (pendingCount > 0)
@@ -617,7 +691,58 @@ public sealed class Scalar8Scalar8RangeReader : IDisposable
                     continue;
                 }
 
-                AddShelfRange(localSession.ReadScalar8Scalar8ShelfBytes(targetOffset, profile));
+                byte[] shelfBytes = localSession.ReadScalar8Scalar8ShelfBytes(targetOffset, profile);
+                Scalar8Scalar8ReadOnly linkedProbe = new(shelfBytes, profile);
+                AddShelfRange(shelfBytes);
+                if (linkedProbe.IsValid && linkedProbe.IsDuplicateRun && linkedProbe.DuplicateRunNextOffset != 0)
+                {
+                    PushTarget(linkedProbe.DuplicateRunNextOffset, remainingHops, lowerEdge, upperEdge);
+                }
+
+                if (rowCount > previousRowCount)
+                {
+                    return true;
+                }
+
+                continue;
+            }
+
+            if (kind == Scalar8Scalar8RouteTargetKind.TerminalIdentityRoot)
+            {
+                if (!localVisitedShelves.Add(targetOffset))
+                {
+                    continue;
+                }
+
+                byte[] rootBytes = localSession.ReadTerminalIdentityRootBytes(targetOffset);
+                if (TerminalIdentityRootLayout.ReadShape(rootBytes) != TerminalIdentityRootLayout.ShapeScalar8 ||
+                    TerminalIdentityRootLayout.ReadKeyLength(rootBytes) != Scalar8Scalar8Layout.KeySize)
+                {
+                    throw new InvalidDataException("The routed SS8-8 terminal identity root shape is invalid.");
+                }
+
+                ulong encodedKey = BinaryPrimitives.ReadUInt64BigEndian(
+                    rootBytes.AsSpan(TerminalIdentityRootLayout.KeyBytesOffset, Scalar8Scalar8Layout.KeySize));
+                if (encodedKey < lowerEncodedKey || encodedKey > upperEncodedKey)
+                {
+                    continue;
+                }
+
+                int shelfExtentSize = TerminalIdentityRootLayout.ReadShelfExtentSize(rootBytes);
+                long identityShelfOffset = TerminalIdentityRootLayout.ReadFirstShelfOffset(rootBytes);
+                while (identityShelfOffset != 0)
+                {
+                    if (!localVisitedShelves.Add(identityShelfOffset))
+                    {
+                        break;
+                    }
+
+                    byte[] identityShelfBytes = localSession.ReadTerminalIdentity8ShelfBytes(identityShelfOffset, shelfExtentSize);
+                    long nextOffset = TerminalIdentity8ShelfLayout.ReadNextShelfOffset(identityShelfBytes);
+                    AddTerminalIdentityShelfRange(identityShelfBytes, encodedKey);
+                    identityShelfOffset = nextOffset;
+                }
+
                 if (rowCount > previousRowCount)
                 {
                     return true;
@@ -628,10 +753,10 @@ public sealed class Scalar8Scalar8RangeReader : IDisposable
 
             if (kind != Scalar8Scalar8RouteTargetKind.Router)
             {
-                throw new InvalidDataException("The routed SS8-8 range target is not a shelf or router.");
+                throw new InvalidDataException("The routed SS8-8 range target is not a shelf, terminal identity root, or router.");
             }
 
-            if (!localVisitedRouters.Add(targetOffset))
+            if (!localVisitedRouters.Add(targetOffset, lowerEdge, upperEdge))
             {
                 continue;
             }
@@ -645,18 +770,16 @@ public sealed class Scalar8Scalar8RangeReader : IDisposable
 
             byte startPrefix = lowerEdge ? GetPrefix(lowerEncodedKey, router.KeyDepth) : (byte)0;
             byte endPrefix = upperEdge ? GetPrefix(upperEncodedKey, router.KeyDepth) : byte.MaxValue;
-            long previousTargetOffset = 0;
             if (descendingTraversal)
             {
                 for (int prefix = startPrefix; prefix <= endPrefix; prefix++)
                 {
                     long childTargetOffset = router.FindTarget((byte)prefix);
-                    if (childTargetOffset == 0 || childTargetOffset == previousTargetOffset)
+                    if (childTargetOffset == 0)
                     {
                         continue;
                     }
 
-                    previousTargetOffset = childTargetOffset;
                     PushTarget(
                         childTargetOffset,
                         remainingHops - 1,
@@ -669,12 +792,11 @@ public sealed class Scalar8Scalar8RangeReader : IDisposable
                 for (int prefix = endPrefix; prefix >= startPrefix; prefix--)
                 {
                     long childTargetOffset = router.FindTarget((byte)prefix);
-                    if (childTargetOffset == 0 || childTargetOffset == previousTargetOffset)
+                    if (childTargetOffset == 0)
                     {
                         continue;
                     }
 
-                    previousTargetOffset = childTargetOffset;
                     PushTarget(
                         childTargetOffset,
                         remainingHops - 1,
@@ -751,6 +873,22 @@ public sealed class Scalar8Scalar8RangeReader : IDisposable
         ArrayPool<byte[]>.Shared.Return(shelves, clearArray: true);
         ArrayPool<int>.Shared.Return(startSlots, clearArray: false);
         ArrayPool<int>.Shared.Return(endSlots, clearArray: false);
+        if (terminalShelfFlags is not null)
+        {
+            byte[] newTerminalFlags = ArrayPool<byte>.Shared.Rent(newLength);
+            terminalShelfFlags.AsSpan(0, shelfCount).CopyTo(newTerminalFlags);
+            ArrayPool<byte>.Shared.Return(terminalShelfFlags, clearArray: false);
+            terminalShelfFlags = newTerminalFlags;
+        }
+
+        if (terminalScalarKeys is not null)
+        {
+            ulong[] newTerminalKeys = ArrayPool<ulong>.Shared.Rent(newLength);
+            terminalScalarKeys.AsSpan(0, shelfCount).CopyTo(newTerminalKeys);
+            ArrayPool<ulong>.Shared.Return(terminalScalarKeys, clearArray: false);
+            terminalScalarKeys = newTerminalKeys;
+        }
+
         shelves = newShelves;
         startSlots = newStartSlots;
         endSlots = newEndSlots;

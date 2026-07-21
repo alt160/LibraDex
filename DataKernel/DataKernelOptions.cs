@@ -8,18 +8,20 @@ namespace LibraDex;
 /// <param name="ReservedPrefixBytes">The number of bytes reserved at the beginning of the file.</param>
 /// <param name="FlushToDiskOnCommit">Whether commits should issue a durable flush after writes.</param>
 /// <param name="MaxCommitGapCoalesceBytes">The largest unchanged byte gap that file-backed commit may bridge to reduce positional write calls.</param>
-public readonly record struct DataKernelOptions(
+internal readonly record struct DataKernelOptions(
     int AppendBufferSize,
     long ReservedPrefixBytes,
     bool FlushToDiskOnCommit,
     int MaxCommitGapCoalesceBytes)
 {
+    internal const int DefaultAppendBufferSize = 64 * 1024;
+
     /// <summary>
     /// Gets the default raw DataKernel policy for early development.<br/>
     /// The reserved prefix leaves file offset zero unavailable for future route targets and superblock work.<br/>
     /// </summary>
     public static DataKernelOptions Default { get; } = new(
-        AppendBufferSize: 1024 * 1024,
+        AppendBufferSize: DefaultAppendBufferSize,
         ReservedPrefixBytes: 4096,
         FlushToDiskOnCommit: false,
         MaxCommitGapCoalesceBytes: 512);

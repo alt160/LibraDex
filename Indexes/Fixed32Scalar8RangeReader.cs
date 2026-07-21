@@ -9,7 +9,7 @@ namespace LibraDex;
 /// The reader keeps routed traversal state and shelf-local slot ranges so callers can stream keys, identities, or full tuples without per-row materialization.<br/>
 /// Shelf bytes are retained for the reader lifetime because the fixed shelf projection is stack-only; row access recreates that projection over the retained shelf buffer.<br/>
 /// </summary>
-public sealed class Fixed32Scalar8RangeReader : IDisposable
+internal sealed class Fixed32Scalar8RangeReader : IDisposable
 {
     private const int DefaultShelfCapacity = 8;
 
@@ -20,10 +20,12 @@ public sealed class Fixed32Scalar8RangeReader : IDisposable
     private long[]? pendingOffsets;
     private int[]? pendingHops;
     private byte[]? pendingFlags;
+    private byte[]? routerBytes;
     private RouteVisitedOffsetSet? visitedShelves;
     private RouteVisitedOffsetSet? visitedRouters;
     private LibraDexFileSession? session;
     private Fixed32Scalar8Profile profile;
+    private long indexRootOffset;
     private ulong lower0;
     private ulong lower1;
     private ulong lower2;
@@ -73,6 +75,7 @@ public sealed class Fixed32Scalar8RangeReader : IDisposable
         }
 
         this.session = session;
+        indexRootOffset = rootRouterOffset;
         this.profile = profile;
         this.lower0 = lower0;
         this.lower1 = lower1;
@@ -86,6 +89,7 @@ public sealed class Fixed32Scalar8RangeReader : IDisposable
         pendingOffsets = ArrayPool<long>.Shared.Rent(DefaultShelfCapacity);
         pendingHops = ArrayPool<int>.Shared.Rent(DefaultShelfCapacity);
         pendingFlags = ArrayPool<byte>.Shared.Rent(DefaultShelfCapacity);
+        routerBytes = ArrayPool<byte>.Shared.Rent(RouterLayout.Size);
         visitedShelves = RouteVisitedOffsetSet.Rent();
         visitedRouters = RouteVisitedOffsetSet.Rent();
         traversalComplete = false;
@@ -465,11 +469,17 @@ public sealed class Fixed32Scalar8RangeReader : IDisposable
             ArrayPool<byte>.Shared.Return(pendingFlags, clearArray: false);
         }
 
+        if (routerBytes is not null)
+        {
+            ArrayPool<byte>.Shared.Return(routerBytes, clearArray: false);
+        }
+
         visitedShelves?.Dispose();
         visitedRouters?.Dispose();
         pendingOffsets = null;
         pendingHops = null;
         pendingFlags = null;
+        routerBytes = null;
         visitedShelves = null;
         visitedRouters = null;
         session = null;
@@ -490,7 +500,6 @@ public sealed class Fixed32Scalar8RangeReader : IDisposable
             byte[]? shelfBytes = shelves[i];
             if (shelfBytes is not null)
             {
-                ArrayPool<byte>.Shared.Return(shelfBytes, clearArray: false);
                 shelves[i] = null!;
             }
         }
@@ -525,14 +534,15 @@ public sealed class Fixed32Scalar8RangeReader : IDisposable
         }
 
         LibraDexFileSession localSession = session ?? throw new ObjectDisposedException(nameof(Fixed32Scalar8RangeReader));
-        Fixed32Scalar8 shelf = new(shelves[currentShelfIndex], profile);
+        byte[] shelfBytes = CloneShelfBytesForMutation(currentShelfIndex);
+        Fixed32Scalar8 shelf = new(shelfBytes, profile);
         int removed = shelf.RemoveSlotRange(currentSlotIndex, 1);
         if (removed != 1)
         {
             return false;
         }
 
-        _ = localSession.StageFixed32Scalar8ShelfRewriteForBatch(shelfOffsets[currentShelfIndex], profile, shelves[currentShelfIndex]);
+        _ = localSession.StageFixed32Scalar8ShelfRewriteForBatch(shelfOffsets[currentShelfIndex], profile, shelfBytes);
         endSlots[currentShelfIndex]--;
         rowCount--;
         ordinal--;
@@ -567,7 +577,7 @@ public sealed class Fixed32Scalar8RangeReader : IDisposable
         {
             byte[] shelfBytes = localSession.IsDurabilityBatchActive
                 ? localSession.ReadFixed32Scalar8ShelfBytesForBatch(shelfOffsets[i], profile)
-                : shelves[i];
+                : CloneShelfBytesForMutation(i);
             Fixed32Scalar8ReadOnly readOnly = new(shelfBytes, profile);
             int startSlot = localSession.IsDurabilityBatchActive
                 ? readOnly.LowerBoundKey(lower0, lower1, lower2, lower3)
@@ -619,9 +629,10 @@ public sealed class Fixed32Scalar8RangeReader : IDisposable
                     continue;
                 }
 
-                Fixed32Scalar8 shelf = new(shelves[i], profile);
+                byte[] shelfBytes = CloneShelfBytesForMutation(i);
+                Fixed32Scalar8 shelf = new(shelfBytes, profile);
                 _ = shelf.RemoveSlotRange(slot, 1);
-                _ = localSession.StageFixed32Scalar8ShelfRewriteForBatch(shelfOffsets[i], profile, shelves[i]);
+                _ = localSession.StageFixed32Scalar8ShelfRewriteForBatch(shelfOffsets[i], profile, shelfBytes);
                 return true;
             }
         }
@@ -673,13 +684,40 @@ public sealed class Fixed32Scalar8RangeReader : IDisposable
         RouteVisitedOffsetSet localVisitedShelves = visitedShelves ?? throw new ObjectDisposedException(nameof(Fixed32Scalar8RangeReader));
         RouteVisitedOffsetSet localVisitedRouters = visitedRouters ?? throw new ObjectDisposedException(nameof(Fixed32Scalar8RangeReader));
         int previousRowCount = rowCount;
-        byte[] routerBytes = new byte[RouterLayout.Size];
+        byte[] localRouterBytes = routerBytes ?? throw new ObjectDisposedException(nameof(Fixed32Scalar8RangeReader));
         while (pendingCount > 0)
         {
             PopTarget(out long targetOffset, out int remainingHops, out bool lowerEdge, out bool upperEdge);
             if (remainingHops <= 0)
             {
                 throw new InvalidDataException("The routed FS32-8 range read exceeded the configured router hop count.");
+            }
+
+            if (localSession.TryGetFixed32Scalar8ReadShelf(indexRootOffset, targetOffset, out byte[]? cachedShelfBytes))
+            {
+                if (!localVisitedShelves.Add(targetOffset))
+                {
+                    continue;
+                }
+
+                AddShelfRange(targetOffset, cachedShelfBytes);
+                if (rowCount > previousRowCount)
+                {
+                    return true;
+                }
+
+                continue;
+            }
+
+            if (localSession.TryGetPromotedDirectRouterKeyDepth(targetOffset, out ushort promotedRouterKeyDepth))
+            {
+                if (!localVisitedRouters.Add(targetOffset))
+                {
+                    continue;
+                }
+
+                PushDirectRouterTargets(localSession, targetOffset, promotedRouterKeyDepth, remainingHops, lowerEdge, upperEdge);
+                continue;
             }
 
             Fixed32Scalar8RouteTargetKind kind = localSession.ClassifyFixed32Scalar8RouteTarget(targetOffset);
@@ -690,7 +728,7 @@ public sealed class Fixed32Scalar8RangeReader : IDisposable
                     continue;
                 }
 
-                AddShelfRange(targetOffset, localSession.ReadFixed32Scalar8ShelfBytes(targetOffset, profile));
+                AddShelfRange(targetOffset, localSession.ReadFixed32Scalar8ShelfBytes(indexRootOffset, targetOffset, profile));
                 if (rowCount > previousRowCount)
                 {
                     return true;
@@ -709,8 +747,14 @@ public sealed class Fixed32Scalar8RangeReader : IDisposable
                 continue;
             }
 
-            localSession.ReadRouterPageUsingArenaCache(targetOffset, routerBytes);
-            RouterReader router = new(routerBytes);
+            if (localSession.TryGetDirectRouterKeyDepth(targetOffset, out ushort directRouterKeyDepth))
+            {
+                PushDirectRouterTargets(localSession, targetOffset, directRouterKeyDepth, remainingHops, lowerEdge, upperEdge);
+                continue;
+            }
+
+            localSession.ReadRouterPageUsingArenaCache(targetOffset, localRouterBytes.AsSpan(0, RouterLayout.Size));
+            RouterReader router = new(localRouterBytes);
             if (!router.IsValid)
             {
                 throw new InvalidDataException("The routed FS32-8 range router is invalid.");
@@ -718,39 +762,137 @@ public sealed class Fixed32Scalar8RangeReader : IDisposable
 
             byte startPrefix = lowerEdge ? GetPrefix(lower0, lower1, lower2, lower3, router.KeyDepth) : (byte)0;
             byte endPrefix = upperEdge ? GetPrefix(upper0, upper1, upper2, upper3, router.KeyDepth) : byte.MaxValue;
-            long previousTargetOffset = 0;
             if (descendingTraversal)
             {
-                for (int prefix = startPrefix; prefix <= endPrefix; prefix++)
+                int prefix = startPrefix;
+                while (prefix <= endPrefix)
                 {
                     long childTargetOffset = router.FindTarget((byte)prefix);
-                    if (childTargetOffset == 0 || childTargetOffset == previousTargetOffset)
+                    if (childTargetOffset == 0)
                     {
+                        prefix++;
                         continue;
                     }
 
-                    previousTargetOffset = childTargetOffset;
-                    PushTarget(childTargetOffset, remainingHops - 1, lowerEdge && prefix == startPrefix, upperEdge && prefix == endPrefix);
+                    int runStart = prefix;
+                    int runEnd = prefix;
+                    while (runEnd < endPrefix && router.FindTarget((byte)(runEnd + 1)) == childTargetOffset)
+                    {
+                        runEnd++;
+                    }
+
+                    bool singlePrefixRun = runStart == runEnd;
+                    PushTarget(
+                        childTargetOffset,
+                        remainingHops - 1,
+                        singlePrefixRun && lowerEdge && runStart == startPrefix,
+                        singlePrefixRun && upperEdge && runEnd == endPrefix);
+                    prefix = runEnd + 1;
                 }
             }
             else
             {
-                for (int prefix = endPrefix; prefix >= startPrefix; prefix--)
+                int prefix = endPrefix;
+                while (prefix >= startPrefix)
                 {
                     long childTargetOffset = router.FindTarget((byte)prefix);
-                    if (childTargetOffset == 0 || childTargetOffset == previousTargetOffset)
+                    if (childTargetOffset == 0)
                     {
+                        prefix--;
                         continue;
                     }
 
-                    previousTargetOffset = childTargetOffset;
-                    PushTarget(childTargetOffset, remainingHops - 1, lowerEdge && prefix == startPrefix, upperEdge && prefix == endPrefix);
+                    int runEnd = prefix;
+                    int runStart = prefix;
+                    while (runStart > startPrefix && router.FindTarget((byte)(runStart - 1)) == childTargetOffset)
+                    {
+                        runStart--;
+                    }
+
+                    bool singlePrefixRun = runStart == runEnd;
+                    PushTarget(
+                        childTargetOffset,
+                        remainingHops - 1,
+                        singlePrefixRun && lowerEdge && runStart == startPrefix,
+                        singlePrefixRun && upperEdge && runEnd == endPrefix);
+                    prefix = runStart - 1;
                 }
             }
         }
 
         traversalComplete = true;
         return false;
+    }
+
+    /// <summary>
+    /// Expands one existing session-promoted direct router into the reader's pending traversal stack.<br/>
+    /// Durable router target offsets remain authoritative; this path only avoids copying and reparsing the same 4 KiB router page after the session has already decoded it.<br/>
+    /// Contiguous target runs are clipped to the requested lower and upper edge prefixes so traversal flags remain identical to the persisted-page path.<br/>
+    /// </summary>
+    /// <param name="localSession">The file session that owns the promoted router projection.<br/></param>
+    /// <param name="routerOffset">The durable router file offset.<br/></param>
+    /// <param name="keyDepth">The persisted key depth exposed by the promoted direct router.<br/></param>
+    /// <param name="remainingHops">The remaining traversal-hop allowance before visiting a child.<br/></param>
+    /// <param name="lowerEdge">Whether the current router lies on the query's lower edge.<br/></param>
+    /// <param name="upperEdge">Whether the current router lies on the query's upper edge.<br/></param>
+    private void PushDirectRouterTargets(
+        LibraDexFileSession localSession,
+        long routerOffset,
+        ushort keyDepth,
+        int remainingHops,
+        bool lowerEdge,
+        bool upperEdge)
+    {
+        byte startPrefix = lowerEdge ? GetPrefix(lower0, lower1, lower2, lower3, keyDepth) : (byte)0;
+        byte endPrefix = upperEdge ? GetPrefix(upper0, upper1, upper2, upper3, keyDepth) : byte.MaxValue;
+        if (descendingTraversal)
+        {
+            int prefix = startPrefix;
+            while (prefix <= endPrefix)
+            {
+                long childTargetOffset = localSession.FindRouterTarget(routerOffset, (byte)prefix);
+                if (childTargetOffset == 0)
+                {
+                    prefix++;
+                    continue;
+                }
+
+                _ = localSession.TryGetDirectRouterTargetPrefixRange(routerOffset, (byte)prefix, childTargetOffset, out byte directRunStart, out byte directRunEnd);
+                int runStart = Math.Max(prefix, directRunStart);
+                int runEnd = Math.Min(endPrefix, directRunEnd);
+                bool singlePrefixRun = runStart == runEnd;
+                PushTarget(
+                    childTargetOffset,
+                    remainingHops - 1,
+                    singlePrefixRun && lowerEdge && runStart == startPrefix,
+                    singlePrefixRun && upperEdge && runEnd == endPrefix);
+                prefix = runEnd + 1;
+            }
+        }
+        else
+        {
+            int prefix = endPrefix;
+            while (prefix >= startPrefix)
+            {
+                long childTargetOffset = localSession.FindRouterTarget(routerOffset, (byte)prefix);
+                if (childTargetOffset == 0)
+                {
+                    prefix--;
+                    continue;
+                }
+
+                _ = localSession.TryGetDirectRouterTargetPrefixRange(routerOffset, (byte)prefix, childTargetOffset, out byte directRunStart, out byte directRunEnd);
+                int runEnd = Math.Min(prefix, directRunEnd);
+                int runStart = Math.Max(startPrefix, directRunStart);
+                bool singlePrefixRun = runStart == runEnd;
+                PushTarget(
+                    childTargetOffset,
+                    remainingHops - 1,
+                    singlePrefixRun && lowerEdge && runStart == startPrefix,
+                    singlePrefixRun && upperEdge && runEnd == endPrefix);
+                prefix = runStart - 1;
+            }
+        }
     }
 
     private void EnsureAllRangesLoaded()
@@ -823,6 +965,19 @@ public sealed class Fixed32Scalar8RangeReader : IDisposable
         shelfOffsets = newShelfOffsets;
         startSlots = newStartSlots;
         endSlots = newEndSlots;
+    }
+
+    /// <summary>
+    /// Clones one borrowed immutable `FS32-8` shelf before cursor-owned mutation.<br/>
+    /// Replacing the reader slot keeps cached bytes immutable while allowing the existing delete path to stage an ordinary full-shelf rewrite.<br/>
+    /// </summary>
+    /// <param name="shelfIndex">The retained shelf index to clone.<br/></param>
+    /// <returns>The mutable reader-owned shelf image.<br/></returns>
+    private byte[] CloneShelfBytesForMutation(int shelfIndex)
+    {
+        byte[] mutableShelfBytes = shelves[shelfIndex].AsSpan(0, profile.ShelfExtentSize).ToArray();
+        shelves[shelfIndex] = mutableShelfBytes;
+        return mutableShelfBytes;
     }
 
     private void PositionAtOrdinal(int targetOrdinal)

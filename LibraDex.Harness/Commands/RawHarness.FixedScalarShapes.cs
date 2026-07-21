@@ -13,6 +13,588 @@ internal static partial class RawHarness
 {
 
     /// <summary>
+    /// Measures public condition-builder ordered counting over a generic `SS8-8` scalar index.<br/>
+    /// Keys are spread across high encoded root-prefix bytes so the benchmark exercises boundary range counts plus count-all metadata traversal for fully covered middle route targets.<br/>
+    /// The command routes through `.AsUInt64.Between(...).EndCondition.Count(...)` to prove the public generic scalar aggregate dispatch, not the raw session API.<br/>
+    /// </summary>
+    /// <param name="args">Harness command arguments.<br/></param>
+    /// <returns>Zero when the measured count matches the seeded expectation; otherwise an exception is thrown.<br/></returns>
+    private static int RunGenericScalar8BetweenCountProof(string[] args)
+    {
+        int itemCount = GetIntOption(args, "--items", 250_000);
+        int iterations = GetIntOption(args, "--iterations", 25_000);
+        int warmupIterations = GetIntOption(args, "--warmup-iterations", 3);
+        int prefixGroupCount = GetIntOption(args, "--prefix-groups", 256);
+        int lowerPrefix = GetIntOption(args, "--lower-prefix", 64);
+        int upperPrefix = GetIntOption(args, "--upper-prefix", 192);
+
+        if (itemCount <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(args), itemCount, "Generic scalar-8 between count proof item count must be positive.");
+        }
+
+        if (iterations <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(args), iterations, "Generic scalar-8 between count proof iterations must be positive.");
+        }
+
+        if (warmupIterations < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(args), warmupIterations, "Generic scalar-8 between count proof warmup iterations cannot be negative.");
+        }
+
+        if (prefixGroupCount <= 0 || prefixGroupCount > 256)
+        {
+            throw new ArgumentOutOfRangeException(nameof(args), prefixGroupCount, "Generic scalar-8 between count proof prefix group count must be from 1 through 256.");
+        }
+
+        if ((uint)lowerPrefix > byte.MaxValue || (uint)upperPrefix > byte.MaxValue || lowerPrefix > upperPrefix)
+        {
+            throw new ArgumentOutOfRangeException(nameof(args), $"{lowerPrefix}..{upperPrefix}", "Generic scalar-8 between count proof prefixes must be an increasing byte range.");
+        }
+
+        using Catalog catalog = Catalog.CreateMemory();
+        using LibraDexIndex<ulong, ulong> index = catalog.Indexes["generic-scalar8-between-count-proof"]["value"].Scalar.Scalar<ulong, ulong>().Create();
+
+        ulong lowerKey = CreateGenericScalar8BetweenCountProofKey(lowerPrefix, 0);
+        ulong upperKey = CreateGenericScalar8BetweenCountProofKey(upperPrefix, uint.MaxValue);
+        long expectedCount = 0;
+        for (int i = 0; i < itemCount; i++)
+        {
+            int prefix = i % prefixGroupCount;
+            ulong key = CreateGenericScalar8BetweenCountProofKey(prefix, (uint)i);
+            _ = index.Insert(key, (ulong)(i + 1));
+            if (key >= lowerKey && key <= upperKey)
+            {
+                expectedCount++;
+            }
+        }
+
+        LibraDexConditionEndCondition condition = LibraDexCondition
+            .ForGroup("generic-scalar8-between-count-proof")
+            .Index("value")
+            .AsUInt64
+            .Between(lowerKey, upperKey)
+            .EndCondition;
+        Func<string, IIndex> resolver = name => name == "value" ? index : throw new KeyNotFoundException(name);
+
+        long warmupCount = 0;
+        for (int i = 0; i < warmupIterations; i++)
+        {
+            warmupCount = condition.Count(resolver, IdentityDeduplication.Preserve);
+        }
+
+        if (warmupIterations == 0)
+        {
+            warmupCount = condition.Count(resolver, IdentityDeduplication.Preserve);
+        }
+
+        if (warmupCount != expectedCount)
+        {
+            throw new InvalidDataException($"Generic scalar-8 between count proof warmup returned {warmupCount}; expected {expectedCount}.");
+        }
+
+        long checksum = 0;
+        Stopwatch watch = Stopwatch.StartNew();
+        for (int i = 0; i < iterations; i++)
+        {
+            checksum += condition.Count(resolver, IdentityDeduplication.Preserve);
+        }
+
+        watch.Stop();
+        long expectedChecksum = expectedCount * iterations;
+        if (checksum != expectedChecksum)
+        {
+            throw new InvalidDataException($"Generic scalar-8 between count proof checksum returned {checksum}; expected {expectedChecksum}.");
+        }
+
+        double elapsedMs = watch.Elapsed.TotalMilliseconds;
+        double opsPerSecond = iterations / Math.Max(watch.Elapsed.TotalSeconds, 0.000001D);
+        Console.WriteLine(
+            "generic-scalar8-between-count-proof ok " +
+            $"items={itemCount} prefixGroups={prefixGroupCount} lowerPrefix={lowerPrefix} upperPrefix={upperPrefix} " +
+            $"expected={expectedCount} warmup={warmupCount} iterations={iterations} elapsedMs={elapsedMs:F3} opsPerSecond={opsPerSecond:F2} checksum={checksum}");
+        return 0;
+    }
+
+    /// <summary>
+    /// Creates one public UInt64 key whose encoded scalar-8 order preserves the supplied high route prefix.<br/>
+    /// UInt64 keys are already sortable as-is, so the top byte directly selects the root-prefix route in `SS8-8` storage.<br/>
+    /// </summary>
+    /// <param name="prefix">The desired high route prefix byte.<br/></param>
+    /// <param name="ordinal">The low key ordinal used to keep seeded keys unique.<br/></param>
+    /// <returns>The public UInt64 key.</returns>
+    private static ulong CreateGenericScalar8BetweenCountProofKey(int prefix, uint ordinal)
+    {
+        return ((ulong)(byte)prefix << 56) | ordinal;
+    }
+
+    /// <summary>
+    /// Measures public condition-builder ordered counting over generic scalar indexes whose key and/or identity side uses 16-byte scalar lanes.<br/>
+    /// The proof covers `SS16-8`, `SS8-16`, `SS16-16`, `FS32-8`, and `FS32-16`, exercising the direct count dispatch added after the original `SS8-8` proof.<br/>
+    /// Keys are spread across high encoded root-prefix bytes so broad between-counts use boundary readers plus free route-target aggregate counts for middle prefixes.<br/>
+    /// </summary>
+    /// <param name="args">Harness command arguments.<br/></param>
+    /// <returns>Zero when every measured count matches the seeded expectation; otherwise an exception is thrown.<br/></returns>
+    private static int RunGenericScalarWideBetweenCountProof(string[] args)
+    {
+        int itemCount = GetIntOption(args, "--items", 150_000);
+        int iterations = GetIntOption(args, "--iterations", 5_000);
+        int warmupIterations = GetIntOption(args, "--warmup-iterations", 3);
+        int prefixGroupCount = GetIntOption(args, "--prefix-groups", 256);
+        int lowerPrefix = GetIntOption(args, "--lower-prefix", 64);
+        int upperPrefix = GetIntOption(args, "--upper-prefix", 192);
+
+        if (itemCount <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(args), itemCount, "Generic wide-scalar between count proof item count must be positive.");
+        }
+
+        if (iterations <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(args), iterations, "Generic wide-scalar between count proof iterations must be positive.");
+        }
+
+        if (warmupIterations < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(args), warmupIterations, "Generic wide-scalar between count proof warmup iterations cannot be negative.");
+        }
+
+        if (prefixGroupCount <= 0 || prefixGroupCount > 256)
+        {
+            throw new ArgumentOutOfRangeException(nameof(args), prefixGroupCount, "Generic wide-scalar between count proof prefix group count must be from 1 through 256.");
+        }
+
+        if ((uint)lowerPrefix > byte.MaxValue || (uint)upperPrefix > byte.MaxValue || lowerPrefix > upperPrefix)
+        {
+            throw new ArgumentOutOfRangeException(nameof(args), $"{lowerPrefix}..{upperPrefix}", "Generic wide-scalar between count proof prefixes must be an increasing byte range.");
+        }
+
+        using Catalog catalog = Catalog.CreateMemory();
+        using LibraDexIndex<UInt128, ulong> ss168 = catalog.Indexes["generic-wide-between-count-proof"]["ss168"].Scalar.Scalar<UInt128, ulong>().Create();
+        using LibraDexIndex<ulong, UInt128> ss816 = catalog.Indexes["generic-wide-between-count-proof"]["ss816"].Scalar.Scalar<ulong, UInt128>().Create();
+        using LibraDexIndex<UInt128, UInt128> ss1616 = catalog.Indexes["generic-wide-between-count-proof"]["ss1616"].Scalar.Scalar<UInt128, UInt128>().Create();
+        using LibraDexIndex<byte[], ulong> fs328 = catalog.Indexes["generic-wide-between-count-proof"]["fs328"].Blob.Scalar<ulong>(LibraDexScalarWidth.Bytes32).Create();
+        using LibraDexIndex<byte[], Guid> fs3216 = catalog.Indexes["generic-wide-between-count-proof"]["fs3216"].Blob.Scalar<Guid>(LibraDexScalarWidth.Bytes32).Create();
+
+        UInt128 lowerKey16 = CreateGenericScalar16BetweenCountProofKey(lowerPrefix, 0);
+        UInt128 upperKey16 = CreateGenericScalar16BetweenCountProofKey(upperPrefix, uint.MaxValue);
+        ulong lowerKey8 = CreateGenericScalar8BetweenCountProofKey(lowerPrefix, 0);
+        ulong upperKey8 = CreateGenericScalar8BetweenCountProofKey(upperPrefix, uint.MaxValue);
+        byte[] lowerKey32 = CreateGenericFixed32BetweenCountProofKey(lowerPrefix, 0);
+        byte[] upperKey32 = CreateGenericFixed32BetweenCountProofKey(upperPrefix, uint.MaxValue);
+        long expectedCount = 0;
+        for (int i = 0; i < itemCount; i++)
+        {
+            int prefix = i % prefixGroupCount;
+            UInt128 key16 = CreateGenericScalar16BetweenCountProofKey(prefix, (uint)i);
+            ulong key8 = CreateGenericScalar8BetweenCountProofKey(prefix, (uint)i);
+            byte[] key32 = CreateGenericFixed32BetweenCountProofKey(prefix, (uint)i);
+            UInt128 identity16 = CreateGenericScalar16BetweenCountProofIdentity(i);
+            _ = ss168.Insert(key16, (ulong)(i + 1));
+            _ = ss816.Insert(key8, identity16);
+            _ = ss1616.Insert(key16, identity16);
+            _ = fs328.Insert(key32, (ulong)(i + 1));
+            _ = fs3216.Insert(key32, CreateGenericFixed32BetweenCountProofGuidIdentity(i));
+            if (key8 >= lowerKey8 && key8 <= upperKey8)
+            {
+                expectedCount++;
+            }
+        }
+
+        LibraDexConditionEndCondition ss168Condition = LibraDexCondition
+            .ForGroup("generic-wide-between-count-proof")
+            .Index("ss168")
+            .AsUInt128
+            .Between(lowerKey16, upperKey16)
+            .EndCondition;
+        LibraDexConditionEndCondition ss816Condition = LibraDexCondition
+            .ForGroup("generic-wide-between-count-proof")
+            .Index("ss816")
+            .AsUInt64
+            .Between(lowerKey8, upperKey8)
+            .EndCondition;
+        LibraDexConditionEndCondition ss1616Condition = LibraDexCondition
+            .ForGroup("generic-wide-between-count-proof")
+            .Index("ss1616")
+            .AsUInt128
+            .Between(lowerKey16, upperKey16)
+            .EndCondition;
+        LibraDexConditionEndCondition fs328Condition = LibraDexCondition
+            .ForGroup("generic-wide-between-count-proof")
+            .Index("fs328")
+            .AsBinary
+            .Between(lowerKey32, upperKey32)
+            .EndCondition;
+        LibraDexConditionEndCondition fs3216Condition = LibraDexCondition
+            .ForGroup("generic-wide-between-count-proof")
+            .Index("fs3216")
+            .AsBinary
+            .Between(lowerKey32, upperKey32)
+            .EndCondition;
+        Func<string, IIndex> resolver = name => name switch
+        {
+            "ss168" => ss168,
+            "ss816" => ss816,
+            "ss1616" => ss1616,
+            "fs328" => fs328,
+            "fs3216" => fs3216,
+            _ => throw new KeyNotFoundException(name)
+        };
+
+        MeasureGenericWideBetweenCountProofShape("ss168", ss168Condition, resolver, expectedCount, iterations, warmupIterations, itemCount, prefixGroupCount, lowerPrefix, upperPrefix);
+        MeasureGenericWideBetweenCountProofShape("ss816", ss816Condition, resolver, expectedCount, iterations, warmupIterations, itemCount, prefixGroupCount, lowerPrefix, upperPrefix);
+        MeasureGenericWideBetweenCountProofShape("ss1616", ss1616Condition, resolver, expectedCount, iterations, warmupIterations, itemCount, prefixGroupCount, lowerPrefix, upperPrefix);
+        MeasureGenericWideBetweenCountProofShape("fs328", fs328Condition, resolver, expectedCount, iterations, warmupIterations, itemCount, prefixGroupCount, lowerPrefix, upperPrefix);
+        MeasureGenericWideBetweenCountProofShape("fs3216", fs3216Condition, resolver, expectedCount, iterations, warmupIterations, itemCount, prefixGroupCount, lowerPrefix, upperPrefix);
+        return 0;
+    }
+
+    /// <summary>
+    /// Measures one public wide-scalar condition count shape and validates its warmup and checksum against the seeded expectation.<br/>
+    /// Keeping the measurement loop shared makes the three shape outputs directly comparable while leaving index creation shape-specific above.<br/>
+    /// </summary>
+    /// <param name="shapeName">The short physical shape name printed in harness output.<br/></param>
+    /// <param name="condition">The public condition-builder count request.<br/></param>
+    /// <param name="resolver">The public index resolver used by condition execution.<br/></param>
+    /// <param name="expectedCount">The expected count for one condition execution.<br/></param>
+    /// <param name="iterations">The measured iteration count.<br/></param>
+    /// <param name="warmupIterations">The unmeasured warmup iteration count.<br/></param>
+    /// <param name="itemCount">The seeded item count printed for context.<br/></param>
+    /// <param name="prefixGroupCount">The seeded root-prefix group count printed for context.<br/></param>
+    /// <param name="lowerPrefix">The lower included root prefix printed for context.<br/></param>
+    /// <param name="upperPrefix">The upper included root prefix printed for context.<br/></param>
+    private static void MeasureGenericWideBetweenCountProofShape(
+        string shapeName,
+        LibraDexConditionEndCondition condition,
+        Func<string, IIndex> resolver,
+        long expectedCount,
+        int iterations,
+        int warmupIterations,
+        int itemCount,
+        int prefixGroupCount,
+        int lowerPrefix,
+        int upperPrefix)
+    {
+        long warmupCount = 0;
+        for (int i = 0; i < warmupIterations; i++)
+        {
+            warmupCount = condition.Count(resolver, IdentityDeduplication.Preserve);
+        }
+
+        if (warmupIterations == 0)
+        {
+            warmupCount = condition.Count(resolver, IdentityDeduplication.Preserve);
+        }
+
+        if (warmupCount != expectedCount)
+        {
+            throw new InvalidDataException($"Generic wide-scalar between count proof {shapeName} warmup returned {warmupCount}; expected {expectedCount}.");
+        }
+
+        long checksum = 0;
+        Stopwatch watch = Stopwatch.StartNew();
+        for (int i = 0; i < iterations; i++)
+        {
+            checksum += condition.Count(resolver, IdentityDeduplication.Preserve);
+        }
+
+        watch.Stop();
+        long expectedChecksum = expectedCount * iterations;
+        if (checksum != expectedChecksum)
+        {
+            throw new InvalidDataException($"Generic wide-scalar between count proof {shapeName} checksum returned {checksum}; expected {expectedChecksum}.");
+        }
+
+        double elapsedMs = watch.Elapsed.TotalMilliseconds;
+        double opsPerSecond = iterations / Math.Max(watch.Elapsed.TotalSeconds, 0.000001D);
+        Console.WriteLine(
+            "generic-wide-between-count-proof ok " +
+            $"shape={shapeName} items={itemCount} prefixGroups={prefixGroupCount} lowerPrefix={lowerPrefix} upperPrefix={upperPrefix} " +
+            $"expected={expectedCount} warmup={warmupCount} iterations={iterations} elapsedMs={elapsedMs:F3} opsPerSecond={opsPerSecond:F2} checksum={checksum}");
+    }
+
+    /// <summary>
+    /// Proves public condition-builder count fan-out for membership and condition-derived multi-range criteria.<br/>
+    /// Membership uses duplicate operand keys to prove count semantics are set-based at the operand layer while preserving duplicate physical tuples under each selected key.<br/>
+    /// Structured date month membership uses duplicate generated ranges to prove multi-range count merging avoids double counting before dispatching each final extent through the direct ordered count primitive.<br/>
+    /// </summary>
+    /// <param name="args">Harness command arguments.<br/></param>
+    /// <returns>Zero when every count matches the expected physical tuple count; otherwise an exception is thrown.<br/></returns>
+    private static int RunGenericCountFanoutProof(string[] args)
+    {
+        _ = args;
+        using Catalog catalog = Catalog.CreateMemory();
+        using LibraDexIndex<ulong, ulong> membership = catalog.Indexes["generic-count-fanout-proof"]["membership"].Scalar.Scalar<ulong, ulong>().Create(keys: IndexKeys.NonUnique);
+        using LibraDexIndex<byte[], ulong> fixed32Membership = catalog.Indexes["generic-count-fanout-proof"]["fixed32Membership"].Blob.Scalar<ulong>(LibraDexScalarWidth.Bytes32).Create(keys: IndexKeys.NonUnique);
+        LibraDexIndexShapeSpec createdShape = catalog.Indexes["generic-count-fanout-proof"]["created"].Shape.Date<DateTime, long>(
+            DateKeys.ExactAndStructured,
+            keys: IndexKeys.NonUnique);
+        IIndex created = catalog.Indexes.Create(createdShape);
+
+        _ = membership.Insert(10UL, 1001UL);
+        _ = membership.Insert(10UL, 1002UL);
+        _ = membership.Insert(20UL, 2001UL);
+        _ = membership.Insert(30UL, 3001UL);
+
+        byte[] fixedKeyA = CreateGenericFixed32BetweenCountProofKey(7, 1);
+        byte[] fixedKeyB = CreateGenericFixed32BetweenCountProofKey(7, 2);
+        byte[] fixedKeyC = CreateGenericFixed32BetweenCountProofKey(7, 3);
+        _ = fixed32Membership.Insert(fixedKeyA, 7001UL);
+        _ = fixed32Membership.Insert((byte[])fixedKeyA.Clone(), 7002UL);
+        _ = fixed32Membership.Insert(fixedKeyB, 7003UL);
+        _ = fixed32Membership.Insert(fixedKeyC, 7004UL);
+
+        ValidateGenericInsert(created.Insert(new DateTime(2026, 1, 1, 8, 0, 0, DateTimeKind.Utc), 2026010108L), "generic count fanout date Jan first");
+        ValidateGenericInsert(created.Insert(new DateTime(2026, 1, 20, 17, 0, 0, DateTimeKind.Utc), 2026012017L), "generic count fanout date Jan second");
+        ValidateGenericInsert(created.Insert(new DateTime(2026, 2, 3, 9, 0, 0, DateTimeKind.Utc), 2026020309L), "generic count fanout date Feb first");
+        ValidateGenericInsert(created.Insert(new DateTime(2026, 3, 7, 9, 0, 0, DateTimeKind.Utc), 2026030709L), "generic count fanout date Mar excluded");
+
+        Func<string, IIndex> resolver = name => name switch
+        {
+            "membership" => membership,
+            "fixed32Membership" => fixed32Membership,
+            "created" => created,
+            _ => throw new KeyNotFoundException(name)
+        };
+
+        LibraDexConditionEndCondition membershipCondition = LibraDexCondition
+            .ForGroup("generic-count-fanout-proof")
+            .Index("membership")
+            .AsUInt64
+            .InSet(new[] { 10UL, 10UL, 20UL })
+            .EndCondition;
+        LibraDexConditionEndCondition fixed32MembershipCondition = LibraDexCondition
+            .ForGroup("generic-count-fanout-proof")
+            .Index("fixed32Membership")
+            .AsBinary
+            .InSet(new byte[][] { (byte[])fixedKeyA.Clone(), (byte[])fixedKeyA.Clone(), (byte[])fixedKeyB.Clone() })
+            .EndCondition;
+        LibraDexConditionEndCondition multiRangeCondition = LibraDexCondition
+            .ForGroup("generic-count-fanout-proof")
+            .Index("created")
+            .AsDate
+            .YearInMonths(2026, 1, 1, 2)
+            .EndCondition;
+
+        long membershipCount = membershipCondition.Count(resolver, IdentityDeduplication.Preserve);
+        long fixed32MembershipCount = fixed32MembershipCondition.Count(resolver, IdentityDeduplication.Preserve);
+        long multiRangeCount = multiRangeCondition.Count(resolver, IdentityDeduplication.Preserve);
+        if (membershipCount != 3)
+        {
+            throw new InvalidDataException($"Generic count fanout proof membership count returned {membershipCount}; expected 3.");
+        }
+
+        if (fixed32MembershipCount != 3)
+        {
+            throw new InvalidDataException($"Generic count fanout proof fixed32 membership count returned {fixed32MembershipCount}; expected 3.");
+        }
+
+        if (multiRangeCount != 3)
+        {
+            throw new InvalidDataException($"Generic count fanout proof multi-range count returned {multiRangeCount}; expected 3.");
+        }
+
+        Console.WriteLine($"generic-count-fanout-proof ok membership={membershipCount} fixed32Membership={fixed32MembershipCount} multiRange={multiRangeCount}");
+        return 0;
+    }
+
+    /// <summary>
+    /// Proves count-only fan-out normalization for public non-generic scalar facades.<br/>
+    /// String and UInt64 membership are exercised through public condition-builder `.Count(...)`, while UInt64 and BigInteger multirange are exercised as internal primitive leaves because no ordinary public grammar emits those multirange payloads today.<br/>
+    /// The expected counts verify duplicate operands and overlapping ranges are treated as set/range-union requests for count without materializing identities.<br/>
+    /// </summary>
+    /// <param name="args">Harness command arguments.<br/></param>
+    /// <returns>Zero when every count matches the expected physical tuple count; otherwise an exception is thrown.<br/></returns>
+    private static int RunNonGenericCountFanoutProof(string[] args)
+    {
+        _ = args;
+        using Catalog catalog = Catalog.CreateMemory();
+        using LibraDexStringScalar8Index code = catalog.Indexes["non-generic-count-fanout-proof"]["code"].String.Create(StringKeys.Exact);
+        using LibraDexUInt64VarIdentityIndex size = catalog.Indexes["non-generic-count-fanout-proof"]["size"].UInt64VarIdentityKeys(maxIdentityBytes: 16).Create(keys: IndexKeys.NonUnique);
+        using LibraDexBigIntScalar8Index<long> score = catalog.Indexes["non-generic-count-fanout-proof"]["score"].BigIntKeys<long>(maxBytes: 32).Create(keys: IndexKeys.NonUnique);
+        using LibraDexBigIntVarIdentityIndex scoreVar = catalog.Indexes["non-generic-count-fanout-proof"]["scoreVar"].BigIntVarIdentityKeys(maxBytes: 32, maxIdentityBytes: 16).Create(keys: IndexKeys.NonUnique);
+
+        ValidateGenericInsert(code.Insert("A", 101UL), "non-generic fanout string A first");
+        ValidateGenericInsert(code.Insert("A", 102UL), "non-generic fanout string A second");
+        ValidateGenericInsert(code.Insert("B", 201UL), "non-generic fanout string B");
+        ValidateGenericInsert(code.Insert("C", 301UL), "non-generic fanout string C excluded");
+
+        ValidateGenericInsert(size.Insert(10UL, new byte[] { 1, 0 }), "non-generic fanout uint64 10 first");
+        ValidateGenericInsert(size.Insert(10UL, new byte[] { 1, 1 }), "non-generic fanout uint64 10 second");
+        ValidateGenericInsert(size.Insert(20UL, new byte[] { 2, 0 }), "non-generic fanout uint64 20");
+        ValidateGenericInsert(size.Insert(25UL, new byte[] { 2, 5 }), "non-generic fanout uint64 25");
+        ValidateGenericInsert(size.Insert(30UL, new byte[] { 3, 0 }), "non-generic fanout uint64 30 excluded");
+
+        ValidateGenericInsert(score.Insert(new BigInteger(10), 1001L), "non-generic fanout bigint scalar 10 first");
+        ValidateGenericInsert(score.Insert(new BigInteger(10), 1002L), "non-generic fanout bigint scalar 10 second");
+        ValidateGenericInsert(score.Insert(new BigInteger(20), 2001L), "non-generic fanout bigint scalar 20");
+        ValidateGenericInsert(score.Insert(new BigInteger(25), 2501L), "non-generic fanout bigint scalar 25");
+        ValidateGenericInsert(score.Insert(new BigInteger(30), 3001L), "non-generic fanout bigint scalar excluded");
+
+        ValidateGenericInsert(scoreVar.Insert(new BigInteger(10), new byte[] { 10, 1 }), "non-generic fanout bigint var 10 first");
+        ValidateGenericInsert(scoreVar.Insert(new BigInteger(10), new byte[] { 10, 2 }), "non-generic fanout bigint var 10 second");
+        ValidateGenericInsert(scoreVar.Insert(new BigInteger(20), new byte[] { 20, 1 }), "non-generic fanout bigint var 20");
+        ValidateGenericInsert(scoreVar.Insert(new BigInteger(25), new byte[] { 25, 1 }), "non-generic fanout bigint var 25");
+        ValidateGenericInsert(scoreVar.Insert(new BigInteger(30), new byte[] { 30, 1 }), "non-generic fanout bigint var excluded");
+
+        Func<string, IIndex> resolver = name => name switch
+        {
+            "code" => code,
+            "size" => size,
+            "score" => score,
+            "scoreVar" => scoreVar,
+            _ => throw new KeyNotFoundException(name)
+        };
+
+        long stringMembershipCount = LibraDexCondition
+            .ForGroup("non-generic-count-fanout-proof")
+            .Index("code")
+            .AsString
+            .InSet(new[] { "A", "A", "B" })
+            .EndCondition
+            .Count(resolver, IdentityDeduplication.Preserve);
+        long uint64MembershipCount = LibraDexCondition
+            .ForGroup("non-generic-count-fanout-proof")
+            .Index("size")
+            .AsUInt64
+            .InSet(new[] { 10UL, 10UL, 20UL })
+            .EndCondition
+            .Count(resolver, IdentityDeduplication.Preserve);
+        long bigIntMembershipCount = LibraDexCondition
+            .ForGroup("non-generic-count-fanout-proof")
+            .Index("score")
+            .AsBigInteger
+            .InSet(new[] { new BigInteger(10), new BigInteger(10), new BigInteger(20) })
+            .EndCondition
+            .Count(resolver, IdentityDeduplication.Preserve);
+
+        LibraDexIdentityKeyRange[] overlappingRanges = new[]
+        {
+            new LibraDexIdentityKeyRange(new BigInteger(10), new BigInteger(20)),
+            new LibraDexIdentityKeyRange(new BigInteger(15), new BigInteger(25))
+        };
+        LibraDexIdentityKeyRange[] overlappingUInt64Ranges = new[]
+        {
+            new LibraDexIdentityKeyRange(10UL, 20UL),
+            new LibraDexIdentityKeyRange(15UL, 25UL)
+        };
+        IIdentityCriterion uint64MultiRange = LibraDexIdentityCriterion.Leaf(
+            size,
+            LibraDexCriteriaKind.MultiRange,
+            new LibraDexQueryDiagnostics(LibraDexExecutionKind.FastPath),
+            overlappingUInt64Ranges);
+        IIdentityCriterion scalarMultiRange = LibraDexIdentityCriterion.Leaf(
+            score,
+            LibraDexCriteriaKind.MultiRange,
+            new LibraDexQueryDiagnostics(LibraDexExecutionKind.FastPath),
+            overlappingRanges);
+        IIdentityCriterion varMultiRange = LibraDexIdentityCriterion.Leaf(
+            scoreVar,
+            LibraDexCriteriaKind.MultiRange,
+            new LibraDexQueryDiagnostics(LibraDexExecutionKind.FastPath),
+            overlappingRanges);
+        long uint64MultiRangeCount = LibraDexIdentityExecutionPlanner.Count(uint64MultiRange, IdentityDeduplication.Preserve);
+        long bigIntMultiRangeCount = LibraDexIdentityExecutionPlanner.Count(scalarMultiRange, IdentityDeduplication.Preserve);
+        long bigIntVarMultiRangeCount = LibraDexIdentityExecutionPlanner.Count(varMultiRange, IdentityDeduplication.Preserve);
+
+        if (stringMembershipCount != 3)
+        {
+            throw new InvalidDataException($"Non-generic count fanout proof string membership returned {stringMembershipCount}; expected 3.");
+        }
+
+        if (uint64MembershipCount != 3)
+        {
+            throw new InvalidDataException($"Non-generic count fanout proof UInt64 membership returned {uint64MembershipCount}; expected 3.");
+        }
+
+        if (bigIntMembershipCount != 3)
+        {
+            throw new InvalidDataException($"Non-generic count fanout proof BigInt membership returned {bigIntMembershipCount}; expected 3.");
+        }
+
+        if (uint64MultiRangeCount != 4)
+        {
+            throw new InvalidDataException($"Non-generic count fanout proof UInt64 var-identity multirange returned {uint64MultiRangeCount}; expected 4.");
+        }
+
+        if (bigIntMultiRangeCount != 4)
+        {
+            throw new InvalidDataException($"Non-generic count fanout proof BigInt multirange returned {bigIntMultiRangeCount}; expected 4.");
+        }
+
+        if (bigIntVarMultiRangeCount != 4)
+        {
+            throw new InvalidDataException($"Non-generic count fanout proof BigInt var-identity multirange returned {bigIntVarMultiRangeCount}; expected 4.");
+        }
+
+        Console.WriteLine(
+            "non-generic-count-fanout-proof ok " +
+            $"stringMembership={stringMembershipCount} uint64Membership={uint64MembershipCount} " +
+            $"bigIntMembership={bigIntMembershipCount} uint64MultiRange={uint64MultiRangeCount} " +
+            $"bigIntMultiRange={bigIntMultiRangeCount} bigIntVarMultiRange={bigIntVarMultiRangeCount}");
+        return 0;
+    }
+
+    /// <summary>
+    /// Creates one public UInt128 key whose encoded scalar-16 order preserves the supplied high route prefix.<br/>
+    /// UInt128 keys are already sortable as an unsigned scalar, so the top byte directly selects the root-prefix route in scalar-16 storage.<br/>
+    /// </summary>
+    /// <param name="prefix">The desired high route prefix byte.<br/></param>
+    /// <param name="ordinal">The low key ordinal used to keep seeded keys unique.<br/></param>
+    /// <returns>The public UInt128 key.</returns>
+    private static UInt128 CreateGenericScalar16BetweenCountProofKey(int prefix, uint ordinal)
+    {
+        UInt128 widened = ordinal;
+        return ((UInt128)(byte)prefix << 120) | (widened << 88) | (widened << 32) | widened;
+    }
+
+    /// <summary>
+    /// Creates a deterministic non-zero UInt128 identity for wide-identity count proof inserts.<br/>
+    /// Count criteria do not decode identities, but varying both lanes keeps the seeded physical shape representative of real widened identities.<br/>
+    /// </summary>
+    /// <param name="ordinal">The deterministic item ordinal.<br/></param>
+    /// <returns>The public UInt128 identity.</returns>
+    private static UInt128 CreateGenericScalar16BetweenCountProofIdentity(int ordinal)
+    {
+        return ((UInt128)0xA5 << 120) | (uint)(ordinal + 1);
+    }
+
+    /// <summary>
+    /// Creates one public 32-byte key whose encoded fixed32 order preserves the supplied high route prefix.<br/>
+    /// The first byte selects the root route while early-lane ordinal entropy keeps inserts from requiring excessive deep routing for proof-sized datasets.<br/>
+    /// </summary>
+    /// <param name="prefix">The desired high route prefix byte.<br/></param>
+    /// <param name="ordinal">The low key ordinal used to keep seeded keys unique.<br/></param>
+    /// <returns>A 32-byte public key.</returns>
+    private static byte[] CreateGenericFixed32BetweenCountProofKey(int prefix, uint ordinal)
+    {
+        byte[] key = new byte[32];
+        key[0] = (byte)prefix;
+        BinaryPrimitives.WriteUInt32BigEndian(key.AsSpan(4, sizeof(uint)), ordinal);
+        BinaryPrimitives.WriteUInt32BigEndian(key.AsSpan(12, sizeof(uint)), ordinal * 17U);
+        BinaryPrimitives.WriteUInt32BigEndian(key.AsSpan(20, sizeof(uint)), ordinal * 131U);
+        BinaryPrimitives.WriteUInt32BigEndian(key.AsSpan(28, sizeof(uint)), ordinal);
+        return key;
+    }
+
+    /// <summary>
+    /// Creates a deterministic Guid identity for fixed32 widened-identity proof inserts.<br/>
+    /// The exact identity value is not used by count criteria, but varying it keeps the physical `FS32-16` shape representative of real data.<br/>
+    /// </summary>
+    /// <param name="ordinal">The deterministic item ordinal.<br/></param>
+    /// <returns>The public Guid identity.</returns>
+    private static Guid CreateGenericFixed32BetweenCountProofGuidIdentity(int ordinal)
+    {
+        Span<byte> bytes = stackalloc byte[16];
+        BinaryPrimitives.WriteUInt32BigEndian(bytes, (uint)ordinal);
+        BinaryPrimitives.WriteUInt32BigEndian(bytes[4..], (uint)(ordinal * 17));
+        BinaryPrimitives.WriteUInt32BigEndian(bytes[8..], (uint)(ordinal * 131));
+        BinaryPrimitives.WriteUInt32BigEndian(bytes[12..], (uint)(ordinal + 1));
+        return new Guid(bytes);
+    }
+
+    /// <summary>
     /// Creates the DataKernel options used by the 16-byte identity split-preservation regression.<br/>
     /// The options match normal harness routed-write behavior while keeping commit coalescing enabled for the batched insert loop.<br/>
     /// </summary>
@@ -7256,10 +7838,16 @@ internal static partial class RawHarness
                     else if (cachedResult == Scalar16Scalar16InsertResult.Full)
                     {
                         telemetry.CacheFullFallbackCount++;
-                        session.StageScalar16Scalar16ShelfRewriteForBatch(target.Offset, profile, entry.Bytes);
-                        telemetry.FullShelfStageCount++;
                         dirtyShelves.Remove(target.Offset);
                         routeTargetCache.Clear();
+                        Scalar16Scalar16RoutedInsertResult result = session.InsertWalkedRoutedScalar16Scalar16FromShelfImage(rootRouterOffset, profile, target.Offset, entry.Bytes, keyHigh, keyLow, keyHigh, keyLow, allowDuplicateKeys: true, maxRouterHops: 8);
+                        if (result.InsertResult != Scalar16Scalar16InsertResult.Inserted)
+                        {
+                            throw new InvalidDataException($"Expected SS16-16 routed bulk split insert, got {result.Kind}/{result.InsertResult}.");
+                        }
+
+                        AddScalar16Scalar16RoutedBulkWriteFallback(result, ref telemetry);
+                        insertedByCache = true;
                     }
                     else
                     {
@@ -7289,7 +7877,7 @@ internal static partial class RawHarness
                 StageScalar16Scalar16ShelfDeltaRewrite(session, pair.Key, profile, pair.Value, ref telemetry);
             }
 
-            (DataKernelCommitTelemetry commit, long deferredRequests) = durabilityBatch.Commit();
+            (DataKernelCommitTelemetry commit, long deferredRequests, _) = durabilityBatch.Commit();
             foreach (KeyValuePair<long, Scalar16Scalar16BatchShelfCacheEntry> pair in dirtyShelves)
             {
                 session.StoreScalar16Scalar16CleanShelfBytesForBatch(pair.Key, profile, pair.Value.Bytes);
@@ -7412,10 +8000,16 @@ internal static partial class RawHarness
                     else if (cachedResult == Scalar16Scalar8InsertResult.Full)
                     {
                         telemetry.CacheFullFallbackCount++;
-                        session.StageScalar16Scalar8ShelfRewriteForBatch(target.Offset, profile, entry.Bytes);
-                        telemetry.FullShelfStageCount++;
                         dirtyShelves.Remove(target.Offset);
                         routeTargetCache.Clear();
+                        Scalar16Scalar8RoutedInsertResult result = session.InsertWalkedRoutedScalar16Scalar8FromShelfImage(rootRouterOffset, profile, target.Offset, entry.Bytes, keyHigh, keyLow, identity, allowDuplicateKeys: true, maxRouterHops: 8);
+                        if (result.InsertResult != Scalar16Scalar8InsertResult.Inserted)
+                        {
+                            throw new InvalidDataException($"Expected SS16-8 routed bulk split insert, got {result.Kind}/{result.InsertResult}.");
+                        }
+
+                        AddScalar16Scalar8RoutedBulkWriteFallback(result, ref telemetry);
+                        insertedByCache = true;
                     }
                     else
                     {
@@ -7445,7 +8039,7 @@ internal static partial class RawHarness
                 StageScalar16Scalar8ShelfDeltaRewrite(session, pair.Key, profile, pair.Value, ref telemetry);
             }
 
-            (DataKernelCommitTelemetry commit, long deferredRequests) = durabilityBatch.Commit();
+            (DataKernelCommitTelemetry commit, long deferredRequests, _) = durabilityBatch.Commit();
             foreach (KeyValuePair<long, Scalar16Scalar8BatchShelfCacheEntry> pair in dirtyShelves)
             {
                 session.StoreScalar16Scalar8CleanShelfBytesForBatch(pair.Key, profile, pair.Value.Bytes);
@@ -7568,10 +8162,16 @@ internal static partial class RawHarness
                     else if (cachedResult == Scalar8Scalar16InsertResult.Full)
                     {
                         telemetry.CacheFullFallbackCount++;
-                        session.StageScalar8Scalar16ShelfRewriteForBatch(target.Offset, profile, entry.Bytes);
-                        telemetry.FullShelfStageCount++;
                         dirtyShelves.Remove(target.Offset);
                         routeTargetCache.Clear();
+                        Scalar8Scalar16RoutedInsertResult result = session.InsertWalkedRoutedScalar8Scalar16FromShelfImage(rootRouterOffset, profile, target.Offset, entry.Bytes, key, identityHigh, identityLow, allowDuplicateKeys: true, maxRouterHops: 8);
+                        if (result.InsertResult != Scalar8Scalar16InsertResult.Inserted)
+                        {
+                            throw new InvalidDataException($"Expected SS8-16 routed bulk split insert, got {result.Kind}/{result.InsertResult}.");
+                        }
+
+                        AddScalar8Scalar16RoutedBulkWriteFallback(result, ref telemetry);
+                        insertedByCache = true;
                     }
                     else
                     {
@@ -7601,7 +8201,7 @@ internal static partial class RawHarness
                 StageScalar8Scalar16ShelfDeltaRewrite(session, pair.Key, profile, pair.Value, ref telemetry);
             }
 
-            (DataKernelCommitTelemetry commit, long deferredRequests) = durabilityBatch.Commit();
+            (DataKernelCommitTelemetry commit, long deferredRequests, _) = durabilityBatch.Commit();
             foreach (KeyValuePair<long, Scalar8Scalar16BatchShelfCacheEntry> pair in dirtyShelves)
             {
                 session.StoreScalar8Scalar16CleanShelfBytesForBatch(pair.Key, profile, pair.Value.Bytes);
@@ -7723,10 +8323,16 @@ internal static partial class RawHarness
                     else if (cachedResult == Fixed32Scalar8InsertResult.Full)
                     {
                         telemetry.CacheFullFallbackCount++;
-                        session.StageFixed32Scalar8ShelfRewriteForBatch(target.Offset, profile, entry.Bytes);
-                        telemetry.FullShelfStageCount++;
                         dirtyShelves.Remove(target.Offset);
                         routeTargetCache.Clear();
+                        Fixed32Scalar8RoutedInsertResult result = session.InsertWalkedRoutedFixed32Scalar8FromShelfImage(rootRouterOffset, profile, target.Offset, entry.Bytes, key0, key1, key2, key3, identity, allowDuplicateKeys: true, maxRouterHops: 32);
+                        if (result.InsertResult != Fixed32Scalar8InsertResult.Inserted)
+                        {
+                            throw new InvalidDataException($"Expected FS32-8 routed bulk split insert, got {result.Kind}/{result.InsertResult}.");
+                        }
+
+                        AddFixed32Scalar8RoutedBulkWriteFallback(result, ref telemetry);
+                        insertedByCache = true;
                     }
                     else
                     {
@@ -7756,7 +8362,7 @@ internal static partial class RawHarness
                 StageFixed32Scalar8ShelfDeltaRewrite(session, pair.Key, profile, pair.Value, ref telemetry);
             }
 
-            (DataKernelCommitTelemetry commit, long deferredRequests) = durabilityBatch.Commit();
+            (DataKernelCommitTelemetry commit, long deferredRequests, _) = durabilityBatch.Commit();
             foreach (KeyValuePair<long, Fixed32Scalar8BatchShelfCacheEntry> pair in dirtyShelves)
             {
                 session.StoreFixed32Scalar8CleanShelfBytesForBatch(pair.Key, profile, pair.Value.Bytes);
@@ -9605,6 +10211,18 @@ internal static partial class RawHarness
     }
 
 
+    private static void PrintFixed32Scalar16SizeSweepRows(ReadOnlySpan<Fixed32Scalar16SizeSweepRow> rows)
+    {
+        Console.WriteLine("| shelf | max items | sorted items/sec | random items/sec | write B/item | p0 ids/sec | p0 ns/id | p0 bytes/range | p0-2 ids/sec | p0-2 ns/id | p0-2 bytes/range |");
+        Console.WriteLine("|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
+        for (int i = 0; i < rows.Length; i++)
+        {
+            Fixed32Scalar16SizeSweepRow row = rows[i];
+            Console.WriteLine(string.Create(CultureInfo.InvariantCulture, $"| {row.Profile.ShelfExtentSize} | {row.Profile.MaxItemCount} | {row.SortedWrite.ItemsPerSecond:F2} | {row.RandomWrite.ItemsPerSecond:F2} | {row.RandomWrite.BytesPerItem:F2} | {row.Prefix0Read.IdentitiesPerSecond:F2} | {row.Prefix0Read.NsPerIdentity:F2} | {row.Prefix0Read.BytesPerRange:F2} | {row.PrefixSpanRead.IdentitiesPerSecond:F2} | {row.PrefixSpanRead.NsPerIdentity:F2} | {row.PrefixSpanRead.BytesPerRange:F2} |"));
+        }
+    }
+
+
     /// <summary>
     /// Prints typed unsigned public bulk-read benchmark rows to the console.<br/>
     /// The shape mirrors the typed markdown comparison report and keeps encoded-baseline drift visible during focused runs.<br/>
@@ -10794,6 +11412,14 @@ internal static partial class RawHarness
         Fixed32Scalar8ReadParityResult PrefixSpanRead);
 
 
+    private readonly record struct Fixed32Scalar16SizeSweepRow(
+        Fixed32Scalar16Profile Profile,
+        Scalar8Scalar8RoutedBulkWriteResult SortedWrite,
+        Scalar8Scalar8RoutedBulkWriteResult RandomWrite,
+        Fixed32Scalar16ReadParityResult Prefix0Read,
+        Fixed32Scalar16ReadParityResult PrefixSpanRead);
+
+
     private readonly record struct Scalar8Scalar8PublicReadTargetResult(
         string Name,
         int DistinctShelfCount,
@@ -10937,10 +11563,16 @@ internal static partial class RawHarness
                     else if (cachedResult == Fixed32Scalar16InsertResult.Full)
                     {
                         telemetry.CacheFullFallbackCount++;
-                        session.StageFixed32Scalar16ShelfRewriteForBatch(target.Offset, profile, entry.Bytes);
-                        telemetry.FullShelfStageCount++;
                         dirtyShelves.Remove(target.Offset);
                         routeTargetCache.Clear();
+                        Fixed32Scalar16RoutedInsertResult result = session.InsertWalkedRoutedFixed32Scalar16FromShelfImage(rootRouterOffset, profile, target.Offset, entry.Bytes, key0, key1, key2, key3, identity, identity, allowDuplicateKeys: true, maxRouterHops: 32);
+                        if (result.InsertResult != Fixed32Scalar16InsertResult.Inserted)
+                        {
+                            throw new InvalidDataException($"Expected FS32-16 routed bulk split insert, got {result.Kind}/{result.InsertResult}.");
+                        }
+
+                        AddFixed32Scalar16RoutedBulkWriteFallback(result, ref telemetry);
+                        insertedByCache = true;
                     }
                     else
                     {
@@ -10970,7 +11602,7 @@ internal static partial class RawHarness
                 StageFixed32Scalar16ShelfDeltaRewrite(session, pair.Key, profile, pair.Value, ref telemetry);
             }
 
-            (DataKernelCommitTelemetry commit, long deferredRequests) = durabilityBatch.Commit();
+            (DataKernelCommitTelemetry commit, long deferredRequests, _) = durabilityBatch.Commit();
             foreach (KeyValuePair<long, Fixed32Scalar16BatchShelfCacheEntry> pair in dirtyShelves)
             {
                 session.StoreFixed32Scalar16CleanShelfBytesForBatch(pair.Key, profile, pair.Value.Bytes);
@@ -11363,13 +11995,14 @@ internal static partial class RawHarness
         int[] sortedOrder,
         DataKernelOptions options,
         SqliteScalar8Scalar8Options sqliteOptions,
+        Scalar8Scalar8Profile profile,
         ReadOnlySpan<AllShapeReadRangeCase> ranges,
         ulong[] identities,
         List<AllShapeReadRangeSweepRow> rows)
     {
         string libraPath = Path.Combine(directory, "read-sweep-ss8-8.lbdx");
         File.Delete(libraPath);
-        using (Scalar8Scalar8Index created = Indexes.SS88.Create(libraPath, DataKernelBackingKind.File, name: "read-sweep-ss8-8", options: options, developerMetadata: CreateDesignPerfMetadata(8801), telemetryOptions: DataKernelTelemetryOptions.EnabledOptions, shelfExtentSize: Scalar8Scalar8Profile.Default32KiB.ShelfExtentSize))
+        using (Scalar8Scalar8Index created = Indexes.SS88.Create(libraPath, DataKernelBackingKind.File, name: "read-sweep-ss8-8", options: options, developerMetadata: CreateDesignPerfMetadata(8801), telemetryOptions: DataKernelTelemetryOptions.EnabledOptions, shelfExtentSize: profile.ShelfExtentSize))
         {
             _ = RunScalar8Scalar8RoutedBulkWriteLoop(created, batches, itemsPerBatch, prefixCount, sortedOrder, batchOffset: 0);
         }

@@ -9,18 +9,23 @@ namespace LibraDex;
 /// The reader stores only matching shelf ranges, then advances slot-by-slot on demand so result rows are not materialized into arrays or per-row references.<br/>
 /// This avoids `byte[][]` materialization while still giving callers ergonomic row-wise access, skip control, and explicit copy points for identities they choose to keep.<br/>
 /// </summary>
-public sealed class Scalar8VarIdentityRangeReader : IDisposable
+internal sealed class Scalar8VarIdentityRangeReader : IDisposable
 {
     private const int DefaultShelfCapacity = 8;
 
     private Scalar8VarIdentityReadOnly[] shelves;
+    private byte[][] terminalShelves;
     private int[] startSlots;
     private int[] endSlots;
+    private byte[] terminalFlags;
+    private ulong[] terminalKeys;
     private long[]? pendingOffsets;
     private int[]? pendingHops;
+    private byte[]? pendingFlags;
     private RouteVisitedOffsetSet? visitedShelves;
-    private RouteVisitedOffsetSet? visitedRouters;
+    private RouteVisitedContextSet? visitedRouters;
     private LibraDexFileSession? session;
+    private long indexRootOffset;
     private int shelfCount;
     private int rowCount;
     private int pendingCount;
@@ -33,11 +38,18 @@ public sealed class Scalar8VarIdentityRangeReader : IDisposable
     private bool traversalComplete = true;
     private bool disposed;
 
+    internal static bool UseExhaustiveRouteTraversal { get; set; }
+
+    internal static bool ScanDescendantRoutesForPrunedReads { get; set; }
+
     internal Scalar8VarIdentityRangeReader()
     {
         shelves = ArrayPool<Scalar8VarIdentityReadOnly>.Shared.Rent(DefaultShelfCapacity);
+        terminalShelves = ArrayPool<byte[]>.Shared.Rent(DefaultShelfCapacity);
         startSlots = ArrayPool<int>.Shared.Rent(DefaultShelfCapacity);
         endSlots = ArrayPool<int>.Shared.Rent(DefaultShelfCapacity);
+        terminalFlags = ArrayPool<byte>.Shared.Rent(DefaultShelfCapacity);
+        terminalKeys = ArrayPool<ulong>.Shared.Rent(DefaultShelfCapacity);
     }
 
     internal Scalar8VarIdentityRangeReader(
@@ -48,24 +60,62 @@ public sealed class Scalar8VarIdentityRangeReader : IDisposable
         ulong upperEncodedKey)
         : this()
     {
+        Reset(session, rootRouterOffset, maxIdentityLength, lowerEncodedKey, upperEncodedKey);
+    }
+
+    /// <summary>
+    /// Reinitializes the reader for a new `SV8` key range while retaining rented traversal buffers.<br/>
+    /// This is used by exact-key batch probes where the caller has a fixed key set and wants to process sorted keys without paying full reader setup/teardown for each key.<br/>
+    /// </summary>
+    /// <param name="session">The opened LibraDex session that owns the root router.</param>
+    /// <param name="rootRouterOffset">The root router offset for the `SV8` index.</param>
+    /// <param name="maxIdentityLength">The maximum raw identity length accepted by the index.</param>
+    /// <param name="lowerEncodedKey">The inclusive lower encoded scalar key.</param>
+    /// <param name="upperEncodedKey">The inclusive upper encoded scalar key.</param>
+    internal void Reset(
+        LibraDexFileSession session,
+        long rootRouterOffset,
+        int maxIdentityLength,
+        ulong lowerEncodedKey,
+        ulong upperEncodedKey)
+    {
+        if (disposed)
+        {
+            throw new ObjectDisposedException(nameof(Scalar8VarIdentityRangeReader));
+        }
+
+        if (lowerEncodedKey > upperEncodedKey)
+        {
+            throw new ArgumentException("The upper SV8 key must be greater than or equal to the lower key.", nameof(upperEncodedKey));
+        }
+
+        ClearLoadedRanges();
         this.session = session;
+        indexRootOffset = rootRouterOffset;
         this.maxIdentityLength = maxIdentityLength;
         this.lowerEncodedKey = lowerEncodedKey;
         this.upperEncodedKey = upperEncodedKey;
-        pendingOffsets = ArrayPool<long>.Shared.Rent(DefaultShelfCapacity);
-        pendingHops = ArrayPool<int>.Shared.Rent(DefaultShelfCapacity);
-        visitedShelves = RouteVisitedOffsetSet.Rent();
-        visitedRouters = RouteVisitedOffsetSet.Rent();
+        pendingOffsets ??= ArrayPool<long>.Shared.Rent(DefaultShelfCapacity);
+        pendingHops ??= ArrayPool<int>.Shared.Rent(DefaultShelfCapacity);
+        pendingFlags ??= ArrayPool<byte>.Shared.Rent(DefaultShelfCapacity);
+        visitedShelves ??= RouteVisitedOffsetSet.Rent();
+        visitedRouters ??= RouteVisitedContextSet.Rent();
+        visitedShelves.Clear();
+        visitedRouters.Clear();
+        pendingCount = 0;
+        currentShelfIndex = 0;
+        currentSlotIndex = -1;
+        ordinal = -1;
         traversalComplete = false;
 
-        byte lowerPrefix = LibraDexFileSession.GetScalar8VarIdentityPrefix(lowerEncodedKey, 0);
-        byte upperPrefix = LibraDexFileSession.GetScalar8VarIdentityPrefix(upperEncodedKey, 0);
+        byte lowerPrefix = UseExhaustiveRouteTraversal ? byte.MinValue : LibraDexFileSession.GetScalar8VarIdentityPrefix(lowerEncodedKey, 0);
+        byte upperPrefix = UseExhaustiveRouteTraversal ? byte.MaxValue : LibraDexFileSession.GetScalar8VarIdentityPrefix(upperEncodedKey, 0);
         for (int prefix = upperPrefix; prefix >= lowerPrefix; prefix--)
         {
             long targetOffset = session.FindRouterTarget(rootRouterOffset, (byte)prefix);
             if (targetOffset != 0)
             {
-                PushTarget(targetOffset, 8);
+                PushTarget(targetOffset, 32, prefix == lowerPrefix, prefix == upperPrefix);
             }
         }
     }
@@ -94,13 +144,15 @@ public sealed class Scalar8VarIdentityRangeReader : IDisposable
     /// Gets the encoded scalar key for the current row.<br/>
     /// The caller must call <see cref="MoveNext"/> successfully before reading this property.<br/>
     /// </summary>
-    public ulong CurrentEncodedKey => CurrentShelf.ReadKeyAt(currentSlotIndex);
+    public ulong CurrentEncodedKey => terminalFlags[currentShelfIndex] == 0 ? CurrentShelf.ReadKeyAt(currentSlotIndex) : terminalKeys[currentShelfIndex];
 
     /// <summary>
     /// Gets the raw identity bytes for the current row.<br/>
     /// The returned span is valid until <see cref="MoveNext"/> is called again or the reader is disposed.<br/>
     /// </summary>
-    public ReadOnlySpan<byte> CurrentIdentity => CurrentShelf.ReadIdentityAt(currentSlotIndex);
+    public ReadOnlySpan<byte> CurrentIdentity => terminalFlags[currentShelfIndex] == 0
+        ? CurrentShelf.ReadIdentityAt(currentSlotIndex)
+        : TerminalVarIdentityShelfLayout.ReadIdentityAt(terminalShelves[currentShelfIndex], currentSlotIndex);
 
     /// <summary>
     /// Gets the current identity length without forcing the caller to copy identity bytes.<br/>
@@ -214,6 +266,11 @@ public sealed class Scalar8VarIdentityRangeReader : IDisposable
             throw new InvalidDataException("The routed SV8 range target shelf is invalid.");
         }
 
+        AddShelfRange(shelf, lowerEncodedKey, upperEncodedKey);
+    }
+
+    private void AddShelfRange(Scalar8VarIdentityReadOnly shelf, ulong lowerEncodedKey, ulong upperEncodedKey)
+    {
         int startSlot = shelf.LowerBoundKey(lowerEncodedKey);
         int endSlot = startSlot;
         while (endSlot < shelf.ItemCount && shelf.ReadKeyAt(endSlot) <= upperEncodedKey)
@@ -237,8 +294,23 @@ public sealed class Scalar8VarIdentityRangeReader : IDisposable
 
         disposed = true;
         ArrayPool<Scalar8VarIdentityReadOnly>.Shared.Return(shelves, clearArray: true);
+        for (int i = 0; i < shelfCount; i++)
+        {
+            if (terminalFlags[i] != 0)
+            {
+                byte[]? terminalShelf = terminalShelves[i];
+                if (terminalShelf is not null)
+                {
+                    ArrayPool<byte>.Shared.Return(terminalShelf, clearArray: false);
+                }
+            }
+        }
+
+        ArrayPool<byte[]>.Shared.Return(terminalShelves, clearArray: true);
         ArrayPool<int>.Shared.Return(startSlots, clearArray: false);
         ArrayPool<int>.Shared.Return(endSlots, clearArray: false);
+        ArrayPool<byte>.Shared.Return(terminalFlags, clearArray: false);
+        ArrayPool<ulong>.Shared.Return(terminalKeys, clearArray: false);
         if (pendingOffsets is not null)
         {
             ArrayPool<long>.Shared.Return(pendingOffsets, clearArray: false);
@@ -249,6 +321,11 @@ public sealed class Scalar8VarIdentityRangeReader : IDisposable
             ArrayPool<int>.Shared.Return(pendingHops, clearArray: false);
         }
 
+        if (pendingFlags is not null)
+        {
+            ArrayPool<byte>.Shared.Return(pendingFlags, clearArray: false);
+        }
+
         visitedShelves?.Dispose();
         visitedRouters?.Dispose();
         pendingOffsets = null;
@@ -256,6 +333,7 @@ public sealed class Scalar8VarIdentityRangeReader : IDisposable
         visitedShelves = null;
         visitedRouters = null;
         session = null;
+        pendingFlags = null;
         shelfCount = 0;
         rowCount = 0;
         pendingCount = 0;
@@ -278,6 +356,32 @@ public sealed class Scalar8VarIdentityRangeReader : IDisposable
         }
     }
 
+    private void ClearLoadedRanges()
+    {
+        for (int i = 0; i < shelfCount; i++)
+        {
+            if (terminalFlags[i] != 0)
+            {
+                byte[]? terminalShelf = terminalShelves[i];
+                if (terminalShelf is not null)
+                {
+                    ArrayPool<byte>.Shared.Return(terminalShelf, clearArray: false);
+                }
+            }
+
+            shelves[i] = null!;
+            terminalShelves[i] = null!;
+            startSlots[i] = 0;
+            endSlots[i] = 0;
+            terminalFlags[i] = 0;
+            terminalKeys[i] = 0;
+        }
+
+        shelfCount = 0;
+        rowCount = 0;
+    }
+
+
     private void AddShelfRange(Scalar8VarIdentityReadOnly shelf, int startSlot, int endSlot)
     {
         if (endSlot <= startSlot)
@@ -291,10 +395,38 @@ public sealed class Scalar8VarIdentityRangeReader : IDisposable
         }
 
         shelves[shelfCount] = shelf;
+        terminalShelves[shelfCount] = null!;
         startSlots[shelfCount] = startSlot;
         endSlots[shelfCount] = endSlot;
+        terminalFlags[shelfCount] = 0;
+        terminalKeys[shelfCount] = 0;
         shelfCount++;
         rowCount = checked(rowCount + endSlot - startSlot);
+    }
+
+    private void AddTerminalVarIdentityShelfRange(byte[] shelfBytes, ulong encodedKey)
+    {
+        TerminalVarIdentityShelfLayout.Validate(shelfBytes, TerminalVarIdentityShelfLayout.ReadShelfExtentSize(shelfBytes));
+        int itemCount = TerminalVarIdentityShelfLayout.ReadItemCount(shelfBytes);
+        if (itemCount <= 0)
+        {
+            ArrayPool<byte>.Shared.Return(shelfBytes, clearArray: false);
+            return;
+        }
+
+        if (shelfCount == shelves.Length)
+        {
+            GrowShelves();
+        }
+
+        shelves[shelfCount] = null!;
+        terminalShelves[shelfCount] = shelfBytes;
+        startSlots[shelfCount] = 0;
+        endSlots[shelfCount] = itemCount;
+        terminalFlags[shelfCount] = 1;
+        terminalKeys[shelfCount] = encodedKey;
+        shelfCount++;
+        rowCount = checked(rowCount + itemCount);
     }
 
     private bool LoadNextShelfRange()
@@ -306,18 +438,54 @@ public sealed class Scalar8VarIdentityRangeReader : IDisposable
 
         LibraDexFileSession localSession = session ?? throw new ObjectDisposedException(nameof(Scalar8VarIdentityRangeReader));
         RouteVisitedOffsetSet localVisitedShelves = visitedShelves ?? throw new ObjectDisposedException(nameof(Scalar8VarIdentityRangeReader));
-        RouteVisitedOffsetSet localVisitedRouters = visitedRouters ?? throw new ObjectDisposedException(nameof(Scalar8VarIdentityRangeReader));
+        RouteVisitedContextSet localVisitedRouters = visitedRouters ?? throw new ObjectDisposedException(nameof(Scalar8VarIdentityRangeReader));
         int previousRowCount = rowCount;
         Span<byte> routerBytes = stackalloc byte[RouterLayout.Size];
         while (pendingCount > 0)
         {
-            PopTarget(out long targetOffset, out int remainingHops);
+            PopTarget(out long targetOffset, out int remainingHops, out bool lowerEdge, out bool upperEdge);
             if (remainingHops <= 0)
             {
                 throw new InvalidDataException("The routed SV8 range read exceeded the configured router hop count.");
             }
 
             Scalar8VarIdentityRouteTargetKind kind = localSession.ClassifyScalar8VarIdentityRouteTarget(targetOffset);
+            if (kind == Scalar8VarIdentityRouteTargetKind.TerminalVarIdentityRoot)
+            {
+                byte[] rootBytes = localSession.ReadTerminalIdentityRootBytes(targetOffset);
+                if (TerminalIdentityRootLayout.ReadShape(rootBytes) != TerminalIdentityRootLayout.ShapeScalar8VarIdentity ||
+                    TerminalIdentityRootLayout.ReadKeyLength(rootBytes) != Scalar8VarIdentityLayout.KeySize)
+                {
+                    throw new InvalidDataException("The routed SV8 terminal var identity root is invalid.");
+                }
+
+                ulong encodedKey = System.Buffers.Binary.BinaryPrimitives.ReadUInt64BigEndian(rootBytes.AsSpan(TerminalIdentityRootLayout.KeyBytesOffset, Scalar8VarIdentityLayout.KeySize));
+                if (encodedKey >= lowerEncodedKey && encodedKey <= upperEncodedKey)
+                {
+                    int shelfExtentSize = TerminalIdentityRootLayout.ReadShelfExtentSize(rootBytes);
+                    long terminalShelfOffset = TerminalIdentityRootLayout.ReadFirstShelfOffset(rootBytes);
+                    while (terminalShelfOffset != 0)
+                    {
+                        if (!localVisitedShelves.Add(terminalShelfOffset))
+                        {
+                            break;
+                        }
+
+                        byte[] terminalShelfBytes = localSession.ReadTerminalVarIdentityShelfBytes(terminalShelfOffset, shelfExtentSize);
+                        long nextOffset = TerminalVarIdentityShelfLayout.ReadNextShelfOffset(terminalShelfBytes);
+                        AddTerminalVarIdentityShelfRange(terminalShelfBytes, encodedKey);
+                        terminalShelfOffset = nextOffset;
+                    }
+
+                    if (rowCount > previousRowCount)
+                    {
+                        return true;
+                    }
+                }
+
+                continue;
+            }
+
             if (kind == Scalar8VarIdentityRouteTargetKind.Shelf)
             {
                 long currentShelfOffset = targetOffset;
@@ -328,14 +496,17 @@ public sealed class Scalar8VarIdentityRangeReader : IDisposable
                         break;
                     }
 
-                    byte[] shelfBytes = localSession.ReadScalar8VarIdentityShelfBytes(currentShelfOffset, maxIdentityLength, out Scalar8VarIdentityProfile profile);
-                    AddShelfRange(shelfBytes, profile, lowerEncodedKey, upperEncodedKey);
-                    currentShelfOffset = Scalar8VarIdentityLayout.ReadNextShelfOffset(shelfBytes);
+                    Scalar8VarIdentityReadOnly shelf = localSession.ReadScalar8VarIdentityReadOnlyShelf(
+                        indexRootOffset,
+                        currentShelfOffset,
+                        maxIdentityLength);
+                    AddShelfRange(shelf, lowerEncodedKey, upperEncodedKey);
+                    currentShelfOffset = shelf.NextShelfOffset;
                     if (rowCount > previousRowCount)
                     {
                         if (currentShelfOffset != 0)
                         {
-                            PushTarget(currentShelfOffset, remainingHops);
+                            PushTarget(currentShelfOffset, remainingHops, lowerEdge, upperEdge);
                         }
 
                         return true;
@@ -345,7 +516,7 @@ public sealed class Scalar8VarIdentityRangeReader : IDisposable
                 continue;
             }
 
-            if (kind != Scalar8VarIdentityRouteTargetKind.Router || !localVisitedRouters.Add(targetOffset))
+            if (kind != Scalar8VarIdentityRouteTargetKind.Router || !localVisitedRouters.Add(targetOffset, lowerEdge, upperEdge))
             {
                 continue;
             }
@@ -357,15 +528,22 @@ public sealed class Scalar8VarIdentityRangeReader : IDisposable
                 throw new InvalidDataException("The routed SV8 range target router is invalid.");
             }
 
-            byte lowerPrefix = LibraDexFileSession.GetScalar8VarIdentityPrefix(lowerEncodedKey, router.KeyDepth);
-            byte upperPrefix = LibraDexFileSession.GetScalar8VarIdentityPrefix(upperEncodedKey, router.KeyDepth);
-            for (int prefix = upperPrefix; prefix >= lowerPrefix; prefix--)
+            bool exhaustiveForRouter = UseExhaustiveRouteTraversal ||
+                (ScanDescendantRoutesForPrunedReads && (lowerEdge || upperEdge));
+            byte edgeLowerPrefix = lowerEdge ? LibraDexFileSession.GetScalar8VarIdentityPrefix(lowerEncodedKey, router.KeyDepth) : byte.MinValue;
+            byte edgeUpperPrefix = upperEdge ? LibraDexFileSession.GetScalar8VarIdentityPrefix(upperEncodedKey, router.KeyDepth) : byte.MaxValue;
+            byte scanLowerPrefix = exhaustiveForRouter ? byte.MinValue : edgeLowerPrefix;
+            byte scanUpperPrefix = exhaustiveForRouter ? byte.MaxValue : edgeUpperPrefix;
+            long previousRouteTarget = 0;
+            for (int prefix = scanUpperPrefix; prefix >= scanLowerPrefix; prefix--)
             {
                 long routeTarget = router.FindTarget((byte)prefix);
-                if (routeTarget != 0)
+                if (routeTarget != 0 && routeTarget != previousRouteTarget)
                 {
-                    PushTarget(routeTarget, remainingHops - 1);
+                    PushTarget(routeTarget, remainingHops - 1, lowerEdge && prefix == edgeLowerPrefix, upperEdge && prefix == edgeUpperPrefix);
                 }
+
+                previousRouteTarget = routeTarget;
             }
         }
 
@@ -380,54 +558,77 @@ public sealed class Scalar8VarIdentityRangeReader : IDisposable
         }
     }
 
-    private void PushTarget(long offset, int remainingHops)
+    private void PushTarget(long offset, int remainingHops, bool lowerEdge, bool upperEdge)
     {
         long[] localOffsets = pendingOffsets ?? throw new ObjectDisposedException(nameof(Scalar8VarIdentityRangeReader));
         int[] localHops = pendingHops ?? throw new ObjectDisposedException(nameof(Scalar8VarIdentityRangeReader));
+        byte[] localFlags = pendingFlags ?? throw new ObjectDisposedException(nameof(Scalar8VarIdentityRangeReader));
         if (pendingCount == localOffsets.Length)
         {
             int newLength = checked(localOffsets.Length * 2);
             long[] newOffsets = ArrayPool<long>.Shared.Rent(newLength);
             int[] newHops = ArrayPool<int>.Shared.Rent(newLength);
+            byte[] newFlags = ArrayPool<byte>.Shared.Rent(newLength);
             localOffsets.AsSpan(0, pendingCount).CopyTo(newOffsets);
             localHops.AsSpan(0, pendingCount).CopyTo(newHops);
+            localFlags.AsSpan(0, pendingCount).CopyTo(newFlags);
             ArrayPool<long>.Shared.Return(localOffsets, clearArray: false);
             ArrayPool<int>.Shared.Return(localHops, clearArray: false);
+            ArrayPool<byte>.Shared.Return(localFlags, clearArray: false);
             pendingOffsets = newOffsets;
             pendingHops = newHops;
+            pendingFlags = newFlags;
             localOffsets = newOffsets;
             localHops = newHops;
+            localFlags = newFlags;
         }
 
         localOffsets[pendingCount] = offset;
         localHops[pendingCount] = remainingHops;
+        localFlags[pendingCount] = (byte)((lowerEdge ? 1 : 0) | (upperEdge ? 2 : 0));
         pendingCount++;
     }
 
-    private void PopTarget(out long offset, out int remainingHops)
+    private void PopTarget(out long offset, out int remainingHops, out bool lowerEdge, out bool upperEdge)
     {
         long[] localOffsets = pendingOffsets ?? throw new ObjectDisposedException(nameof(Scalar8VarIdentityRangeReader));
         int[] localHops = pendingHops ?? throw new ObjectDisposedException(nameof(Scalar8VarIdentityRangeReader));
+        byte[] localFlags = pendingFlags ?? throw new ObjectDisposedException(nameof(Scalar8VarIdentityRangeReader));
         pendingCount--;
         offset = localOffsets[pendingCount];
         remainingHops = localHops[pendingCount];
+        byte flags = localFlags[pendingCount];
+        lowerEdge = (flags & 1) != 0;
+        upperEdge = (flags & 2) != 0;
     }
 
     private void GrowShelves()
     {
         int newLength = checked(shelves.Length * 2);
         Scalar8VarIdentityReadOnly[] newShelves = ArrayPool<Scalar8VarIdentityReadOnly>.Shared.Rent(newLength);
+        byte[][] newTerminalShelves = ArrayPool<byte[]>.Shared.Rent(newLength);
         int[] newStartSlots = ArrayPool<int>.Shared.Rent(newLength);
         int[] newEndSlots = ArrayPool<int>.Shared.Rent(newLength);
+        byte[] newTerminalFlags = ArrayPool<byte>.Shared.Rent(newLength);
+        ulong[] newTerminalKeys = ArrayPool<ulong>.Shared.Rent(newLength);
         Array.Copy(shelves, newShelves, shelfCount);
+        Array.Copy(terminalShelves, newTerminalShelves, shelfCount);
         startSlots.AsSpan(0, shelfCount).CopyTo(newStartSlots);
         endSlots.AsSpan(0, shelfCount).CopyTo(newEndSlots);
+        terminalFlags.AsSpan(0, shelfCount).CopyTo(newTerminalFlags);
+        terminalKeys.AsSpan(0, shelfCount).CopyTo(newTerminalKeys);
         ArrayPool<Scalar8VarIdentityReadOnly>.Shared.Return(shelves, clearArray: true);
+        ArrayPool<byte[]>.Shared.Return(terminalShelves, clearArray: true);
         ArrayPool<int>.Shared.Return(startSlots, clearArray: false);
         ArrayPool<int>.Shared.Return(endSlots, clearArray: false);
+        ArrayPool<byte>.Shared.Return(terminalFlags, clearArray: false);
+        ArrayPool<ulong>.Shared.Return(terminalKeys, clearArray: false);
         shelves = newShelves;
+        terminalShelves = newTerminalShelves;
         startSlots = newStartSlots;
         endSlots = newEndSlots;
+        terminalFlags = newTerminalFlags;
+        terminalKeys = newTerminalKeys;
     }
 
     private void PositionAtOrdinal(int targetOrdinal)

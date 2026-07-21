@@ -17,7 +17,7 @@ internal ref struct Fixed32Scalar16
     /// </summary>
     /// <param name="bytes">The writable shelf bytes to project.</param>
     public Fixed32Scalar16(Span<byte> bytes)
-        : this(bytes, Fixed32Scalar16Profile.Default64KiB)
+        : this(bytes, Fixed32Scalar16Profile.Default40KiB)
     {
     }
 
@@ -271,6 +271,11 @@ internal ref struct Fixed32Scalar16
 
     private int NormalizeDeletedSlots(ushort physicalCount)
     {
+        if (CountDeletedSlots(physicalCount) == 0)
+        {
+            return 0;
+        }
+
         byte[] compacted = new byte[physicalCount * Fixed32Scalar16Layout.ItemSize];
         int writeIndex = 0;
         for (int slotIndex = 0; slotIndex < physicalCount; slotIndex++)
@@ -407,5 +412,39 @@ internal ref struct Fixed32Scalar16
     public Fixed32Scalar16ReadOnly AsReadOnly()
     {
         return new Fixed32Scalar16ReadOnly(bytes, profile);
+    }
+
+    /// <summary>
+    /// Appends one tuple whose total tuple order is already known to follow every active tuple in this shelf.<br/>
+    /// The caller owns ordering and duplicate validation; this primitive performs only capacity validation plus direct payload, slot, and count writes.<br/>
+    /// It is intended for rebuilding a newly initialized shelf from a previously sorted tuple stream, where repeating the general lower-bound and last-tuple checks would be redundant.<br/>
+    /// </summary>
+    /// <param name="key0">The encoded sortable key part 0.<br/></param>
+    /// <param name="key1">The encoded sortable key part 1.<br/></param>
+    /// <param name="key2">The encoded sortable key part 2.<br/></param>
+    /// <param name="key3">The encoded sortable key part 3.<br/></param>
+    /// <param name="encodedIdentityHigh">The encoded high identity lane.<br/></param>
+    /// <param name="encodedIdentityLow">The encoded low identity lane.<br/></param>
+    /// <returns><see cref="Fixed32Scalar16InsertResult.Inserted"/> when appended; otherwise <see cref="Fixed32Scalar16InsertResult.Full"/>.<br/></returns>
+    internal Fixed32Scalar16InsertResult AppendKnownSorted(
+        ulong key0,
+        ulong key1,
+        ulong key2,
+        ulong key3,
+        ulong encodedIdentityHigh,
+        ulong encodedIdentityLow)
+    {
+        ushort count = ItemCount;
+        if (count >= profile.MaxItemCount)
+        {
+            return Fixed32Scalar16InsertResult.Full;
+        }
+
+        int itemOffset = Fixed32Scalar16Layout.GetItemOffset(profile, count);
+        Fixed32Scalar16Layout.WriteItemKey(bytes, itemOffset, key0, key1, key2, key3);
+        Fixed32Scalar16Layout.WriteItemIdentity(bytes, itemOffset, encodedIdentityHigh, encodedIdentityLow);
+        Fixed32Scalar16Layout.WriteSlot(bytes, profile, count, checked((ushort)itemOffset));
+        Fixed32Scalar16Layout.WriteItemCount(bytes, checked((ushort)(count + 1)));
+        return Fixed32Scalar16InsertResult.Inserted;
     }
 }

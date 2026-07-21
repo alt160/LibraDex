@@ -2,7 +2,7 @@ using LibraDex.Views;
 
 namespace LibraDex;
 
-public sealed partial class LibraDexFileSession
+internal sealed partial class LibraDexFileSession
 {
     /// <summary>
     /// Opens a forward-only `VS8` routed range reader for an inclusive raw-key range.<br/>
@@ -22,7 +22,8 @@ public sealed partial class LibraDexFileSession
         ReadOnlySpan<byte> lowerKey,
         ReadOnlySpan<byte> upperKey,
         int maxRouterHops = DefaultVarKeyScalar8MaxRouterHops,
-        bool decodeLogicalKeys = false)
+        bool decodeLogicalKeys = false,
+        bool captureDiagnostics = false)
     {
         if (lowerKey.SequenceCompareTo(upperKey) > 0)
         {
@@ -34,7 +35,7 @@ public sealed partial class LibraDexFileSession
             throw new ArgumentOutOfRangeException(nameof(maxRouterHops), maxRouterHops, "The VS8 range reader maximum router hop count must be positive.");
         }
 
-        return new VarKeyScalar8RangeReader(this, rootRouterOffset, maxKeyLength, lowerKey, upperKey, maxRouterHops, decodeLogicalKeys);
+        return new VarKeyScalar8RangeReader(this, rootRouterOffset, maxKeyLength, lowerKey, upperKey, maxRouterHops, decodeLogicalKeys, captureDiagnostics);
     }
 
     /// <summary>

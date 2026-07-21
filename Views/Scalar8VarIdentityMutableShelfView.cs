@@ -1,3 +1,4 @@
+using System.Buffers;
 using LibraDex.Layouts;
 
 namespace LibraDex.Views;
@@ -14,11 +15,18 @@ internal sealed class Scalar8VarIdentityMutableShelfView
     private readonly ulong[] keys;
     private readonly int[] sortedIndexes;
     private readonly bool[] deletedSlots;
+    private readonly bool pooledBytes;
+    private readonly bool pooledSidecars;
+    private bool released;
     private int itemCount;
     private int slotStreamLength;
     private int recordArenaEnd;
     private int deletedItemCount;
     private int deletedPayloadBytes;
+    private int dirtySlotStart;
+    private int dirtySlotEnd;
+    private int dirtyRecordStart;
+    private int dirtyRecordEnd;
 
     private Scalar8VarIdentityMutableShelfView(
         byte[] bytes,
@@ -28,6 +36,8 @@ internal sealed class Scalar8VarIdentityMutableShelfView
         ulong[] keys,
         int[] sortedIndexes,
         bool[] deletedSlots,
+        bool pooledBytes,
+        bool pooledSidecars,
         int itemCount,
         int slotStreamLength,
         int slotCapacityBytes,
@@ -40,6 +50,8 @@ internal sealed class Scalar8VarIdentityMutableShelfView
         this.keys = keys;
         this.sortedIndexes = sortedIndexes;
         this.deletedSlots = deletedSlots;
+        this.pooledBytes = pooledBytes;
+        this.pooledSidecars = pooledSidecars;
         this.itemCount = itemCount;
         this.slotStreamLength = slotStreamLength;
         SlotCapacityBytes = slotCapacityBytes;
@@ -84,6 +96,36 @@ internal sealed class Scalar8VarIdentityMutableShelfView
     public bool IsDirty { get; private set; }
 
     /// <summary>
+    /// Gets whether this shelf must be published as a full extent because the caller replaced or directly mutated bytes outside tracked insert ranges.<br/>
+    /// </summary>
+    internal bool RequiresFullRewrite { get; private set; }
+
+    /// <summary>
+    /// Gets whether header counters changed since the shelf was loaded into the mutable batch cache.<br/>
+    /// </summary>
+    internal bool HeaderDirty { get; private set; }
+
+    /// <summary>
+    /// Gets the first dirty slot-stream byte relative to the start of the shelf image, or zero when no slot bytes are dirty.<br/>
+    /// </summary>
+    internal int DirtySlotStart => dirtySlotStart;
+
+    /// <summary>
+    /// Gets the exclusive dirty slot-stream end relative to the start of the shelf image, or zero when no slot bytes are dirty.<br/>
+    /// </summary>
+    internal int DirtySlotEnd => dirtySlotEnd;
+
+    /// <summary>
+    /// Gets the first dirty record-arena byte relative to the start of the shelf image, or zero when no record bytes are dirty.<br/>
+    /// </summary>
+    internal int DirtyRecordStart => dirtyRecordStart;
+
+    /// <summary>
+    /// Gets the exclusive dirty record-arena end relative to the start of the shelf image, or zero when no record bytes are dirty.<br/>
+    /// </summary>
+    internal int DirtyRecordEnd => dirtyRecordEnd;
+
+    /// <summary>
     /// Gets whether the persisted 7-byte slot stream in <see cref="Bytes"/> must be rebuilt from the decoded sidecars before disk publication or static shelf helpers read it.<br/>
     /// </summary>
     public bool SlotBytesDirty { get; private set; }
@@ -97,6 +139,26 @@ internal sealed class Scalar8VarIdentityMutableShelfView
     /// <param name="shelf">The decoded mutable shelf when validation succeeds.</param>
     /// <returns>`true` when the byte image is valid for <paramref name="profile"/>.</returns>
     public static bool TryCreate(byte[] bytes, Scalar8VarIdentityProfile profile, out Scalar8VarIdentityMutableShelfView shelf)
+        => TryCreateCore(bytes, profile, pooledBytes: false, pooledSidecars: false, out shelf);
+
+    /// <summary>
+    /// Decodes an existing `SV8` shelf into a mutable view that returns its byte and sidecar buffers to shared pools on release.<br/>
+    /// This is intended for durability-batch hot paths that create many short-lived mutable shelf views across small app batches.<br/>
+    /// </summary>
+    /// <param name="bytes">The pooled disk-shaped shelf byte image.</param>
+    /// <param name="profile">The expected `SV8` shelf profile.</param>
+    /// <param name="pooledBytes">Whether <paramref name="bytes"/> should be returned to the shared byte pool when released.</param>
+    /// <param name="shelf">The decoded mutable shelf when validation succeeds.</param>
+    /// <returns>`true` when the byte image is valid for <paramref name="profile"/>.</returns>
+    public static bool TryCreatePooled(byte[] bytes, Scalar8VarIdentityProfile profile, bool pooledBytes, out Scalar8VarIdentityMutableShelfView shelf)
+        => TryCreateCore(bytes, profile, pooledBytes, pooledSidecars: true, out shelf);
+
+    private static bool TryCreateCore(
+        byte[] bytes,
+        Scalar8VarIdentityProfile profile,
+        bool pooledBytes,
+        bool pooledSidecars,
+        out Scalar8VarIdentityMutableShelfView shelf)
     {
         shelf = null!;
         if (bytes.Length < profile.ShelfExtentSize ||
@@ -126,23 +188,25 @@ internal sealed class Scalar8VarIdentityMutableShelfView
         }
 
         int slotCapacity = slotCapacityBytes / Scalar8VarIdentityLayout.SlotSize;
-        int[] offsets = new int[slotCapacity];
-        uint[] prefixes = new uint[slotCapacity];
-        ulong[] keys = new ulong[slotCapacity];
-        int[] indexes = new int[slotCapacity];
-        bool[] deleted = new bool[slotCapacity];
+        int[] offsets = pooledSidecars ? ArrayPool<int>.Shared.Rent(slotCapacity) : new int[slotCapacity];
+        uint[] prefixes = pooledSidecars ? ArrayPool<uint>.Shared.Rent(slotCapacity) : new uint[slotCapacity];
+        ulong[] keys = pooledSidecars ? ArrayPool<ulong>.Shared.Rent(slotCapacity) : new ulong[slotCapacity];
+        int[] indexes = pooledSidecars ? ArrayPool<int>.Shared.Rent(slotCapacity) : new int[slotCapacity];
+        bool[] deleted = pooledSidecars ? ArrayPool<bool>.Shared.Rent(slotCapacity) : new bool[slotCapacity];
         int cursor = Scalar8VarIdentityLayout.HeaderSize;
         for (int i = 0; i < count; i++)
         {
             int offset = Scalar8VarIdentityLayout.ReadSlotRecordOffset(bytes, cursor);
             if (offset < recordArenaStart || offset >= recordArenaEnd)
             {
+                ReturnSidecarsIfPooled(pooledSidecars, offsets, prefixes, keys, indexes, deleted);
                 return false;
             }
 
             int recordLength = Scalar8VarIdentityLayout.GetRecordLength(bytes, offset);
             if (recordLength <= 0 || offset + recordLength > recordArenaEnd)
             {
+                ReturnSidecarsIfPooled(pooledSidecars, offsets, prefixes, keys, indexes, deleted);
                 return false;
             }
 
@@ -153,7 +217,12 @@ internal sealed class Scalar8VarIdentityMutableShelfView
             cursor += Scalar8VarIdentityLayout.SlotSize;
         }
 
-        shelf = new Scalar8VarIdentityMutableShelfView(bytes, profile, offsets, prefixes, keys, indexes, deleted, count, slotStreamLength, slotCapacityBytes, recordArenaEnd);
+        if (pooledSidecars && count < slotCapacity)
+        {
+            Array.Clear(deleted, count, slotCapacity - count);
+        }
+
+        shelf = new Scalar8VarIdentityMutableShelfView(bytes, profile, offsets, prefixes, keys, indexes, deleted, pooledBytes, pooledSidecars, count, slotStreamLength, slotCapacityBytes, recordArenaEnd);
         return true;
     }
 
@@ -240,12 +309,16 @@ internal sealed class Scalar8VarIdentityMutableShelfView
             int slotOffset = Scalar8VarIdentityLayout.HeaderSize + checked(insertIndex * Scalar8VarIdentityLayout.SlotSize);
             Scalar8VarIdentityLayout.WriteSlotRecordOffset(Bytes, slotOffset, recordOffset);
             Scalar8VarIdentityLayout.WriteSlotKeyPrefix(Bytes, slotOffset, prefix);
+            MarkDirtySlotRange(slotOffset, slotOffset + Scalar8VarIdentityLayout.SlotSize);
         }
         else
         {
             SlotBytesDirty = true;
+            MarkDirtySlotRange(Scalar8VarIdentityLayout.HeaderSize, Scalar8VarIdentityLayout.HeaderSize + slotStreamLength);
         }
 
+        MarkHeaderDirty();
+        MarkDirtyRecordRange(recordOffset, newRecordArenaEnd);
         IsDirty = true;
         return Scalar8VarIdentityInsertResult.Inserted;
     }
@@ -280,6 +353,50 @@ internal sealed class Scalar8VarIdentityMutableShelfView
     public void MarkDirty()
     {
         IsDirty = true;
+        RequiresFullRewrite = true;
+    }
+
+    /// <summary>
+    /// Releases buffers owned by this mutable view back to their shared pools.<br/>
+    /// Non-pooled views ignore the call except for optional clearing of their authoritative byte image.<br/>
+    /// </summary>
+    /// <param name="clearShelfBytes">Whether the used shelf extent should be cleared before the view is dropped or returned to the pool.</param>
+    internal void Release(bool clearShelfBytes)
+    {
+        if (released)
+        {
+            return;
+        }
+
+        released = true;
+        if (clearShelfBytes)
+        {
+            Bytes.AsSpan(0, Profile.ShelfExtentSize).Clear();
+        }
+
+        if (pooledSidecars)
+        {
+            ArrayPool<int>.Shared.Return(recordOffsets, clearArray: true);
+            ArrayPool<uint>.Shared.Return(keyPrefixes, clearArray: true);
+            ArrayPool<ulong>.Shared.Return(keys, clearArray: true);
+            ArrayPool<int>.Shared.Return(sortedIndexes, clearArray: true);
+            ArrayPool<bool>.Shared.Return(deletedSlots, clearArray: true);
+        }
+
+        if (pooledBytes)
+        {
+            ArrayPool<byte>.Shared.Return(Bytes, clearArray: false);
+        }
+    }
+
+    /// <summary>
+    /// Marks the persisted header as dirty after a tracked counter or link-field mutation.<br/>
+    /// This lets commit publish only the compact header plus slot/record ranges for ordinary in-place inserts.<br/>
+    /// </summary>
+    internal void MarkHeaderDirty()
+    {
+        IsDirty = true;
+        HeaderDirty = true;
     }
 
     /// <summary>
@@ -318,7 +435,7 @@ internal sealed class Scalar8VarIdentityMutableShelfView
 
         if (marked != 0)
         {
-            IsDirty = true;
+            MarkDirty();
             SlotBytesDirty = true;
         }
 
@@ -412,8 +529,76 @@ internal sealed class Scalar8VarIdentityMutableShelfView
         Scalar8VarIdentityLayout.WriteSlotStreamLength(Bytes, slotStreamLength);
         SlotBytesDirty = true;
         EnsureSlotBytesCurrent();
-        IsDirty = true;
+        MarkDirty();
         return removed;
+    }
+
+    /// <summary>
+    /// Extends the tracked dirty slot-stream range for a mutation that changed persisted slot bytes.<br/>
+    /// Ranges are shelf-relative, end-exclusive, and merged conservatively so publication can stage one slot segment per shelf.<br/>
+    /// </summary>
+    /// <param name="start">The first changed shelf-relative byte.</param>
+    /// <param name="end">The exclusive changed byte end.</param>
+    private void MarkDirtySlotRange(int start, int end)
+    {
+        if (end <= start)
+        {
+            return;
+        }
+
+        if (dirtySlotEnd == 0)
+        {
+            dirtySlotStart = start;
+            dirtySlotEnd = end;
+            return;
+        }
+
+        dirtySlotStart = Math.Min(dirtySlotStart, start);
+        dirtySlotEnd = Math.Max(dirtySlotEnd, end);
+    }
+
+    /// <summary>
+    /// Extends the tracked dirty record-arena range for append-like variable identity bytes.<br/>
+    /// Ranges are shelf-relative, end-exclusive, and merged conservatively so publication can stage one record segment per shelf.<br/>
+    /// </summary>
+    /// <param name="start">The first changed shelf-relative byte.</param>
+    /// <param name="end">The exclusive changed byte end.</param>
+    private void MarkDirtyRecordRange(int start, int end)
+    {
+        if (end <= start)
+        {
+            return;
+        }
+
+        if (dirtyRecordEnd == 0)
+        {
+            dirtyRecordStart = start;
+            dirtyRecordEnd = end;
+            return;
+        }
+
+        dirtyRecordStart = Math.Min(dirtyRecordStart, start);
+        dirtyRecordEnd = Math.Max(dirtyRecordEnd, end);
+    }
+
+    private static void ReturnSidecarsIfPooled(
+        bool pooledSidecars,
+        int[] recordOffsets,
+        uint[] keyPrefixes,
+        ulong[] keys,
+        int[] sortedIndexes,
+        bool[] deletedSlots)
+    {
+        if (!pooledSidecars)
+        {
+            return;
+        }
+
+        ArrayPool<int>.Shared.Return(recordOffsets, clearArray: true);
+        ArrayPool<uint>.Shared.Return(keyPrefixes, clearArray: true);
+        ArrayPool<ulong>.Shared.Return(keys, clearArray: true);
+        ArrayPool<int>.Shared.Return(sortedIndexes, clearArray: true);
+        ArrayPool<bool>.Shared.Return(deletedSlots, clearArray: true);
     }
 
     /// <summary>

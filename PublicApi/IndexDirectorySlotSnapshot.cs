@@ -9,14 +9,14 @@ namespace LibraDex;
 /// <param name="Flags">Slot-level flags reserved for format and lifecycle behavior.</param>
 /// <param name="RootRouterOffset">The direct file offset of the index root router.</param>
 /// <param name="MetadataOffset">The direct file offset of optional variable-length index metadata.</param>
-/// <param name="ItemCount">The cached item count for the index.</param>
+/// <param name="ItemCount">The directory-level cached item count for shapes that maintain one; fixed-N shelf-count shapes can leave this value non-authoritative.</param>
 /// <param name="Generation">The index generation or version counter.</param>
 /// <param name="KeyProfileId">The fixed key profile identifier.</param>
 /// <param name="IdentityProfileId">The fixed identity profile identifier.</param>
 /// <param name="RouterProfileId">The fixed router profile identifier.</param>
 /// <param name="AllocationClassId">The allocation class identifier used for future reuse policy.</param>
 /// <param name="Name">The fixed-width index name stored in the directory slot.</param>
-public readonly record struct IndexDirectorySlotSnapshot(
+internal readonly record struct IndexDirectorySlotSnapshot(
     int SlotIndex,
     byte State,
     byte Flags,
@@ -36,4 +36,3 @@ public readonly record struct IndexDirectorySlotSnapshot(
     /// </summary>
     public bool IsActive => State == Layouts.IndexDirectoryLayout.ActiveState;
 }
-

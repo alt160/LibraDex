@@ -23,6 +23,10 @@ internal static class Scalar8Scalar8Layout
     public const int HeaderSizeOffset = 6;
     public const int FlagsOffset = 8;
     public const int ItemCountOffset = 12;
+    public const uint DuplicateRunFlag = 1U;
+    public const int DuplicateRunKeyOffset = 16;
+    public const int DuplicateRunNextOffset = 24;
+    public const int DuplicateRunIdentityOffset = HeaderSize;
 
     public const int ItemKeyOffset = 0;
     public const int ItemIdentityOffset = KeySize;
@@ -145,6 +149,54 @@ internal static class Scalar8Scalar8Layout
     public static void WriteItemCount(Span<byte> target, ushort value)
     {
         BinaryPrimitives.WriteUInt16LittleEndian(target.Slice(ItemCountOffset, sizeof(ushort)), value);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool HasDuplicateRunFlag(ReadOnlySpan<byte> source)
+    {
+        return (ReadFlags(source) & DuplicateRunFlag) != 0;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static int GetDuplicateRunCapacity(Scalar8Scalar8Profile profile)
+    {
+        return checked((profile.ShelfExtentSize - DuplicateRunIdentityOffset) / IdentitySize);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static ulong ReadDuplicateRunKey(ReadOnlySpan<byte> source)
+    {
+        return BinaryPrimitives.ReadUInt64BigEndian(source.Slice(DuplicateRunKeyOffset, KeySize));
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static void WriteDuplicateRunKey(Span<byte> target, ulong encodedKey)
+    {
+        BinaryPrimitives.WriteUInt64BigEndian(target.Slice(DuplicateRunKeyOffset, KeySize), encodedKey);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static long ReadDuplicateRunNextOffset(ReadOnlySpan<byte> source)
+    {
+        return BinaryPrimitives.ReadInt64LittleEndian(source.Slice(DuplicateRunNextOffset, sizeof(long)));
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static void WriteDuplicateRunNextOffset(Span<byte> target, long nextOffset)
+    {
+        BinaryPrimitives.WriteInt64LittleEndian(target.Slice(DuplicateRunNextOffset, sizeof(long)), nextOffset);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static ulong ReadDuplicateRunIdentity(ReadOnlySpan<byte> source, int slotIndex)
+    {
+        return BinaryPrimitives.ReadUInt64BigEndian(source.Slice(DuplicateRunIdentityOffset + (slotIndex * IdentitySize), IdentitySize));
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static void WriteDuplicateRunIdentity(Span<byte> target, int slotIndex, ulong encodedIdentity)
+    {
+        BinaryPrimitives.WriteUInt64BigEndian(target.Slice(DuplicateRunIdentityOffset + (slotIndex * IdentitySize), IdentitySize), encodedIdentity);
     }
 
     /// <summary>

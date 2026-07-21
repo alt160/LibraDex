@@ -23,7 +23,11 @@ internal ref struct KeyStateIdentityRoute
 
     public bool IsScalar8InlineValid => AsReadOnly().IsScalar8InlineValid;
 
+    public bool IsScalar8TerminalIdentityRootValid => AsReadOnly().IsScalar8TerminalIdentityRootValid;
+
     public bool IsScalar16InlineValid => AsReadOnly().IsScalar16InlineValid;
+
+    public bool IsScalar16TerminalIdentityRootValid => AsReadOnly().IsScalar16TerminalIdentityRootValid;
 
     public void InitializeScalar8Inline()
     {
@@ -33,6 +37,16 @@ internal ref struct KeyStateIdentityRoute
     public void InitializeScalar16Inline()
     {
         InitializeInline(KeyStateIdentityRouteLayout.Scalar16IdentityCode);
+    }
+
+    public void InitializeScalar8TerminalIdentityRoot(long childRootOffset, int itemCount)
+    {
+        InitializeTerminalIdentityRoot(KeyStateIdentityRouteLayout.Scalar8IdentityCode, childRootOffset, itemCount);
+    }
+
+    public void InitializeScalar16TerminalIdentityRoot(long childRootOffset, int itemCount)
+    {
+        InitializeTerminalIdentityRoot(KeyStateIdentityRouteLayout.Scalar16IdentityCode, childRootOffset, itemCount);
     }
 
     public bool InsertScalar8(ulong encodedIdentity)
@@ -180,6 +194,29 @@ internal ref struct KeyStateIdentityRoute
         KeyStateIdentityRouteLayout.WriteIdentitySizeCode(bytes, identitySizeCode);
         KeyStateIdentityRouteLayout.WriteChildRootOffset(bytes, 0);
     }
+
+    private void InitializeTerminalIdentityRoot(ushort identitySizeCode, long childRootOffset, int itemCount)
+    {
+        if (childRootOffset <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(childRootOffset), childRootOffset, "The promoted key-state child root offset must be positive.");
+        }
+
+        if (itemCount < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(itemCount), itemCount, "The promoted key-state item count cannot be negative.");
+        }
+
+        bytes.Clear();
+        KeyStateIdentityRouteLayout.WriteMagic(bytes, KeyStateIdentityRouteLayout.Magic);
+        KeyStateIdentityRouteLayout.WriteFormatVersion(bytes, KeyStateIdentityRouteLayout.FormatVersion);
+        KeyStateIdentityRouteLayout.WriteHeaderSize(bytes, KeyStateIdentityRouteLayout.HeaderSize);
+        KeyStateIdentityRouteLayout.WriteStorageKind(bytes, KeyStateIdentityRouteLayout.TerminalIdentityRootStorageKind);
+        KeyStateIdentityRouteLayout.WriteFlags(bytes, 0);
+        KeyStateIdentityRouteLayout.WriteItemCount(bytes, itemCount);
+        KeyStateIdentityRouteLayout.WriteIdentitySizeCode(bytes, identitySizeCode);
+        KeyStateIdentityRouteLayout.WriteChildRootOffset(bytes, childRootOffset);
+    }
 }
 
 /// <summary>
@@ -230,6 +267,26 @@ internal readonly ref struct KeyStateIdentityRouteReadOnly
         ChildRootOffset == 0 &&
         ItemCount >= 0 &&
         ItemCount <= KeyStateIdentityRouteLayout.MaxScalar16InlineItemCount;
+
+    public bool IsScalar8TerminalIdentityRootValid =>
+        bytes.Length >= KeyStateIdentityRouteLayout.ExtentSize &&
+        Magic == KeyStateIdentityRouteLayout.Magic &&
+        FormatVersion == KeyStateIdentityRouteLayout.FormatVersion &&
+        HeaderSize == KeyStateIdentityRouteLayout.HeaderSize &&
+        StorageKind == KeyStateIdentityRouteLayout.TerminalIdentityRootStorageKind &&
+        IdentitySizeCode == KeyStateIdentityRouteLayout.Scalar8IdentityCode &&
+        ChildRootOffset > 0 &&
+        ItemCount >= 0;
+
+    public bool IsScalar16TerminalIdentityRootValid =>
+        bytes.Length >= KeyStateIdentityRouteLayout.ExtentSize &&
+        Magic == KeyStateIdentityRouteLayout.Magic &&
+        FormatVersion == KeyStateIdentityRouteLayout.FormatVersion &&
+        HeaderSize == KeyStateIdentityRouteLayout.HeaderSize &&
+        StorageKind == KeyStateIdentityRouteLayout.TerminalIdentityRootStorageKind &&
+        IdentitySizeCode == KeyStateIdentityRouteLayout.Scalar16IdentityCode &&
+        ChildRootOffset > 0 &&
+        ItemCount >= 0;
 
     public int LowerBoundScalar8(ulong encodedIdentity)
     {

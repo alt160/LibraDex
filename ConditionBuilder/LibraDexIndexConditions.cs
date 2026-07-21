@@ -383,7 +383,7 @@ public sealed class LibraDexIndexWhere<TKey, TIdentity>
     internal LibraDexIndexCondition<TKey, TIdentity> Create(LibraDexConditionOperatorKind operatorKind, params LibraDexConditionOperand[] operands)
     {
         LibraDexConditionOperatorKind effectiveOperator = negate ? Negate(operatorKind) : operatorKind;
-        LibraDexConditionBuilder builder = new(index.Group);
+        LibraDexConditionBuilder builder = new(ResolveConditionGroup(index));
         LibraDexConditionEndCondition condition = builder.AddLeaf(new LibraDexConditionLeafDescriptor(
             index.Name,
             ResolveValueKind(),
@@ -392,6 +392,19 @@ public sealed class LibraDexIndexWhere<TKey, TIdentity>
             IgnoreCase: false,
             Culture: null)).EndCondition;
         return new LibraDexIndexCondition<TKey, TIdentity>(index, condition);
+    }
+
+    /// <summary>
+    /// Resolves the condition group used by opened-index fluent conditions.<br/>
+    /// Catalog indexes use their persisted identity group, while standalone ungrouped handles receive a private single-index group so condition syntax remains available without pretending the handle belongs to a catalog group.<br/>
+    /// </summary>
+    /// <param name="index">The opened index handle that owns the condition.</param>
+    /// <returns>The non-empty condition group name to store on the condition descriptor.</returns>
+    private static string ResolveConditionGroup(LibraDexIndex<TKey, TIdentity> index)
+    {
+        return index.Group.Length == 0
+            ? "__standalone:" + index.Name
+            : index.Group;
     }
 
     private LibraDexIndexCondition<TKey, TIdentity> CreateKeyStateCondition(LibraDexConditionOperatorKind operatorKind, NullKey keyState, string? name)

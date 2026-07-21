@@ -6,7 +6,7 @@ namespace LibraDex;
 /// Caches superblock fields after file initialization or open.<br/>
 /// This is an outer model snapshot and is not used as a hot byte view.<br/>
 /// </summary>
-public readonly record struct SuperblockSnapshot(
+internal readonly record struct SuperblockSnapshot(
     Guid FileGuid,
     long CreatedUtcTicks,
     long ReservedPrefixBytes,

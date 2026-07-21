@@ -11,6 +11,147 @@ using Microsoft.Data.Sqlite;
 
 internal static partial class RawHarness
 {
+    /// <summary>
+    /// Measures public condition-builder string prefix counting over a real `VS8`-backed `LibraDexStringScalar8Index`.<br/>
+    /// The benchmark intentionally routes through `.StartsWith(...).EndCondition.Count(...)` so it exercises the condition materializer, `Prefix` primitive, and shape-specific prefix count planner instead of the raw var-key range API.<br/>
+    /// Seed keys use a path-like repeated-prefix layout to create the multi-byte router shapes that motivated the prefix extent planner work.<br/>
+    /// </summary>
+    /// <param name="args">Harness command arguments.<br/></param>
+    /// <returns>Zero when the measured count matches the seeded expectation; otherwise an exception is thrown.<br/></returns>
+    private static int RunStringPrefixCountProof(string[] args)
+    {
+        int itemCount = GetIntOption(args, "--items", 250_000);
+        int iterations = GetIntOption(args, "--iterations", 25_000);
+        int warmupIterations = GetIntOption(args, "--warmup-iterations", 3);
+        int prefixGroupCount = GetIntOption(args, "--prefix-groups", 512);
+        int targetGroup = GetIntOption(args, "--target-group", Math.Max(0, prefixGroupCount / 2));
+        string rootPrefix = GetOption(args, "--root-prefix", @"C:\Windows");
+
+        if (itemCount <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(args), itemCount, "String prefix count proof item count must be positive.");
+        }
+
+        if (iterations <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(args), iterations, "String prefix count proof iterations must be positive.");
+        }
+
+        if (warmupIterations < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(args), warmupIterations, "String prefix count proof warmup iterations cannot be negative.");
+        }
+
+        if (prefixGroupCount <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(args), prefixGroupCount, "String prefix count proof prefix group count must be positive.");
+        }
+
+        if ((uint)targetGroup >= (uint)prefixGroupCount)
+        {
+            throw new ArgumentOutOfRangeException(nameof(args), targetGroup, "String prefix count proof target group must be inside the prefix group count.");
+        }
+
+        using Catalog catalog = Catalog.CreateMemory();
+        CatalogIdentityGroupIndexes group = catalog.Indexes["string-prefix-count-proof"];
+        using LibraDexStringScalar8Index pathIndex = group["path"].String.Create(StringKeys.Exact);
+
+        string targetPrefix = CreateStringPrefixCountProofPrefix(rootPrefix, targetGroup);
+        long expectedCount = 0;
+        for (int i = 0; i < itemCount; i++)
+        {
+            int groupOrdinal = i % prefixGroupCount;
+            string key = CreateStringPrefixCountProofKey(rootPrefix, groupOrdinal, i);
+            _ = pathIndex.Insert(key, (ulong)(i + 1));
+            if (groupOrdinal == targetGroup)
+            {
+                expectedCount++;
+            }
+        }
+
+        LibraDexConditionEndCondition condition = LibraDexCondition
+            .ForGroup("string-prefix-count-proof")
+            .Index("path")
+            .AsString
+            .StartsWith(targetPrefix)
+            .EndCondition;
+        Func<string, IIndex> resolver = name => name == "path" ? pathIndex : throw new KeyNotFoundException(name);
+
+        long warmupCount = 0;
+        for (int i = 0; i < warmupIterations; i++)
+        {
+            warmupCount = condition.Count(resolver, IdentityDeduplication.Preserve);
+        }
+
+        if (warmupIterations == 0)
+        {
+            warmupCount = condition.Count(resolver, IdentityDeduplication.Preserve);
+        }
+
+        if (warmupCount != expectedCount)
+        {
+            throw new InvalidDataException($"String prefix count proof warmup returned {warmupCount}; expected {expectedCount}.");
+        }
+
+        long checksum = 0;
+        Stopwatch watch = Stopwatch.StartNew();
+        for (int i = 0; i < iterations; i++)
+        {
+            checksum += condition.Count(resolver, IdentityDeduplication.Preserve);
+        }
+
+        watch.Stop();
+        long expectedChecksum = expectedCount * iterations;
+        if (checksum != expectedChecksum)
+        {
+            throw new InvalidDataException($"String prefix count proof checksum returned {checksum}; expected {expectedChecksum}.");
+        }
+
+        double elapsedMs = watch.Elapsed.TotalMilliseconds;
+        double opsPerSecond = iterations / Math.Max(watch.Elapsed.TotalSeconds, 0.000001D);
+#if LIBRADEX_PREFIX_COUNT_TELEMETRY
+        VarKeyScalar8PrefixCountTelemetry telemetry = pathIndex.LastExactPrefixCountTelemetry;
+        Console.WriteLine(
+            "string-prefix-count-proof ok " +
+            $"items={itemCount} prefixGroups={prefixGroupCount} targetGroup={targetGroup} " +
+            $"expected={expectedCount} warmup={warmupCount} iterations={iterations} elapsedMs={elapsedMs:F3} opsPerSecond={opsPerSecond:F2} checksum={checksum} " +
+            $"routers={telemetry.RoutersVisited} oneByteRouters={telemetry.OneByteRoutersVisited} multiByteRouters={telemetry.MultiByteRoutersVisited} " +
+            $"multiByteRoutes={telemetry.MultiByteRoutesVisited} stemMatched={telemetry.MultiByteRoutesStemMatched} containedRoutes={telemetry.MultiByteRoutesContained} ambiguousRoutes={telemetry.MultiByteRoutesAmbiguous} " +
+            $"targets={telemetry.TargetsVisited} metadataTargets={telemetry.TargetsCountedByMetadata} narrowShelves={telemetry.ShelfTargetsCountedNarrow} narrowTerminalRoots={telemetry.TerminalRootsCountedNarrow} " +
+            $"containedRouterScans={telemetry.ContainedRouterTargetScans} fallbackToRange={telemetry.FallbackToRangeCount}");
+#else
+        Console.WriteLine(
+            "string-prefix-count-proof ok " +
+            $"items={itemCount} prefixGroups={prefixGroupCount} targetGroup={targetGroup} " +
+            $"expected={expectedCount} warmup={warmupCount} iterations={iterations} elapsedMs={elapsedMs:F3} opsPerSecond={opsPerSecond:F2} checksum={checksum}");
+#endif
+        return 0;
+    }
+
+    /// <summary>
+    /// Creates one deterministic path-like prefix for a string prefix count proof group.<br/>
+    /// The repeated root and fixed-width group segment encourage compressed multi-byte routers while keeping the expected count simple integer math.<br/>
+    /// </summary>
+    /// <param name="rootPrefix">The caller-selected path root.<br/></param>
+    /// <param name="groupOrdinal">The prefix group ordinal.<br/></param>
+    /// <returns>The string prefix used for both seeding and querying one group.<br/></returns>
+    private static string CreateStringPrefixCountProofPrefix(string rootPrefix, int groupOrdinal)
+    {
+        return FormattableString.Invariant($@"{rootPrefix}\System32\DriverStore\FileRepository\pkg-{groupOrdinal:D5}");
+    }
+
+    /// <summary>
+    /// Creates one deterministic path-like key for the public string prefix count proof.<br/>
+    /// The key starts with a group prefix and appends a unique file component so prefix counts can validate against a known per-group cardinality.<br/>
+    /// </summary>
+    /// <param name="rootPrefix">The caller-selected path root.<br/></param>
+    /// <param name="groupOrdinal">The prefix group ordinal.<br/></param>
+    /// <param name="itemOrdinal">The unique item ordinal.<br/></param>
+    /// <returns>A deterministic string key for insertion into the proof index.<br/></returns>
+    private static string CreateStringPrefixCountProofKey(string rootPrefix, int groupOrdinal, int itemOrdinal)
+    {
+        return FormattableString.Invariant($@"{CreateStringPrefixCountProofPrefix(rootPrefix, groupOrdinal)}\amd64_component_{itemOrdinal:D8}.dll");
+    }
 
     private static byte[] CreateVarKeyRepackHarnessKey(int ordinal)
     {
@@ -232,6 +373,14 @@ internal static partial class RawHarness
         Identities = 0,
         Keys = 1,
         Tuples = 2
+    }
+
+
+    private enum Scalar8VarIdentityReadPattern
+    {
+        Range = 0,
+        ExactKeys = 1,
+        RotatingRange = 2
     }
 
 
@@ -502,6 +651,38 @@ internal static partial class RawHarness
             {
                 count++;
             }
+        }
+
+        return count;
+    }
+
+
+    private static int CountScalar8VarIdentityExactKeys(int itemCount, int duplicateModulo, int firstKey, int keyCount)
+    {
+        int count = 0;
+        int limit = firstKey + keyCount;
+        for (int i = 0; i < itemCount; i++)
+        {
+            int key = i % duplicateModulo;
+            if (key >= firstKey && key < limit)
+            {
+                count++;
+            }
+        }
+
+        return count;
+    }
+
+
+    private static int CountScalar8VarIdentityRotatingRanges(int itemCount, int duplicateModulo, int rangeKeyCount, int windowCount, int windowStep)
+    {
+        int count = 0;
+        int maxStart = duplicateModulo - rangeKeyCount;
+        int startModulo = maxStart + 1;
+        for (int windowIndex = 0; windowIndex < windowCount; windowIndex++)
+        {
+            int lowerKey = checked((windowIndex * windowStep) % startModulo);
+            count += CountScalar8VarIdentityKeyRange(itemCount, duplicateModulo, lowerKey, lowerKey + rangeKeyCount - 1);
         }
 
         return count;
@@ -2244,6 +2425,274 @@ internal static partial class RawHarness
 
 
     /// <summary>
+    /// Measures routed `SV8` exact-key reads for one or more generated scalar keys.<br/>
+    /// Each key is probed independently with equal lower/upper bounds so the measurement represents "return identities for these specific keys" instead of a contiguous BETWEEN scan.<br/>
+    /// </summary>
+    /// <param name="session">The opened LibraDex session.</param>
+    /// <param name="rootOffset">The root router offset for the `SV8` index.</param>
+    /// <param name="maxIdentityLength">The maximum raw identity length accepted by the index.</param>
+    /// <param name="duplicateModulo">The generated scalar-key modulo.</param>
+    /// <param name="keyDistribution">The requested key distribution.</param>
+    /// <param name="firstKey">The first generated scalar key to probe.</param>
+    /// <param name="keyCount">The number of generated scalar keys to probe.</param>
+    /// <param name="itemCount">The total generated item count.</param>
+    /// <param name="iterations">The number of measured probe passes.</param>
+    /// <param name="iterationMode">The payload shape to read from each matching row.</param>
+    /// <returns>The routed exact-key read measurement row.</returns>
+    private static VarKeyScalar8ReadMeasurement MeasureScalar8VarIdentityExactKeyReads(
+        LibraDexFileSession session,
+        long rootOffset,
+        int maxIdentityLength,
+        int duplicateModulo,
+        string keyDistribution,
+        int firstKey,
+        int keyCount,
+        int itemCount,
+        int iterations,
+        VarIdentityIterationMode iterationMode)
+    {
+        int expected = CountScalar8VarIdentityExactKeys(itemCount, duplicateModulo, firstKey, keyCount);
+        bool diagnoseMissing = Environment.GetEnvironmentVariable("LIBRADEX_DIAG_SV8_EXACT_MISSING") == "1";
+        bool diagnoseRoutes = Environment.GetEnvironmentVariable("LIBRADEX_DIAG_SV8_EXACT_ROUTES") == "1";
+        long checksum = 0;
+        long total = 0;
+        _ = session.GetAndResetReadTelemetry();
+        Stopwatch watch = Stopwatch.StartNew();
+        using Scalar8VarIdentityRangeReader reader = new();
+        for (int i = 0; i < iterations; i++)
+        {
+            int iterationCount = 0;
+            for (int keyIndex = 0; keyIndex < keyCount; keyIndex++)
+            {
+                int key = firstKey + keyIndex;
+                int expectedForKey = CountScalar8VarIdentityKeyRange(itemCount, duplicateModulo, key, key);
+                ulong encodedKey = Scalar8Scalar8Layout.EncodeUnsignedScalar8(CreateScalar8VarIdentitySqliteKey(key, duplicateModulo, keyDistribution));
+                reader.Reset(session, rootOffset, maxIdentityLength, encodedKey, encodedKey);
+                int count = 0;
+                HashSet<int>? seenIndices = diagnoseMissing && i == 0 ? [] : null;
+                while (reader.MoveNext())
+                {
+                    checksum += ChecksumScalar8VarIdentityCurrent(reader, iterationMode);
+                    if (seenIndices is not null && TryParseScalar8VarIdentityIndex(reader.CurrentIdentity, out int parsedIndex))
+                    {
+                        seenIndices.Add(parsedIndex);
+                    }
+
+                    count++;
+                }
+
+                if (count != expectedForKey)
+                {
+                    string routeDiagnostic = diagnoseRoutes
+                        ? Environment.NewLine + session.DescribeScalar8VarIdentityExactKeyRoutes(rootOffset, maxIdentityLength, encodedKey, maxRows: 0)
+                        : string.Empty;
+                    if (seenIndices is not null)
+                    {
+                        string missing = DescribeMissingScalar8VarIdentityIndices(itemCount, duplicateModulo, key, seenIndices, maxCount: 32);
+                        throw new InvalidDataException($"SV8 exact-key read expected {expectedForKey} identities for key {key}, got {count}. Missing generated indices: {missing}.{routeDiagnostic}");
+                    }
+
+                    throw new InvalidDataException($"SV8 exact-key read expected {expectedForKey} identities for key {key}, got {count}.{routeDiagnostic}");
+                }
+
+                iterationCount += count;
+            }
+
+            if (iterationCount != expected)
+            {
+                throw new InvalidDataException($"SV8 exact-key pass expected {expected} identities, got {iterationCount}.");
+            }
+
+            total += iterationCount;
+        }
+
+        watch.Stop();
+        DataKernelReadTelemetry telemetry = session.GetAndResetReadTelemetry();
+        (int cacheArenaCount, long cacheBytes) = session.GetRouterArenaReadCacheStatsForValidation();
+        return CreateVarKeyScalar8ReadMeasurement(iterations, expected, total, watch.Elapsed, checksum, telemetry, cacheArenaCount, cacheBytes);
+    }
+
+
+    /// <summary>
+    /// Parses the generated source index from an `SV8` variable-identity payload produced by <see cref="CreateScalar8VarIdentity(int, int, bool)"/>.<br/>
+    /// The diagnostic parser recognizes the ASCII `item/XXXXXXXX/` prefix used by variable-length comparison workloads and intentionally ignores fixed-length payloads.<br/>
+    /// </summary>
+    /// <param name="identity">The raw identity bytes returned by the reader.<br/></param>
+    /// <param name="index">Receives the parsed generated source index when the identity has the expected prefix.<br/></param>
+    /// <returns><see langword="true"/> when the source index was parsed.</returns>
+    private static bool TryParseScalar8VarIdentityIndex(ReadOnlySpan<byte> identity, out int index)
+    {
+        index = 0;
+        if (identity.Length < 14 ||
+            identity[0] != (byte)'i' ||
+            identity[1] != (byte)'t' ||
+            identity[2] != (byte)'e' ||
+            identity[3] != (byte)'m' ||
+            identity[4] != (byte)'/')
+        {
+            return false;
+        }
+
+        int value = 0;
+        for (int i = 5; i < 13; i++)
+        {
+            byte b = identity[i];
+            int nibble;
+            if (b >= (byte)'0' && b <= (byte)'9')
+            {
+                nibble = b - (byte)'0';
+            }
+            else if (b >= (byte)'A' && b <= (byte)'F')
+            {
+                nibble = b - (byte)'A' + 10;
+            }
+            else
+            {
+                return false;
+            }
+
+            value = (value << 4) | nibble;
+        }
+
+        if (identity[13] != (byte)'/')
+        {
+            return false;
+        }
+
+        index = value;
+        return true;
+    }
+
+
+    /// <summary>
+    /// Builds a compact missing-index list for an exact-key diagnostic failure.<br/>
+    /// </summary>
+    /// <param name="itemCount">The total generated item count.<br/></param>
+    /// <param name="duplicateModulo">The scalar-key modulo used by the generator.<br/></param>
+    /// <param name="key">The generated scalar key being diagnosed.<br/></param>
+    /// <param name="seenIndices">The generated source indices returned by the reader.<br/></param>
+    /// <param name="maxCount">The maximum number of missing indices to include in the string.<br/></param>
+    /// <returns>A comma-separated missing-index list with an overflow marker when needed.<br/></returns>
+    private static string DescribeMissingScalar8VarIdentityIndices(int itemCount, int duplicateModulo, int key, HashSet<int> seenIndices, int maxCount)
+    {
+        StringBuilder builder = new();
+        int emitted = 0;
+        int missing = 0;
+        for (int i = key; i < itemCount; i += duplicateModulo)
+        {
+            if (seenIndices.Contains(i))
+            {
+                continue;
+            }
+
+            missing++;
+            if (emitted < maxCount)
+            {
+                if (emitted != 0)
+                {
+                    builder.Append(", ");
+                }
+
+                builder.Append(i.ToString(CultureInfo.InvariantCulture));
+                emitted++;
+            }
+        }
+
+        if (missing > emitted)
+        {
+            if (builder.Length != 0)
+            {
+                builder.Append(", ");
+            }
+
+            builder.Append('+');
+            builder.Append((missing - emitted).ToString(CultureInfo.InvariantCulture));
+            builder.Append(" more");
+        }
+
+        return builder.Length == 0 ? "none parsed" : builder.ToString();
+    }
+
+
+    /// <summary>
+    /// Measures routed `SV8` rotating range reads across a fixed set of generated scalar windows.<br/>
+    /// Each measured pass reads multiple same-width contiguous ranges so the row represents sustained range-query throughput instead of one repeatedly hot lower/upper window.<br/>
+    /// </summary>
+    /// <param name="session">The opened LibraDex session.</param>
+    /// <param name="rootOffset">The root router offset for the `SV8` index.</param>
+    /// <param name="maxIdentityLength">The maximum raw identity length accepted by the index.</param>
+    /// <param name="duplicateModulo">The generated scalar-key modulo.</param>
+    /// <param name="keyDistribution">The requested key distribution.</param>
+    /// <param name="rangeKeyCount">The number of adjacent generated scalar keys per window.</param>
+    /// <param name="windowCount">The number of windows to read per measured pass.</param>
+    /// <param name="windowStep">The generated-key step between window starts.</param>
+    /// <param name="itemCount">The total generated item count.</param>
+    /// <param name="iterations">The number of measured read passes.</param>
+    /// <param name="iterationMode">The payload shape to read from each matching row.</param>
+    /// <returns>The routed rotating-range read measurement row.</returns>
+    private static VarKeyScalar8ReadMeasurement MeasureScalar8VarIdentityRotatingRangeReads(
+        LibraDexFileSession session,
+        long rootOffset,
+        int maxIdentityLength,
+        int duplicateModulo,
+        string keyDistribution,
+        int rangeKeyCount,
+        int windowCount,
+        int windowStep,
+        int itemCount,
+        int iterations,
+        VarIdentityIterationMode iterationMode)
+    {
+        int expected = CountScalar8VarIdentityRotatingRanges(itemCount, duplicateModulo, rangeKeyCount, windowCount, windowStep);
+        int maxStart = duplicateModulo - rangeKeyCount;
+        int startModulo = maxStart + 1;
+        long checksum = 0;
+        long total = 0;
+        _ = session.GetAndResetReadTelemetry();
+        Stopwatch watch = Stopwatch.StartNew();
+        using Scalar8VarIdentityRangeReader reader = new();
+        for (int i = 0; i < iterations; i++)
+        {
+            int iterationCount = 0;
+            for (int windowIndex = 0; windowIndex < windowCount; windowIndex++)
+            {
+                int lowerKey = checked((windowIndex * windowStep) % startModulo);
+                int upperKey = lowerKey + rangeKeyCount - 1;
+                int expectedForWindow = CountScalar8VarIdentityKeyRange(itemCount, duplicateModulo, lowerKey, upperKey);
+                ulong lower = Scalar8Scalar8Layout.EncodeUnsignedScalar8(CreateScalar8VarIdentitySqliteKey(lowerKey, duplicateModulo, keyDistribution));
+                ulong upper = Scalar8Scalar8Layout.EncodeUnsignedScalar8(CreateScalar8VarIdentitySqliteKey(upperKey, duplicateModulo, keyDistribution));
+                reader.Reset(session, rootOffset, maxIdentityLength, lower, upper);
+                int count = 0;
+                while (reader.MoveNext())
+                {
+                    checksum += ChecksumScalar8VarIdentityCurrent(reader, iterationMode);
+                    count++;
+                }
+
+                if (count != expectedForWindow)
+                {
+                    throw new InvalidDataException($"SV8 rotating range expected {expectedForWindow} identities for keys {lowerKey}-{upperKey}, got {count}.");
+                }
+
+                iterationCount += count;
+            }
+
+            if (iterationCount != expected)
+            {
+                throw new InvalidDataException($"SV8 rotating range pass expected {expected} identities, got {iterationCount}.");
+            }
+
+            total += iterationCount;
+        }
+
+        watch.Stop();
+        DataKernelReadTelemetry telemetry = session.GetAndResetReadTelemetry();
+        (int cacheArenaCount, long cacheBytes) = session.GetRouterArenaReadCacheStatsForValidation();
+        return CreateVarKeyScalar8ReadMeasurement(iterations, expected, total, watch.Elapsed, checksum, telemetry, cacheArenaCount, cacheBytes);
+    }
+
+
+    /// <summary>
     /// Adds the current `SV8` reader row payload requested by the iteration mode to the comparison checksum.<br/>
     /// The helper avoids touching identity bytes during key-only measurements and avoids touching key fields during identity-only measurements.<br/>
     /// </summary>
@@ -3461,7 +3910,7 @@ internal static partial class RawHarness
             }
 
             Stopwatch commitWatch = Stopwatch.StartNew();
-            (commitTelemetry, _) = durabilityBatch.Commit();
+            (commitTelemetry, _, _) = durabilityBatch.Commit();
             commitWatch.Stop();
             commitElapsed = commitWatch.Elapsed;
         }
@@ -3523,7 +3972,7 @@ internal static partial class RawHarness
                 Priority: LibraDexWritePriority.WriteSpeed));
             _ = CreateVarKeyScalar8HierarchicalBulkTree(session, rootOffset, keys, maxKeyLength, branchCount);
             Stopwatch commitWatch = Stopwatch.StartNew();
-            (commitTelemetry, _) = durabilityBatch.Commit();
+            (commitTelemetry, _, _) = durabilityBatch.Commit();
             commitWatch.Stop();
             commitElapsed = commitWatch.Elapsed;
         }
@@ -3984,6 +4433,1022 @@ internal static partial class RawHarness
         DataKernelReadTelemetry telemetry = session.GetAndResetReadTelemetry();
         (int cacheArenaCount, long cacheBytes) = session.GetRouterArenaReadCacheStatsForValidation();
         return CreateVarKeyScalar8ReadMeasurement(iterations, expected, total, watch.Elapsed, checksum, telemetry, cacheArenaCount, cacheBytes);
+    }
+
+
+    /// <summary>
+    /// Validates range-count traversal through compressed multi-byte var-key routers for `VS8`, `VS16`, and `VV` shapes.<br/>
+    /// The command manually builds one root route to one compressed router whose child routes each point at sorted shelves, then compares shape-specific range-count primitives against normal range-reader counts over an edge-spanning range.<br/>
+    /// </summary>
+    /// <param name="args">The harness command-line arguments.<br/></param>
+    /// <returns>Zero when all compressed-router range-count primitives match their reader parity counts.<br/></returns>
+    private static int RunVarLenMultiByteRangeCountSanity(string[] args)
+    {
+        string path = GetOption(args, "--path", Path.Combine(@"T:\LibraDex", "varlen-mb-range-count-sanity.lbdx"));
+        int groupCount = GetIntOption(args, "--groups", 16);
+        int itemsPerGroup = GetIntOption(args, "--items-per-group", 96);
+        int identityLength = GetIntOption(args, "--identity-length", 32);
+        if (groupCount <= 2 ||
+            groupCount > 128 ||
+            itemsPerGroup <= 0 ||
+            identityLength <= 0 ||
+            identityLength > 1024)
+        {
+            throw new ArgumentOutOfRangeException(nameof(args), "Multi-byte range-count sanity requires groups 3-128, positive items per group, and identity length 1-1024.");
+        }
+
+        Directory.CreateDirectory(Path.GetDirectoryName(path) ?? ".");
+        File.Delete(path);
+        DataKernelOptions options = CreateDesignPerfOptions();
+        byte[][] keys = CreateVarLenMultiByteRangeCountKeys(groupCount, itemsPerGroup);
+        int lowerGroup = Math.Min(2, groupCount - 2);
+        int upperGroup = Math.Max(lowerGroup + 1, groupCount - 3);
+        byte[] lowerKey = CreateVarLenMultiByteRangeCountKey(lowerGroup, Math.Min(7, itemsPerGroup - 1));
+        byte[] upperKey = CreateVarLenMultiByteRangeCountKey(upperGroup, Math.Max(0, itemsPerGroup - 11));
+        long expected = CountVarLenMultiByteRangeCountExpected(keys, lowerKey, upperKey);
+        long vs8RootOffset;
+        long vs16RootOffset;
+        long vvRootOffset;
+
+        using (LibraDexFileSession session = LibraDexFileSession.Initialize(path, options, CreateDesignPerfMetadata(9217), DataKernelTelemetryOptions.EnabledOptions))
+        {
+            (RouterSnapshot vs8Root, _) = session.CreateRootRouterIndex(CreateHarnessSlot(0, "vmbvs8", 0));
+            vs8RootOffset = vs8Root.Offset;
+            CreateVarKeyScalar8MultiByteRangeCountTree(session, vs8RootOffset, groupCount, itemsPerGroup);
+
+            (RouterSnapshot vs16Root, _) = session.CreateRootRouterIndex(CreateHarnessSlot(1, "vmbvs16", 0));
+            vs16RootOffset = vs16Root.Offset;
+            CreateVarKeyScalar16MultiByteRangeCountTree(session, vs16RootOffset, groupCount, itemsPerGroup);
+
+            (RouterSnapshot vvRoot, _) = session.CreateRootRouterIndex(CreateHarnessSlot(2, "vmbvv", 0));
+            vvRootOffset = vvRoot.Offset;
+            CreateVarKeyVarIdentityMultiByteRangeCountTree(session, vvRootOffset, groupCount, itemsPerGroup, identityLength);
+        }
+
+        using LibraDexFileSession reopened = LibraDexFileSession.Open(path, options, DataKernelTelemetryOptions.EnabledOptions);
+        ValidateVarLenMultiByteRangeCountShape("VS8", expected, reopened.CountVarKeyScalar8IdentityRange(vs8RootOffset, 1024, lowerKey, upperKey), CountVarKeyScalar8RangeReader(reopened, vs8RootOffset, lowerKey, upperKey));
+        ValidateVarLenMultiByteRangeCountShape("VS16", expected, reopened.CountVarKeyScalar16IdentityRange(vs16RootOffset, 1024, lowerKey, upperKey), CountVarKeyScalar16RangeReader(reopened, vs16RootOffset, lowerKey, upperKey));
+        ValidateVarLenMultiByteRangeCountShape("VV", expected, reopened.CountVarKeyVarIdentityRange(vvRootOffset, 1024, 1024, lowerKey, upperKey), CountVarKeyVarIdentityRangeReader(reopened, vvRootOffset, lowerKey, upperKey));
+
+        Console.WriteLine($"varlen-mb-range-count-sanity ok path={path} groups={groupCount} itemsPerGroup={itemsPerGroup} expected={expected}");
+        return 0;
+    }
+
+
+    /// <summary>
+    /// Measures compressed multi-byte var-key range-count primitives against ordinary range-reader counting for `VS8`, `VS16`, and `VV` shapes.<br/>
+    /// The setup matches <see cref="RunVarLenMultiByteRangeCountSanity"/> so the measured path contains one compressed router with boundary and fully contained route targets.<br/>
+    /// </summary>
+    /// <param name="args">The harness command-line arguments.<br/></param>
+    /// <returns>Zero when all measured loops return the expected checksum.<br/></returns>
+    private static int RunVarLenMultiByteRangeCountPerf(string[] args)
+    {
+        string path = GetOption(args, "--path", Path.Combine(@"T:\LibraDex", "varlen-mb-range-count-perf.lbdx"));
+        int groupCount = GetIntOption(args, "--groups", 64);
+        int itemsPerGroup = GetIntOption(args, "--items-per-group", 512);
+        int identityLength = GetIntOption(args, "--identity-length", 32);
+        int iterations = GetIntOption(args, "--iterations", 10_000);
+        int warmupIterations = GetIntOption(args, "--warmup-iterations", 5);
+        if (groupCount <= 2 ||
+            groupCount > 128 ||
+            itemsPerGroup <= 0 ||
+            identityLength <= 0 ||
+            identityLength > 1024 ||
+            iterations <= 0 ||
+            warmupIterations < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(args), "Multi-byte range-count perf requires groups 3-128, positive items per group, identity length 1-1024, positive iterations, and non-negative warmups.");
+        }
+
+        Directory.CreateDirectory(Path.GetDirectoryName(path) ?? ".");
+        File.Delete(path);
+        DataKernelOptions options = CreateDesignPerfOptions();
+        byte[][] keys = CreateVarLenMultiByteRangeCountKeys(groupCount, itemsPerGroup);
+        int lowerGroup = Math.Min(2, groupCount - 2);
+        int upperGroup = Math.Max(lowerGroup + 1, groupCount - 3);
+        byte[] lowerKey = CreateVarLenMultiByteRangeCountKey(lowerGroup, Math.Min(7, itemsPerGroup - 1));
+        byte[] upperKey = CreateVarLenMultiByteRangeCountKey(upperGroup, Math.Max(0, itemsPerGroup - 11));
+        long expected = CountVarLenMultiByteRangeCountExpected(keys, lowerKey, upperKey);
+        long vs8RootOffset;
+        long vs16RootOffset;
+        long vvRootOffset;
+
+        using (LibraDexFileSession session = LibraDexFileSession.Initialize(path, options, CreateDesignPerfMetadata(9218), DataKernelTelemetryOptions.EnabledOptions))
+        {
+            (RouterSnapshot vs8Root, _) = session.CreateRootRouterIndex(CreateHarnessSlot(0, "vmpvs8", 0));
+            vs8RootOffset = vs8Root.Offset;
+            CreateVarKeyScalar8MultiByteRangeCountTree(session, vs8RootOffset, groupCount, itemsPerGroup);
+
+            (RouterSnapshot vs16Root, _) = session.CreateRootRouterIndex(CreateHarnessSlot(1, "vmpvs16", 0));
+            vs16RootOffset = vs16Root.Offset;
+            CreateVarKeyScalar16MultiByteRangeCountTree(session, vs16RootOffset, groupCount, itemsPerGroup);
+
+            (RouterSnapshot vvRoot, _) = session.CreateRootRouterIndex(CreateHarnessSlot(2, "vmpvv", 0));
+            vvRootOffset = vvRoot.Offset;
+            CreateVarKeyVarIdentityMultiByteRangeCountTree(session, vvRootOffset, groupCount, itemsPerGroup, identityLength);
+        }
+
+        using LibraDexFileSession reopened = LibraDexFileSession.Open(path, options, DataKernelTelemetryOptions.EnabledOptions);
+        VarLenMultiByteRangeCountPerfRow vs8Count = MeasureVarKeyScalar8MultiByteRangeCountPrimitive(reopened, vs8RootOffset, lowerKey, upperKey, expected, iterations, warmupIterations);
+        VarLenMultiByteRangeCountPerfRow vs8Reader = MeasureVarKeyScalar8MultiByteRangeReaderCount(reopened, vs8RootOffset, lowerKey, upperKey, expected, iterations, warmupIterations);
+        VarLenMultiByteRangeCountPerfRow vs16Count = MeasureVarKeyScalar16MultiByteRangeCountPrimitive(reopened, vs16RootOffset, lowerKey, upperKey, expected, iterations, warmupIterations);
+        VarLenMultiByteRangeCountPerfRow vs16Reader = MeasureVarKeyScalar16MultiByteRangeReaderCount(reopened, vs16RootOffset, lowerKey, upperKey, expected, iterations, warmupIterations);
+        VarLenMultiByteRangeCountPerfRow vvCount = MeasureVarKeyVarIdentityMultiByteRangeCountPrimitive(reopened, vvRootOffset, lowerKey, upperKey, expected, iterations, warmupIterations);
+        VarLenMultiByteRangeCountPerfRow vvReader = MeasureVarKeyVarIdentityMultiByteRangeReaderCount(reopened, vvRootOffset, lowerKey, upperKey, expected, iterations, warmupIterations);
+
+        Console.WriteLine(
+            $"varlen-mb-range-count-perf ok path={path} groups={groupCount} itemsPerGroup={itemsPerGroup} expected={expected} iterations={iterations} warmups={warmupIterations}");
+        PrintVarLenMultiByteRangeCountPerf("VS8", iterations, vs8Count, vs8Reader);
+        PrintVarLenMultiByteRangeCountPerf("VS16", iterations, vs16Count, vs16Reader);
+        PrintVarLenMultiByteRangeCountPerf("VV", iterations, vvCount, vvReader);
+        return 0;
+    }
+
+
+    /// <summary>
+    /// Holds one compressed-router range-count performance measurement row.<br/>
+    /// The checksum is the repeated sum of observed counts and prevents dead-loop measurements from hiding an incorrect count path.<br/>
+    /// </summary>
+    /// <param name="Elapsed">The measured elapsed time.<br/></param>
+    /// <param name="Checksum">The accumulated count checksum.<br/></param>
+    private readonly record struct VarLenMultiByteRangeCountPerfRow(TimeSpan Elapsed, long Checksum);
+
+
+    /// <summary>
+    /// Measures the `VS8` compressed-router range-count primitive loop.<br/>
+    /// This path should use the metadata-aware count planner, including compressed-router route classification and narrow boundary shelf counts.<br/>
+    /// </summary>
+    /// <param name="session">The opened file session.<br/></param>
+    /// <param name="rootOffset">The `VS8` root router offset.<br/></param>
+    /// <param name="lowerKey">The inclusive lower key.<br/></param>
+    /// <param name="upperKey">The inclusive upper key.<br/></param>
+    /// <param name="expected">The expected count per iteration.<br/></param>
+    /// <param name="iterations">The measured iteration count.<br/></param>
+    /// <param name="warmupIterations">The warmup iteration count.<br/></param>
+    /// <returns>The measured elapsed time and checksum.<br/></returns>
+    private static VarLenMultiByteRangeCountPerfRow MeasureVarKeyScalar8MultiByteRangeCountPrimitive(
+        LibraDexFileSession session,
+        long rootOffset,
+        byte[] lowerKey,
+        byte[] upperKey,
+        long expected,
+        int iterations,
+        int warmupIterations)
+    {
+        return MeasureVarLenMultiByteRangeCountLoop(
+            "VS8-count",
+            expected,
+            iterations,
+            warmupIterations,
+            () => session.CountVarKeyScalar8IdentityRange(rootOffset, 1024, lowerKey, upperKey));
+    }
+
+
+    /// <summary>
+    /// Measures ordinary `VS8` range-reader count loops over the compressed-router proof range.<br/>
+    /// This is the baseline for understanding how much work the count planner avoids relative to reader materialization.<br/>
+    /// </summary>
+    /// <param name="session">The opened file session.<br/></param>
+    /// <param name="rootOffset">The `VS8` root router offset.<br/></param>
+    /// <param name="lowerKey">The inclusive lower key.<br/></param>
+    /// <param name="upperKey">The inclusive upper key.<br/></param>
+    /// <param name="expected">The expected count per iteration.<br/></param>
+    /// <param name="iterations">The measured iteration count.<br/></param>
+    /// <param name="warmupIterations">The warmup iteration count.<br/></param>
+    /// <returns>The measured elapsed time and checksum.<br/></returns>
+    private static VarLenMultiByteRangeCountPerfRow MeasureVarKeyScalar8MultiByteRangeReaderCount(
+        LibraDexFileSession session,
+        long rootOffset,
+        byte[] lowerKey,
+        byte[] upperKey,
+        long expected,
+        int iterations,
+        int warmupIterations)
+    {
+        return MeasureVarLenMultiByteRangeCountLoop(
+            "VS8-reader",
+            expected,
+            iterations,
+            warmupIterations,
+            () => CountVarKeyScalar8RangeReader(session, rootOffset, lowerKey, upperKey));
+    }
+
+
+    /// <summary>
+    /// Measures the `VS16` compressed-router range-count primitive loop.<br/>
+    /// The measurement isolates widened identity metadata counting from range-reader shelf materialization.<br/>
+    /// </summary>
+    /// <param name="session">The opened file session.<br/></param>
+    /// <param name="rootOffset">The `VS16` root router offset.<br/></param>
+    /// <param name="lowerKey">The inclusive lower key.<br/></param>
+    /// <param name="upperKey">The inclusive upper key.<br/></param>
+    /// <param name="expected">The expected count per iteration.<br/></param>
+    /// <param name="iterations">The measured iteration count.<br/></param>
+    /// <param name="warmupIterations">The warmup iteration count.<br/></param>
+    /// <returns>The measured elapsed time and checksum.<br/></returns>
+    private static VarLenMultiByteRangeCountPerfRow MeasureVarKeyScalar16MultiByteRangeCountPrimitive(
+        LibraDexFileSession session,
+        long rootOffset,
+        byte[] lowerKey,
+        byte[] upperKey,
+        long expected,
+        int iterations,
+        int warmupIterations)
+    {
+        return MeasureVarLenMultiByteRangeCountLoop(
+            "VS16-count",
+            expected,
+            iterations,
+            warmupIterations,
+            () => session.CountVarKeyScalar16IdentityRange(rootOffset, 1024, lowerKey, upperKey));
+    }
+
+
+    /// <summary>
+    /// Measures ordinary `VS16` range-reader count loops over the compressed-router proof range.<br/>
+    /// The baseline includes ordinary range-reader setup and shelf range loading for the same physical tree.<br/>
+    /// </summary>
+    /// <param name="session">The opened file session.<br/></param>
+    /// <param name="rootOffset">The `VS16` root router offset.<br/></param>
+    /// <param name="lowerKey">The inclusive lower key.<br/></param>
+    /// <param name="upperKey">The inclusive upper key.<br/></param>
+    /// <param name="expected">The expected count per iteration.<br/></param>
+    /// <param name="iterations">The measured iteration count.<br/></param>
+    /// <param name="warmupIterations">The warmup iteration count.<br/></param>
+    /// <returns>The measured elapsed time and checksum.<br/></returns>
+    private static VarLenMultiByteRangeCountPerfRow MeasureVarKeyScalar16MultiByteRangeReaderCount(
+        LibraDexFileSession session,
+        long rootOffset,
+        byte[] lowerKey,
+        byte[] upperKey,
+        long expected,
+        int iterations,
+        int warmupIterations)
+    {
+        return MeasureVarLenMultiByteRangeCountLoop(
+            "VS16-reader",
+            expected,
+            iterations,
+            warmupIterations,
+            () => CountVarKeyScalar16RangeReader(session, rootOffset, lowerKey, upperKey));
+    }
+
+
+    /// <summary>
+    /// Measures the `VV` compressed-router range-count primitive loop.<br/>
+    /// This verifies the varlen-key/varlen-identity shape benefits from the same compressed-router metadata count planner.<br/>
+    /// </summary>
+    /// <param name="session">The opened file session.<br/></param>
+    /// <param name="rootOffset">The `VV` root router offset.<br/></param>
+    /// <param name="lowerKey">The inclusive lower key.<br/></param>
+    /// <param name="upperKey">The inclusive upper key.<br/></param>
+    /// <param name="expected">The expected count per iteration.<br/></param>
+    /// <param name="iterations">The measured iteration count.<br/></param>
+    /// <param name="warmupIterations">The warmup iteration count.<br/></param>
+    /// <returns>The measured elapsed time and checksum.<br/></returns>
+    private static VarLenMultiByteRangeCountPerfRow MeasureVarKeyVarIdentityMultiByteRangeCountPrimitive(
+        LibraDexFileSession session,
+        long rootOffset,
+        byte[] lowerKey,
+        byte[] upperKey,
+        long expected,
+        int iterations,
+        int warmupIterations)
+    {
+        return MeasureVarLenMultiByteRangeCountLoop(
+            "VV-count",
+            expected,
+            iterations,
+            warmupIterations,
+            () => session.CountVarKeyVarIdentityRange(rootOffset, 1024, 1024, lowerKey, upperKey));
+    }
+
+
+    /// <summary>
+    /// Measures ordinary `VV` range-reader count loops over the compressed-router proof range.<br/>
+    /// The result is the tuple-reader baseline for the same key range and physical compressed router shape.<br/>
+    /// </summary>
+    /// <param name="session">The opened file session.<br/></param>
+    /// <param name="rootOffset">The `VV` root router offset.<br/></param>
+    /// <param name="lowerKey">The inclusive lower key.<br/></param>
+    /// <param name="upperKey">The inclusive upper key.<br/></param>
+    /// <param name="expected">The expected count per iteration.<br/></param>
+    /// <param name="iterations">The measured iteration count.<br/></param>
+    /// <param name="warmupIterations">The warmup iteration count.<br/></param>
+    /// <returns>The measured elapsed time and checksum.<br/></returns>
+    private static VarLenMultiByteRangeCountPerfRow MeasureVarKeyVarIdentityMultiByteRangeReaderCount(
+        LibraDexFileSession session,
+        long rootOffset,
+        byte[] lowerKey,
+        byte[] upperKey,
+        long expected,
+        int iterations,
+        int warmupIterations)
+    {
+        return MeasureVarLenMultiByteRangeCountLoop(
+            "VV-reader",
+            expected,
+            iterations,
+            warmupIterations,
+            () => CountVarKeyVarIdentityRangeReader(session, rootOffset, lowerKey, upperKey));
+    }
+
+
+    /// <summary>
+    /// Measures a repeated count-producing delegate with correctness checks before and during timing.<br/>
+    /// Warmup calls must also return the expected value so cache warmup cannot mask an incorrect first-call path.<br/>
+    /// </summary>
+    /// <param name="label">The measurement label used in failure messages.<br/></param>
+    /// <param name="expected">The expected count per call.<br/></param>
+    /// <param name="iterations">The measured iteration count.<br/></param>
+    /// <param name="warmupIterations">The warmup iteration count.<br/></param>
+    /// <param name="count">The count-producing delegate to measure.<br/></param>
+    /// <returns>The measured elapsed time and checksum.<br/></returns>
+    private static VarLenMultiByteRangeCountPerfRow MeasureVarLenMultiByteRangeCountLoop(
+        string label,
+        long expected,
+        int iterations,
+        int warmupIterations,
+        Func<long> count)
+    {
+        for (int i = 0; i < warmupIterations; i++)
+        {
+            long warmup = count();
+            if (warmup != expected)
+            {
+                throw new InvalidDataException($"{label} warmup returned {warmup}; expected {expected}.");
+            }
+        }
+
+        long checksum = 0;
+        Stopwatch watch = Stopwatch.StartNew();
+        for (int i = 0; i < iterations; i++)
+        {
+            long value = count();
+            if (value != expected)
+            {
+                throw new InvalidDataException($"{label} iteration {i} returned {value}; expected {expected}.");
+            }
+
+            checksum += value;
+        }
+
+        watch.Stop();
+        return new VarLenMultiByteRangeCountPerfRow(watch.Elapsed, checksum);
+    }
+
+
+    /// <summary>
+    /// Prints one shape's compressed-router range-count comparison row.<br/>
+    /// The output reports raw elapsed times, operations per second, and the count-path speedup over range-reader counting.<br/>
+    /// </summary>
+    /// <param name="shape">The shape label being printed.<br/></param>
+    /// <param name="iterations">The measured iteration count.<br/></param>
+    /// <param name="count">The count-primitive measurement.<br/></param>
+    /// <param name="reader">The range-reader count measurement.<br/></param>
+    private static void PrintVarLenMultiByteRangeCountPerf(string shape, int iterations, VarLenMultiByteRangeCountPerfRow count, VarLenMultiByteRangeCountPerfRow reader)
+    {
+        double countMs = count.Elapsed.TotalMilliseconds;
+        double readerMs = reader.Elapsed.TotalMilliseconds;
+        double speedup = readerMs / Math.Max(countMs, 0.000001D);
+        Console.WriteLine(
+            $"{shape} countMs={countMs:F3} readerMs={readerMs:F3} speedup={speedup:F2}x " +
+            $"countOpsPerSecond={iterations / Math.Max(count.Elapsed.TotalSeconds, 0.000001D):F2} readerOpsPerSecond={iterations / Math.Max(reader.Elapsed.TotalSeconds, 0.000001D):F2} " +
+            $"countChecksum={count.Checksum} readerChecksum={reader.Checksum}");
+    }
+
+
+    /// <summary>
+    /// Creates deterministic keys for the compressed-router range-count proof.<br/>
+    /// All keys share byte zero and a long common stem, while byte ten is the group fanout byte used by the compressed router's final-byte route interval.<br/>
+    /// </summary>
+    /// <param name="groupCount">The number of compressed-router route groups.<br/></param>
+    /// <param name="itemsPerGroup">The number of generated keys per group.<br/></param>
+    /// <returns>All generated keys in group-major order.<br/></returns>
+    private static byte[][] CreateVarLenMultiByteRangeCountKeys(int groupCount, int itemsPerGroup)
+    {
+        byte[][] keys = new byte[checked(groupCount * itemsPerGroup)][];
+        int ordinal = 0;
+        for (int group = 0; group < groupCount; group++)
+        {
+            for (int item = 0; item < itemsPerGroup; item++)
+            {
+                keys[ordinal++] = CreateVarLenMultiByteRangeCountKey(group, item);
+            }
+        }
+
+        return keys;
+    }
+
+
+    /// <summary>
+    /// Creates one deterministic key for the compressed-router range-count proof.<br/>
+    /// The key is binary rather than textual so the test controls the exact root byte, compressed stem, group fanout byte, and item suffix without collation or encoding ambiguity.<br/>
+    /// </summary>
+    /// <param name="group">The compressed-router route group.<br/></param>
+    /// <param name="item">The item ordinal within the group.<br/></param>
+    /// <returns>The generated key bytes.<br/></returns>
+    private static byte[] CreateVarLenMultiByteRangeCountKey(int group, int item)
+    {
+        byte[] key = new byte[16];
+        key[0] = 0x43;
+        key.AsSpan(1, 9).Fill(0x35);
+        key[10] = (byte)group;
+        BinaryPrimitives.WriteInt32BigEndian(key.AsSpan(11, sizeof(int)), item);
+        key[15] = unchecked((byte)((group * 31 + item * 17) & 0xFF));
+        return key;
+    }
+
+
+    /// <summary>
+    /// Counts the generated compressed-router proof keys that fall inside an inclusive encoded-key range.<br/>
+    /// This is the construction-side oracle; the command separately compares the production count primitive with the normal range reader for each physical shape.<br/>
+    /// </summary>
+    /// <param name="keys">The generated proof keys.<br/></param>
+    /// <param name="lowerKey">The inclusive lower key.<br/></param>
+    /// <param name="upperKey">The inclusive upper key.<br/></param>
+    /// <returns>The number of generated keys inside the range.<br/></returns>
+    private static long CountVarLenMultiByteRangeCountExpected(byte[][] keys, ReadOnlySpan<byte> lowerKey, ReadOnlySpan<byte> upperKey)
+    {
+        long count = 0;
+        for (int i = 0; i < keys.Length; i++)
+        {
+            ReadOnlySpan<byte> key = keys[i];
+            if (key.SequenceCompareTo(lowerKey) >= 0 &&
+                key.SequenceCompareTo(upperKey) <= 0)
+            {
+                count++;
+            }
+        }
+
+        return count;
+    }
+
+
+    /// <summary>
+    /// Builds the `VS8` compressed-router proof tree under an existing root router.<br/>
+    /// Each compressed route points at one sorted shelf so range-count traversal must classify the multi-byte route before deciding whether to use shelf metadata or boundary slot counts.<br/>
+    /// </summary>
+    /// <param name="session">The session receiving the proof tree.<br/></param>
+    /// <param name="rootOffset">The root router offset to link.<br/></param>
+    /// <param name="groupCount">The number of compressed-router route groups.<br/></param>
+    /// <param name="itemsPerGroup">The number of generated keys per group.<br/></param>
+    private static void CreateVarKeyScalar8MultiByteRangeCountTree(LibraDexFileSession session, long rootOffset, int groupCount, int itemsPerGroup)
+    {
+        RouterMultiByteRouteSnapshot[] routes = new RouterMultiByteRouteSnapshot[groupCount];
+        byte[] stem = CreateVarLenMultiByteRangeCountStem();
+        for (int group = 0; group < groupCount; group++)
+        {
+            byte[][] keys = new byte[itemsPerGroup][];
+            ulong[] identities = new ulong[itemsPerGroup];
+            for (int item = 0; item < itemsPerGroup; item++)
+            {
+                keys[item] = CreateVarLenMultiByteRangeCountKey(group, item);
+                identities[item] = CreateVarKeyScalar8Identity((group * itemsPerGroup) + item);
+            }
+
+            VarKeyScalar8Profile profile = SelectVarKeyScalar8BuildProfile(keys, identities);
+            if (!VarKeyScalar8.TryBuildFromSorted(keys, identities, profile, out byte[] shelfBytes))
+            {
+                throw new InvalidDataException("The VS8 multi-byte range-count proof shelf could not be built.");
+            }
+
+            (long shelfOffset, _) = session.CreateVarKeyScalar8Shelf(profile, shelfBytes);
+            routes[group] = new RouterMultiByteRouteSnapshot(stem, (byte)group, (byte)group, shelfOffset);
+        }
+
+        LinkVarLenMultiByteRangeCountRouter(session, rootOffset, stem, routes);
+    }
+
+
+    /// <summary>
+    /// Builds the `VS16` compressed-router proof tree under an existing root router.<br/>
+    /// The key layout matches `VS8`; only the identity payload changes, which keeps range-count routing differences shape-specific.<br/>
+    /// </summary>
+    /// <param name="session">The session receiving the proof tree.<br/></param>
+    /// <param name="rootOffset">The root router offset to link.<br/></param>
+    /// <param name="groupCount">The number of compressed-router route groups.<br/></param>
+    /// <param name="itemsPerGroup">The number of generated keys per group.<br/></param>
+    private static void CreateVarKeyScalar16MultiByteRangeCountTree(LibraDexFileSession session, long rootOffset, int groupCount, int itemsPerGroup)
+    {
+        RouterMultiByteRouteSnapshot[] routes = new RouterMultiByteRouteSnapshot[groupCount];
+        byte[] stem = CreateVarLenMultiByteRangeCountStem();
+        for (int group = 0; group < groupCount; group++)
+        {
+            byte[][] keys = new byte[itemsPerGroup][];
+            ulong[] identityHighs = new ulong[itemsPerGroup];
+            ulong[] identityLows = new ulong[itemsPerGroup];
+            for (int item = 0; item < itemsPerGroup; item++)
+            {
+                keys[item] = CreateVarLenMultiByteRangeCountKey(group, item);
+                CreateVarKeyScalar16Identity((group * itemsPerGroup) + item, out identityHighs[item], out identityLows[item]);
+            }
+
+            VarKeyScalar16Profile profile = SelectVarKeyScalar16BuildProfile(keys, identityHighs, identityLows);
+            if (!VarKeyScalar16.TryBuildFromSorted(keys, identityHighs, identityLows, profile, out byte[] shelfBytes))
+            {
+                throw new InvalidDataException("The VS16 multi-byte range-count proof shelf could not be built.");
+            }
+
+            (long shelfOffset, _) = session.CreateVarKeyScalar16Shelf(profile, shelfBytes);
+            routes[group] = new RouterMultiByteRouteSnapshot(stem, (byte)group, (byte)group, shelfOffset);
+        }
+
+        LinkVarLenMultiByteRangeCountRouter(session, rootOffset, stem, routes);
+    }
+
+
+    /// <summary>
+    /// Builds the `VV` compressed-router proof tree under an existing root router.<br/>
+    /// Variable identities are generated deterministically per item, letting the same key-range oracle validate the varlen-key/varlen-identity count primitive.<br/>
+    /// </summary>
+    /// <param name="session">The session receiving the proof tree.<br/></param>
+    /// <param name="rootOffset">The root router offset to link.<br/></param>
+    /// <param name="groupCount">The number of compressed-router route groups.<br/></param>
+    /// <param name="itemsPerGroup">The number of generated keys per group.<br/></param>
+    /// <param name="identityLength">The generated variable identity length.<br/></param>
+    private static void CreateVarKeyVarIdentityMultiByteRangeCountTree(LibraDexFileSession session, long rootOffset, int groupCount, int itemsPerGroup, int identityLength)
+    {
+        RouterMultiByteRouteSnapshot[] routes = new RouterMultiByteRouteSnapshot[groupCount];
+        byte[] stem = CreateVarLenMultiByteRangeCountStem();
+        for (int group = 0; group < groupCount; group++)
+        {
+            byte[][] keys = new byte[itemsPerGroup][];
+            byte[][] identities = new byte[itemsPerGroup][];
+            for (int item = 0; item < itemsPerGroup; item++)
+            {
+                int ordinal = (group * itemsPerGroup) + item;
+                keys[item] = CreateVarLenMultiByteRangeCountKey(group, item);
+                identities[item] = CreateScalar8VarIdentity(ordinal, identityLength);
+            }
+
+            VarKeyVarIdentityProfile profile = SelectVarKeyVarIdentityBuildProfile(keys, identities, VarKeyVarIdentityProfile.DefaultInitial);
+            if (!VarKeyVarIdentity.TryBuildFromSorted(keys, identities, profile, out byte[] shelfBytes))
+            {
+                throw new InvalidDataException("The VV multi-byte range-count proof shelf could not be built.");
+            }
+
+            (long shelfOffset, _) = session.CreateVarKeyVarIdentityShelf(profile, shelfBytes);
+            routes[group] = new RouterMultiByteRouteSnapshot(stem, (byte)group, (byte)group, shelfOffset);
+        }
+
+        LinkVarLenMultiByteRangeCountRouter(session, rootOffset, stem, routes);
+    }
+
+
+    /// <summary>
+    /// Creates the common compressed-router stem used by the multi-byte range-count proof.<br/>
+    /// The root router consumes byte zero, this stem consumes bytes one through nine, and the compressed route final byte consumes the group byte at depth ten.<br/>
+    /// </summary>
+    /// <returns>The shared compressed-router stem.<br/></returns>
+    private static byte[] CreateVarLenMultiByteRangeCountStem()
+    {
+        byte[] stem = new byte[9];
+        stem.AsSpan().Fill(0x35);
+        return stem;
+    }
+
+
+    /// <summary>
+    /// Creates and links the compressed proof router under byte-zero root route 0x43.<br/>
+    /// The helper centralizes the physical router shape so `VS8`, `VS16`, and `VV` proofs differ only in shelf payload format.<br/>
+    /// </summary>
+    /// <param name="session">The session receiving the router.<br/></param>
+    /// <param name="rootOffset">The root router offset to link.<br/></param>
+    /// <param name="stem">The compressed-router stem bytes.<br/></param>
+    /// <param name="routes">The compressed-router route snapshots.<br/></param>
+    private static void LinkVarLenMultiByteRangeCountRouter(LibraDexFileSession session, long rootOffset, byte[] stem, RouterMultiByteRouteSnapshot[] routes)
+    {
+        (RouterSnapshot router, _) = session.CreateCompressedMultiByteRouter(
+            checked((byte)(stem.Length + 1)),
+            keyDepth: 1,
+            maxRouteCount: checked((ushort)routes.Length),
+            allocationClassId: 0,
+            routes);
+        _ = session.UpdateRouterRoute(rootOffset, 0x43, 0x43, 0x43, router.Offset);
+    }
+
+
+    /// <summary>
+    /// Verifies one compressed-router range-count result against both generated expectation and range-reader parity.<br/>
+    /// Separate expected and reader comparisons make failures distinguish construction mistakes from count-planner regressions.<br/>
+    /// </summary>
+    /// <param name="shape">The shape label being validated.<br/></param>
+    /// <param name="expected">The construction-side expected count.<br/></param>
+    /// <param name="rangeCount">The production range-count primitive result.<br/></param>
+    /// <param name="readerCount">The normal range-reader result.<br/></param>
+    private static void ValidateVarLenMultiByteRangeCountShape(string shape, long expected, long rangeCount, long readerCount)
+    {
+        if (rangeCount != expected)
+        {
+            throw new InvalidDataException($"{shape} compressed-router range count returned {rangeCount}; expected {expected}.");
+        }
+
+        if (readerCount != rangeCount)
+        {
+            throw new InvalidDataException($"{shape} compressed-router reader count returned {readerCount}; range count returned {rangeCount}.");
+        }
+    }
+
+
+    /// <summary>
+    /// Counts a `VS8` raw range reader over caller-supplied encoded bounds.<br/>
+    /// This overload exists for proofs where the range is not the harness's ordinary first-byte prefix span.<br/>
+    /// </summary>
+    /// <param name="session">The opened file session.<br/></param>
+    /// <param name="rootOffset">The root router offset for the `VS8` index.<br/></param>
+    /// <param name="lowerKey">The inclusive lower key.<br/></param>
+    /// <param name="upperKey">The inclusive upper key.<br/></param>
+    /// <returns>The number of rows observed by the range reader.<br/></returns>
+    private static long CountVarKeyScalar8RangeReader(LibraDexFileSession session, long rootOffset, ReadOnlySpan<byte> lowerKey, ReadOnlySpan<byte> upperKey)
+    {
+        using VarKeyScalar8RangeReader reader = session.OpenVarKeyScalar8RangeReader(rootOffset, 1024, lowerKey, upperKey);
+        return reader.Count;
+    }
+
+
+    /// <summary>
+    /// Counts a `VS16` raw range reader over caller-supplied encoded bounds.<br/>
+    /// This keeps compressed-router count proof validation independent from the generated first-byte prefix helper ranges.<br/>
+    /// </summary>
+    /// <param name="session">The opened file session.<br/></param>
+    /// <param name="rootOffset">The root router offset for the `VS16` index.<br/></param>
+    /// <param name="lowerKey">The inclusive lower key.<br/></param>
+    /// <param name="upperKey">The inclusive upper key.<br/></param>
+    /// <returns>The number of rows observed by the range reader.<br/></returns>
+    private static long CountVarKeyScalar16RangeReader(LibraDexFileSession session, long rootOffset, ReadOnlySpan<byte> lowerKey, ReadOnlySpan<byte> upperKey)
+    {
+        using VarKeyScalar16RangeReader reader = session.OpenVarKeyScalar16RangeReader(rootOffset, 1024, lowerKey, upperKey);
+        return reader.Count;
+    }
+
+
+    /// <summary>
+    /// Counts a `VV` raw range reader over caller-supplied encoded bounds.<br/>
+    /// The proof uses this as the tuple-reader oracle for compressed-router range-count traversal.<br/>
+    /// </summary>
+    /// <param name="session">The opened file session.<br/></param>
+    /// <param name="rootOffset">The root router offset for the `VV` index.<br/></param>
+    /// <param name="lowerKey">The inclusive lower key.<br/></param>
+    /// <param name="upperKey">The inclusive upper key.<br/></param>
+    /// <returns>The number of rows observed by the range reader.<br/></returns>
+    private static long CountVarKeyVarIdentityRangeReader(LibraDexFileSession session, long rootOffset, ReadOnlySpan<byte> lowerKey, ReadOnlySpan<byte> upperKey)
+    {
+        using VarKeyVarIdentityRangeReader reader = session.OpenVarKeyVarIdentityRangeReader(rootOffset, 1024, 1024, lowerKey, upperKey);
+        return reader.Count;
+    }
+
+
+    /// <summary>
+    /// Validates routed count-all metadata traversal for each variable-length index shelf family.<br/>
+    /// The command builds `VS8`, `VS16`, `SV8`, `SV16`, and `VV` populations through their normal walked routed insert paths, reopens the file, and compares the count-specific primitive against a full-range reader count for each shape.<br/>
+    /// It deliberately avoids delete/update paths so failures stay scoped to count-all route traversal, shelf-header item counts, and reader parity.<br/>
+    /// </summary>
+    /// <param name="args">The harness command-line arguments.<br/></param>
+    /// <returns>Zero when all variable-length count-all primitives match reader enumeration.<br/></returns>
+    private static int RunVarLenCountAllSanity(string[] args)
+    {
+        string path = GetOption(args, "--path", Path.Combine(@"T:\LibraDex", "varlen-count-all-sanity.lbdx"));
+        int itemCount = GetIntOption(args, "--items", 512);
+        int keyLength = GetIntOption(args, "--key-length", 48);
+        int identityLength = GetIntOption(args, "--identity-length", 48);
+        int prefixCount = GetIntOption(args, "--prefix-count", 16);
+        int duplicateModulo = GetIntOption(args, "--duplicate-modulo", 16);
+        if (itemCount <= 0 ||
+            keyLength <= 0 ||
+            keyLength > 1024 ||
+            identityLength <= 0 ||
+            identityLength > 1024 ||
+            prefixCount <= 0 ||
+            prefixCount > 256 ||
+            duplicateModulo <= 0 ||
+            duplicateModulo > 256)
+        {
+            throw new ArgumentOutOfRangeException(nameof(args), "Varlen count-all sanity requires positive items, key length 1-1024, identity length 1-1024, prefix count 1-256, and duplicate modulo 1-256.");
+        }
+
+        Directory.CreateDirectory(Path.GetDirectoryName(path) ?? ".");
+        File.Delete(path);
+        DataKernelOptions options = CreateDesignPerfOptions();
+        long vs8RootOffset;
+        long vs16RootOffset;
+        long sv8RootOffset;
+        long sv16RootOffset;
+        long vvRootOffset;
+        using (LibraDexFileSession session = LibraDexFileSession.Initialize(path, options, CreateDesignPerfMetadata(9181), DataKernelTelemetryOptions.EnabledOptions))
+        {
+            (RouterSnapshot vs8Root, _) = session.CreateRootRouterIndex(CreateHarnessSlot(0, "vacvs8", 0));
+            vs8RootOffset = vs8Root.Offset;
+            for (int prefix = 0; prefix < prefixCount; prefix++)
+            {
+                _ = session.CreateVarKeyScalar8ShelfAndLinkRootRoute(vs8RootOffset, (byte)prefix, VarKeyScalar8Profile.DefaultInitial);
+            }
+
+            (RouterSnapshot vs16Root, _) = session.CreateRootRouterIndex(CreateHarnessSlot(1, "vacvs16", 0));
+            vs16RootOffset = vs16Root.Offset;
+            for (int prefix = 0; prefix < prefixCount; prefix++)
+            {
+                _ = session.CreateVarKeyScalar16ShelfAndLinkRootRoute(vs16RootOffset, (byte)prefix, VarKeyScalar16Profile.DefaultInitial);
+            }
+
+            (RouterSnapshot sv8Root, _) = session.CreateRootRouterIndex(CreateHarnessSlot(2, "vacsv8", 0));
+            sv8RootOffset = sv8Root.Offset;
+            _ = session.CreateScalar8VarIdentityShelfAndLinkRootRoute(sv8RootOffset, 0, Scalar8VarIdentityProfile.DefaultInitial);
+
+            (RouterSnapshot sv16Root, _) = session.CreateRootRouterIndex(CreateHarnessSlot(3, "vacsv16", 0));
+            sv16RootOffset = sv16Root.Offset;
+            _ = session.CreateScalar16VarIdentityShelfAndLinkRootRoute(sv16RootOffset, 0, Scalar16VarIdentityProfile.DefaultInitial);
+
+            (RouterSnapshot vvRoot, _) = session.CreateRootRouterIndex(CreateHarnessSlot(4, "vacvv", 0));
+            vvRootOffset = vvRoot.Offset;
+            for (int prefix = 0; prefix < prefixCount; prefix++)
+            {
+                _ = session.CreateVarKeyVarIdentityShelfAndLinkRootRoute(vvRootOffset, (byte)prefix, VarKeyVarIdentityProfile.DefaultInitial);
+            }
+
+            using LibraDexFileSessionDurabilityBatch batch = session.BeginDurabilityBatch();
+            for (int i = 0; i < itemCount; i++)
+            {
+                byte[] key = CreateVarKeyScalar8Key(i, keyLength, prefixCount);
+                VarKeyScalar8RoutedInsertResult vs8Result = session.InsertWalkedRoutedVarKeyScalar8(vs8RootOffset, 1024, key, CreateVarKeyScalar8Identity(i), allowDuplicateKeys: true, maxRouterHops: 8);
+                if (vs8Result.InsertResult != VarKeyScalar8InsertResult.Inserted)
+                {
+                    throw new InvalidDataException($"Expected count-all VS8 insert {i}, got {vs8Result.Kind}/{vs8Result.InsertResult}.");
+                }
+
+                CreateVarKeyScalar16Identity(i, out ulong identityHigh, out ulong identityLow);
+                VarKeyScalar16RoutedInsertResult vs16Result = session.InsertWalkedRoutedVarKeyScalar16(vs16RootOffset, 1024, key, identityHigh, identityLow, allowDuplicateKeys: true, maxRouterHops: 8);
+                if (vs16Result.InsertResult != VarKeyScalar16InsertResult.Inserted)
+                {
+                    throw new InvalidDataException($"Expected count-all VS16 insert {i}, got {vs16Result.Kind}/{vs16Result.InsertResult}.");
+                }
+
+                ulong sv8Key = CreateScalar8VarIdentityKey(i, duplicateModulo);
+                byte[] identity = CreateScalar8VarIdentity(i, identityLength);
+                Scalar8VarIdentityRoutedInsertResult sv8Result = session.InsertWalkedRoutedScalar8VarIdentity(sv8RootOffset, identityLength, sv8Key, identity, allowDuplicateKeys: true, maxRouterHops: 8);
+                if (sv8Result.InsertResult != Scalar8VarIdentityInsertResult.Inserted)
+                {
+                    throw new InvalidDataException($"Expected count-all SV8 insert {i}, got {sv8Result.Kind}/{sv8Result.InsertResult}.");
+                }
+
+                CreateScalar16VarIdentityKey(i, duplicateModulo, "low", out ulong sv16KeyHigh, out ulong sv16KeyLow);
+                Scalar16VarIdentityRoutedInsertResult sv16Result = session.InsertWalkedRoutedScalar16VarIdentity(sv16RootOffset, identityLength, sv16KeyHigh, sv16KeyLow, identity, allowDuplicateKeys: true, maxRouterHops: 16);
+                if (sv16Result.InsertResult != Scalar16VarIdentityInsertResult.Inserted)
+                {
+                    throw new InvalidDataException($"Expected count-all SV16 insert {i}, got {sv16Result.Kind}/{sv16Result.InsertResult}.");
+                }
+
+                VarKeyVarIdentityRoutedInsertResult vvResult = session.InsertWalkedRoutedVarKeyVarIdentity(vvRootOffset, 1024, 1024, key, identity, allowDuplicateKeys: true, maxRouterHops: 8);
+                if (vvResult.InsertResult != VarKeyVarIdentityInsertResult.Inserted)
+                {
+                    throw new InvalidDataException($"Expected count-all VV insert {i}, got {vvResult.Kind}/{vvResult.InsertResult}.");
+                }
+            }
+
+            _ = batch.Commit();
+        }
+
+        using LibraDexFileSession reopened = LibraDexFileSession.Open(path, options, DataKernelTelemetryOptions.EnabledOptions);
+        ValidateVarLenCountAllSanity("VS8", itemCount, reopened.CountVarKeyScalar8Identities(vs8RootOffset, 1024), CountVarKeyScalar8RangeReader(reopened, vs8RootOffset, keyLength, prefixCount));
+        ValidateVarLenCountAllSanity("VS16", itemCount, reopened.CountVarKeyScalar16Identities(vs16RootOffset, 1024), CountVarKeyScalar16RangeReader(reopened, vs16RootOffset, keyLength, prefixCount));
+        ValidateVarLenCountAllSanity("SV8", itemCount, reopened.CountScalar8VarIdentityIdentities(sv8RootOffset, identityLength), CountScalar8VarIdentityRangeReader(reopened, sv8RootOffset, identityLength, duplicateModulo));
+        ValidateVarLenCountAllSanity("SV16", itemCount, reopened.CountScalar16VarIdentityIdentities(sv16RootOffset, identityLength), CountScalar16VarIdentityRangeReader(reopened, sv16RootOffset, identityLength, duplicateModulo));
+        ValidateVarLenCountAllSanity("VV", itemCount, reopened.CountVarKeyVarIdentityIdentities(vvRootOffset, 1024, 1024), CountVarKeyVarIdentityRangeReader(reopened, vvRootOffset, keyLength, prefixCount));
+
+        byte[] varLower = CreateVarKeyScalar8PrefixLower(0, keyLength);
+        byte[] varUpper = CreateVarKeyScalar8PrefixUpper(prefixCount - 1, keyLength);
+        ValidateVarLenRangeCountSanity("VS8", reopened.CountVarKeyScalar8IdentityRange(vs8RootOffset, 1024, varLower, varUpper), CountVarKeyScalar8RangeReader(reopened, vs8RootOffset, keyLength, prefixCount));
+        ValidateVarLenRangeCountSanity("VS16", reopened.CountVarKeyScalar16IdentityRange(vs16RootOffset, 1024, varLower, varUpper), CountVarKeyScalar16RangeReader(reopened, vs16RootOffset, keyLength, prefixCount));
+        ValidateVarLenRangeCountSanity("VV", reopened.CountVarKeyVarIdentityRange(vvRootOffset, 1024, 1024, varLower, varUpper), CountVarKeyVarIdentityRangeReader(reopened, vvRootOffset, keyLength, prefixCount));
+
+        ValidateVarLenPrefixCountSanity(reopened, vs8RootOffset, vs16RootOffset, vvRootOffset, itemCount, keyLength, prefixCount, 0);
+        ValidateVarLenPrefixCountSanity(reopened, vs8RootOffset, vs16RootOffset, vvRootOffset, itemCount, keyLength, prefixCount, prefixCount / 2);
+        ValidateVarLenPrefixCountSanity(reopened, vs8RootOffset, vs16RootOffset, vvRootOffset, itemCount, keyLength, prefixCount, prefixCount - 1);
+
+        ulong sv8Lower = CreateScalar8VarIdentityKey(0, duplicateModulo);
+        ulong sv8Upper = CreateScalar8VarIdentityKey(duplicateModulo - 1, duplicateModulo);
+        ValidateVarLenRangeCountSanity("SV8", reopened.CountScalar8VarIdentityRange(sv8RootOffset, identityLength, sv8Lower, sv8Upper), CountScalar8VarIdentityRangeReader(reopened, sv8RootOffset, identityLength, duplicateModulo));
+
+        CreateScalar16VarIdentityKey(0, duplicateModulo, "low", out ulong sv16LowerHigh, out ulong sv16LowerLow);
+        CreateScalar16VarIdentityKey(duplicateModulo - 1, duplicateModulo, "low", out ulong sv16UpperHigh, out ulong sv16UpperLow);
+        ValidateVarLenRangeCountSanity("SV16", reopened.CountScalar16VarIdentityRange(sv16RootOffset, identityLength, sv16LowerHigh, sv16LowerLow, sv16UpperHigh, sv16UpperLow), CountScalar16VarIdentityRangeReader(reopened, sv16RootOffset, identityLength, duplicateModulo));
+
+        Console.WriteLine($"varlen-count-all-sanity ok path={path} items={itemCount} keyLength={keyLength} identityLength={identityLength} prefixCount={prefixCount} duplicateModulo={duplicateModulo}");
+        return 0;
+    }
+
+
+    /// <summary>
+    /// Verifies one variable-length count-all result against its expected population and reader parity count.<br/>
+    /// This keeps the command failure messages shape-specific without duplicating the same comparison policy across all five shapes.<br/>
+    /// </summary>
+    /// <param name="shape">The shape label being validated.<br/></param>
+    /// <param name="expected">The generated population size expected for the count-all path.<br/></param>
+    /// <param name="countAll">The count returned by the metadata traversal primitive.<br/></param>
+    /// <param name="readerCount">The count returned by full-range reader enumeration.<br/></param>
+    private static void ValidateVarLenCountAllSanity(string shape, long expected, long countAll, long readerCount)
+    {
+        if (countAll != expected)
+        {
+            throw new InvalidDataException($"{shape} count-all returned {countAll}; expected {expected}.");
+        }
+
+        if (readerCount != countAll)
+        {
+            throw new InvalidDataException($"{shape} reader count returned {readerCount}; count-all returned {countAll}.");
+        }
+    }
+
+
+    /// <summary>
+    /// Verifies one variable-length range-count result against the established range-reader count.<br/>
+    /// The harness uses reader parity as the correctness oracle while the production range-count primitive is free to use shelf metadata for fully covered route targets.<br/>
+    /// </summary>
+    /// <param name="shape">The shape label being validated.<br/></param>
+    /// <param name="rangeCount">The count returned by the metadata-aware range-count primitive.<br/></param>
+    /// <param name="readerCount">The count returned by the corresponding range reader.<br/></param>
+    private static void ValidateVarLenRangeCountSanity(string shape, long rangeCount, long readerCount)
+    {
+        if (rangeCount != readerCount)
+        {
+            throw new InvalidDataException($"{shape} range-count returned {rangeCount}; reader count returned {readerCount}.");
+        }
+    }
+
+
+    /// <summary>
+    /// Verifies variable-key prefix-count primitives for the three key-variable shapes that expose prefix dispatch.<br/>
+    /// The generated data uses the first key byte as a stable prefix bucket, so the expected count can be computed directly while range-reader parity proves the same extent against normal ordered enumeration.<br/>
+    /// </summary>
+    /// <param name="session">The opened file session.<br/></param>
+    /// <param name="vs8RootOffset">The root router offset for the `VS8` index.<br/></param>
+    /// <param name="vs16RootOffset">The root router offset for the `VS16` index.<br/></param>
+    /// <param name="vvRootOffset">The root router offset for the `VV` index.<br/></param>
+    /// <param name="itemCount">The generated population size.<br/></param>
+    /// <param name="keyLength">The generated key length.<br/></param>
+    /// <param name="prefixCount">The number of first-byte prefix buckets.<br/></param>
+    /// <param name="prefix">The first-byte prefix bucket to verify.<br/></param>
+    private static void ValidateVarLenPrefixCountSanity(
+        LibraDexFileSession session,
+        long vs8RootOffset,
+        long vs16RootOffset,
+        long vvRootOffset,
+        int itemCount,
+        int keyLength,
+        int prefixCount,
+        int prefix)
+    {
+        long expected = CountVarKeyScalar8PrefixPopulation(itemCount, prefixCount, prefix);
+        byte[] encodedPrefix = { (byte)prefix };
+        byte[] lower = CreateVarKeyScalar8PrefixLower(prefix, keyLength);
+        byte[] upper = CreateVarKeyScalar8PrefixUpper(prefix, keyLength);
+
+        using VarKeyScalar8RangeReader vs8Reader = session.OpenVarKeyScalar8RangeReader(vs8RootOffset, 1024, lower, upper);
+        ValidateVarLenPrefixCountSanity("VS8", prefix, expected, session.CountVarKeyScalar8IdentityPrefix(vs8RootOffset, 1024, encodedPrefix), vs8Reader.Count);
+
+        using VarKeyScalar16RangeReader vs16Reader = session.OpenVarKeyScalar16RangeReader(vs16RootOffset, 1024, lower, upper);
+        ValidateVarLenPrefixCountSanity("VS16", prefix, expected, session.CountVarKeyScalar16IdentityPrefix(vs16RootOffset, 1024, encodedPrefix), vs16Reader.Count);
+
+        using VarKeyVarIdentityRangeReader vvReader = session.OpenVarKeyVarIdentityRangeReader(vvRootOffset, 1024, 1024, lower, upper);
+        ValidateVarLenPrefixCountSanity("VV", prefix, expected, session.CountVarKeyVarIdentityPrefix(vvRootOffset, 1024, 1024, encodedPrefix), vvReader.Count);
+    }
+
+
+    /// <summary>
+    /// Verifies one variable-key prefix-count result against both the generated bucket size and range-reader parity.<br/>
+    /// Keeping the generated-count and reader-count checks separate makes failures identify whether routing skipped data or the deterministic setup changed unexpectedly.<br/>
+    /// </summary>
+    /// <param name="shape">The shape label being validated.<br/></param>
+    /// <param name="prefix">The first-byte prefix bucket being validated.<br/></param>
+    /// <param name="expected">The generated population count for the prefix bucket.<br/></param>
+    /// <param name="prefixCount">The count returned by the prefix-count primitive.<br/></param>
+    /// <param name="readerCount">The count returned by ordered range-reader enumeration over the same prefix bounds.<br/></param>
+    private static void ValidateVarLenPrefixCountSanity(string shape, int prefix, long expected, long prefixCount, long readerCount)
+    {
+        if (prefixCount != expected)
+        {
+            throw new InvalidDataException($"{shape} prefix-count for prefix {prefix} returned {prefixCount}; expected {expected}.");
+        }
+
+        if (readerCount != prefixCount)
+        {
+            throw new InvalidDataException($"{shape} prefix reader count for prefix {prefix} returned {readerCount}; prefix-count returned {prefixCount}.");
+        }
+    }
+
+
+    /// <summary>
+    /// Computes the deterministic generated population for one first-byte variable-key prefix bucket.<br/>
+    /// Generated keys assign `index % prefixCount` to byte zero, so this remains independent of shelf splits, route promotion, and router shape.<br/>
+    /// </summary>
+    /// <param name="itemCount">The generated population size.<br/></param>
+    /// <param name="prefixCount">The number of first-byte prefix buckets.<br/></param>
+    /// <param name="prefix">The first-byte prefix bucket being counted.<br/></param>
+    /// <returns>The number of generated keys whose first byte equals <paramref name="prefix"/>.<br/></returns>
+    private static long CountVarKeyScalar8PrefixPopulation(int itemCount, int prefixCount, int prefix)
+    {
+        if (prefix < 0 ||
+            prefix >= prefixCount)
+        {
+            return 0;
+        }
+
+        if (itemCount <= prefix)
+        {
+            return 0;
+        }
+
+        return ((itemCount - 1 - prefix) / prefixCount) + 1;
+    }
+
+
+    /// <summary>
+    /// Counts a full deterministic `VS8` population through the ordinary range reader.<br/>
+    /// The lower and upper bounds cover every generated first-byte prefix, giving a reader parity count without using the count-all primitive.<br/>
+    /// </summary>
+    /// <param name="session">The opened file session.<br/></param>
+    /// <param name="rootOffset">The root router offset for the `VS8` index.<br/></param>
+    /// <param name="keyLength">The generated key length.<br/></param>
+    /// <param name="prefixCount">The number of generated first-byte prefixes.<br/></param>
+    /// <returns>The number of rows observed by the range reader.<br/></returns>
+    private static long CountVarKeyScalar8RangeReader(LibraDexFileSession session, long rootOffset, int keyLength, int prefixCount)
+    {
+        byte[] lower = CreateVarKeyScalar8PrefixLower(0, keyLength);
+        byte[] upper = CreateVarKeyScalar8PrefixUpper(prefixCount - 1, keyLength);
+        using VarKeyScalar8RangeReader reader = session.OpenVarKeyScalar8RangeReader(rootOffset, 1024, lower, upper);
+        return reader.Count;
+    }
+
+
+    /// <summary>
+    /// Counts a full deterministic `VS16` population through the ordinary range reader.<br/>
+    /// This is the 16-byte identity counterpart to the `VS8` reader parity helper.<br/>
+    /// </summary>
+    /// <param name="session">The opened file session.<br/></param>
+    /// <param name="rootOffset">The root router offset for the `VS16` index.<br/></param>
+    /// <param name="keyLength">The generated key length.<br/></param>
+    /// <param name="prefixCount">The number of generated first-byte prefixes.<br/></param>
+    /// <returns>The number of rows observed by the range reader.<br/></returns>
+    private static long CountVarKeyScalar16RangeReader(LibraDexFileSession session, long rootOffset, int keyLength, int prefixCount)
+    {
+        byte[] lower = CreateVarKeyScalar8PrefixLower(0, keyLength);
+        byte[] upper = CreateVarKeyScalar8PrefixUpper(prefixCount - 1, keyLength);
+        using VarKeyScalar16RangeReader reader = session.OpenVarKeyScalar16RangeReader(rootOffset, 1024, lower, upper);
+        return reader.Count;
+    }
+
+
+    /// <summary>
+    /// Counts a full deterministic `SV8` population through the ordinary scalar-key range reader.<br/>
+    /// The bounds cover the complete generated duplicate-key modulo so the reader count should equal the inserted population.<br/>
+    /// </summary>
+    /// <param name="session">The opened file session.<br/></param>
+    /// <param name="rootOffset">The root router offset for the `SV8` index.<br/></param>
+    /// <param name="identityLength">The maximum generated identity length.<br/></param>
+    /// <param name="duplicateModulo">The scalar-key duplicate modulo used by generation.<br/></param>
+    /// <returns>The number of rows observed by the range reader.<br/></returns>
+    private static long CountScalar8VarIdentityRangeReader(LibraDexFileSession session, long rootOffset, int identityLength, int duplicateModulo)
+    {
+        ulong lower = CreateScalar8VarIdentityKey(0, duplicateModulo);
+        ulong upper = CreateScalar8VarIdentityKey(duplicateModulo - 1, duplicateModulo);
+        using Scalar8VarIdentityRangeReader reader = session.OpenScalar8VarIdentityRangeReader(rootOffset, identityLength, lower, upper);
+        return reader.Count;
+    }
+
+
+    /// <summary>
+    /// Counts a full deterministic `SV16` population through the ordinary scalar-key range reader.<br/>
+    /// The low-distribution key generator keeps the range compact while still exercising the 16-byte scalar-key reader.<br/>
+    /// </summary>
+    /// <param name="session">The opened file session.<br/></param>
+    /// <param name="rootOffset">The root router offset for the `SV16` index.<br/></param>
+    /// <param name="identityLength">The maximum generated identity length.<br/></param>
+    /// <param name="duplicateModulo">The scalar-key duplicate modulo used by generation.<br/></param>
+    /// <returns>The number of rows observed by the range reader.<br/></returns>
+    private static long CountScalar16VarIdentityRangeReader(LibraDexFileSession session, long rootOffset, int identityLength, int duplicateModulo)
+    {
+        CreateScalar16VarIdentityKey(0, duplicateModulo, "low", out ulong lowerHigh, out ulong lowerLow);
+        CreateScalar16VarIdentityKey(duplicateModulo - 1, duplicateModulo, "low", out ulong upperHigh, out ulong upperLow);
+        using Scalar16VarIdentityRangeReader reader = session.OpenScalar16VarIdentityRangeReader(rootOffset, identityLength, lowerHigh, lowerLow, upperHigh, upperLow);
+        return reader.Count;
+    }
+
+
+    /// <summary>
+    /// Counts a full deterministic `VV` population through the ordinary range reader.<br/>
+    /// The lower and upper bounds cover every generated first-byte prefix, giving tuple-reader parity without using count-all metadata traversal.<br/>
+    /// </summary>
+    /// <param name="session">The opened file session.<br/></param>
+    /// <param name="rootOffset">The root router offset for the `VV` index.<br/></param>
+    /// <param name="keyLength">The generated key length.<br/></param>
+    /// <param name="prefixCount">The number of generated first-byte prefixes.<br/></param>
+    /// <returns>The number of rows observed by the range reader.<br/></returns>
+    private static long CountVarKeyVarIdentityRangeReader(LibraDexFileSession session, long rootOffset, int keyLength, int prefixCount)
+    {
+        byte[] lower = CreateVarKeyScalar8PrefixLower(0, keyLength);
+        byte[] upper = CreateVarKeyScalar8PrefixUpper(prefixCount - 1, keyLength);
+        using VarKeyVarIdentityRangeReader reader = session.OpenVarKeyVarIdentityRangeReader(rootOffset, 1024, 1024, lower, upper);
+        return reader.Count;
     }
 
 

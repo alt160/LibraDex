@@ -2,9 +2,10 @@ using LibraDex.Layouts;
 
 namespace LibraDex.Views;
 
-internal sealed class Scalar8VarIdentityReadOnly
+internal sealed class Scalar8VarIdentityReadOnly : IVarIdentityReadOnlyShelf
 {
     private readonly ReadOnlyMemory<byte> bytes;
+    private readonly byte[]? ownedBytes;
     private readonly Scalar8VarIdentityProfile profile;
     private readonly uint[] recordOffsets;
     private readonly uint[] keyPrefixes;
@@ -12,6 +13,25 @@ internal sealed class Scalar8VarIdentityReadOnly
     public Scalar8VarIdentityReadOnly(ReadOnlyMemory<byte> bytes, Scalar8VarIdentityProfile profile)
         : this(bytes, profile, validateRecords: true)
     {
+    }
+
+    /// <summary>
+    /// Creates an immutable `SV8` shelf view that retains explicit ownership of the supplied byte array.<br/>
+    /// Session read caching uses this overload so retained shelf bytes and decoded sidecars remain one visible ownership unit.<br/>
+    /// </summary>
+    /// <param name="bytes">The complete immutable shelf byte array retained by the view.<br/></param>
+    /// <param name="profile">The `SV8` shelf profile used to validate and decode slot metadata.<br/></param>
+    internal Scalar8VarIdentityReadOnly(byte[] bytes, Scalar8VarIdentityProfile profile)
+        : this(bytes, profile, validateRecords: true)
+    {
+    }
+
+    internal Scalar8VarIdentityReadOnly(byte[] bytes, Scalar8VarIdentityProfile profile, bool validateRecords)
+    {
+        this.bytes = bytes;
+        ownedBytes = bytes;
+        this.profile = profile;
+        IsValid = TryDecodeSlots(bytes, profile, validateRecords, out recordOffsets, out keyPrefixes);
     }
 
     internal Scalar8VarIdentityReadOnly(ReadOnlyMemory<byte> bytes, Scalar8VarIdentityProfile profile, bool validateRecords)
@@ -30,6 +50,16 @@ internal sealed class Scalar8VarIdentityReadOnly
     public int LiveItemCount => ItemCount;
 
     public int DeletedItemCount => 0;
+
+    internal byte[] Bytes => ownedBytes ?? throw new InvalidOperationException("This SV8 read-only view does not own a cacheable shelf byte array.");
+
+    internal long RetainedSidecarBytes => checked((long)recordOffsets.Length * sizeof(uint) + (long)keyPrefixes.Length * sizeof(uint));
+
+    byte[] IVarIdentityReadOnlyShelf.Bytes => Bytes;
+
+    long IVarIdentityReadOnlyShelf.RetainedSidecarBytes => RetainedSidecarBytes;
+
+    internal long NextShelfOffset => Scalar8VarIdentityLayout.ReadNextShelfOffset(bytes.Span);
 
     public int LowerBoundKey(ulong encodedKey)
     {

@@ -490,6 +490,101 @@ internal sealed class LibraDexStringPatternPredicate
         };
     }
 
+    /// <summary>
+    /// Attempts to compile this string predicate into an ordinal UTF-8 byte predicate.<br/>
+    /// The caller supplies the same operand transform used by the selected physical projection, allowing folded-text scans to compare already-folded key bytes against already-folded criteria bytes without decoding each candidate key.<br/>
+    /// Predicates that require regex, wildcard, capture, custom managed comparison, or unnormalized ignore-case exact-index semantics return <see langword="false"/> so the executor can keep the existing managed string fallback.<br/>
+    /// </summary>
+    /// <param name="operandTransform">Transforms developer-facing operands into the bytes stored by the selected string projection.</param>
+    /// <param name="allowCaseNormalizedBytes">True when the selected projection already stores keys normalized for the predicate's case policy.</param>
+    /// <param name="matcher">Receives the compiled byte matcher when the predicate can execute over UTF-8 bytes.</param>
+    /// <returns><see langword="true"/> when byte-native residual comparison is safe for this predicate.</returns>
+    internal bool TryCreateUtf8ByteMatcher(
+        Func<string?, string?> operandTransform,
+        bool allowCaseNormalizedBytes,
+        out LibraDexUtf8StringPatternPredicate? matcher)
+    {
+        ArgumentNullException.ThrowIfNull(operandTransform);
+        matcher = null;
+        if (!CanUseUtf8ByteMatcher(allowCaseNormalizedBytes))
+        {
+            return false;
+        }
+
+        byte[] expected = EncodeTransformedOperand(operandTransform, value);
+        byte[]? upper = upperValue is null ? null : EncodeTransformedOperand(operandTransform, upperValue);
+        byte[][]? set = null;
+        if (setValues is not null)
+        {
+            set = new byte[setValues.Count][];
+            int index = 0;
+            foreach (string item in setValues)
+            {
+                set[index++] = EncodeTransformedOperand(operandTransform, item);
+            }
+        }
+
+        matcher = new LibraDexUtf8StringPatternPredicate(mode, expected, upper, set);
+        return true;
+    }
+
+    /// <summary>
+    /// Determines whether this predicate's semantics can be represented by ordinal byte comparison over already-projected UTF-8 key bytes.<br/>
+    /// Folded projection callers may permit ignore-case policies because both candidate and criteria bytes are normalized before comparison; exact-index callers must stay case-sensitive to avoid changing .NET comparison semantics.<br/>
+    /// </summary>
+    /// <param name="allowCaseNormalizedBytes">True when the selected projection normalizes case for both keys and operands.</param>
+    /// <returns><see langword="true"/> when the byte matcher can preserve the intended comparison contract.</returns>
+    private bool CanUseUtf8ByteMatcher(bool allowCaseNormalizedBytes)
+    {
+        if (mode is LibraDexStringPatternMode.MatchesPattern or
+            LibraDexStringPatternMode.NotMatchesPattern or
+            LibraDexStringPatternMode.RegexMatches or
+            LibraDexStringPatternMode.NotRegexMatches or
+            LibraDexStringPatternMode.MatchesWith or
+            LibraDexStringPatternMode.NotMatchesWith or
+            LibraDexStringPatternMode.MatchesInSet or
+            LibraDexStringPatternMode.NotMatchesInSet)
+        {
+            return false;
+        }
+
+        if (policy.Kind == LibraDexStringComparisonPolicyKind.Custom)
+        {
+            return false;
+        }
+
+        if (!allowCaseNormalizedBytes && policy.Kind != LibraDexStringComparisonPolicyKind.Ordinal)
+        {
+            return false;
+        }
+
+        return mode is LibraDexStringPatternMode.StartsWith or
+            LibraDexStringPatternMode.EndsWith or
+            LibraDexStringPatternMode.Contains or
+            LibraDexStringPatternMode.EqualTo or
+            LibraDexStringPatternMode.NotEqualTo or
+            LibraDexStringPatternMode.InSet or
+            LibraDexStringPatternMode.NotInSet;
+    }
+
+    /// <summary>
+    /// Converts one transformed string operand to UTF-8 bytes for byte-native residual matching.<br/>
+    /// Null operands cannot participate in ordinary string-pattern residuals because null and empty strings are stored through key-state routes outside the var-key scan path.<br/>
+    /// </summary>
+    /// <param name="operandTransform">The projection-compatible operand transform.</param>
+    /// <param name="operand">The developer-facing operand.</param>
+    /// <returns>The transformed UTF-8 operand bytes.</returns>
+    private static byte[] EncodeTransformedOperand(Func<string?, string?> operandTransform, string operand)
+    {
+        string? transformed = operandTransform(operand);
+        if (transformed is null)
+        {
+            throw new InvalidOperationException("String byte predicates cannot use null transformed operands.");
+        }
+
+        return Encoding.UTF8.GetBytes(transformed);
+    }
+
     private bool MatchesRegex(string candidate, CompareOptions options)
         => regex is null
             ? Regex.IsMatch(candidate, value, CreateRegexOptions(options))
@@ -816,6 +911,95 @@ internal sealed class LibraDexStringPatternPredicate
         }
 
         return candidateIndex == candidate.Length;
+    }
+}
+
+/// <summary>
+/// Executes a compiled string-pattern residual directly against UTF-8 key payload bytes.<br/>
+/// The matcher deliberately owns already-transformed criteria bytes and performs only ordinal byte operations, keeping scan-backed exact/folded string predicates away from per-row string allocation.<br/>
+/// </summary>
+internal sealed class LibraDexUtf8StringPatternPredicate
+{
+    private readonly LibraDexStringPatternMode mode;
+    private readonly byte[] value;
+    private readonly byte[]? upperValue;
+    private readonly byte[][]? setValues;
+
+    /// <summary>
+    /// Initializes a byte-native string pattern predicate from projection-compatible UTF-8 operands.<br/>
+    /// The caller prepares operands once per query using the same transform as the selected physical projection; execution then compares candidate bytes directly.<br/>
+    /// </summary>
+    /// <param name="mode">The string predicate mode.</param>
+    /// <param name="value">The primary operand bytes.</param>
+    /// <param name="upperValue">The upper operand bytes for between-style predicates.</param>
+    /// <param name="setValues">The membership operand bytes for set-style predicates.</param>
+    internal LibraDexUtf8StringPatternPredicate(
+        LibraDexStringPatternMode mode,
+        byte[] value,
+        byte[]? upperValue,
+        byte[][]? setValues)
+    {
+        this.mode = mode;
+        this.value = value;
+        this.upperValue = upperValue;
+        this.setValues = setValues;
+    }
+
+    /// <summary>
+    /// Tests one UTF-8 key payload against this compiled byte predicate.<br/>
+    /// The candidate span must exclude LibraDex's string sentinel byte and represent the same exact or folded projection selected when the matcher was created.<br/>
+    /// </summary>
+    /// <param name="candidate">The candidate UTF-8 payload bytes.</param>
+    /// <returns><see langword="true"/> when the candidate satisfies the predicate.</returns>
+    internal bool Matches(ReadOnlySpan<byte> candidate)
+    {
+        return mode switch
+        {
+            LibraDexStringPatternMode.StartsWith => candidate.StartsWith(value),
+            LibraDexStringPatternMode.EndsWith => candidate.EndsWith(value),
+            LibraDexStringPatternMode.Contains => candidate.IndexOf(value) >= 0,
+            LibraDexStringPatternMode.EqualTo => candidate.SequenceEqual(value),
+            LibraDexStringPatternMode.NotEqualTo => !candidate.SequenceEqual(value),
+            LibraDexStringPatternMode.GreaterThan => candidate.SequenceCompareTo(value) > 0,
+            LibraDexStringPatternMode.GreaterOrEqual => candidate.SequenceCompareTo(value) >= 0,
+            LibraDexStringPatternMode.LessThan => candidate.SequenceCompareTo(value) < 0,
+            LibraDexStringPatternMode.LessOrEqual => candidate.SequenceCompareTo(value) <= 0,
+            LibraDexStringPatternMode.Between => candidate.SequenceCompareTo(value) >= 0 &&
+                candidate.SequenceCompareTo(RequireUpperValue()) <= 0,
+            LibraDexStringPatternMode.NotBetween => candidate.SequenceCompareTo(value) < 0 ||
+                candidate.SequenceCompareTo(RequireUpperValue()) > 0,
+            LibraDexStringPatternMode.InSet => MatchesSet(candidate),
+            LibraDexStringPatternMode.NotInSet => !MatchesSet(candidate),
+            _ => false
+        };
+    }
+
+    /// <summary>
+    /// Returns the required upper byte operand for between-style comparisons.<br/>
+    /// The guard keeps invalid matcher construction visible instead of silently treating the missing bound as an empty payload.<br/>
+    /// </summary>
+    /// <returns>The upper operand bytes.</returns>
+    private byte[] RequireUpperValue()
+        => upperValue ?? throw new InvalidOperationException("The UTF-8 byte string predicate requires an upper comparison value.");
+
+    /// <summary>
+    /// Tests one candidate payload against the prepared byte membership set.<br/>
+    /// The simple linear scan avoids building a span comparer allocation surface; condition builder membership sets are expected to route exact lookups when large enough to matter.<br/>
+    /// </summary>
+    /// <param name="candidate">The candidate UTF-8 payload bytes.</param>
+    /// <returns><see langword="true"/> when the candidate matches a set operand.</returns>
+    private bool MatchesSet(ReadOnlySpan<byte> candidate)
+    {
+        byte[][] localSet = setValues ?? throw new InvalidOperationException("The UTF-8 byte string predicate requires membership values.");
+        for (int i = 0; i < localSet.Length; i++)
+        {
+            if (candidate.SequenceEqual(localSet[i]))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 }
 

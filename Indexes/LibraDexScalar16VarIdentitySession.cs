@@ -1,13 +1,14 @@
 using LibraDex.Layouts;
 using LibraDex.Views;
 using System.Buffers.Binary;
+using System.Collections.Generic;
 using System.Diagnostics;
 
 namespace LibraDex;
 
-public sealed partial class LibraDexFileSession
+internal sealed partial class LibraDexFileSession
 {
-    private const int DefaultScalar16VarIdentityMaxRouterHops = 8;
+    internal const int DefaultScalar16VarIdentityMaxRouterHops = 4096;
 
     internal Scalar16VarIdentityRouteTargetKind ClassifyScalar16VarIdentityRouteTarget(long targetOffset)
     {
@@ -16,20 +17,326 @@ public sealed partial class LibraDexFileSession
             return Scalar16VarIdentityRouteTargetKind.None;
         }
 
-        Span<byte> header = stackalloc byte[Scalar16VarIdentityLayout.HeaderSize];
-        kernel.Read(targetOffset, header);
-        uint magic = BinaryPrimitives.ReadUInt32LittleEndian(header[..sizeof(uint)]);
+        RouteTargetKindCache targetKindCache = scalar16VarIdentityRouteTargetKindCache.Value!;
+        if (targetKindCache.TryGet(targetOffset, out int cachedKind))
+        {
+            return (Scalar16VarIdentityRouteTargetKind)cachedKind;
+        }
+
+        Span<byte> magicBytes = stackalloc byte[sizeof(uint)];
+        if (!TryReadFromRouterArenaCache(targetOffset, magicBytes))
+        {
+            kernel.Read(targetOffset, magicBytes);
+        }
+
+        uint magic = BinaryPrimitives.ReadUInt32LittleEndian(magicBytes);
         if (magic == RouterLayout.Magic)
         {
+            targetKindCache.Set(targetOffset, (int)Scalar16VarIdentityRouteTargetKind.Router);
             return Scalar16VarIdentityRouteTargetKind.Router;
         }
 
         if (magic == Scalar16VarIdentityLayout.Magic)
         {
+            targetKindCache.Set(targetOffset, (int)Scalar16VarIdentityRouteTargetKind.Shelf);
             return Scalar16VarIdentityRouteTargetKind.Shelf;
         }
 
         return Scalar16VarIdentityRouteTargetKind.None;
+    }
+
+    /// <summary>
+    /// Counts every ordinary `SV16` identity reachable from the routed root by summing shelf-local count metadata.<br/>
+    /// This avoids range-reader setup for count-all while still following routed shelves and duplicate-run overflow chains.<br/>
+    /// </summary>
+    /// <param name="rootRouterOffset">The routed `SV16` root router offset.<br/></param>
+    /// <param name="maxIdentityLength">The maximum raw identity length accepted by the index.<br/></param>
+    /// <returns>The summed ordinary routed identity count.<br/></returns>
+    internal long CountScalar16VarIdentityIdentities(long rootRouterOffset, int maxIdentityLength)
+    {
+        HashSet<long> visitedTargets = new();
+        HashSet<long> visitedRouters = new();
+        return CountScalar16VarIdentityIdentitiesFromRouter(rootRouterOffset, maxIdentityLength, visitedTargets, visitedRouters);
+    }
+
+    /// <summary>
+    /// Counts `SV16` identities in an inclusive scalar-key range using metadata traversal for fully covered direct root-prefix targets.<br/>
+    /// Boundary prefixes and compressed/shared root layouts retain reader counting so range edges remain exact without copying identity bytes.<br/>
+    /// </summary>
+    /// <param name="rootRouterOffset">The routed `SV16` root router offset.<br/></param>
+    /// <param name="maxIdentityLength">The maximum raw identity length accepted by the index.<br/></param>
+    /// <param name="lowerEncodedKeyHigh">The high half of the inclusive lower encoded scalar key.<br/></param>
+    /// <param name="lowerEncodedKeyLow">The low half of the inclusive lower encoded scalar key.<br/></param>
+    /// <param name="upperEncodedKeyHigh">The high half of the inclusive upper encoded scalar key.<br/></param>
+    /// <param name="upperEncodedKeyLow">The low half of the inclusive upper encoded scalar key.<br/></param>
+    /// <returns>The number of matching identities.<br/></returns>
+    internal long CountScalar16VarIdentityRange(
+        long rootRouterOffset,
+        int maxIdentityLength,
+        ulong lowerEncodedKeyHigh,
+        ulong lowerEncodedKeyLow,
+        ulong upperEncodedKeyHigh,
+        ulong upperEncodedKeyLow)
+    {
+        if (CompareScalar16VarIdentityKey(lowerEncodedKeyHigh, lowerEncodedKeyLow, upperEncodedKeyHigh, upperEncodedKeyLow) > 0)
+        {
+            return 0;
+        }
+
+        byte lowerPrefix = GetScalar16VarIdentityPrefix(lowerEncodedKeyHigh, lowerEncodedKeyLow, 0);
+        byte upperPrefix = GetScalar16VarIdentityPrefix(upperEncodedKeyHigh, upperEncodedKeyLow, 0);
+        if (lowerPrefix == upperPrefix || lowerPrefix == byte.MaxValue || upperPrefix == byte.MinValue)
+        {
+            using Scalar16VarIdentityRangeReader reader = OpenScalar16VarIdentityRangeReader(rootRouterOffset, maxIdentityLength, lowerEncodedKeyHigh, lowerEncodedKeyLow, upperEncodedKeyHigh, upperEncodedKeyLow);
+            return reader.Count;
+        }
+
+        Span<byte> routerBytes = stackalloc byte[RouterLayout.Size];
+        ReadRouterPageUsingArenaCache(rootRouterOffset, routerBytes);
+        RouterReader router = new(routerBytes);
+        if (!router.IsValid)
+        {
+            throw new InvalidDataException("The routed SV16 range-count root router is invalid.");
+        }
+
+        if (!router.HasDirectIndex)
+        {
+            using Scalar16VarIdentityRangeReader reader = OpenScalar16VarIdentityRangeReader(rootRouterOffset, maxIdentityLength, lowerEncodedKeyHigh, lowerEncodedKeyLow, upperEncodedKeyHigh, upperEncodedKeyLow);
+            return reader.Count;
+        }
+
+        long lowerTarget = router.GetRouteTargetAt(lowerPrefix);
+        long upperTarget = router.GetRouteTargetAt(upperPrefix);
+        for (int prefix = lowerPrefix + 1; prefix < upperPrefix; prefix++)
+        {
+            long target = router.GetRouteTargetAt(prefix);
+            if (target != 0 && (target == lowerTarget || target == upperTarget))
+            {
+                using Scalar16VarIdentityRangeReader reader = OpenScalar16VarIdentityRangeReader(rootRouterOffset, maxIdentityLength, lowerEncodedKeyHigh, lowerEncodedKeyLow, upperEncodedKeyHigh, upperEncodedKeyLow);
+                return reader.Count;
+            }
+        }
+
+        long count = 0;
+        CreateScalar16PrefixUpperBound(lowerPrefix, out ulong lowerEdgeHigh, out ulong lowerEdgeLow);
+        using (Scalar16VarIdentityRangeReader lowerReader = OpenScalar16VarIdentityRangeReader(rootRouterOffset, maxIdentityLength, lowerEncodedKeyHigh, lowerEncodedKeyLow, lowerEdgeHigh, lowerEdgeLow))
+        {
+            count += lowerReader.Count;
+        }
+
+        HashSet<long> visitedTargets = new();
+        HashSet<long> visitedRouters = new();
+        for (int prefix = lowerPrefix + 1; prefix < upperPrefix; prefix++)
+        {
+            count += CountScalar16VarIdentityRouteTarget(router.GetRouteTargetAt(prefix), maxIdentityLength, visitedTargets, visitedRouters);
+        }
+
+        CreateScalar16PrefixLowerBound(upperPrefix, out ulong upperEdgeHigh, out ulong upperEdgeLow);
+        using (Scalar16VarIdentityRangeReader upperReader = OpenScalar16VarIdentityRangeReader(rootRouterOffset, maxIdentityLength, upperEdgeHigh, upperEdgeLow, upperEncodedKeyHigh, upperEncodedKeyLow))
+        {
+            count += upperReader.Count;
+        }
+
+        return count;
+    }
+
+    /// <summary>
+    /// Creates the inclusive scalar-16 lower key for a root prefix byte.<br/>
+    /// </summary>
+    /// <param name="prefix">The root prefix byte.<br/></param>
+    /// <param name="high">Receives the high encoded key half.<br/></param>
+    /// <param name="low">Receives the low encoded key half.<br/></param>
+    private static void CreateScalar16PrefixLowerBound(byte prefix, out ulong high, out ulong low)
+    {
+        high = (ulong)prefix << 56;
+        low = 0;
+    }
+
+    /// <summary>
+    /// Creates the inclusive scalar-16 upper key for a root prefix byte.<br/>
+    /// </summary>
+    /// <param name="prefix">The root prefix byte.<br/></param>
+    /// <param name="high">Receives the high encoded key half.<br/></param>
+    /// <param name="low">Receives the low encoded key half.<br/></param>
+    private static void CreateScalar16PrefixUpperBound(byte prefix, out ulong high, out ulong low)
+    {
+        high = ((ulong)prefix << 56) | 0x00FFFFFFFFFFFFFFUL;
+        low = ulong.MaxValue;
+    }
+
+    private long CountScalar16VarIdentityIdentitiesFromRouter(
+        long routerOffset,
+        int maxIdentityLength,
+        HashSet<long> visitedTargets,
+        HashSet<long> visitedRouters)
+    {
+        if (!visitedRouters.Add(routerOffset))
+        {
+            return 0;
+        }
+
+        Span<byte> routerBytes = stackalloc byte[RouterLayout.Size];
+        ReadRouterPageUsingArenaCache(routerOffset, routerBytes);
+        RouterReader router = new(routerBytes);
+        if (!router.IsValid)
+        {
+            throw new InvalidDataException("The routed SV16 count router is invalid.");
+        }
+
+        long count = 0;
+        if (router.HasDirectIndex)
+        {
+            for (int routeIndex = 0; routeIndex <= byte.MaxValue; routeIndex++)
+            {
+                count += CountScalar16VarIdentityRouteTarget(router.GetRouteTargetAt(routeIndex), maxIdentityLength, visitedTargets, visitedRouters);
+            }
+
+            return count;
+        }
+
+        for (int routeIndex = 0; routeIndex < router.RouteCount; routeIndex++)
+        {
+            count += CountScalar16VarIdentityRouteTarget(router.GetRouteTargetAt(routeIndex), maxIdentityLength, visitedTargets, visitedRouters);
+        }
+
+        return count;
+    }
+
+    private long CountScalar16VarIdentityRouteTarget(
+        long targetOffset,
+        int maxIdentityLength,
+        HashSet<long> visitedTargets,
+        HashSet<long> visitedRouters)
+    {
+        if (targetOffset == 0 || visitedTargets.Contains(targetOffset) || visitedRouters.Contains(targetOffset))
+        {
+            return 0;
+        }
+
+        Scalar16VarIdentityRouteTargetKind kind = ClassifyScalar16VarIdentityRouteTarget(targetOffset);
+        if (kind == Scalar16VarIdentityRouteTargetKind.Router)
+        {
+            return CountScalar16VarIdentityIdentitiesFromRouter(targetOffset, maxIdentityLength, visitedTargets, visitedRouters);
+        }
+
+        if (kind != Scalar16VarIdentityRouteTargetKind.Shelf)
+        {
+            throw new InvalidDataException("The routed SV16 count target is not a shelf or router.");
+        }
+
+        if (!visitedTargets.Add(targetOffset))
+        {
+            return 0;
+        }
+
+        return CountScalar16VarIdentityShelfChainNarrow(targetOffset, maxIdentityLength, visitedTargets);
+    }
+
+    private long CountScalar16VarIdentityShelfChainNarrow(long shelfOffset, int maxIdentityLength, HashSet<long> visitedTargets)
+    {
+        long count = 0;
+        long currentOffset = shelfOffset;
+        while (currentOffset != 0)
+        {
+            count += ReadScalar16VarIdentityShelfItemCountNarrow(currentOffset, maxIdentityLength, out long nextOffset);
+            currentOffset = nextOffset;
+            if (currentOffset != 0 && !visitedTargets.Add(currentOffset))
+            {
+                break;
+            }
+        }
+
+        return count;
+    }
+
+    private long ReadScalar16VarIdentityShelfItemCountNarrow(long shelfOffset, int maxIdentityLength, out long nextOffset)
+    {
+        if (durabilityBatchActive &&
+            scalar16VarIdentityMutableBatchShelves.TryGetValue(shelfOffset, out Scalar16VarIdentityMutableShelfView? mutableShelf))
+        {
+            nextOffset = Scalar16VarIdentityLayout.ReadNextShelfOffset(mutableShelf.Bytes);
+            return mutableShelf.LiveItemCount;
+        }
+
+        Scalar16VarIdentityShelfCountCacheKey cacheKey = new(shelfOffset, maxIdentityLength);
+        if (TryGetScalar16VarIdentityShelfCountCache(cacheKey, out ScalarVarIdentityShelfCountCacheValue cachedValue))
+        {
+            nextOffset = cachedValue.NextShelfOffset;
+            return cachedValue.Count;
+        }
+
+        Span<byte> header = stackalloc byte[Scalar16VarIdentityLayout.HeaderSize];
+        kernel.Read(shelfOffset, header);
+        if (Scalar16VarIdentityLayout.ReadMagic(header) != Scalar16VarIdentityLayout.Magic ||
+            Scalar16VarIdentityLayout.ReadFormatVersion(header) != Scalar16VarIdentityLayout.FormatVersion ||
+            Scalar16VarIdentityLayout.ReadHeaderSize(header) != Scalar16VarIdentityLayout.HeaderSize)
+        {
+            throw new InvalidDataException("The routed SV16 count shelf header is invalid.");
+        }
+
+        int shelfExtentSize = Scalar16VarIdentityLayout.ReadShelfExtentSize(header);
+        _ = Scalar16VarIdentityProfile.Create(shelfExtentSize, maxIdentityLength);
+        int count = Scalar16VarIdentityLayout.ReadItemCount(header);
+        int slotStreamLength = Scalar16VarIdentityLayout.ReadSlotStreamLength(header);
+        int slotCapacityBytes = Scalar16VarIdentityLayout.ReadSlotCapacityBytes(header);
+        int recordArenaEnd = Scalar16VarIdentityLayout.ReadRecordArenaEnd(header);
+        int expectedSlotCapacityBytes = Scalar16VarIdentityLayout.CalculateSlotCapacityBytes(shelfExtentSize);
+        if (count < 0 ||
+            count > expectedSlotCapacityBytes / Scalar16VarIdentityLayout.SlotSize ||
+            slotStreamLength != checked(count * Scalar16VarIdentityLayout.SlotSize) ||
+            slotCapacityBytes != expectedSlotCapacityBytes ||
+            recordArenaEnd < Scalar16VarIdentityLayout.HeaderSize + slotCapacityBytes ||
+            recordArenaEnd > shelfExtentSize)
+        {
+            throw new InvalidDataException("The routed SV16 count shelf metadata is invalid.");
+        }
+
+        nextOffset = Scalar16VarIdentityLayout.ReadNextShelfOffset(header);
+        StoreScalar16VarIdentityShelfCountCache(cacheKey, count, nextOffset);
+        return count;
+    }
+
+    /// <summary>
+    /// Tries to read a session-local narrow count projection for one `SV16` shelf.<br/>
+    /// The projection stores both count and next-shelf offset, and is invalidated through the shared DataKernel mutation-version boundary.<br/>
+    /// This keeps repeated count traversal from rereading shelf headers while preserving the rule that persisted count metadata is not maintained by extra writes.<br/>
+    /// </summary>
+    /// <param name="key">The physical `SV16` shelf count cache key.<br/></param>
+    /// <param name="value">Receives the cached count and next offset when a current entry is available.<br/></param>
+    /// <returns><see langword="true"/> when a current count projection was found; otherwise <see langword="false"/>.<br/></returns>
+    private bool TryGetScalar16VarIdentityShelfCountCache(Scalar16VarIdentityShelfCountCacheKey key, out ScalarVarIdentityShelfCountCacheValue value)
+    {
+        long mutationVersion = kernel.MutationVersion;
+        lock (countHeaderCacheSync)
+        {
+            EnsureCountHeaderCacheVersionUnderLock(mutationVersion);
+            if (scalar16VarIdentityShelfCountCache.TryGetValue(key, out value) &&
+                kernel.MutationVersion == mutationVersion)
+            {
+                return true;
+            }
+        }
+
+        value = default;
+        return false;
+    }
+
+
+    /// <summary>
+    /// Stores one validated `SV16` shelf count projection at the current raw-storage mutation version.<br/>
+    /// The value comes from a shelf header already read by the count path, so this cache is a free in-memory reuse layer and not a persisted metadata maintenance strategy.<br/>
+    /// </summary>
+    /// <param name="key">The physical `SV16` shelf count cache key.<br/></param>
+    /// <param name="count">The validated live item count read from the shelf header.<br/></param>
+    /// <param name="nextOffset">The next shelf offset from the shelf header.<br/></param>
+    private void StoreScalar16VarIdentityShelfCountCache(Scalar16VarIdentityShelfCountCacheKey key, long count, long nextOffset)
+    {
+        long mutationVersion = kernel.MutationVersion;
+        lock (countHeaderCacheSync)
+        {
+            EnsureCountHeaderCacheVersionUnderLock(mutationVersion);
+            scalar16VarIdentityShelfCountCache[key] = new ScalarVarIdentityShelfCountCacheValue(count, nextOffset);
+        }
     }
 
     internal (long ShelfOffset, DataKernelCommitTelemetry Commit) CreateScalar16VarIdentityShelfAndLinkRootRoute(
@@ -141,6 +448,99 @@ public sealed partial class LibraDexFileSession
         }
 
         throw new InvalidDataException("The routed SV16 target walk exceeded the configured maximum router hop count.");
+    }
+
+    /// <summary>
+    /// Tries to resolve one exact encoded `SV16` key directly to its owning ordinary shelf.<br/>
+    /// Repeated exact reads reuse promoted direct-router views and cached target kinds, avoiding the generic range frontier and its per-hop backing classification reads.<br/>
+    /// An unset route is an ordinary not-found result; invalid structures and exhausted hop guards remain explicit corruption failures.<br/>
+    /// </summary>
+    /// <param name="rootRouterOffset">The routed `SV16` root router offset.<br/></param>
+    /// <param name="encodedKeyHigh">The high 8 bytes of the exact encoded key.<br/></param>
+    /// <param name="encodedKeyLow">The low 8 bytes of the exact encoded key.<br/></param>
+    /// <param name="maxRouterHops">The maximum number of router pages to follow.<br/></param>
+    /// <param name="shelfOffset">Receives the owning ordinary shelf offset when the route exists.<br/></param>
+    /// <returns><see langword="true"/> when the exact route terminates at an `SV16` shelf; otherwise <see langword="false"/> when the route is unset.<br/></returns>
+    internal bool TryWalkScalar16VarIdentityExactShelf(
+        long rootRouterOffset,
+        ulong encodedKeyHigh,
+        ulong encodedKeyLow,
+        int maxRouterHops,
+        out long shelfOffset)
+    {
+        if (maxRouterHops <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(maxRouterHops), maxRouterHops, "The SV16 maximum router hop count must be positive.");
+        }
+
+        long routerOffset = rootRouterOffset;
+        Span<byte> routerBytes = stackalloc byte[RouterLayout.Size];
+        for (int hop = 0; hop < maxRouterHops; hop++)
+        {
+            if (TryGetDirectRouterView(routerOffset, out DirectRouterView? directView))
+            {
+                byte prefixByte = GetScalar16VarIdentityPrefix(encodedKeyHigh, encodedKeyLow, directView!.KeyDepth);
+                long targetOffset = directView.GetTarget(prefixByte);
+                if (targetOffset == 0)
+                {
+                    shelfOffset = 0;
+                    return false;
+                }
+
+                Scalar16VarIdentityRouteTargetKind kind = ToScalar16VarIdentityRouteTargetKind(directView.GetTargetKind(prefixByte));
+                if (kind == Scalar16VarIdentityRouteTargetKind.None)
+                {
+                    kind = ClassifyScalar16VarIdentityRouteTarget(targetOffset);
+                    directView.SetTargetKind(prefixByte, ToScalar8Scalar8RouteTargetKind(kind));
+                }
+
+                if (kind == Scalar16VarIdentityRouteTargetKind.Shelf)
+                {
+                    shelfOffset = targetOffset;
+                    return true;
+                }
+
+                if (kind == Scalar16VarIdentityRouteTargetKind.Router)
+                {
+                    routerOffset = targetOffset;
+                    continue;
+                }
+
+                throw new InvalidDataException("The routed SV16 exact-read target is not a shelf or router.");
+            }
+
+            ReadRouterPageUsingArenaCache(routerOffset, routerBytes);
+            RouterReader reader = new(routerBytes);
+            if (!reader.IsValid)
+            {
+                throw new InvalidDataException("The routed SV16 exact-read router is invalid.");
+            }
+
+            byte fallbackPrefix = GetScalar16VarIdentityPrefix(encodedKeyHigh, encodedKeyLow, reader.KeyDepth);
+            long fallbackTargetOffset = reader.FindTarget(fallbackPrefix);
+            if (fallbackTargetOffset == 0)
+            {
+                shelfOffset = 0;
+                return false;
+            }
+
+            Scalar16VarIdentityRouteTargetKind fallbackKind = ClassifyScalar16VarIdentityRouteTarget(fallbackTargetOffset);
+            if (fallbackKind == Scalar16VarIdentityRouteTargetKind.Shelf)
+            {
+                shelfOffset = fallbackTargetOffset;
+                return true;
+            }
+
+            if (fallbackKind == Scalar16VarIdentityRouteTargetKind.Router)
+            {
+                routerOffset = fallbackTargetOffset;
+                continue;
+            }
+
+            throw new InvalidDataException("The routed SV16 exact-read target is not a shelf or router.");
+        }
+
+        throw new InvalidDataException("The routed SV16 exact-read walk exceeded the configured maximum router hop count.");
     }
 
     internal Scalar16VarIdentityRoutedInsertResult InsertWalkedRoutedScalar16VarIdentity(
@@ -328,6 +728,7 @@ public sealed partial class LibraDexFileSession
         started = collectAttribution ? Stopwatch.GetTimestamp() : 0;
         mutableShelf.EnsureSlotBytesCurrent();
         if (insertResult == Scalar16VarIdentityInsertResult.Full &&
+            target.RouterDepth >= Scalar16VarIdentityLayout.KeySize - 1 &&
             Scalar16VarIdentity.TryGrowAndInsert(mutableShelf.Bytes, profile, encodedKeyHigh, encodedKeyLow, identity, allowDuplicateKeys, out Scalar16VarIdentityProfile grownProfile, out byte[] grownShelf, out Scalar16VarIdentityInsertResult grownResult))
         {
             if (grownResult != Scalar16VarIdentityInsertResult.Inserted)
@@ -380,7 +781,7 @@ public sealed partial class LibraDexFileSession
             TrySplitScalar16VarIdentityShelf(
                 mutableShelf,
                 profile,
-                target.RouterDepth,
+                0,
                 encodedKeyHigh,
                 encodedKeyLow,
                 identity,
@@ -394,64 +795,17 @@ public sealed partial class LibraDexFileSession
                 out Scalar16VarIdentityInsertResult splitInsertResult))
         {
             scalar16VarIdentityMutableBatchShelves.Remove(target.Offset);
-            RawDataReservation leftReservation = kernel.Reserve(profile.ShelfExtentSize);
-            leftShelf.CopyTo(leftReservation.Span);
-            RawDataReservation rightReservation = kernel.Reserve(profile.ShelfExtentSize);
-            rightShelf.CopyTo(rightReservation.Span);
-            RawDataReservation childRouterReservation = kernel.Reserve(RouterLayout.Size);
-            RouterWriter childWriter = new(childRouterReservation.Span);
-            childWriter.InitializeExpandedOneByte(
+            DataKernelCommitTelemetry telemetry = PublishScalar16VarIdentityShelfTransformSplit(
+                target.Offset,
+                profile,
+                splitDepth,
                 splitDepth,
                 target.AllocationClassId,
-                CreateSplitScalar8Scalar8RouteTargets(leftReservation.Extent.Offset, rightReservation.Extent.Offset, selectedRightPrefix));
-            RepointRoute(pathTarget.ParentRouterOffset, pathTarget.RouteIndex, childRouterReservation.Extent.Offset);
-            DataKernelCommitTelemetry telemetry = CommitAndInvalidateRouterReadCache();
-            if (collectAttribution)
-            {
-                structuralTicks += Stopwatch.GetTimestamp() - started;
-            }
-
-            attribution = new Scalar16VarIdentityWalkedWriteAttribution(routeWalkTicks, shelfReadTicks, duplicateChainTicks, mutationTicks, stageTicks, structuralTicks);
-            return new Scalar16VarIdentityRoutedInsertResult(
-                Scalar16VarIdentityRoutedInsertKind.WalkedShelfSplit,
-                splitInsertResult,
-                childRouterReservation.Extent.Offset,
-                rightReservation.Extent.Offset,
-                telemetry,
-                Math.Max(leftCount, rightCount),
-                profile.ShelfExtentSize,
-                target.RouterDepth,
-                splitDepth);
-        }
-        if (collectAttribution)
-        {
-            structuralTicks += Stopwatch.GetTimestamp() - started;
-        }
-
-        started = collectAttribution ? Stopwatch.GetTimestamp() : 0;
-        if (insertResult == Scalar16VarIdentityInsertResult.Full &&
-            TrySplitScalar16VarIdentityShelfAtDepth(
-                mutableShelf,
-                profile,
-                target.RouterDepth,
-                encodedKeyHigh,
-                encodedKeyLow,
-                identity,
-                allowDuplicateKeys,
-                out selectedRightPrefix,
-                out leftShelf,
-                out rightShelf,
-                out leftCount,
-                out rightCount,
-                out splitInsertResult))
-        {
-            scalar16VarIdentityMutableBatchShelves.Remove(target.Offset);
-            RawDataReservation leftReservation = kernel.Reserve(profile.ShelfExtentSize);
-            leftShelf.CopyTo(leftReservation.Span);
-            RawDataReservation rightReservation = kernel.Reserve(profile.ShelfExtentSize);
-            rightShelf.CopyTo(rightReservation.Span);
-            RepointSameDepthRoutes(pathTarget.ParentRouterOffset, target.Offset, selectedRightPrefix, leftReservation.Extent.Offset, rightReservation.Extent.Offset);
-            DataKernelCommitTelemetry telemetry = CommitAndInvalidateRouterReadCache();
+                selectedRightPrefix,
+                leftShelf,
+                rightShelf,
+                out _,
+                out long rightShelfOffset);
             if (collectAttribution)
             {
                 structuralTicks += Stopwatch.GetTimestamp() - started;
@@ -462,12 +816,12 @@ public sealed partial class LibraDexFileSession
                 Scalar16VarIdentityRoutedInsertKind.WalkedShelfSplit,
                 splitInsertResult,
                 target.Offset,
-                rightReservation.Extent.Offset,
+                rightShelfOffset,
                 telemetry,
                 Math.Max(leftCount, rightCount),
                 profile.ShelfExtentSize,
                 target.RouterDepth,
-                target.RouterDepth);
+                splitDepth);
         }
         if (collectAttribution)
         {
@@ -606,27 +960,367 @@ public sealed partial class LibraDexFileSession
         using RouteVisitedOffsetSet visitedRouters = RouteVisitedOffsetSet.Rent();
         byte lowerPrefix = GetScalar16VarIdentityPrefix(lowerEncodedKeyHigh, lowerEncodedKeyLow, 0);
         byte upperPrefix = GetScalar16VarIdentityPrefix(upperEncodedKeyHigh, upperEncodedKeyLow, 0);
-        for (int prefix = lowerPrefix; prefix <= upperPrefix; prefix++)
+        int prefix = lowerPrefix;
+        while (prefix <= upperPrefix)
         {
             long targetOffset = FindRouterTarget(rootRouterOffset, (byte)prefix);
             if (targetOffset == 0)
             {
+                prefix++;
                 continue;
             }
 
-            deleted += DeleteScalar16VarIdentityRangeFromTarget(
-                targetOffset,
-                maxIdentityLength,
+            int runEnd = prefix;
+            while (runEnd < upperPrefix && FindRouterTarget(rootRouterOffset, (byte)(runEnd + 1)) == targetOffset)
+            {
+                runEnd++;
+            }
+
+            Scalar16VarIdentityRangeReader.CreateScalar16RouteBounds(
                 lowerEncodedKeyHigh,
                 lowerEncodedKeyLow,
                 upperEncodedKeyHigh,
                 upperEncodedKeyLow,
+                keyDepth: 0,
+                (byte)prefix,
+                (byte)runEnd,
+                out ulong targetLowerHigh,
+                out ulong targetLowerLow,
+                out ulong targetUpperHigh,
+                out ulong targetUpperLow);
+
+            deleted += DeleteScalar16VarIdentityRangeFromTarget(
+                targetOffset,
+                maxIdentityLength,
+                targetLowerHigh,
+                targetLowerLow,
+                targetUpperHigh,
+                targetUpperLow,
                 visitedShelves,
                 visitedRouters,
                 maxRouterHops);
+            prefix = runEnd + 1;
         }
 
         return deleted;
+    }
+
+    /// <summary>
+    /// Attempts one routed `SV16` insert through a writer-local ordinary-shelf context without allowing topology changes.<br/>
+    /// The method supports warmed ordinary shelves that are not linked duplicate-run heads; growth, overflow chains, and split paths throw so callers can use the existing topology path.<br/>
+    /// </summary>
+    /// <param name="writeContext">The writer context that owns staged ordinary shelf mutations.<br/></param>
+    /// <param name="rootRouterOffset">The root router offset for the index.<br/></param>
+    /// <param name="maxIdentityLength">The maximum raw identity length accepted by the index profile.<br/></param>
+    /// <param name="encodedKeyHigh">The high 8 bytes of the encoded sortable 16-byte key.<br/></param>
+    /// <param name="encodedKeyLow">The low 8 bytes of the encoded sortable 16-byte key.<br/></param>
+    /// <param name="identity">The raw variable-length identity bytes to insert.<br/></param>
+    /// <param name="allowDuplicateKeys">Whether duplicate keys with different identities are allowed.<br/></param>
+    /// <param name="maxRouterHops">The maximum number of router pages to follow.<br/></param>
+    /// <returns>The storage-facing routed insert result for the writer-local attempt.<br/></returns>
+    internal Scalar16VarIdentityRoutedInsertResult InsertWalkedRoutedScalar16VarIdentityNoSplitForWriteContext(
+        LibraDexWriteContext writeContext,
+        long rootRouterOffset,
+        int maxIdentityLength,
+        ulong encodedKeyHigh,
+        ulong encodedKeyLow,
+        ReadOnlySpan<byte> identity,
+        bool allowDuplicateKeys,
+        int maxRouterHops = DefaultScalar16VarIdentityMaxRouterHops)
+    {
+        Scalar16VarIdentityRoutePathTarget pathTarget;
+        lock (routerReadCacheSync)
+        {
+            pathTarget = WalkScalar16VarIdentityRoutePathTarget(rootRouterOffset, encodedKeyHigh, encodedKeyLow, maxRouterHops);
+        }
+
+        Scalar16VarIdentityRouteTarget target = pathTarget.Target;
+        if (target.Kind != Scalar16VarIdentityRouteTargetKind.Shelf)
+        {
+            throw new InvalidOperationException("The SV16 writer-context path supports only ordinary warmed shelf routes.");
+        }
+
+        RecordScalar16VarIdentityRouteClaimForWriteContext(writeContext, pathTarget);
+        Scalar16VarIdentityMutableShelfView shelf = ReadScalar16VarIdentityMutableShelfForWriteContext(writeContext, target.Offset, maxIdentityLength);
+        Scalar16VarIdentityProfile profile = shelf.Profile;
+        int beforeItemCount = shelf.ItemCount;
+        if (Scalar16VarIdentityLayout.ReadNextShelfOffset(shelf.Bytes) != 0)
+        {
+            throw new InvalidOperationException("The SV16 writer-context path does not yet support linked duplicate-run shelves.");
+        }
+
+        Scalar16VarIdentityInsertResult insertResult = shelf.Insert(encodedKeyHigh, encodedKeyLow, identity, allowDuplicateKeys);
+        if (insertResult == Scalar16VarIdentityInsertResult.Full)
+        {
+            throw new InvalidOperationException("The SV16 writer-context path does not yet support shelf growth or split transforms.");
+        }
+
+        Scalar16VarIdentityRoutedInsertKind kind = insertResult switch
+        {
+            Scalar16VarIdentityInsertResult.Inserted => Scalar16VarIdentityRoutedInsertKind.WalkedNoSplit,
+            Scalar16VarIdentityInsertResult.KeyConflict => Scalar16VarIdentityRoutedInsertKind.KeyConflict,
+            _ => Scalar16VarIdentityRoutedInsertKind.NoOp
+        };
+        return new Scalar16VarIdentityRoutedInsertResult(
+            kind,
+            insertResult,
+            target.Offset,
+            insertResult == Scalar16VarIdentityInsertResult.Inserted ? target.Offset : 0,
+            default,
+            insertResult == Scalar16VarIdentityInsertResult.Inserted ? beforeItemCount + 1 : beforeItemCount,
+            profile.ShelfExtentSize,
+            target.RouterDepth);
+    }
+
+    /// <summary>
+    /// Attempts one exact `SV16` tuple delete through a writer-local ordinary-shelf context without following linked duplicate-run routes.<br/>
+    /// Unsupported route shapes throw so callers can fall back to the existing durability-batch delete path.<br/>
+    /// </summary>
+    /// <param name="writeContext">The writer context that owns staged ordinary shelf mutations.<br/></param>
+    /// <param name="rootRouterOffset">The root router offset for the index.<br/></param>
+    /// <param name="maxIdentityLength">The maximum raw identity length accepted by the index profile.<br/></param>
+    /// <param name="encodedKeyHigh">The high 8 bytes of the exact encoded key.<br/></param>
+    /// <param name="encodedKeyLow">The low 8 bytes of the exact encoded key.<br/></param>
+    /// <param name="identity">The exact raw identity bytes to delete.<br/></param>
+    /// <param name="maxRouterHops">The maximum number of router pages to follow.<br/></param>
+    /// <returns><see langword="true"/> when one live tuple was marked deleted in the writer-local shelf.</returns>
+    internal bool DeleteScalar16VarIdentityExactTupleForWriteContext(
+        LibraDexWriteContext writeContext,
+        long rootRouterOffset,
+        int maxIdentityLength,
+        ulong encodedKeyHigh,
+        ulong encodedKeyLow,
+        ReadOnlySpan<byte> identity,
+        int maxRouterHops = DefaultScalar16VarIdentityMaxRouterHops)
+    {
+        Scalar16VarIdentityRoutePathTarget pathTarget;
+        lock (routerReadCacheSync)
+        {
+            pathTarget = WalkScalar16VarIdentityRoutePathTarget(rootRouterOffset, encodedKeyHigh, encodedKeyLow, maxRouterHops);
+        }
+
+        Scalar16VarIdentityRouteTarget target = pathTarget.Target;
+        if (target.Kind != Scalar16VarIdentityRouteTargetKind.Shelf)
+        {
+            throw new InvalidOperationException("The SV16 writer-context exact delete path supports only ordinary warmed shelf routes.");
+        }
+
+        RecordScalar16VarIdentityRouteClaimForWriteContext(writeContext, pathTarget);
+        Scalar16VarIdentityMutableShelfView shelf = ReadScalar16VarIdentityMutableShelfForWriteContext(writeContext, target.Offset, maxIdentityLength);
+        if (Scalar16VarIdentityLayout.ReadNextShelfOffset(shelf.Bytes) != 0)
+        {
+            throw new InvalidOperationException("The SV16 writer-context exact delete path does not yet support linked duplicate-run shelves.");
+        }
+
+        return shelf.MarkTupleDeleted(encodedKeyHigh, encodedKeyLow, identity);
+    }
+
+    /// <summary>
+    /// Deletes an inclusive encoded-key `SV16` range through a writer-local ordinary-shelf context without allowing linked duplicate-run route cleanup.<br/>
+    /// This supports warmed shelf-local range tombstoning; unsupported route shapes throw so callers can fall back to the existing durability-batch range delete path.<br/>
+    /// </summary>
+    /// <param name="writeContext">The writer context that owns staged ordinary shelf mutations.<br/></param>
+    /// <param name="rootRouterOffset">The root router offset for the index.<br/></param>
+    /// <param name="maxIdentityLength">The maximum raw identity length accepted by the index profile.<br/></param>
+    /// <param name="lowerEncodedKeyHigh">The high 8 bytes of the inclusive lower encoded key.<br/></param>
+    /// <param name="lowerEncodedKeyLow">The low 8 bytes of the inclusive lower encoded key.<br/></param>
+    /// <param name="upperEncodedKeyHigh">The high 8 bytes of the inclusive upper encoded key.<br/></param>
+    /// <param name="upperEncodedKeyLow">The low 8 bytes of the inclusive upper encoded key.<br/></param>
+    /// <param name="maxRouterHops">The maximum number of router pages to follow.<br/></param>
+    /// <returns>The number of live tuples marked deleted in writer-local shelves.<br/></returns>
+    internal long DeleteScalar16VarIdentityKeyRangeForWriteContext(
+        LibraDexWriteContext writeContext,
+        long rootRouterOffset,
+        int maxIdentityLength,
+        ulong lowerEncodedKeyHigh,
+        ulong lowerEncodedKeyLow,
+        ulong upperEncodedKeyHigh,
+        ulong upperEncodedKeyLow,
+        int maxRouterHops = DefaultScalar16VarIdentityMaxRouterHops)
+    {
+        ArgumentNullException.ThrowIfNull(writeContext);
+        if (CompareScalar16VarIdentityKey(lowerEncodedKeyHigh, lowerEncodedKeyLow, upperEncodedKeyHigh, upperEncodedKeyLow) > 0)
+        {
+            return 0;
+        }
+
+        lock (routerReadCacheSync)
+        {
+            long deleted = 0;
+            using RouteVisitedOffsetSet visitedShelves = RouteVisitedOffsetSet.Rent();
+            using RouteVisitedOffsetSet visitedRouters = RouteVisitedOffsetSet.Rent();
+            byte lowerPrefix = GetScalar16VarIdentityPrefix(lowerEncodedKeyHigh, lowerEncodedKeyLow, 0);
+            byte upperPrefix = GetScalar16VarIdentityPrefix(upperEncodedKeyHigh, upperEncodedKeyLow, 0);
+            int prefix = lowerPrefix;
+            while (prefix <= upperPrefix)
+            {
+                long targetOffset = FindRouterTarget(rootRouterOffset, (byte)prefix);
+                if (targetOffset == 0)
+                {
+                    prefix++;
+                    continue;
+                }
+
+                int runEnd = prefix;
+                while (runEnd < upperPrefix && FindRouterTarget(rootRouterOffset, (byte)(runEnd + 1)) == targetOffset)
+                {
+                    runEnd++;
+                }
+
+                Scalar16VarIdentityRangeReader.CreateScalar16RouteBounds(
+                    lowerEncodedKeyHigh,
+                    lowerEncodedKeyLow,
+                    upperEncodedKeyHigh,
+                    upperEncodedKeyLow,
+                    keyDepth: 0,
+                    (byte)prefix,
+                    (byte)runEnd,
+                    out ulong targetLowerHigh,
+                    out ulong targetLowerLow,
+                    out ulong targetUpperHigh,
+                    out ulong targetUpperLow);
+
+                deleted += DeleteScalar16VarIdentityRangeFromTargetForWriteContext(
+                    writeContext,
+                    rootRouterOffset,
+                    prefix,
+                    targetOffset,
+                    maxIdentityLength,
+                    targetLowerHigh,
+                    targetLowerLow,
+                    targetUpperHigh,
+                    targetUpperLow,
+                    visitedShelves,
+                    visitedRouters,
+                    maxRouterHops);
+                prefix = runEnd + 1;
+            }
+
+            return deleted;
+        }
+    }
+
+    /// <summary>
+    /// Recursively deletes one `SV16` range target through a writer-local ordinary-shelf context.<br/>
+    /// Router targets are traversed, ordinary non-linked shelves are tombstoned, and linked duplicate-run targets are rejected for fallback handling.<br/>
+    /// </summary>
+    /// <param name="writeContext">The writer context that owns staged ordinary shelf mutations.<br/></param>
+    /// <param name="parentRouterOffset">The parent router whose route slot selected <paramref name="targetOffset"/>.<br/></param>
+    /// <param name="routeIndex">The parent-router route slot that selected <paramref name="targetOffset"/>.<br/></param>
+    /// <param name="targetOffset">The routed target offset to process.<br/></param>
+    /// <param name="maxIdentityLength">The maximum raw identity length accepted by the index profile.<br/></param>
+    /// <param name="lowerEncodedKeyHigh">The high 8 bytes of the inclusive lower encoded key.<br/></param>
+    /// <param name="lowerEncodedKeyLow">The low 8 bytes of the inclusive lower encoded key.<br/></param>
+    /// <param name="upperEncodedKeyHigh">The high 8 bytes of the inclusive upper encoded key.<br/></param>
+    /// <param name="upperEncodedKeyLow">The low 8 bytes of the inclusive upper encoded key.<br/></param>
+    /// <param name="visitedShelves">The visited shelf set used to avoid repeated mutation of shared targets.<br/></param>
+    /// <param name="visitedRouters">The visited router set used to avoid route cycles.<br/></param>
+    /// <param name="remainingRouterHops">The remaining router hop budget.<br/></param>
+    /// <returns>The number of live tuples marked deleted.<br/></returns>
+    private long DeleteScalar16VarIdentityRangeFromTargetForWriteContext(
+        LibraDexWriteContext writeContext,
+        long parentRouterOffset,
+        int routeIndex,
+        long targetOffset,
+        int maxIdentityLength,
+        ulong lowerEncodedKeyHigh,
+        ulong lowerEncodedKeyLow,
+        ulong upperEncodedKeyHigh,
+        ulong upperEncodedKeyLow,
+        RouteVisitedOffsetSet visitedShelves,
+        RouteVisitedOffsetSet visitedRouters,
+        int remainingRouterHops)
+    {
+        Scalar16VarIdentityRouteTargetKind kind = ClassifyScalar16VarIdentityRouteTarget(targetOffset);
+        if (kind == Scalar16VarIdentityRouteTargetKind.Shelf)
+        {
+            RecordScalar16VarIdentityRouteClaimForWriteContext(writeContext, parentRouterOffset, routeIndex, targetOffset);
+            if (!visitedShelves.Add(targetOffset))
+            {
+                return 0;
+            }
+
+            Scalar16VarIdentityMutableShelfView shelf = ReadScalar16VarIdentityMutableShelfForWriteContext(writeContext, targetOffset, maxIdentityLength);
+            if (Scalar16VarIdentityLayout.ReadNextShelfOffset(shelf.Bytes) != 0)
+            {
+                throw new InvalidOperationException("The SV16 writer-context range delete path does not yet support linked duplicate-run shelves.");
+            }
+
+            return shelf.MarkKeyRangeDeleted(lowerEncodedKeyHigh, lowerEncodedKeyLow, upperEncodedKeyHigh, upperEncodedKeyLow);
+        }
+
+        if (kind != Scalar16VarIdentityRouteTargetKind.Router)
+        {
+            throw new InvalidDataException("The routed SV16 writer-context range delete target is not a shelf or router.");
+        }
+
+        if (!visitedRouters.Add(targetOffset))
+        {
+            return 0;
+        }
+
+        if (remainingRouterHops <= 0)
+        {
+            throw new InvalidDataException("The routed SV16 writer-context range delete exceeded the configured router hop count.");
+        }
+
+        long deletedFromChildren = 0;
+        Span<byte> routerBytes = stackalloc byte[RouterLayout.Size];
+        ReadRouterPageUsingArenaCache(targetOffset, routerBytes);
+        RouterReader reader = new(routerBytes);
+        if (!reader.IsValid)
+        {
+            throw new InvalidDataException("The routed SV16 writer-context range delete router is invalid.");
+        }
+
+        byte lowerPrefix = GetScalar16VarIdentityPrefix(lowerEncodedKeyHigh, lowerEncodedKeyLow, reader.KeyDepth);
+        byte upperPrefix = GetScalar16VarIdentityPrefix(upperEncodedKeyHigh, upperEncodedKeyLow, reader.KeyDepth);
+        int prefix = lowerPrefix;
+        while (prefix <= upperPrefix)
+        {
+            long childTargetOffset = reader.FindTarget((byte)prefix, out int childRouteIndex);
+            if (childTargetOffset == 0)
+            {
+                prefix++;
+                continue;
+            }
+
+            int runEnd = prefix;
+            while (runEnd < upperPrefix && reader.FindTarget((byte)(runEnd + 1)) == childTargetOffset)
+            {
+                runEnd++;
+            }
+
+            Scalar16VarIdentityRangeReader.CreateScalar16RouteBounds(
+                lowerEncodedKeyHigh,
+                lowerEncodedKeyLow,
+                upperEncodedKeyHigh,
+                upperEncodedKeyLow,
+                reader.KeyDepth,
+                (byte)prefix,
+                (byte)runEnd,
+                out ulong childLowerHigh,
+                out ulong childLowerLow,
+                out ulong childUpperHigh,
+                out ulong childUpperLow);
+
+            deletedFromChildren += DeleteScalar16VarIdentityRangeFromTargetForWriteContext(
+                writeContext,
+                targetOffset,
+                childRouteIndex,
+                childTargetOffset,
+                maxIdentityLength,
+                childLowerHigh,
+                childLowerLow,
+                childUpperHigh,
+                childUpperLow,
+                visitedShelves,
+                visitedRouters,
+                remainingRouterHops - 1);
+            prefix = runEnd + 1;
+        }
+
+        return deletedFromChildren;
     }
 
     /// <summary>
@@ -748,24 +1442,46 @@ public sealed partial class LibraDexFileSession
 
         byte lowerPrefix = GetScalar16VarIdentityPrefix(lowerEncodedKeyHigh, lowerEncodedKeyLow, reader.KeyDepth);
         byte upperPrefix = GetScalar16VarIdentityPrefix(upperEncodedKeyHigh, upperEncodedKeyLow, reader.KeyDepth);
-        for (int prefix = lowerPrefix; prefix <= upperPrefix; prefix++)
+        int prefix = lowerPrefix;
+        while (prefix <= upperPrefix)
         {
             long childTargetOffset = reader.FindTarget((byte)prefix);
             if (childTargetOffset == 0)
             {
+                prefix++;
                 continue;
             }
 
-            deletedFromChildren += DeleteScalar16VarIdentityRangeFromTarget(
-                childTargetOffset,
-                maxIdentityLength,
+            int runEnd = prefix;
+            while (runEnd < upperPrefix && reader.FindTarget((byte)(runEnd + 1)) == childTargetOffset)
+            {
+                runEnd++;
+            }
+
+            Scalar16VarIdentityRangeReader.CreateScalar16RouteBounds(
                 lowerEncodedKeyHigh,
                 lowerEncodedKeyLow,
                 upperEncodedKeyHigh,
                 upperEncodedKeyLow,
+                reader.KeyDepth,
+                (byte)prefix,
+                (byte)runEnd,
+                out ulong childLowerHigh,
+                out ulong childLowerLow,
+                out ulong childUpperHigh,
+                out ulong childUpperLow);
+
+            deletedFromChildren += DeleteScalar16VarIdentityRangeFromTarget(
+                childTargetOffset,
+                maxIdentityLength,
+                childLowerHigh,
+                childLowerLow,
+                childUpperHigh,
+                childUpperLow,
                 visitedShelves,
                 visitedRouters,
                 remainingRouterHops - 1);
+            prefix = runEnd + 1;
         }
 
         return deletedFromChildren;
@@ -773,7 +1489,15 @@ public sealed partial class LibraDexFileSession
 
     internal byte[] ReadScalar16VarIdentityShelfBytes(long shelfOffset, int maxIdentityLength, out Scalar16VarIdentityProfile profile)
     {
-        byte[] header = new byte[Scalar16VarIdentityLayout.HeaderSize];
+        if (durabilityBatchActive &&
+            scalar16VarIdentityMutableBatchShelves.TryGetValue(shelfOffset, out Scalar16VarIdentityMutableShelfView? mutableShelf))
+        {
+            mutableShelf.EnsureSlotBytesCurrent();
+            profile = mutableShelf.Profile;
+            return mutableShelf.Bytes;
+        }
+
+        Span<byte> header = stackalloc byte[Scalar16VarIdentityLayout.HeaderSize];
         kernel.Read(shelfOffset, header);
         if (Scalar16VarIdentityLayout.ReadMagic(header) != Scalar16VarIdentityLayout.Magic ||
             Scalar16VarIdentityLayout.ReadFormatVersion(header) != Scalar16VarIdentityLayout.FormatVersion ||
@@ -787,6 +1511,46 @@ public sealed partial class LibraDexFileSession
         byte[] shelfBytes = new byte[shelfExtentSize];
         kernel.Read(shelfOffset, shelfBytes);
         return shelfBytes;
+    }
+
+    /// <summary>
+    /// Reads one immutable decoded `SV16` shelf view for range and exact-key cursors.<br/>
+    /// Repeated reads reuse both the persisted shelf bytes and decoded slot sidecars until the session mutation boundary invalidates them.<br/>
+    /// Active durability batches bypass the cache so pending mutable shelf images remain authoritative.<br/>
+    /// </summary>
+    /// <param name="indexRootOffset">The owning index root used for per-index cache accounting.<br/></param>
+    /// <param name="shelfOffset">The file offset of the ordinary `SV16` shelf.<br/></param>
+    /// <param name="maxIdentityLength">The maximum raw identity length accepted by the index.<br/></param>
+    /// <returns>The validated read-only shelf view.<br/></returns>
+    internal Scalar16VarIdentityReadOnly ReadScalar16VarIdentityReadOnlyShelf(
+        long indexRootOffset,
+        long shelfOffset,
+        int maxIdentityLength)
+    {
+        int cacheGeneration = scalar16VarIdentityReadCache.Generation;
+        if (!durabilityBatchActive &&
+            scalar16VarIdentityReadCache.TryGet(indexRootOffset, shelfOffset, out Scalar16VarIdentityReadOnly cachedShelf))
+        {
+            return cachedShelf;
+        }
+
+        byte[] shelfBytes = ReadScalar16VarIdentityShelfBytes(shelfOffset, maxIdentityLength, out Scalar16VarIdentityProfile profile);
+        Scalar16VarIdentityReadOnly shelf = new(shelfBytes, profile, validateRecords: false);
+        if (!shelf.IsValid)
+        {
+            throw new InvalidDataException("The routed SV16 read-only shelf bytes are invalid.");
+        }
+
+        if (!durabilityBatchActive)
+        {
+            shelf = scalar16VarIdentityReadCache.Store(
+                indexRootOffset,
+                shelfOffset,
+                shelf,
+                cacheGeneration);
+        }
+
+        return shelf;
     }
 
     /// <summary>
@@ -861,6 +1625,87 @@ public sealed partial class LibraDexFileSession
         RawDataReservation shelfRewrite = kernel.ReserveAt(shelfOffset, mutableShelf.Profile.ShelfExtentSize);
         rewrittenBytes.AsSpan(0, mutableShelf.Profile.ShelfExtentSize).CopyTo(shelfRewrite.Span);
         return CommitAndInvalidateRouterReadCache();
+    }
+
+    /// <summary>
+    /// Publishes an `SV16` full-shelf transform by rewriting the source shelf offset as the first router page.<br/>
+    /// Existing parent routes and cached target offsets can continue to point at <paramref name="sourceShelfOffset"/> because the target reclassifies from shelf to router after commit.<br/>
+    /// Replacement tuple shelves are appended, deeper split routers are appended when needed, and the superseded shelf extent is registered as a local router arena for future router pages.<br/>
+    /// </summary>
+    /// <param name="sourceShelfOffset">The full shelf offset that becomes the first router page.<br/></param>
+    /// <param name="profile">The `SV16` shelf profile that defines the superseded extent size.<br/></param>
+    /// <param name="childRouterKeyDepth">The key byte depth represented by the transformed source offset.<br/></param>
+    /// <param name="splitKeyDepth">The key byte depth that separates the left and right replacement shelves.<br/></param>
+    /// <param name="allocationClassId">The router allocation class id to persist in each created router.<br/></param>
+    /// <param name="selectedRightPrefix">The first prefix byte routed to the right shelf at <paramref name="splitKeyDepth"/>.<br/></param>
+    /// <param name="leftShelf">The rebuilt left replacement shelf bytes.<br/></param>
+    /// <param name="rightShelf">The rebuilt right replacement shelf bytes.<br/></param>
+    /// <param name="leftShelfOffset">Receives the appended left shelf offset.<br/></param>
+    /// <param name="rightShelfOffset">Receives the appended right shelf offset.<br/></param>
+    /// <returns>The DataKernel commit telemetry for the transform publication.<br/></returns>
+    private DataKernelCommitTelemetry PublishScalar16VarIdentityShelfTransformSplit(
+        long sourceShelfOffset,
+        Scalar16VarIdentityProfile profile,
+        ushort childRouterKeyDepth,
+        ushort splitKeyDepth,
+        ushort allocationClassId,
+        byte selectedRightPrefix,
+        byte[] leftShelf,
+        byte[] rightShelf,
+        out long leftShelfOffset,
+        out long rightShelfOffset)
+    {
+        if (splitKeyDepth < childRouterKeyDepth)
+        {
+            throw new ArgumentOutOfRangeException(nameof(splitKeyDepth), splitKeyDepth, "The SV16 split depth cannot precede the transformed router depth.");
+        }
+
+        RawDataReservation leftAppend = kernel.Reserve(profile.ShelfExtentSize);
+        leftShelf.CopyTo(leftAppend.Span);
+        leftShelfOffset = leftAppend.Extent.Offset;
+
+        RawDataReservation rightAppend = kernel.Reserve(profile.ShelfExtentSize);
+        rightShelf.CopyTo(rightAppend.Span);
+        rightShelfOffset = rightAppend.Extent.Offset;
+
+        int appendedRouterCount = splitKeyDepth - childRouterKeyDepth;
+        long nextRouterOffset = 0;
+        for (int i = appendedRouterCount - 1; i >= 0; i--)
+        {
+            ushort routerDepth = checked((ushort)(childRouterKeyDepth + i + 1));
+            long[] targets = routerDepth == splitKeyDepth
+                ? CreateSplitScalar8Scalar8RouteTargets(leftShelfOffset, rightShelfOffset, selectedRightPrefix)
+                : CreateFilledScalar8Scalar8RouteTargets(nextRouterOffset);
+
+            RawDataReservation appendedRouter = kernel.Reserve(RouterLayout.Size);
+            RouterWriter appendedWriter = new(appendedRouter.Span);
+            appendedWriter.InitializeExpandedOneByte(routerDepth, allocationClassId, targets);
+            nextRouterOffset = appendedRouter.Extent.Offset;
+        }
+
+        RawDataReservation sourceRouterRewrite = kernel.ReserveAt(sourceShelfOffset, RouterLayout.Size);
+        RouterWriter sourceWriter = new(sourceRouterRewrite.Span);
+        sourceWriter.InitializeExpandedOneByte(
+            childRouterKeyDepth,
+            allocationClassId,
+            CreateUniformScalar8Scalar8RouteTargets(nextRouterOffset, leftShelfOffset, rightShelfOffset, selectedRightPrefix));
+
+        uint arenaFlags = profile.ShelfExtentSize > ushort.MaxValue + 1
+            ? RouterLayout.ArenaLengthFromPageCountFlag
+            : 0;
+        sourceWriter.WriteArenaMetadata(
+            arenaBaseDelta: 0,
+            arenaLength: profile.ShelfExtentSize,
+            routerPageSize: checked((ushort)RouterLayout.Size),
+            routerPageIndex: 0,
+            routerPageCount: checked((ushort)(profile.ShelfExtentSize / RouterLayout.Size)),
+            arenaFlags: arenaFlags);
+
+        InvalidateRouterReadCacheForRouterRewrite(sourceShelfOffset);
+        DataKernelCommitTelemetry telemetry = CommitAndDeferRouterReadCacheInvalidation();
+        RouterArenaState arena = RegisterRouterArena(sourceShelfOffset, profile.ShelfExtentSize);
+        arena.MarkUsed(0);
+        return telemetry;
     }
 
     private static bool TrySplitScalar16VarIdentityShelf(

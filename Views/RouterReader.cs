@@ -173,6 +173,12 @@ internal readonly ref struct RouterReader
             }
         }
 
+        if (routeCount > 0)
+        {
+            routeIndex = FindNearestMultiByteRoute(key, keyDepth, localBytes, routeCount, maxRouteCount, prefixByteCount, stemLength);
+            return GetRouteTargetAt(routeIndex);
+        }
+
         routeIndex = -1;
         return 0;
     }
@@ -189,6 +195,154 @@ internal readonly ref struct RouterReader
         return RouterLayout.ReadRouteTargetOffset(route);
     }
 
+    /// <summary>
+    /// Reads the inclusive starting prefix byte from a physical route slot.<br/>
+    /// Count and aggregate walkers use this to iterate persisted route entries directly instead of re-querying every logical prefix value.<br/>
+    /// </summary>
+    /// <param name="routeIndex">The zero-based route slot index.<br/></param>
+    /// <returns>The inclusive prefix start byte stored in the route slot.<br/></returns>
+    public byte GetRoutePrefixStartAt(int routeIndex)
+    {
+        ReadOnlySpan<byte> route = RouterLayout.GetRoute(bytes, routeIndex);
+        return RouterLayout.ReadRoutePrefixStart(route);
+    }
+
+    /// <summary>
+    /// Reads the inclusive ending prefix byte from a physical route slot.<br/>
+    /// Count and aggregate walkers use this to preserve direct route-slot semantics without performing ordered prefix lookups.<br/>
+    /// </summary>
+    /// <param name="routeIndex">The zero-based route slot index.<br/></param>
+    /// <returns>The inclusive prefix end byte stored in the route slot.<br/></returns>
+    public byte GetRoutePrefixEndAt(int routeIndex)
+    {
+        ReadOnlySpan<byte> route = RouterLayout.GetRoute(bytes, routeIndex);
+        return RouterLayout.ReadRoutePrefixEnd(route);
+    }
+
+    /// <summary>
+    /// Reads the persisted stem bytes for one compressed multi-byte route without allocating or decoding a synthetic key.<br/>
+    /// The returned span aliases the router page and is valid only while this reader's source bytes remain valid.<br/>
+    /// </summary>
+    /// <param name="routeIndex">The zero-based compressed route slot index.<br/></param>
+    /// <returns>The exact persisted stem bytes preceding the route's final-byte interval.<br/></returns>
+    public ReadOnlySpan<byte> GetMultiByteRouteStemAt(int routeIndex)
+    {
+        int prefixByteCount = PrefixByteCount;
+        if (prefixByteCount <= 1)
+            throw new InvalidOperationException("A one-byte router does not contain multi-byte route stems.");
+
+        if ((uint)routeIndex >= RouteCount)
+            throw new ArgumentOutOfRangeException(nameof(routeIndex), routeIndex, "The compressed route index is outside the persisted route count.");
+
+        return bytes.Slice(
+            RouterLayout.GetMultiByteRouteStemOffset(MaxRouteCount, prefixByteCount, routeIndex),
+            prefixByteCount - 1);
+    }
+
+    /// <summary>
+    /// Classifies one persisted compressed multi-byte route against the active edges of an inclusive variable-key range.<br/>
+    /// The caller supplies the route indices selected for the lower and upper keys so boundary targets remain reachable even when a compressed route uses nearest-route fallback.<br/>
+    /// Routes wholly outside an active edge are rejected before their child target is queued; interior routes retain neither edge and may traverse their contained subtree directly.<br/>
+    /// This method performs no allocation and compares the persisted stem and final-byte interval directly from the router page.<br/>
+    /// </summary>
+    /// <param name="routeIndex">The zero-based compressed route slot being classified.<br/></param>
+    /// <param name="lowerKey">The inclusive raw lower key.<br/></param>
+    /// <param name="upperKey">The inclusive raw upper key.<br/></param>
+    /// <param name="maxKeyLength">The maximum raw key length accepted by the index.<br/></param>
+    /// <param name="lowerEdge">True when this router may contain the lower range boundary.<br/></param>
+    /// <param name="upperEdge">True when this router may contain the upper range boundary.<br/></param>
+    /// <param name="lowerRouteIndex">The route selected by the lower key, or `-1` when the lower edge is inactive.<br/></param>
+    /// <param name="upperRouteIndex">The route selected by the upper key, or `-1` when the upper edge is inactive.<br/></param>
+    /// <param name="targetOffset">Receives the persisted child target when the route can intersect the range.<br/></param>
+    /// <param name="childLowerEdge">Receives whether the selected child still contains the lower boundary.<br/></param>
+    /// <param name="childUpperEdge">Receives whether the selected child still contains the upper boundary.<br/></param>
+    /// <returns><see langword="true"/> when the route can intersect the requested range and has a nonzero target; otherwise <see langword="false"/>.<br/></returns>
+    public bool TrySelectMultiByteRangeRoute(
+        int routeIndex,
+        ReadOnlySpan<byte> lowerKey,
+        ReadOnlySpan<byte> upperKey,
+        int maxKeyLength,
+        bool lowerEdge,
+        bool upperEdge,
+        int lowerRouteIndex,
+        int upperRouteIndex,
+        out long targetOffset,
+        out bool childLowerEdge,
+        out bool childUpperEdge)
+    {
+        targetOffset = GetRouteTargetAt(routeIndex);
+        childLowerEdge = false;
+        childUpperEdge = false;
+        if (targetOffset == 0)
+        {
+            return false;
+        }
+
+        bool selectedByLower = lowerEdge && routeIndex == lowerRouteIndex;
+        bool selectedByUpper = upperEdge && routeIndex == upperRouteIndex;
+        int lowToLower = lowerEdge ? CompareMultiByteRouteBoundToKey(routeIndex, highBound: false, lowerKey, maxKeyLength) : 0;
+        int highToLower = lowerEdge ? CompareMultiByteRouteBoundToKey(routeIndex, highBound: true, lowerKey, maxKeyLength) : 0;
+        int lowToUpper = upperEdge ? CompareMultiByteRouteBoundToKey(routeIndex, highBound: false, upperKey, maxKeyLength) : 0;
+        int highToUpper = upperEdge ? CompareMultiByteRouteBoundToKey(routeIndex, highBound: true, upperKey, maxKeyLength) : 0;
+        if ((lowerEdge && highToLower < 0 && !selectedByLower) ||
+            (upperEdge && lowToUpper > 0 && !selectedByUpper))
+        {
+            targetOffset = 0;
+            return false;
+        }
+
+        childLowerEdge = selectedByLower && lowToLower < 0 && highToLower >= 0;
+        childUpperEdge = selectedByUpper && lowToUpper <= 0 && highToUpper > 0;
+        return true;
+    }
+
+    /// <summary>
+    /// Compares one compressed route's low or high synthetic key bound against a raw key without materializing the bound.<br/>
+    /// Bytes following the route prefix use zero for a low bound and `0xFF` for a high bound, matching the conservative variable-key range containment model.<br/>
+    /// Parent bytes are omitted because an active edge already proves equality through <see cref="KeyDepth"/>; only the current compressed segment and suffix can change the result.<br/>
+    /// </summary>
+    /// <param name="routeIndex">The zero-based compressed route slot being compared.<br/></param>
+    /// <param name="highBound">True to compare the route's high synthetic bound; false to compare its low synthetic bound.<br/></param>
+    /// <param name="key">The raw key boundary.<br/></param>
+    /// <param name="maxKeyLength">The maximum raw key length accepted by the index.<br/></param>
+    /// <returns>A negative value when the route bound is below the key, zero when equivalent under padded comparison, or a positive value when above the key.<br/></returns>
+    private int CompareMultiByteRouteBoundToKey(int routeIndex, bool highBound, ReadOnlySpan<byte> key, int maxKeyLength)
+    {
+        int keyDepth = KeyDepth;
+        int prefixByteCount = PrefixByteCount;
+        int stemLength = prefixByteCount - 1;
+        int routeDepth = keyDepth + stemLength;
+        int routeLength = routeDepth + 1;
+        int compareLength = Math.Max(Math.Max(routeLength, key.Length), maxKeyLength);
+        ReadOnlySpan<byte> stem = bytes.Slice(RouterLayout.GetMultiByteRouteStemOffset(MaxRouteCount, prefixByteCount, routeIndex), stemLength);
+        byte routePrefix = highBound ? GetRoutePrefixEndAt(routeIndex) : GetRoutePrefixStartAt(routeIndex);
+        byte fill = highBound ? byte.MaxValue : byte.MinValue;
+        for (int depth = keyDepth; depth < compareLength; depth++)
+        {
+            byte routeByte;
+            if (depth < routeDepth)
+            {
+                routeByte = stem[depth - keyDepth];
+            }
+            else if (depth == routeDepth)
+            {
+                routeByte = routePrefix;
+            }
+            else
+            {
+                routeByte = fill;
+            }
+
+            byte keyByte = depth < key.Length ? key[depth] : byte.MinValue;
+            if (routeByte != keyByte)
+            {
+                return routeByte < keyByte ? -1 : 1;
+            }
+        }
+
+        return 0;
+    }
+
     private static bool StemMatchesKey(ReadOnlySpan<byte> stem, ReadOnlySpan<byte> key, int keyDepth)
     {
         for (int i = 0; i < stem.Length; i++)
@@ -200,6 +354,51 @@ internal readonly ref struct RouterReader
         }
 
         return true;
+    }
+
+    private static int FindNearestMultiByteRoute(
+        ReadOnlySpan<byte> key,
+        int keyDepth,
+        ReadOnlySpan<byte> routerBytes,
+        int routeCount,
+        int maxRouteCount,
+        int prefixByteCount,
+        int stemLength)
+    {
+        int previous = 0;
+        for (int i = 0; i < routeCount; i++)
+        {
+            ReadOnlySpan<byte> stem = routerBytes.Slice(RouterLayout.GetMultiByteRouteStemOffset(maxRouteCount, prefixByteCount, i), stemLength);
+            int comparison = CompareKeyToStem(key, keyDepth, stem);
+            if (comparison < 0)
+            {
+                return i == 0 ? 0 : previous;
+            }
+
+            previous = i;
+        }
+
+        return previous;
+    }
+
+    private static int CompareKeyToStem(ReadOnlySpan<byte> key, int keyDepth, ReadOnlySpan<byte> stem)
+    {
+        for (int i = 0; i < stem.Length; i++)
+        {
+            byte keyByte = GetKeyByteOrZero(key, keyDepth + i);
+            byte stemByte = stem[i];
+            if (keyByte < stemByte)
+            {
+                return -1;
+            }
+
+            if (keyByte > stemByte)
+            {
+                return 1;
+            }
+        }
+
+        return 0;
     }
 
     private static byte GetKeyByteOrZero(ReadOnlySpan<byte> key, int index)

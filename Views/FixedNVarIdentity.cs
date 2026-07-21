@@ -478,6 +478,32 @@ internal sealed class FixedNVarIdentityReadOnly
         }
     }
 
+    /// <summary>
+    /// Counts tuples whose fixed-width keys are inside the inclusive key range.<br/>
+    /// This path reads only decoded slot offsets and key bytes; identity payload bytes are not copied or validated beyond the shelf decode already performed by the constructor.<br/>
+    /// </summary>
+    /// <param name="lowerKey">The inclusive lower fixed-width key bytes.<br/></param>
+    /// <param name="upperKey">The inclusive upper fixed-width key bytes.<br/></param>
+    /// <returns>The number of tuples in the requested key range.<br/></returns>
+    public int CountItemsInKeyRange(ReadOnlySpan<byte> lowerKey, ReadOnlySpan<byte> upperKey)
+    {
+        int count = 0;
+        int start = LowerBoundKey(lowerKey);
+        uint upperPrefix = FixedNVarIdentityLayout.CreateKeyPrefix(upperKey);
+        for (int i = start; i < ItemCount; i++)
+        {
+            int comparison = CompareSlotKey(i, upperPrefix, upperKey);
+            if (comparison > 0)
+            {
+                break;
+            }
+
+            count++;
+        }
+
+        return count;
+    }
+
     internal static bool TryDecodeSlots(ReadOnlySpan<byte> bytes, FixedNVarIdentityProfile profile, out int[] recordOffsets, out uint[] keyPrefixes)
     {
         recordOffsets = [];

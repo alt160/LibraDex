@@ -2,23 +2,35 @@ using LibraDex.Layouts;
 
 namespace LibraDex.Views;
 
-internal sealed class Scalar16VarIdentityReadOnly
+internal sealed class Scalar16VarIdentityReadOnly : IVarIdentityReadOnlyShelf
 {
     private readonly ReadOnlyMemory<byte> bytes;
-    private readonly Scalar16VarIdentityProfile profile;
+    private readonly byte[]? ownedBytes;
     private readonly uint[] recordOffsets;
     private readonly uint[] keyPrefixes;
 
     public Scalar16VarIdentityReadOnly(ReadOnlyMemory<byte> bytes, Scalar16VarIdentityProfile profile)
+    {
+        this.bytes = bytes;
+        IsValid = TryDecodeSlots(bytes.Span, profile, validateRecords: true, out recordOffsets, out keyPrefixes);
+    }
+
+    /// <summary>
+    /// Creates an immutable `SV16` shelf view that retains explicit ownership of the supplied byte array.<br/>
+    /// Session read caching uses this overload so its retained-byte accounting and decoded sidecars share one visible ownership unit.<br/>
+    /// </summary>
+    /// <param name="bytes">The complete immutable shelf byte array retained by the view.<br/></param>
+    /// <param name="profile">The `SV16` shelf profile used to validate and decode slot metadata.<br/></param>
+    internal Scalar16VarIdentityReadOnly(byte[] bytes, Scalar16VarIdentityProfile profile)
         : this(bytes, profile, validateRecords: true)
     {
     }
 
-    internal Scalar16VarIdentityReadOnly(ReadOnlyMemory<byte> bytes, Scalar16VarIdentityProfile profile, bool validateRecords)
+    internal Scalar16VarIdentityReadOnly(byte[] bytes, Scalar16VarIdentityProfile profile, bool validateRecords)
     {
         this.bytes = bytes;
-        this.profile = profile;
-        IsValid = TryDecodeSlots(bytes.Span, profile, validateRecords, out recordOffsets, out keyPrefixes);
+        ownedBytes = bytes;
+        IsValid = TryDecodeSlots(bytes, profile, validateRecords, out recordOffsets, out keyPrefixes);
     }
 
     public bool IsValid { get; }
@@ -30,6 +42,16 @@ internal sealed class Scalar16VarIdentityReadOnly
     public int LiveItemCount => ItemCount;
 
     public int DeletedItemCount => 0;
+
+    internal byte[] Bytes => ownedBytes ?? throw new InvalidOperationException("This SV16 read-only view does not own a cacheable shelf byte array.");
+
+    internal long RetainedSidecarBytes => checked((long)recordOffsets.Length * sizeof(uint) + (long)keyPrefixes.Length * sizeof(uint));
+
+    byte[] IVarIdentityReadOnlyShelf.Bytes => Bytes;
+
+    long IVarIdentityReadOnlyShelf.RetainedSidecarBytes => RetainedSidecarBytes;
+
+    internal long NextShelfOffset => Scalar16VarIdentityLayout.ReadNextShelfOffset(bytes.Span);
 
     public int LowerBoundKey(ulong encodedKeyHigh, ulong encodedKeyLow)
     {
@@ -224,4 +246,21 @@ internal sealed class Scalar16VarIdentityReadOnly
         return Scalar16VarIdentityLayout.CompareRecordTuple(localBytes, checked((int)recordOffsets[slotIndex]), encodedKeyHigh, encodedKeyLow, identity);
     }
 
+}
+
+/// <summary>
+/// Exposes the owned immutable shelf bytes and decoded-sidecar retention needed by the shared session cache.<br/>
+/// The interface is internal so persisted shelf families retain strongly typed public/read paths without adding cache concepts to caller APIs.<br/>
+/// </summary>
+internal interface IVarIdentityReadOnlyShelf
+{
+    /// <summary>
+    /// Gets the complete immutable shelf byte array owned by the decoded view.<br/>
+    /// </summary>
+    byte[] Bytes { get; }
+
+    /// <summary>
+    /// Gets the retained decoded-sidecar bytes owned in addition to the shelf image.<br/>
+    /// </summary>
+    long RetainedSidecarBytes { get; }
 }

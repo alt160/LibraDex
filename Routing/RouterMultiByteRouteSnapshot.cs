@@ -9,7 +9,7 @@ namespace LibraDex;
 /// <param name="PrefixStart">The inclusive final-byte prefix start.</param>
 /// <param name="PrefixEnd">The inclusive final-byte prefix end.</param>
 /// <param name="TargetOffset">The route target file offset, or zero when unset.</param>
-public readonly record struct RouterMultiByteRouteSnapshot(
+internal readonly record struct RouterMultiByteRouteSnapshot(
     ReadOnlyMemory<byte> PrefixStem,
     byte PrefixStart,
     byte PrefixEnd,

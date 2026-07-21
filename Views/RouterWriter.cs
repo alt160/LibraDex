@@ -80,6 +80,50 @@ internal ref struct RouterWriter
     }
 
     /// <summary>
+    /// Initializes a fully expanded one-byte router whose 256 prefixes share one target.<br/>
+    /// This avoids constructing a temporary 256-element target array for uniform fixed-key router chains.<br/>
+    /// </summary>
+    /// <param name="keyDepth">The encoded key byte depth owned by this router.<br/></param>
+    /// <param name="allocationClassId">The allocation class identifier persisted in the router header.<br/></param>
+    /// <param name="targetOffset">The target offset written for every prefix.<br/></param>
+    public void InitializeExpandedOneByteUniform(ushort keyDepth, ushort allocationClassId, long targetOffset)
+    {
+        InitializeExpandedOneByteSplit(keyDepth, allocationClassId, targetOffset, targetOffset, 0);
+    }
+
+    /// <summary>
+    /// Initializes a fully expanded one-byte router with one contiguous left/right target boundary.<br/>
+    /// Prefixes below <paramref name="rightPrefixByte"/> select the left target and later prefixes select the right target without a temporary target array.<br/>
+    /// </summary>
+    /// <param name="keyDepth">The encoded key byte depth owned by this router.<br/></param>
+    /// <param name="allocationClassId">The allocation class identifier persisted in the router header.<br/></param>
+    /// <param name="leftTargetOffset">The target for prefixes below the boundary.<br/></param>
+    /// <param name="rightTargetOffset">The target for prefixes at or above the boundary.<br/></param>
+    /// <param name="rightPrefixByte">The first prefix routed to <paramref name="rightTargetOffset"/>.<br/></param>
+    public void InitializeExpandedOneByteSplit(ushort keyDepth, ushort allocationClassId, long leftTargetOffset, long rightTargetOffset, byte rightPrefixByte)
+    {
+        bytes.Clear();
+        RouterLayout.WriteMagic(bytes, RouterLayout.Magic);
+        RouterLayout.WriteFormatVersion(bytes, RouterLayout.FormatVersion);
+        RouterLayout.WriteHeaderSize(bytes, RouterLayout.HeaderSize);
+        RouterLayout.WriteFlags(bytes, RouterLayout.DirectIndexFlag);
+        RouterLayout.WritePrefixByteCount(bytes, 1);
+        RouterLayout.WriteKeyDepth(bytes, keyDepth);
+        RouterLayout.WriteRouteCount(bytes, RouterLayout.MaxOneByteRouteCount);
+        RouterLayout.WriteMaxRouteCount(bytes, RouterLayout.MaxOneByteRouteCount);
+        RouterLayout.WriteAllocationClassId(bytes, allocationClassId);
+
+        for (int i = 0; i < RouterLayout.MaxOneByteRouteCount; i++)
+        {
+            Span<byte> route = RouterLayout.GetRoute(bytes, i);
+            byte prefix = (byte)i;
+            RouterLayout.WriteRoutePrefixStart(route, prefix);
+            RouterLayout.WriteRoutePrefixEnd(route, prefix);
+            RouterLayout.WriteRouteTargetOffset(route, prefix < rightPrefixByte ? leftTargetOffset : rightTargetOffset);
+        }
+    }
+
+    /// <summary>
     /// Writes router-arena membership metadata into an already initialized router page.<br/>
     /// The arena base is persisted as a signed delta from this router's own file offset so a whole router block can later relocate without rewriting internal arena metadata.<br/>
     /// </summary>

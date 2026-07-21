@@ -2,10 +2,12 @@ using LibraDex.Layouts;
 using LibraDex.Views;
 using System.Buffers;
 using System.Buffers.Binary;
+using System.Collections.Generic;
+using System.Globalization;
 
 namespace LibraDex;
 
-public sealed partial class LibraDexFileSession
+internal sealed partial class LibraDexFileSession
 {
     /// <summary>
     /// Classifies the structure stored at a route target offset for the first `VV` varlen-key/varlen-identity shape.<br/>
@@ -21,7 +23,8 @@ public sealed partial class LibraDexFileSession
             return VarKeyVarIdentityRouteTargetKind.None;
         }
 
-        if (varKeyVarIdentityRouteTargetKindCache.TryGet(targetOffset, out int cachedKind))
+        RouteTargetKindCache targetKindCache = varKeyVarIdentityRouteTargetKindCache.Value!;
+        if (targetKindCache.TryGet(targetOffset, out int cachedKind))
         {
             return (VarKeyVarIdentityRouteTargetKind)cachedKind;
         }
@@ -31,17 +34,800 @@ public sealed partial class LibraDexFileSession
         uint magic = BinaryPrimitives.ReadUInt32LittleEndian(magicBytes);
         if (magic == RouterLayout.Magic)
         {
-            varKeyVarIdentityRouteTargetKindCache.Set(targetOffset, (int)VarKeyVarIdentityRouteTargetKind.Router);
+            targetKindCache.Set(targetOffset, (int)VarKeyVarIdentityRouteTargetKind.Router);
             return VarKeyVarIdentityRouteTargetKind.Router;
         }
 
         if (magic == VarKeyVarIdentityLayout.Magic)
         {
-            varKeyVarIdentityRouteTargetKindCache.Set(targetOffset, (int)VarKeyVarIdentityRouteTargetKind.Shelf);
+            targetKindCache.Set(targetOffset, (int)VarKeyVarIdentityRouteTargetKind.Shelf);
             return VarKeyVarIdentityRouteTargetKind.Shelf;
         }
 
+        if (magic == TerminalIdentityRootLayout.Magic)
+        {
+            Span<byte> headerBytes = stackalloc byte[TerminalIdentityRootLayout.HeaderSize];
+            kernel.Read(targetOffset, headerBytes);
+            if (TerminalIdentityRootLayout.ReadFormatVersion(headerBytes) == TerminalIdentityRootLayout.FormatVersion &&
+                TerminalIdentityRootLayout.ReadHeaderSize(headerBytes) == TerminalIdentityRootLayout.HeaderSize &&
+                TerminalIdentityRootLayout.ReadShape(headerBytes) == TerminalIdentityRootLayout.ShapeVarKey)
+            {
+                targetKindCache.Set(targetOffset, (int)VarKeyVarIdentityRouteTargetKind.TerminalVarIdentityRoot);
+                return VarKeyVarIdentityRouteTargetKind.TerminalVarIdentityRoot;
+            }
+        }
+
         throw new InvalidDataException($"VV route target at offset {targetOffset} does not contain a recognized LibraDex structure.");
+    }
+
+    /// <summary>
+    /// Counts every ordinary `VV` tuple reachable from the routed root by summing shelf-local count metadata.<br/>
+    /// This is the count-all primitive for varlen key / varlen identity storage and avoids range-reader setup when every key is requested.<br/>
+    /// </summary>
+    /// <param name="rootRouterOffset">The routed `VV` root router offset.<br/></param>
+    /// <param name="maxKeyLength">The maximum encoded key length accepted by the index.<br/></param>
+    /// <param name="maxIdentityLength">The maximum raw identity length accepted by the index.<br/></param>
+    /// <returns>The summed ordinary routed tuple count.<br/></returns>
+    internal long CountVarKeyVarIdentityIdentities(long rootRouterOffset, int maxKeyLength, int maxIdentityLength)
+    {
+        HashSet<long> visitedTargets = new();
+        HashSet<long> visitedRouters = new();
+        return CountVarKeyVarIdentityIdentitiesFromRouter(rootRouterOffset, maxKeyLength, maxIdentityLength, visitedTargets, visitedRouters);
+    }
+
+    /// <summary>
+    /// Counts `VV` tuples in an inclusive encoded-key range using metadata traversal for fully covered direct root-prefix targets.<br/>
+    /// Boundary prefixes keep the established range-reader count path so edge comparisons stay exact without adding a second key predicate implementation.<br/>
+    /// Compressed roots and shared boundary targets fall back to reader counting because those shapes cannot prove root-prefix containment from the root router alone.<br/>
+    /// </summary>
+    /// <param name="rootRouterOffset">The routed `VV` root router offset.<br/></param>
+    /// <param name="maxKeyLength">The maximum encoded key length accepted by the index.<br/></param>
+    /// <param name="maxIdentityLength">The maximum raw identity length accepted by the index.<br/></param>
+    /// <param name="lowerKey">The inclusive encoded lower key.<br/></param>
+    /// <param name="upperKey">The inclusive encoded upper key.<br/></param>
+    /// <returns>The number of matching routed `VV` tuples.<br/></returns>
+    internal long CountVarKeyVarIdentityRange(
+        long rootRouterOffset,
+        int maxKeyLength,
+        int maxIdentityLength,
+        ReadOnlySpan<byte> lowerKey,
+        ReadOnlySpan<byte> upperKey)
+    {
+        return CountVarKeyVarIdentityRangeByShelfScoop(
+            rootRouterOffset,
+            maxKeyLength,
+            maxIdentityLength,
+            lowerKey,
+            upperKey);
+    }
+
+    /// <summary>
+    /// Counts `VV` tuples whose encoded key starts with <paramref name="encodedPrefix"/> using a shape-specific prefix extent walk.<br/>
+    /// Contained router targets are counted from existing shelf and terminal-root metadata; partial or ambiguous targets are counted through the established encoded range counter.<br/>
+    /// This keeps varlen-key/varlen-identity prefix counts aligned with the `VS8` and `VS16` prefix planners without materializing identities.<br/>
+    /// </summary>
+    /// <param name="rootRouterOffset">The routed `VV` root router offset.<br/></param>
+    /// <param name="maxKeyLength">The maximum encoded key length accepted by the index.<br/></param>
+    /// <param name="maxIdentityLength">The maximum raw identity length accepted by the index.<br/></param>
+    /// <param name="encodedPrefix">The encoded key prefix to match.<br/></param>
+    /// <returns>The number of matching routed `VV` tuples.<br/></returns>
+    internal long CountVarKeyVarIdentityPrefix(
+        long rootRouterOffset,
+        int maxKeyLength,
+        int maxIdentityLength,
+        ReadOnlySpan<byte> encodedPrefix)
+    {
+        if (encodedPrefix.Length == 0)
+        {
+            return CountVarKeyVarIdentityIdentities(rootRouterOffset, maxKeyLength, maxIdentityLength);
+        }
+
+        byte[] lowerKey = encodedPrefix.ToArray();
+        byte[] upperKey = CreateVarKeyPrefixUpperBound(encodedPrefix, maxKeyLength);
+        HashSet<long> visitedTargets = new();
+        HashSet<long> visitedRouters = new();
+        return TryCountVarKeyVarIdentityPrefixFromRouter(
+            rootRouterOffset,
+            maxKeyLength,
+            maxIdentityLength,
+            lowerKey,
+            upperKey,
+            encodedPrefix,
+            visitedTargets,
+            visitedRouters,
+            DefaultVarKeyVarIdentityMaxRouterHops,
+            out long count)
+            ? count
+            : CountVarKeyVarIdentityRange(rootRouterOffset, maxKeyLength, maxIdentityLength, lowerKey, upperKey);
+    }
+
+    /// <summary>
+    /// Counts a routed `VV` router subtree for one encoded prefix criterion.<br/>
+    /// The walker follows only routes that can contain the requested prefix and switches to count-all when the route path proves full containment.<br/>
+    /// </summary>
+    /// <param name="routerOffset">The router offset to evaluate.<br/></param>
+    /// <param name="maxKeyLength">The maximum encoded key length accepted by the index.<br/></param>
+    /// <param name="maxIdentityLength">The maximum raw identity length accepted by the index.<br/></param>
+    /// <param name="lowerKey">The inclusive encoded lower bound for narrow fallback counting.<br/></param>
+    /// <param name="upperKey">The inclusive encoded upper bound for narrow fallback counting.<br/></param>
+    /// <param name="encodedPrefix">The encoded prefix being matched.<br/></param>
+    /// <param name="visitedTargets">Route targets already counted during this prefix walk.<br/></param>
+    /// <param name="visitedRouters">Routers already counted during this prefix walk.<br/></param>
+    /// <param name="remainingRouterHops">The remaining router-hop safety budget.<br/></param>
+    /// <param name="count">Receives the matching count when the prefix walk succeeds.<br/></param>
+    /// <returns><see langword="true"/> when the prefix extent was counted without falling back to the generic range count; otherwise <see langword="false"/>.<br/></returns>
+    private bool TryCountVarKeyVarIdentityPrefixFromRouter(
+        long routerOffset,
+        int maxKeyLength,
+        int maxIdentityLength,
+        ReadOnlySpan<byte> lowerKey,
+        ReadOnlySpan<byte> upperKey,
+        ReadOnlySpan<byte> encodedPrefix,
+        HashSet<long> visitedTargets,
+        HashSet<long> visitedRouters,
+        int remainingRouterHops,
+        out long count)
+    {
+        count = 0;
+        if (routerOffset == 0)
+        {
+            return true;
+        }
+
+        if (!visitedRouters.Add(routerOffset))
+        {
+            return true;
+        }
+
+        if (remainingRouterHops <= 0)
+        {
+            return false;
+        }
+
+        Span<byte> routerBytes = stackalloc byte[RouterLayout.Size];
+        ReadRouterPageUsingArenaCache(routerOffset, routerBytes);
+        RouterReader router = new(routerBytes);
+        if (!router.IsValid)
+        {
+            throw new InvalidDataException("The routed VV prefix-count router is invalid.");
+        }
+
+        if (router.KeyDepth >= encodedPrefix.Length)
+        {
+            count = CountContainedVarKeyVarIdentityRouterTargets(router, maxKeyLength, maxIdentityLength, visitedTargets, visitedRouters);
+            return true;
+        }
+
+        if (router.PrefixByteCount == 1)
+        {
+            byte prefixByte = GetVarKeyScalar8Prefix(encodedPrefix, router.KeyDepth);
+            long targetOffset = router.FindTarget(prefixByte);
+            return TryCountVarKeyVarIdentityPrefixFromTarget(
+                targetOffset,
+                maxKeyLength,
+                maxIdentityLength,
+                lowerKey,
+                upperKey,
+                encodedPrefix,
+                routeProvesContainment: router.KeyDepth + 1 >= encodedPrefix.Length,
+                visitedTargets,
+                visitedRouters,
+                remainingRouterHops - 1,
+                out count);
+        }
+
+        return TryCountVarKeyVarIdentityPrefixFromMultiByteRouter(
+            router,
+            routerBytes,
+            maxKeyLength,
+            maxIdentityLength,
+            lowerKey,
+            upperKey,
+            encodedPrefix,
+            visitedTargets,
+            visitedRouters,
+            remainingRouterHops,
+            out count);
+    }
+
+    /// <summary>
+    /// Counts matching targets under one compressed multi-byte `VV` router for an encoded prefix criterion.<br/>
+    /// Routes whose stored stem proves the requested prefix are counted wholesale; routes with a widened final-byte range continue as partial targets when the requested byte is inside that range.<br/>
+    /// </summary>
+    /// <param name="router">The decoded router view.<br/></param>
+    /// <param name="routerBytes">The router page bytes that own compressed route stems.<br/></param>
+    /// <param name="maxKeyLength">The maximum encoded key length accepted by the index.<br/></param>
+    /// <param name="maxIdentityLength">The maximum raw identity length accepted by the index.<br/></param>
+    /// <param name="lowerKey">The inclusive encoded lower bound for narrow fallback counting.<br/></param>
+    /// <param name="upperKey">The inclusive encoded upper bound for narrow fallback counting.<br/></param>
+    /// <param name="encodedPrefix">The encoded prefix being matched.<br/></param>
+    /// <param name="visitedTargets">Route targets already counted during this prefix walk.<br/></param>
+    /// <param name="visitedRouters">Routers already counted during this prefix walk.<br/></param>
+    /// <param name="remainingRouterHops">The remaining router-hop safety budget.<br/></param>
+    /// <param name="count">Receives the matching count when the compressed-router walk succeeds.<br/></param>
+    /// <returns><see langword="true"/> when the compressed router was counted safely; otherwise <see langword="false"/>.<br/></returns>
+    private bool TryCountVarKeyVarIdentityPrefixFromMultiByteRouter(
+        RouterReader router,
+        ReadOnlySpan<byte> routerBytes,
+        int maxKeyLength,
+        int maxIdentityLength,
+        ReadOnlySpan<byte> lowerKey,
+        ReadOnlySpan<byte> upperKey,
+        ReadOnlySpan<byte> encodedPrefix,
+        HashSet<long> visitedTargets,
+        HashSet<long> visitedRouters,
+        int remainingRouterHops,
+        out long count)
+    {
+        count = 0;
+        int keyDepth = router.KeyDepth;
+        int prefixByteCount = router.PrefixByteCount;
+        int stemLength = prefixByteCount - 1;
+        int finalDepth = keyDepth + stemLength;
+        int routeEndDepth = keyDepth + prefixByteCount;
+        int routeCount = router.RouteCount;
+        int maxRouteCount = router.MaxRouteCount;
+
+        for (int routeIndex = 0; routeIndex < routeCount; routeIndex++)
+        {
+            ReadOnlySpan<byte> stem = routerBytes.Slice(RouterLayout.GetMultiByteRouteStemOffset(maxRouteCount, prefixByteCount, routeIndex), stemLength);
+            if (!VarKeyPrefixMatchesRouteStem(encodedPrefix, keyDepth, stem))
+            {
+                continue;
+            }
+
+            long targetOffset = router.GetRouteTargetAt(routeIndex);
+            if (targetOffset == 0)
+            {
+                continue;
+            }
+
+            bool contained;
+            if (encodedPrefix.Length <= finalDepth)
+            {
+                contained = true;
+            }
+            else
+            {
+                byte finalPrefixByte = GetVarKeyScalar8Prefix(encodedPrefix, finalDepth);
+                byte routeStart = router.GetRoutePrefixStartAt(routeIndex);
+                byte routeEnd = router.GetRoutePrefixEndAt(routeIndex);
+                if (finalPrefixByte < routeStart || finalPrefixByte > routeEnd)
+                {
+                    continue;
+                }
+
+                contained = routeStart == routeEnd && encodedPrefix.Length <= routeEndDepth;
+            }
+
+            if (!TryCountVarKeyVarIdentityPrefixFromTarget(
+                targetOffset,
+                maxKeyLength,
+                maxIdentityLength,
+                lowerKey,
+                upperKey,
+                encodedPrefix,
+                contained,
+                visitedTargets,
+                visitedRouters,
+                remainingRouterHops - 1,
+                out long childCount))
+            {
+                return false;
+            }
+
+            count += childCount;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Counts one routed `VV` target for an encoded prefix criterion.<br/>
+    /// Proven-contained targets use ordinary count-all metadata traversal; partial shelf and terminal targets use exact encoded range checks; routers continue the prefix walk.<br/>
+    /// </summary>
+    /// <param name="targetOffset">The target offset to count.<br/></param>
+    /// <param name="maxKeyLength">The maximum encoded key length accepted by the index.<br/></param>
+    /// <param name="maxIdentityLength">The maximum raw identity length accepted by the index.<br/></param>
+    /// <param name="lowerKey">The inclusive encoded lower bound for narrow fallback counting.<br/></param>
+    /// <param name="upperKey">The inclusive encoded upper bound for narrow fallback counting.<br/></param>
+    /// <param name="encodedPrefix">The encoded prefix being matched.<br/></param>
+    /// <param name="routeProvesContainment">True when the route path already proves every key below this target starts with <paramref name="encodedPrefix"/>.<br/></param>
+    /// <param name="visitedTargets">Route targets already counted during this prefix walk.<br/></param>
+    /// <param name="visitedRouters">Routers already counted during this prefix walk.<br/></param>
+    /// <param name="remainingRouterHops">The remaining router-hop safety budget.<br/></param>
+    /// <param name="count">Receives the matching count when the target was counted safely.<br/></param>
+    /// <returns><see langword="true"/> when the target was counted safely; otherwise <see langword="false"/>.<br/></returns>
+    private bool TryCountVarKeyVarIdentityPrefixFromTarget(
+        long targetOffset,
+        int maxKeyLength,
+        int maxIdentityLength,
+        ReadOnlySpan<byte> lowerKey,
+        ReadOnlySpan<byte> upperKey,
+        ReadOnlySpan<byte> encodedPrefix,
+        bool routeProvesContainment,
+        HashSet<long> visitedTargets,
+        HashSet<long> visitedRouters,
+        int remainingRouterHops,
+        out long count)
+    {
+        count = 0;
+        if (targetOffset == 0)
+        {
+            return true;
+        }
+
+        if (routeProvesContainment)
+        {
+            count = CountVarKeyVarIdentityRouteTarget(targetOffset, maxKeyLength, maxIdentityLength, visitedTargets, visitedRouters);
+            return true;
+        }
+
+        VarKeyVarIdentityRouteTargetKind kind = ClassifyVarKeyVarIdentityRouteTarget(targetOffset);
+        if (kind == VarKeyVarIdentityRouteTargetKind.Router)
+        {
+            return TryCountVarKeyVarIdentityPrefixFromRouter(
+                targetOffset,
+                maxKeyLength,
+                maxIdentityLength,
+                lowerKey,
+                upperKey,
+                encodedPrefix,
+                visitedTargets,
+                visitedRouters,
+                remainingRouterHops,
+                out count);
+        }
+
+        if (kind == VarKeyVarIdentityRouteTargetKind.Shelf)
+        {
+            if (!visitedTargets.Add(targetOffset))
+            {
+                return true;
+            }
+
+            count = CountVarKeyVarIdentityShelfKeyRangeNarrow(targetOffset, maxKeyLength, maxIdentityLength, lowerKey, upperKey);
+            return true;
+        }
+
+        if (kind == VarKeyVarIdentityRouteTargetKind.TerminalVarIdentityRoot)
+        {
+            count = CountVarKeyVarIdentityTerminalRootKeyRangeNarrow(targetOffset, lowerKey, upperKey);
+            return true;
+        }
+
+        throw new InvalidDataException("The routed VV prefix-count target is not a shelf, terminal root, or router.");
+    }
+
+    /// <summary>
+    /// Counts every target directly referenced by an already visited contained `VV` router.<br/>
+    /// This avoids re-entering the router's own visited check while preserving count-all metadata traversal for each child target.<br/>
+    /// </summary>
+    /// <param name="router">The contained router view whose route targets should be counted.<br/></param>
+    /// <param name="maxKeyLength">The maximum encoded key length accepted by the index.<br/></param>
+    /// <param name="maxIdentityLength">The maximum raw identity length accepted by the index.<br/></param>
+    /// <param name="visitedTargets">Route targets already counted during this prefix walk.<br/></param>
+    /// <param name="visitedRouters">Routers already counted during this prefix walk.<br/></param>
+    /// <returns>The number of identities in the router's child targets.<br/></returns>
+    private long CountContainedVarKeyVarIdentityRouterTargets(
+        RouterReader router,
+        int maxKeyLength,
+        int maxIdentityLength,
+        HashSet<long> visitedTargets,
+        HashSet<long> visitedRouters)
+    {
+        long count = 0;
+        int routeCount = router.HasDirectIndex ? RouterLayout.MaxOneByteRouteCount : router.RouteCount;
+        for (int routeIndex = 0; routeIndex < routeCount; routeIndex++)
+        {
+            count += CountVarKeyVarIdentityRouteTarget(router.GetRouteTargetAt(routeIndex), maxKeyLength, maxIdentityLength, visitedTargets, visitedRouters);
+        }
+
+        return count;
+    }
+
+    private bool TryCountVarKeyVarIdentityRangeFromTarget(
+        long targetOffset,
+        int maxKeyLength,
+        int maxIdentityLength,
+        ReadOnlySpan<byte> lowerKey,
+        ReadOnlySpan<byte> upperKey,
+        byte[] pathPrefix,
+        bool lowerEdge,
+        bool upperEdge,
+        HashSet<long> visitedTargets,
+        HashSet<long> visitedRouters,
+        int remainingRouterHops,
+        out long count)
+    {
+        count = 0;
+        if (targetOffset == 0)
+        {
+            return true;
+        }
+
+        if (!lowerEdge && !upperEdge)
+        {
+            count = CountVarKeyVarIdentityRouteTarget(targetOffset, maxKeyLength, maxIdentityLength, visitedTargets, visitedRouters);
+            return true;
+        }
+
+        VarKeyVarIdentityRouteTargetKind kind = ClassifyVarKeyVarIdentityRouteTarget(targetOffset);
+        if (kind == VarKeyVarIdentityRouteTargetKind.Shelf)
+        {
+            if (!visitedTargets.Add(targetOffset))
+            {
+                return true;
+            }
+
+            count = CountVarKeyVarIdentityShelfKeyRangeNarrow(targetOffset, maxKeyLength, maxIdentityLength, lowerKey, upperKey);
+            return true;
+        }
+
+        if (kind == VarKeyVarIdentityRouteTargetKind.TerminalVarIdentityRoot)
+        {
+            count = CountVarKeyVarIdentityTerminalRootKeyRangeNarrow(targetOffset, lowerKey, upperKey);
+            return true;
+        }
+
+        if (kind != VarKeyVarIdentityRouteTargetKind.Router)
+        {
+            throw new InvalidDataException("The routed VV range-count target is not a shelf, terminal identity root, or router.");
+        }
+
+        if (!visitedRouters.Add(targetOffset))
+        {
+            return true;
+        }
+
+        if (remainingRouterHops <= 0)
+        {
+            return false;
+        }
+
+        Span<byte> routerBytes = stackalloc byte[RouterLayout.Size];
+        ReadRouterPageUsingArenaCache(targetOffset, routerBytes);
+        RouterReader router = new(routerBytes);
+        if (!router.IsValid)
+        {
+            throw new InvalidDataException("The routed VV range-count router is invalid.");
+        }
+
+        if (router.PrefixByteCount > 1)
+        {
+            return TryCountVarKeyVarIdentityRangeFromMultiByteRouter(
+                router,
+                routerBytes,
+                maxKeyLength,
+                maxIdentityLength,
+                lowerKey,
+                upperKey,
+                pathPrefix,
+                lowerEdge,
+                upperEdge,
+                visitedTargets,
+                visitedRouters,
+                remainingRouterHops,
+                out count);
+        }
+
+        byte lowerPrefix = lowerEdge ? GetVarKeyScalar8Prefix(lowerKey, router.KeyDepth) : byte.MinValue;
+        byte upperPrefix = upperEdge ? GetVarKeyScalar8Prefix(upperKey, router.KeyDepth) : byte.MaxValue;
+        long lowerTarget = lowerEdge ? router.FindTarget(lowerPrefix) : 0;
+        long upperTarget = upperEdge ? router.FindTarget(upperPrefix) : 0;
+        if (lowerEdge && upperEdge && lowerPrefix != upperPrefix && lowerTarget != 0 && lowerTarget == upperTarget)
+        {
+            return false;
+        }
+
+        for (int prefix = lowerPrefix; prefix <= upperPrefix; prefix++)
+        {
+            long childTarget = router.FindTarget((byte)prefix);
+            if (childTarget == 0)
+            {
+                continue;
+            }
+
+            bool childLowerEdge = lowerEdge && prefix == lowerPrefix;
+            bool childUpperEdge = upperEdge && prefix == upperPrefix;
+            if (!childLowerEdge && !childUpperEdge && (childTarget == lowerTarget || childTarget == upperTarget))
+            {
+                return false;
+            }
+
+            if (!TryCountVarKeyVarIdentityRangeFromTarget(
+                childTarget,
+                maxKeyLength,
+                maxIdentityLength,
+                lowerKey,
+                upperKey,
+                CreateVarKeyRoutePathPrefix(pathPrefix, router.KeyDepth, (byte)prefix),
+                childLowerEdge,
+                childUpperEdge,
+                visitedTargets,
+                visitedRouters,
+                remainingRouterHops - 1,
+                out long childCount))
+            {
+                return false;
+            }
+
+            count += childCount;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Counts a compressed multi-byte `VV` router for an inclusive encoded-key range.<br/>
+    /// Fully contained compressed routes are counted from existing shelf or terminal metadata, while boundary-overlapping routes continue through exact key-range checks.<br/>
+    /// </summary>
+    /// <param name="router">The decoded compressed router.<br/></param>
+    /// <param name="routerBytes">The router page bytes that own the route stems.<br/></param>
+    /// <param name="maxKeyLength">The maximum encoded key length accepted by the index.<br/></param>
+    /// <param name="maxIdentityLength">The maximum raw identity length accepted by the index.<br/></param>
+    /// <param name="lowerKey">The inclusive encoded lower key.<br/></param>
+    /// <param name="upperKey">The inclusive encoded upper key.<br/></param>
+    /// <param name="pathPrefix">The key bytes proven by parent route traversal.<br/></param>
+    /// <param name="lowerEdge">True when this router may contain the lower range boundary.<br/></param>
+    /// <param name="upperEdge">True when this router may contain the upper range boundary.<br/></param>
+    /// <param name="visitedTargets">Route targets already counted by this range walk.<br/></param>
+    /// <param name="visitedRouters">Routers already counted by this range walk.<br/></param>
+    /// <param name="remainingRouterHops">The remaining router-hop safety budget.<br/></param>
+    /// <param name="count">Receives the matching count when the router was counted safely.<br/></param>
+    /// <returns><see langword="true"/> when the compressed router was counted safely; otherwise <see langword="false"/>.<br/></returns>
+    private bool TryCountVarKeyVarIdentityRangeFromMultiByteRouter(
+        RouterReader router,
+        ReadOnlySpan<byte> routerBytes,
+        int maxKeyLength,
+        int maxIdentityLength,
+        ReadOnlySpan<byte> lowerKey,
+        ReadOnlySpan<byte> upperKey,
+        ReadOnlySpan<byte> pathPrefix,
+        bool lowerEdge,
+        bool upperEdge,
+        HashSet<long> visitedTargets,
+        HashSet<long> visitedRouters,
+        int remainingRouterHops,
+        out long count)
+    {
+        count = 0;
+        int keyDepth = router.KeyDepth;
+        int prefixByteCount = router.PrefixByteCount;
+        int stemLength = prefixByteCount - 1;
+        int routeCount = router.RouteCount;
+        int maxRouteCount = router.MaxRouteCount;
+        for (int routeIndex = 0; routeIndex < routeCount; routeIndex++)
+        {
+            ReadOnlySpan<byte> stem = routerBytes.Slice(RouterLayout.GetMultiByteRouteStemOffset(maxRouteCount, prefixByteCount, routeIndex), stemLength);
+            byte routeStart = router.GetRoutePrefixStartAt(routeIndex);
+            byte routeEnd = router.GetRoutePrefixEndAt(routeIndex);
+            if (!TryClassifyVarKeyMultiByteRangeRoute(pathPrefix, keyDepth, stem, routeStart, routeEnd, lowerKey, upperKey, maxKeyLength, lowerEdge, upperEdge, out bool childLowerEdge, out bool childUpperEdge))
+            {
+                continue;
+            }
+
+            long childTarget = router.GetRouteTargetAt(routeIndex);
+            if (childTarget == 0)
+            {
+                continue;
+            }
+
+            if (!TryCountVarKeyVarIdentityRangeFromTarget(
+                childTarget,
+                maxKeyLength,
+                maxIdentityLength,
+                lowerKey,
+                upperKey,
+                CreateVarKeyMultiByteRoutePathPrefix(pathPrefix, keyDepth, stem, routeStart),
+                childLowerEdge,
+                childUpperEdge,
+                visitedTargets,
+                visitedRouters,
+                remainingRouterHops - 1,
+                out long childCount))
+            {
+                return false;
+            }
+
+            count += childCount;
+        }
+
+        return true;
+    }
+
+    private long CountVarKeyVarIdentityShelfKeyRangeNarrow(
+        long shelfOffset,
+        int maxKeyLength,
+        int maxIdentityLength,
+        ReadOnlySpan<byte> lowerKey,
+        ReadOnlySpan<byte> upperKey)
+    {
+        if (durabilityBatchActive &&
+            varKeyVarIdentityMutableBatchShelves.TryGetValue(shelfOffset, out VarKeyVarIdentityMutableShelf? mutableShelf))
+        {
+            return mutableShelf.CountLiveItemsInKeyRange(lowerKey, upperKey);
+        }
+
+        VarKeyVarIdentityReadOnly shelf = ReadVarKeyVarIdentityReadOnlyShelf(shelfOffset, maxKeyLength, maxIdentityLength);
+        return shelf.CountItemsInKeyRange(lowerKey, upperKey);
+    }
+
+    private long CountVarKeyVarIdentityTerminalRootKeyRangeNarrow(long rootOffset, ReadOnlySpan<byte> lowerKey, ReadOnlySpan<byte> upperKey)
+    {
+        Span<byte> rootHeader = stackalloc byte[TerminalIdentityRootLayout.HeaderSize];
+        kernel.Read(rootOffset, rootHeader);
+        if (TerminalIdentityRootLayout.ReadMagic(rootHeader) != TerminalIdentityRootLayout.Magic ||
+            TerminalIdentityRootLayout.ReadFormatVersion(rootHeader) != TerminalIdentityRootLayout.FormatVersion ||
+            TerminalIdentityRootLayout.ReadHeaderSize(rootHeader) != TerminalIdentityRootLayout.HeaderSize ||
+            TerminalIdentityRootLayout.ReadShape(rootHeader) != TerminalIdentityRootLayout.ShapeVarKey)
+        {
+            throw new InvalidDataException("The routed VV range-count terminal root header is invalid.");
+        }
+
+        int keyLength = TerminalIdentityRootLayout.ReadKeyLength(rootHeader);
+        byte[] rootBytes = new byte[TerminalIdentityRootLayout.Size];
+        kernel.Read(rootOffset, rootBytes);
+        ReadOnlySpan<byte> key = rootBytes.AsSpan(TerminalIdentityRootLayout.KeyBytesOffset, keyLength);
+        return key.SequenceCompareTo(lowerKey) >= 0 && key.SequenceCompareTo(upperKey) <= 0
+            ? CountTerminalVarIdentityRootNarrow(rootOffset, TerminalIdentityRootLayout.ShapeVarKey)
+            : 0;
+    }
+
+    private long CountVarKeyVarIdentityIdentitiesFromRouter(
+        long routerOffset,
+        int maxKeyLength,
+        int maxIdentityLength,
+        HashSet<long> visitedTargets,
+        HashSet<long> visitedRouters)
+    {
+        if (!visitedRouters.Add(routerOffset))
+        {
+            return 0;
+        }
+
+        Span<byte> routerBytes = stackalloc byte[RouterLayout.Size];
+        ReadRouterPageUsingArenaCache(routerOffset, routerBytes);
+        RouterReader router = new(routerBytes);
+        if (!router.IsValid)
+        {
+            throw new InvalidDataException("The routed VV count router is invalid.");
+        }
+
+        long count = 0;
+        if (router.HasDirectIndex)
+        {
+            for (int routeIndex = 0; routeIndex <= byte.MaxValue; routeIndex++)
+            {
+                count += CountVarKeyVarIdentityRouteTarget(router.GetRouteTargetAt(routeIndex), maxKeyLength, maxIdentityLength, visitedTargets, visitedRouters);
+            }
+
+            return count;
+        }
+
+        for (int routeIndex = 0; routeIndex < router.RouteCount; routeIndex++)
+        {
+            count += CountVarKeyVarIdentityRouteTarget(router.GetRouteTargetAt(routeIndex), maxKeyLength, maxIdentityLength, visitedTargets, visitedRouters);
+        }
+
+        return count;
+    }
+
+    private long CountVarKeyVarIdentityRouteTarget(
+        long targetOffset,
+        int maxKeyLength,
+        int maxIdentityLength,
+        HashSet<long> visitedTargets,
+        HashSet<long> visitedRouters)
+    {
+        if (targetOffset == 0 || visitedTargets.Contains(targetOffset) || visitedRouters.Contains(targetOffset))
+        {
+            return 0;
+        }
+
+        VarKeyVarIdentityRouteTargetKind kind = ClassifyVarKeyVarIdentityRouteTarget(targetOffset);
+        if (kind == VarKeyVarIdentityRouteTargetKind.Router)
+        {
+            return CountVarKeyVarIdentityIdentitiesFromRouter(targetOffset, maxKeyLength, maxIdentityLength, visitedTargets, visitedRouters);
+        }
+
+        if (!visitedTargets.Add(targetOffset))
+        {
+            return 0;
+        }
+
+        return kind switch
+        {
+            VarKeyVarIdentityRouteTargetKind.Shelf => ReadVarKeyVarIdentityShelfItemCountNarrow(targetOffset, maxKeyLength, maxIdentityLength),
+            VarKeyVarIdentityRouteTargetKind.TerminalVarIdentityRoot => CountTerminalVarIdentityRootNarrow(targetOffset, TerminalIdentityRootLayout.ShapeVarKey),
+            _ => throw new InvalidDataException("The routed VV count target is not a shelf, terminal root, or router.")
+        };
+    }
+
+    private long ReadVarKeyVarIdentityShelfItemCountNarrow(long shelfOffset, int maxKeyLength, int maxIdentityLength)
+    {
+        if (durabilityBatchActive &&
+            varKeyVarIdentityMutableBatchShelves.TryGetValue(shelfOffset, out VarKeyVarIdentityMutableShelf? mutableShelf))
+        {
+            return mutableShelf.LiveItemCount;
+        }
+
+        VarKeyVarIdentityShelfCountCacheKey cacheKey = new(shelfOffset, maxKeyLength, maxIdentityLength);
+        if (TryGetVarKeyVarIdentityShelfCountCache(cacheKey, out long cachedCount))
+        {
+            return cachedCount;
+        }
+
+        Span<byte> header = stackalloc byte[VarKeyVarIdentityLayout.HeaderSize];
+        kernel.Read(shelfOffset, header);
+        if (VarKeyVarIdentityLayout.ReadMagic(header) != VarKeyVarIdentityLayout.Magic ||
+            VarKeyVarIdentityLayout.ReadFormatVersion(header) != VarKeyVarIdentityLayout.FormatVersion ||
+            VarKeyVarIdentityLayout.ReadHeaderSize(header) != VarKeyVarIdentityLayout.HeaderSize)
+        {
+            throw new InvalidDataException("The routed VV count shelf header is invalid.");
+        }
+
+        int shelfExtentSize = VarKeyVarIdentityLayout.ReadShelfExtentSize(header);
+        _ = VarKeyVarIdentityProfile.Create(shelfExtentSize, maxKeyLength, maxIdentityLength);
+        int count = VarKeyVarIdentityLayout.ReadItemCount(header);
+        int slotStreamLength = VarKeyVarIdentityLayout.ReadSlotStreamLength(header);
+        int slotCapacityBytes = VarKeyVarIdentityLayout.ReadSlotCapacityBytes(header);
+        int recordArenaEnd = VarKeyVarIdentityLayout.ReadRecordArenaEnd(header);
+        int expectedSlotCapacityBytes = VarKeyVarIdentityLayout.CalculateSlotCapacityBytes(shelfExtentSize);
+        if (count < 0 ||
+            count > expectedSlotCapacityBytes / VarKeyVarIdentityLayout.SlotSize ||
+            slotStreamLength != checked(count * VarKeyVarIdentityLayout.SlotSize) ||
+            slotCapacityBytes != expectedSlotCapacityBytes ||
+            recordArenaEnd < VarKeyVarIdentityLayout.HeaderSize + slotCapacityBytes ||
+            recordArenaEnd > shelfExtentSize)
+        {
+            throw new InvalidDataException("The routed VV count shelf metadata is invalid.");
+        }
+
+        StoreVarKeyVarIdentityShelfCountCache(cacheKey, count);
+        return count;
+    }
+
+    /// <summary>
+    /// Tries to read a session-local narrow count projection for one `VV` shelf.<br/>
+    /// The cache key includes the physical shelf offset and max key/identity constraints so repeated count-only traversals can reuse validated shelf-header counts without loading tuple payload bytes.<br/>
+    /// Entries are scoped to the DataKernel mutation version through the shared count-header cache invalidation boundary, so the cache never requires an extra persisted write or flush.<br/>
+    /// </summary>
+    /// <param name="key">The physical `VV` shelf count cache key.<br/></param>
+    /// <param name="count">Receives the cached item count when a current entry is available.<br/></param>
+    /// <returns><see langword="true"/> when a current count projection was found; otherwise <see langword="false"/>.<br/></returns>
+    private bool TryGetVarKeyVarIdentityShelfCountCache(VarKeyVarIdentityShelfCountCacheKey key, out long count)
+    {
+        long mutationVersion = kernel.MutationVersion;
+        lock (countHeaderCacheSync)
+        {
+            EnsureCountHeaderCacheVersionUnderLock(mutationVersion);
+            if (varKeyVarIdentityShelfCountCache.TryGetValue(key, out count) &&
+                kernel.MutationVersion == mutationVersion)
+            {
+                return true;
+            }
+        }
+
+        count = 0;
+        return false;
+    }
+
+
+    /// <summary>
+    /// Stores one validated `VV` shelf item-count projection at the current raw-storage mutation version.<br/>
+    /// The stored value comes from an existing shelf header that the current count operation already read, making this a free session-local reuse path rather than maintained persisted metadata.<br/>
+    /// </summary>
+    /// <param name="key">The physical `VV` shelf count cache key.<br/></param>
+    /// <param name="count">The validated live item count read from the shelf header.<br/></param>
+    private void StoreVarKeyVarIdentityShelfCountCache(VarKeyVarIdentityShelfCountCacheKey key, long count)
+    {
+        long mutationVersion = kernel.MutationVersion;
+        lock (countHeaderCacheSync)
+        {
+            EnsureCountHeaderCacheVersionUnderLock(mutationVersion);
+            varKeyVarIdentityShelfCountCache[key] = count;
+        }
     }
 
     /// <summary>
@@ -128,6 +914,37 @@ public sealed partial class LibraDexFileSession
     }
 
     /// <summary>
+    /// Creates a prebuilt `VV` shelf without linking it to a router route.<br/>
+    /// Bulk and validation construction can append final shelf images first, then wire those shelves through a chosen router shape such as a compressed multi-byte router.<br/>
+    /// The supplied bytes are validated against the profile before reservation so malformed payloads cannot enter the routed varlen-key/varlen-identity graph.<br/>
+    /// </summary>
+    /// <param name="profile">The `VV` shelf profile used to validate and reserve the shelf extent.<br/></param>
+    /// <param name="shelfBytes">The complete prebuilt shelf image.<br/></param>
+    /// <returns>The created shelf offset and commit telemetry.<br/></returns>
+    /// <exception cref="ArgumentException">Thrown when the supplied shelf image length does not match the profile.<br/></exception>
+    /// <exception cref="InvalidDataException">Thrown when the shelf bytes are invalid.<br/></exception>
+    internal (long ShelfOffset, DataKernelCommitTelemetry Commit) CreateVarKeyVarIdentityShelf(
+        VarKeyVarIdentityProfile profile,
+        ReadOnlySpan<byte> shelfBytes)
+    {
+        if (shelfBytes.Length != profile.ShelfExtentSize)
+        {
+            throw new ArgumentException("The prebuilt VV shelf image must match the profiled shelf extent size.", nameof(shelfBytes));
+        }
+
+        if (!VarKeyVarIdentityReadOnly.TryDecodeSlots(shelfBytes, profile, out _, out _))
+        {
+            throw new InvalidDataException("The prebuilt VV shelf image is invalid.");
+        }
+
+        RawDataReservation shelfReservation = kernel.Reserve(profile.ShelfExtentSize);
+        shelfBytes.CopyTo(shelfReservation.Span);
+
+        DataKernelCommitTelemetry telemetry = CommitAndInvalidateRouterReadCache();
+        return (shelfReservation.Extent.Offset, telemetry);
+    }
+
+    /// <summary>
     /// Walks routers for a raw `VV` key until the route target is classified as a shelf.<br/>
     /// Raw key bytes drive routing exactly as in `VS8`; missing deeper bytes route as zero so short keys remain deterministic.<br/>
     /// Multi-byte routers are understood for read compatibility, but this first `VV` write path does not yet create them.<br/>
@@ -161,11 +978,16 @@ public sealed partial class LibraDexFileSession
                     long directTargetOffset = directView.GetTarget(directPrefixByte);
                     if (directTargetOffset == 0)
                     {
-                        throw new InvalidDataException("The routed VV target is unset.");
+                        return new VarKeyVarIdentityRoutePathTarget(
+                            new VarKeyVarIdentityRouteTarget(VarKeyVarIdentityRouteTargetKind.None, 0, directView.KeyDepth, directView.AllocationClassId),
+                            routerOffset,
+                            directPrefixByte,
+                            directPrefixByte);
                     }
 
                     VarKeyVarIdentityRouteTargetKind directKind = ClassifyVarKeyVarIdentityRouteTarget(directTargetOffset);
-                    if (directKind == VarKeyVarIdentityRouteTargetKind.Shelf)
+                    if (directKind == VarKeyVarIdentityRouteTargetKind.Shelf ||
+                        directKind == VarKeyVarIdentityRouteTargetKind.TerminalVarIdentityRoot)
                     {
                         return new VarKeyVarIdentityRoutePathTarget(
                             new VarKeyVarIdentityRouteTarget(directKind, directTargetOffset, directView.KeyDepth, directView.AllocationClassId),
@@ -180,7 +1002,7 @@ public sealed partial class LibraDexFileSession
                         continue;
                     }
 
-                    throw new InvalidDataException("The routed VV target is not a shelf or router.");
+                    throw new InvalidDataException("The routed VV target is not a shelf, terminal identity root, or router.");
                 }
 
                 if (TryGetMultiByteRouterView(routerOffset, out MultiByteRouterView? multiByteView))
@@ -193,7 +1015,8 @@ public sealed partial class LibraDexFileSession
 
                     VarKeyVarIdentityRouteTargetKind multiByteKind = ClassifyVarKeyVarIdentityRouteTarget(multiByteTargetOffset);
                     byte multiBytePrefixByte = GetVarKeyScalar8Prefix(key, multiByteView.KeyDepth);
-                    if (multiByteKind == VarKeyVarIdentityRouteTargetKind.Shelf)
+                    if (multiByteKind == VarKeyVarIdentityRouteTargetKind.Shelf ||
+                        multiByteKind == VarKeyVarIdentityRouteTargetKind.TerminalVarIdentityRoot)
                     {
                         return new VarKeyVarIdentityRoutePathTarget(
                             new VarKeyVarIdentityRouteTarget(multiByteKind, multiByteTargetOffset, multiByteView.KeyDepth, multiByteView.AllocationClassId),
@@ -208,7 +1031,7 @@ public sealed partial class LibraDexFileSession
                         continue;
                     }
 
-                    throw new InvalidDataException("The routed VV target is not a shelf or router.");
+                    throw new InvalidDataException("The routed VV target is not a shelf, terminal identity root, or router.");
                 }
 
                 kernel.Read(routerOffset, routerSpan);
@@ -224,11 +1047,16 @@ public sealed partial class LibraDexFileSession
                     : reader.FindTarget(key, reader.KeyDepth, out routeIndex);
                 if (targetOffset == 0)
                 {
-                    throw new InvalidDataException("The routed VV target is unset.");
+                    return new VarKeyVarIdentityRoutePathTarget(
+                        new VarKeyVarIdentityRouteTarget(VarKeyVarIdentityRouteTargetKind.None, 0, reader.KeyDepth, reader.AllocationClassId),
+                        routerOffset,
+                        prefixByte,
+                        routeIndex);
                 }
 
                 VarKeyVarIdentityRouteTargetKind kind = ClassifyVarKeyVarIdentityRouteTarget(targetOffset);
-                if (kind == VarKeyVarIdentityRouteTargetKind.Shelf)
+                if (kind == VarKeyVarIdentityRouteTargetKind.Shelf ||
+                    kind == VarKeyVarIdentityRouteTargetKind.TerminalVarIdentityRoot)
                 {
                     return new VarKeyVarIdentityRoutePathTarget(
                         new VarKeyVarIdentityRouteTarget(kind, targetOffset, reader.KeyDepth, reader.AllocationClassId),
@@ -243,7 +1071,7 @@ public sealed partial class LibraDexFileSession
                     continue;
                 }
 
-                throw new InvalidDataException("The routed VV target is not a shelf or router.");
+                throw new InvalidDataException("The routed VV target is not a shelf, terminal identity root, or router.");
             }
         }
         finally
@@ -293,13 +1121,55 @@ public sealed partial class LibraDexFileSession
         bool createdInitialShelfRoute = false;
         if (initialTargetOffset == 0)
         {
-            VarKeyVarIdentityProfile initialProfile = VarKeyVarIdentityProfile.SelectInitial(currentWriteIntent, maxKeyLength, maxIdentityLength);
+            VarKeyVarIdentityProfile initialProfile = SelectInitialVarKeyVarIdentityProfile(maxKeyLength, maxIdentityLength);
             _ = CreateVarKeyVarIdentityShelfAndLinkRootRoute(rootRouterOffset, rootPrefix, initialProfile);
             createdInitialShelfRoute = true;
         }
 
         VarKeyVarIdentityRoutePathTarget pathTarget = WalkVarKeyVarIdentityRoutePathTarget(rootRouterOffset, key, maxRouterHops);
         VarKeyVarIdentityRouteTarget target = pathTarget.Target;
+        if (target.Kind == VarKeyVarIdentityRouteTargetKind.None)
+        {
+            VarKeyVarIdentityProfile coldProfile = SelectInitialVarKeyVarIdentityProfile(maxKeyLength, maxIdentityLength);
+            if (TryInsertVarKeyVarIdentityDirectColdRoute(
+                rootRouterOffset,
+                pathTarget.ParentRouterOffset,
+                pathTarget.PrefixByte,
+                coldProfile,
+                key,
+                identity,
+                allowDuplicateKeys,
+                out VarKeyVarIdentityRoutedInsertResult coldResult))
+            {
+                return coldResult;
+            }
+
+            return InsertWalkedRoutedVarKeyVarIdentity(
+                rootRouterOffset,
+                maxKeyLength,
+                maxIdentityLength,
+                key,
+                identity,
+                allowDuplicateKeys,
+                maxRouterHops);
+        }
+
+        if (target.Kind == VarKeyVarIdentityRouteTargetKind.TerminalVarIdentityRoot)
+        {
+            if (IsVarKeyVarIdentityTerminalRootForKey(target.Offset, key))
+            {
+                return InsertIntoVarKeyVarIdentityTerminalRoute(target.Offset, maxIdentityLength, key, identity, allowDuplicateKeys);
+            }
+
+            return SplitMismatchedVarKeyVarIdentityTerminalRoute(
+                pathTarget,
+                maxKeyLength,
+                maxIdentityLength,
+                key,
+                identity,
+                allowDuplicateKeys);
+        }
+
         if (target.Kind != VarKeyVarIdentityRouteTargetKind.Shelf)
         {
             throw new InvalidDataException("The classified route walker did not terminate at a VV shelf.");
@@ -391,9 +1261,106 @@ public sealed partial class LibraDexFileSession
 
         if (insertResult == VarKeyVarIdentityInsertResult.Full)
         {
-            ushort childRouterKeyDepth = checked((ushort)(target.RouterDepth + 1));
+            if (TryConvertVarKeyVarIdentityDuplicateRunToTerminalRoute(
+                pathTarget,
+                existingShelf,
+                profile,
+                key,
+                identity,
+                allowDuplicateKeys,
+                out VarKeyVarIdentityRoutedInsertResult terminalResult))
+            {
+                existingShelf.Release(clearShelfBytes: true);
+                return terminalResult;
+            }
+
+            if (TryExtractVarKeyVarIdentityDuplicateKeyToTerminalRoute(
+                pathTarget,
+                existingShelf,
+                profile,
+                key,
+                identity,
+                allowDuplicateKeys,
+                out VarKeyVarIdentityRoutedInsertResult extractedResult))
+            {
+                existingShelf.Release(clearShelfBytes: true);
+                return extractedResult;
+            }
+
+            Span<byte> parentRouterBytes = stackalloc byte[RouterLayout.Size];
+            ReadRouterPageUsingArenaCache(pathTarget.ParentRouterOffset, parentRouterBytes);
+            RouterReader parentReader = new(parentRouterBytes);
+            if (!parentReader.IsValid ||
+                !TryGetVarKeyParentTargetRange(
+                    parentReader,
+                    pathTarget.RouteIndex,
+                    target.Offset,
+                    out bool parentHasDirectIndex,
+                    out int parentRangeStart,
+                    out int parentRangeEnd,
+                    out ushort parentFinalKeyDepth))
+            {
+                varKeyVarIdentityMutableBatchShelves.Remove(target.Offset);
+                existingShelf.Release(clearShelfBytes: true);
+                return InsertWalkedRoutedVarKeyVarIdentity(
+                    rootRouterOffset,
+                    maxKeyLength,
+                    maxIdentityLength,
+                    key,
+                    identity,
+                    allowDuplicateKeys,
+                    maxRouterHops);
+            }
+
+            ushort childRouterKeyDepth = parentRangeStart < parentRangeEnd
+                ? parentFinalKeyDepth
+                : checked((ushort)(parentFinalKeyDepth + 1));
             byte rightPrefixByte = GetVarKeyScalar8Prefix(key, childRouterKeyDepth);
             varKeyVarIdentityMutableBatchShelves.Remove(target.Offset);
+            (long childRouterOffset,
+                long leftShelfOffset,
+                long rightShelfOffset,
+                int leftItemCount,
+                int rightItemCount,
+                VarKeyVarIdentityInsertResult transformResult,
+                DataKernelCommitTelemetry transformCommit) splitResult;
+            try
+            {
+                splitResult = SplitRoutedVarKeyVarIdentityByShelfTransform(
+                    pathTarget.ParentRouterOffset,
+                    parentHasDirectIndex,
+                    parentRangeStart,
+                    parentRangeEnd,
+                    parentFinalKeyDepth,
+                    target.Offset,
+                    existingShelf,
+                    rightPrefixByte,
+                    profile,
+                    key,
+                    identity,
+                    target.AllocationClassId,
+                    childRouterKeyDepth);
+            }
+            catch (InvalidDataException ex) when (ex.Message.Contains("requires at least two distinct prefixes", StringComparison.Ordinal))
+            {
+                childRouterKeyDepth = 0;
+                rightPrefixByte = GetVarKeyScalar8Prefix(key, childRouterKeyDepth);
+                splitResult = SplitRoutedVarKeyVarIdentityByShelfTransform(
+                    pathTarget.ParentRouterOffset,
+                    parentHasDirectIndex,
+                    parentRangeStart,
+                    parentRangeEnd,
+                    parentFinalKeyDepth,
+                    target.Offset,
+                    existingShelf,
+                    rightPrefixByte,
+                    profile,
+                    key,
+                    identity,
+                    target.AllocationClassId,
+                    childRouterKeyDepth);
+            }
+
             (
                 long childRouterOffset,
                 long leftShelfOffset,
@@ -401,15 +1368,7 @@ public sealed partial class LibraDexFileSession
                 _,
                 _,
                 VarKeyVarIdentityInsertResult transformResult,
-                DataKernelCommitTelemetry transformCommit) = SplitRoutedVarKeyVarIdentityByShelfTransform(
-                target.Offset,
-                existingShelf,
-                rightPrefixByte,
-                profile,
-                key,
-                identity,
-                target.AllocationClassId,
-                childRouterKeyDepth);
+                DataKernelCommitTelemetry transformCommit) = splitResult;
             existingShelf.Release(clearShelfBytes: true);
 
             VarKeyVarIdentityRoutedInsertKind kind = transformResult == VarKeyVarIdentityInsertResult.Inserted
@@ -436,6 +1395,1027 @@ public sealed partial class LibraDexFileSession
             beforeItemCount,
             profile.ShelfExtentSize,
             target.RouterDepth);
+    }
+
+    /// <summary>
+    /// Inserts one raw identity into an exact-key terminal `VV` duplicate route.<br/>
+    /// The root stores the raw variable key once; terminal shelves store only sorted raw identities so duplicate-key pressure does not repeat key bytes per row.<br/>
+    /// The method prefers tail append and local shelf insertion before falling back to a full terminal-chain rewrite for unusual out-of-order cases.<br/>
+    /// </summary>
+    /// <param name="rootOffset">The terminal identity root offset reached by the route walker.</param>
+    /// <param name="maxIdentityLength">The maximum raw identity length accepted by the owning index.</param>
+    /// <param name="key">The raw variable key expected on the terminal root.</param>
+    /// <param name="identity">The raw variable identity to insert.</param>
+    /// <param name="allowDuplicateKeys">Whether the owning index allows duplicate keys with different identities.</param>
+    /// <returns>The routed insert result for the terminal route mutation.</returns>
+    private VarKeyVarIdentityRoutedInsertResult InsertIntoVarKeyVarIdentityTerminalRoute(
+        long rootOffset,
+        int maxIdentityLength,
+        ReadOnlySpan<byte> key,
+        ReadOnlySpan<byte> identity,
+        bool allowDuplicateKeys)
+    {
+        if (!allowDuplicateKeys)
+        {
+            return new VarKeyVarIdentityRoutedInsertResult(
+                VarKeyVarIdentityRoutedInsertKind.KeyConflict,
+                VarKeyVarIdentityInsertResult.KeyConflict,
+                rootOffset,
+                0,
+                default,
+                0,
+                0);
+        }
+
+        if ((uint)identity.Length == 0 || identity.Length > maxIdentityLength)
+        {
+            return new VarKeyVarIdentityRoutedInsertResult(
+                VarKeyVarIdentityRoutedInsertKind.Invalid,
+                VarKeyVarIdentityInsertResult.Invalid,
+                rootOffset,
+                0,
+                default,
+                0,
+                0);
+        }
+
+        byte[] rootBytes = ReadTerminalIdentityRootBytes(rootOffset);
+        if (TerminalIdentityRootLayout.ReadShape(rootBytes) != TerminalIdentityRootLayout.ShapeVarKey ||
+            !IsTerminalIdentityRootForKey(rootBytes, key, out long firstShelfOffset))
+        {
+            throw new InvalidDataException("The routed VV terminal var identity root does not match the inserted key.");
+        }
+
+        int shelfExtentSize = TerminalIdentityRootLayout.ReadShelfExtentSize(rootBytes);
+        long tailShelfOffset = TerminalIdentityRootLayout.ReadTailShelfOffset(rootBytes);
+        if (TryAppendScalar8VarIdentityTerminalTail(rootOffset, rootBytes, firstShelfOffset, tailShelfOffset, shelfExtentSize, identity, out DataKernelCommitTelemetry appendTelemetry))
+        {
+            return new VarKeyVarIdentityRoutedInsertResult(
+                VarKeyVarIdentityRoutedInsertKind.WalkedDuplicateRunOverflow,
+                VarKeyVarIdentityInsertResult.Inserted,
+                rootOffset,
+                rootOffset,
+                appendTelemetry,
+                0,
+                shelfExtentSize);
+        }
+
+        if (TryInsertIntoScalar8VarIdentityTerminalChain(rootOffset, rootBytes, firstShelfOffset, shelfExtentSize, identity, out Scalar8VarIdentityRoutedInsertResult chainInsertResult))
+        {
+            return new VarKeyVarIdentityRoutedInsertResult(
+                chainInsertResult.InsertResult == Scalar8VarIdentityInsertResult.AlreadyPresent ? VarKeyVarIdentityRoutedInsertKind.NoOp : VarKeyVarIdentityRoutedInsertKind.WalkedDuplicateRunOverflow,
+                MapScalar8VarIdentityInsertResult(chainInsertResult.InsertResult),
+                chainInsertResult.PrimaryOffset,
+                chainInsertResult.NewShelfOffset,
+                chainInsertResult.Commit,
+                chainInsertResult.TargetShelfItemCount,
+                chainInsertResult.TargetShelfExtentSize);
+        }
+
+        using PooledTerminalVarIdentitySet identities = ReadScalar8VarIdentityTerminalIdentitiesPooled(rootOffset, key, shelfExtentSize);
+        int insertIndex = LowerBoundTerminalVarIdentity(identities, identity);
+        if (insertIndex < identities.Count && VarKeyVarIdentityLayout.IdentityBytesEqual(identities.ReadAt(insertIndex), identity))
+        {
+            return new VarKeyVarIdentityRoutedInsertResult(
+                VarKeyVarIdentityRoutedInsertKind.NoOp,
+                VarKeyVarIdentityInsertResult.AlreadyPresent,
+                rootOffset,
+                0,
+                default,
+                identities.Count,
+                shelfExtentSize);
+        }
+
+        identities.InsertAt(insertIndex, identity);
+        DataKernelCommitTelemetry rewriteTelemetry = RewriteScalar8VarIdentityTerminalRoute(
+            rootOffset,
+            TerminalIdentityRootLayout.ShapeVarKey,
+            key,
+            shelfExtentSize,
+            identities);
+        return new VarKeyVarIdentityRoutedInsertResult(
+            VarKeyVarIdentityRoutedInsertKind.WalkedDuplicateRunOverflow,
+            VarKeyVarIdentityInsertResult.Inserted,
+            rootOffset,
+            rootOffset,
+            rewriteTelemetry,
+            identities.Count,
+            shelfExtentSize);
+    }
+
+    /// <summary>
+    /// Converts one full same-key `VV` shelf into an exact-key terminal var-identity route.<br/>
+    /// The source shelf is cleared and kept as the fallback target for nonmatching branches; the exact-key path points at a terminal root that stores the key once and identities only thereafter.<br/>
+    /// This is the varlen-key equivalent of the `SV8` duplicate-run terminal shape and avoids repeated key payload storage under hot duplicate keys.<br/>
+    /// </summary>
+    /// <param name="pathTarget">The routed path target that reached the full source shelf.</param>
+    /// <param name="existingShelf">The full mutable source shelf.</param>
+    /// <param name="profile">The source shelf profile.</param>
+    /// <param name="key">The raw variable key being inserted.</param>
+    /// <param name="identity">The raw variable identity being inserted.</param>
+    /// <param name="allowDuplicateKeys">Whether the owning index allows duplicate keys with different identities.</param>
+    /// <param name="result">Receives the routed insert result when conversion or duplicate no-op is performed.</param>
+    /// <returns><see langword="true"/> when this method handled the full shelf; otherwise <see langword="false"/>.</returns>
+    private bool TryConvertVarKeyVarIdentityDuplicateRunToTerminalRoute(
+        VarKeyVarIdentityRoutePathTarget pathTarget,
+        VarKeyVarIdentityMutableShelf existingShelf,
+        VarKeyVarIdentityProfile profile,
+        ReadOnlySpan<byte> key,
+        ReadOnlySpan<byte> identity,
+        bool allowDuplicateKeys,
+        out VarKeyVarIdentityRoutedInsertResult result)
+    {
+        result = default;
+        if (!allowDuplicateKeys ||
+            existingShelf.ItemCount == 0 ||
+            !existingShelf.ReadKeyAt(0).SequenceEqual(key) ||
+            !existingShelf.ReadKeyAt(existingShelf.ItemCount - 1).SequenceEqual(key))
+        {
+            return false;
+        }
+
+        for (int i = 1; i + 1 < existingShelf.ItemCount; i++)
+        {
+            if (!existingShelf.ReadKeyAt(i).SequenceEqual(key))
+            {
+                return false;
+            }
+        }
+
+        using PooledTerminalVarIdentitySet identities = CollectVarKeyVarIdentitySameKeyShelfPooled(existingShelf, key, identity, out bool incomingAdded, out bool alreadyPresent);
+        if (alreadyPresent)
+        {
+            result = new VarKeyVarIdentityRoutedInsertResult(
+                VarKeyVarIdentityRoutedInsertKind.NoOp,
+                VarKeyVarIdentityInsertResult.AlreadyPresent,
+                pathTarget.Target.Offset,
+                0,
+                default,
+                identities.Count,
+                profile.ShelfExtentSize,
+                pathTarget.Target.RouterDepth);
+            return true;
+        }
+
+        if (!incomingAdded)
+        {
+            int insertIndex = LowerBoundTerminalVarIdentity(identities, identity);
+            identities.InsertAt(insertIndex, identity);
+        }
+
+        int terminalShelfExtentSize = SelectVarKeyVarIdentityTerminalShelfExtentSize(profile.ShelfExtentSize, identities);
+        long rootOffset = CreateScalar8VarIdentityTerminalRoute(
+            TerminalIdentityRootLayout.ShapeVarKey,
+            key,
+            terminalShelfExtentSize,
+            identities);
+        varKeyVarIdentityMutableBatchShelves.Remove(pathTarget.Target.Offset);
+        byte[] clearedSourceShelf = VarKeyVarIdentity.CreateEmpty(profile);
+        RawDataReservation sourceRewrite = kernel.ReserveAt(pathTarget.Target.Offset, profile.ShelfExtentSize);
+        clearedSourceShelf.CopyTo(sourceRewrite.Span);
+        long replacementOffset = CreateVarKeyVarIdentityTerminalRouterChain(
+            firstDepth: 0,
+            pathTarget.Target.AllocationClassId,
+            key,
+            profile.MaxKeyLength,
+            pathTarget.Target.Offset,
+            rootOffset);
+        RepointExactRouteAndAliases(
+            pathTarget.ParentRouterOffset,
+            pathTarget.Target.Offset,
+            pathTarget.RouteIndex,
+            replacementOffset,
+            pathTarget.Target.Offset);
+        DataKernelCommitTelemetry telemetry = CommitAndInvalidateRouterReadCache();
+        result = new VarKeyVarIdentityRoutedInsertResult(
+            VarKeyVarIdentityRoutedInsertKind.WalkedDuplicateRunOverflow,
+            VarKeyVarIdentityInsertResult.Inserted,
+            pathTarget.Target.Offset,
+            replacementOffset,
+            telemetry,
+            identities.Count,
+            terminalShelfExtentSize,
+            pathTarget.Target.RouterDepth);
+        return true;
+    }
+
+    /// <summary>
+    /// Extracts one hot duplicate key from a mixed full `VV` shelf into an exact-key terminal identity route.<br/>
+    /// The source shelf is rewritten with only nonmatching tuples, while matching-key identities are stored in compact terminal var-identity shelves under a root that stores the key once.<br/>
+    /// This handles the non-exhausted duplicate-pressure case where a general split would keep chasing identical key bytes and eventually fail to find a dividing prefix.<br/>
+    /// </summary>
+    /// <param name="pathTarget">The routed path target that reached the mixed full shelf.</param>
+    /// <param name="existingShelf">The mutable source shelf.</param>
+    /// <param name="profile">The source shelf profile.</param>
+    /// <param name="key">The duplicate raw variable key to extract.</param>
+    /// <param name="identity">The incoming raw variable identity.</param>
+    /// <param name="allowDuplicateKeys">Whether the owning index allows duplicate keys with different identities.</param>
+    /// <param name="result">Receives the routed insert result when extraction or duplicate no-op is performed.</param>
+    /// <returns><see langword="true"/> when this method handled the full shelf; otherwise <see langword="false"/>.</returns>
+    private bool TryExtractVarKeyVarIdentityDuplicateKeyToTerminalRoute(
+        VarKeyVarIdentityRoutePathTarget pathTarget,
+        VarKeyVarIdentityMutableShelf existingShelf,
+        VarKeyVarIdentityProfile profile,
+        ReadOnlySpan<byte> key,
+        ReadOnlySpan<byte> identity,
+        bool allowDuplicateKeys,
+        out VarKeyVarIdentityRoutedInsertResult result)
+    {
+        const int DuplicatePressureItemCount = 16;
+
+        result = default;
+        if (!allowDuplicateKeys || existingShelf.ItemCount == 0)
+        {
+            return false;
+        }
+
+        int matchingCount = 0;
+        for (int i = 0; i < existingShelf.ItemCount; i++)
+        {
+            if (existingShelf.ReadKeyAt(i).SequenceEqual(key))
+            {
+                matchingCount++;
+            }
+        }
+
+        if (matchingCount < DuplicatePressureItemCount)
+        {
+            return false;
+        }
+
+        int remainderCount = existingShelf.ItemCount - matchingCount;
+        int[] rentedKeyOffsets = ArrayPool<int>.Shared.Rent(Math.Max(1, remainderCount));
+        int[] rentedKeyLengths = ArrayPool<int>.Shared.Rent(Math.Max(1, remainderCount));
+        int[] rentedIdentityOffsets = ArrayPool<int>.Shared.Rent(Math.Max(1, remainderCount));
+        int[] rentedIdentityLengths = ArrayPool<int>.Shared.Rent(Math.Max(1, remainderCount));
+        try
+        {
+            Span<int> keyOffsets = rentedKeyOffsets.AsSpan(0, remainderCount);
+            Span<int> keyLengths = rentedKeyLengths.AsSpan(0, remainderCount);
+            Span<int> identityOffsets = rentedIdentityOffsets.AsSpan(0, remainderCount);
+            Span<int> identityLengths = rentedIdentityLengths.AsSpan(0, remainderCount);
+            using PooledTerminalVarIdentitySet terminalIdentities = PooledTerminalVarIdentitySet.Rent(matchingCount + 1, profile.ShelfExtentSize + identity.Length);
+            int remainderIndex = 0;
+            bool incomingAdded = false;
+            bool alreadyPresent = false;
+            for (int i = 0; i < existingShelf.ItemCount; i++)
+            {
+                ReadOnlySpan<byte> currentKey = existingShelf.ReadKeyAt(i);
+                ReadOnlySpan<byte> currentIdentity = existingShelf.ReadIdentityAt(i);
+                if (!currentKey.SequenceEqual(key))
+                {
+                    existingShelf.ReadKeyLocationAt(i, out int currentKeyOffset, out int currentKeyLength);
+                    existingShelf.ReadIdentityLocationAt(i, out int currentIdentityOffset, out int currentIdentityLength);
+                    keyOffsets[remainderIndex] = currentKeyOffset;
+                    keyLengths[remainderIndex] = currentKeyLength;
+                    identityOffsets[remainderIndex] = currentIdentityOffset;
+                    identityLengths[remainderIndex] = currentIdentityLength;
+                    remainderIndex++;
+                    continue;
+                }
+
+                int order = VarKeyVarIdentityLayout.CompareIdentityBytes(identity, currentIdentity);
+                if (!incomingAdded && order < 0)
+                {
+                    terminalIdentities.Add(identity);
+                    incomingAdded = true;
+                }
+
+                if (order == 0)
+                {
+                    alreadyPresent = true;
+                }
+
+                terminalIdentities.Add(currentIdentity);
+            }
+
+            if (remainderIndex != remainderCount)
+            {
+                throw new InvalidDataException("The VV duplicate-key extraction remainder map did not cover the expected tuple count.");
+            }
+
+            if (alreadyPresent)
+            {
+                result = new VarKeyVarIdentityRoutedInsertResult(
+                    VarKeyVarIdentityRoutedInsertKind.NoOp,
+                    VarKeyVarIdentityInsertResult.AlreadyPresent,
+                    pathTarget.Target.Offset,
+                    0,
+                    default,
+                    terminalIdentities.Count,
+                    profile.ShelfExtentSize,
+                    pathTarget.Target.RouterDepth);
+                return true;
+            }
+
+            if (!incomingAdded)
+            {
+                terminalIdentities.Add(identity);
+            }
+
+            byte[] remainderShelfBytes = remainderCount == 0
+                ? VarKeyVarIdentity.CreateEmpty(profile)
+                : BuildVarKeyVarIdentityShelfFromSources(
+                    existingShelf.Bytes,
+                    keyOffsets,
+                    keyLengths,
+                    identityOffsets,
+                    identityLengths,
+                    profile);
+            int terminalShelfExtentSize = SelectVarKeyVarIdentityTerminalShelfExtentSize(profile.ShelfExtentSize, terminalIdentities);
+            long terminalRootOffset = CreateScalar8VarIdentityTerminalRoute(
+                TerminalIdentityRootLayout.ShapeVarKey,
+                key,
+                terminalShelfExtentSize,
+                terminalIdentities);
+            varKeyVarIdentityMutableBatchShelves.Remove(pathTarget.Target.Offset);
+            RawDataReservation sourceRewrite = kernel.ReserveAt(pathTarget.Target.Offset, profile.ShelfExtentSize);
+            remainderShelfBytes.CopyTo(sourceRewrite.Span);
+            long replacementOffset = CreateVarKeyVarIdentityTerminalRouterChain(
+                firstDepth: 0,
+                pathTarget.Target.AllocationClassId,
+                key,
+                profile.MaxKeyLength,
+                pathTarget.Target.Offset,
+                terminalRootOffset);
+            RepointExactRouteAndAliases(
+                pathTarget.ParentRouterOffset,
+                pathTarget.Target.Offset,
+                pathTarget.RouteIndex,
+                replacementOffset,
+                pathTarget.Target.Offset);
+            DataKernelCommitTelemetry telemetry = CommitAndInvalidateRouterReadCache();
+            result = new VarKeyVarIdentityRoutedInsertResult(
+                VarKeyVarIdentityRoutedInsertKind.WalkedDuplicateRunOverflow,
+                VarKeyVarIdentityInsertResult.Inserted,
+                pathTarget.Target.Offset,
+                replacementOffset,
+                telemetry,
+                terminalIdentities.Count,
+                terminalShelfExtentSize,
+                pathTarget.Target.RouterDepth);
+            return true;
+        }
+        finally
+        {
+            ArrayPool<int>.Shared.Return(rentedKeyOffsets, clearArray: false);
+            ArrayPool<int>.Shared.Return(rentedKeyLengths, clearArray: false);
+            ArrayPool<int>.Shared.Return(rentedIdentityOffsets, clearArray: false);
+            ArrayPool<int>.Shared.Return(rentedIdentityLengths, clearArray: false);
+        }
+    }
+
+    /// <summary>
+    /// Builds one ordinary `VV` shelf from source descriptors that point into an existing shelf image.<br/>
+    /// The descriptors are already in sorted tuple order, so the writer emits slots and records in one pass without materializing key or identity payload arrays.<br/>
+    /// </summary>
+    /// <param name="existingShelfBytes">The source shelf bytes that own the key and identity payload slices.</param>
+    /// <param name="keyOffsets">The key payload offsets in <paramref name="existingShelfBytes"/>.</param>
+    /// <param name="keyLengths">The key payload lengths matching <paramref name="keyOffsets"/>.</param>
+    /// <param name="identityOffsets">The identity payload offsets in <paramref name="existingShelfBytes"/>.</param>
+    /// <param name="identityLengths">The identity payload lengths matching <paramref name="identityOffsets"/>.</param>
+    /// <param name="profile">The target shelf profile.</param>
+    /// <returns>The rebuilt ordinary `VV` shelf bytes.</returns>
+    private static byte[] BuildVarKeyVarIdentityShelfFromSources(
+        byte[] existingShelfBytes,
+        ReadOnlySpan<int> keyOffsets,
+        ReadOnlySpan<int> keyLengths,
+        ReadOnlySpan<int> identityOffsets,
+        ReadOnlySpan<int> identityLengths,
+        VarKeyVarIdentityProfile profile)
+    {
+        if (keyOffsets.Length != keyLengths.Length ||
+            keyOffsets.Length != identityOffsets.Length ||
+            keyOffsets.Length != identityLengths.Length)
+        {
+            throw new InvalidDataException("The VV shelf source descriptors are incomplete.");
+        }
+
+        byte[] shelfBytes = new byte[profile.ShelfExtentSize];
+        VarKeyVarIdentityLayout.Initialize(shelfBytes, profile);
+        int slotCursor = VarKeyVarIdentityLayout.HeaderSize;
+        int slotCapacityBytes = VarKeyVarIdentityLayout.ReadSlotCapacityBytes(shelfBytes);
+        int recordCursor = VarKeyVarIdentityLayout.HeaderSize + slotCapacityBytes;
+        for (int i = 0; i < keyOffsets.Length; i++)
+        {
+            ReadOnlySpan<byte> currentKey = existingShelfBytes.AsSpan(keyOffsets[i], keyLengths[i]);
+            ReadOnlySpan<byte> currentIdentity = existingShelfBytes.AsSpan(identityOffsets[i], identityLengths[i]);
+            if (slotCursor + VarKeyVarIdentityLayout.SlotSize > VarKeyVarIdentityLayout.HeaderSize + slotCapacityBytes)
+            {
+                throw new InvalidDataException("The VV extracted remainder shelf exceeded slot capacity.");
+            }
+
+            int recordLength = VarKeyVarIdentityLayout.GetNewRecordLength(currentKey.Length, currentIdentity.Length);
+            if (recordCursor + recordLength > profile.ShelfExtentSize)
+            {
+                throw new InvalidDataException("The VV extracted remainder shelf exceeded record capacity.");
+            }
+
+            VarKeyVarIdentityLayout.WriteRecord(shelfBytes, recordCursor, currentKey, currentIdentity);
+            VarKeyVarIdentityLayout.WriteSlotRecordOffset(shelfBytes, slotCursor, recordCursor);
+            VarKeyVarIdentityLayout.WriteSlotKeyPrefix(shelfBytes, slotCursor, VarKeyVarIdentityLayout.CreateKeyPrefix(currentKey));
+            slotCursor += VarKeyVarIdentityLayout.SlotSize;
+            recordCursor += recordLength;
+        }
+
+        VarKeyVarIdentityLayout.WriteItemCount(shelfBytes, keyOffsets.Length);
+        VarKeyVarIdentityLayout.WriteSlotStreamLength(shelfBytes, slotCursor - VarKeyVarIdentityLayout.HeaderSize);
+        VarKeyVarIdentityLayout.WriteRecordArenaEnd(shelfBytes, recordCursor);
+        return shelfBytes;
+    }
+
+    /// <summary>
+    /// Collects same-key `VV` shelf identities into the pooled terminal identity workspace in sorted identity order.<br/>
+    /// The source shelf is already sorted by key then identity, so the method only performs a single merge pass for the incoming identity and does not allocate per-row identity arrays.<br/>
+    /// </summary>
+    /// <param name="existingShelf">The same-key source shelf.</param>
+    /// <param name="key">The raw variable key shared by every source row.</param>
+    /// <param name="identity">The incoming identity to merge.</param>
+    /// <param name="incomingAdded">Receives whether the incoming identity was inserted during the merge pass.</param>
+    /// <param name="alreadyPresent">Receives whether the exact key/identity tuple already existed.</param>
+    /// <returns>A pooled terminal identity workspace owned by the caller.</returns>
+    private static PooledTerminalVarIdentitySet CollectVarKeyVarIdentitySameKeyShelfPooled(
+        VarKeyVarIdentityMutableShelf existingShelf,
+        ReadOnlySpan<byte> key,
+        ReadOnlySpan<byte> identity,
+        out bool incomingAdded,
+        out bool alreadyPresent)
+    {
+        incomingAdded = false;
+        alreadyPresent = false;
+        PooledTerminalVarIdentitySet identities = PooledTerminalVarIdentitySet.Rent(existingShelf.ItemCount + 1, existingShelf.Profile.ShelfExtentSize + identity.Length);
+        for (int i = 0; i < existingShelf.ItemCount; i++)
+        {
+            ReadOnlySpan<byte> currentKey = existingShelf.ReadKeyAt(i);
+            if (!currentKey.SequenceEqual(key))
+            {
+                throw new InvalidDataException("The VV terminal conversion source shelf contained more than one key.");
+            }
+
+            ReadOnlySpan<byte> currentIdentity = existingShelf.ReadIdentityAt(i);
+            int order = VarKeyVarIdentityLayout.CompareIdentityBytes(identity, currentIdentity);
+            if (!incomingAdded && order < 0)
+            {
+                identities.Add(identity);
+                incomingAdded = true;
+            }
+
+            if (order == 0)
+            {
+                alreadyPresent = true;
+            }
+
+            identities.Add(currentIdentity);
+        }
+
+        if (!incomingAdded && !alreadyPresent)
+        {
+            identities.Add(identity);
+            incomingAdded = true;
+        }
+
+        return identities;
+    }
+
+    /// <summary>
+    /// Creates a byte-depth exact-key router chain for a terminal `VV` duplicate route.<br/>
+    /// Every branch that does not match the terminal key byte at the current depth routes to the cleared ordinary source shelf, preserving future inserts for nearby but distinct keys.<br/>
+    /// Short keys include their missing-byte zero route so a longer key sharing the same prefix cannot enter the exact-key terminal root.<br/>
+    /// </summary>
+    /// <param name="firstDepth">The first raw-key byte depth below the parent route.</param>
+    /// <param name="allocationClassId">The allocation class id written to each created router.</param>
+    /// <param name="key">The raw variable key owned by the terminal route.</param>
+    /// <param name="maxKeyLength">The maximum raw variable key length accepted by the owning index.</param>
+    /// <param name="emptyShelfOffset">The cleared ordinary shelf target for nonmatching branches.</param>
+    /// <param name="terminalRootOffset">The exact-key terminal identity root offset.</param>
+    /// <returns>The top router offset that should replace the parent route target.</returns>
+    private long CreateVarKeyVarIdentityTerminalRouterChain(
+        ushort firstDepth,
+        ushort allocationClassId,
+        ReadOnlySpan<byte> key,
+        int maxKeyLength,
+        long emptyShelfOffset,
+        long terminalRootOffset)
+    {
+        int terminalDepth = Math.Min(key.Length, maxKeyLength - 1);
+        long nextTargetOffset = terminalRootOffset;
+        for (int depth = terminalDepth; depth >= firstDepth; depth--)
+        {
+            long[] targets = CreateFilledScalar8Scalar8RouteTargets(emptyShelfOffset);
+            targets[GetVarKeyScalar8Prefix(key, depth)] = nextTargetOffset;
+            RawDataReservation reservation = kernel.Reserve(RouterLayout.Size);
+            RouterWriter writer = new(reservation.Span);
+            writer.InitializeExpandedOneByte(checked((ushort)depth), allocationClassId, targets);
+            nextTargetOffset = reservation.Extent.Offset;
+        }
+
+        return nextTargetOffset;
+    }
+
+    /// <summary>
+    /// Selects the compact terminal identity shelf extent for a `VV` duplicate route.<br/>
+    /// Terminal shelves start at 4 KB and grow only enough to hold the largest identity payload while never exceeding the source shelf extent selected by write policy.<br/>
+    /// </summary>
+    /// <param name="sourceShelfExtentSize">The full source shelf extent size.</param>
+    /// <param name="identities">The pooled sorted identity workspace.</param>
+    /// <returns>The terminal var-identity shelf extent size.</returns>
+    private static int SelectVarKeyVarIdentityTerminalShelfExtentSize(int sourceShelfExtentSize, PooledTerminalVarIdentitySet identities)
+    {
+        const int MinimumTerminalShelfExtentSize = 4096;
+        int largestIdentityLength = identities.LargestIdentityLength;
+        int minimumRequired = checked(TerminalVarIdentityShelfLayout.HeaderSize +
+            TerminalVarIdentityShelfLayout.SlotSize +
+            TerminalVarIdentityShelfLayout.GetNewRecordLength(largestIdentityLength));
+        int selected = MinimumTerminalShelfExtentSize;
+        while (selected < minimumRequired && selected < sourceShelfExtentSize)
+        {
+            selected = checked(selected * 2);
+        }
+
+        return selected > sourceShelfExtentSize ? sourceShelfExtentSize : selected;
+    }
+
+    /// <summary>
+    /// Maps the shared scalar-varidentity terminal insert result enum into the `VV` insert result enum.<br/>
+    /// The terminal identity shelf code is byte-oriented and reused by `VV`; this mapper keeps the public routed result shape-specific without duplicating the shelf mutation logic.<br/>
+    /// </summary>
+    /// <param name="result">The shared terminal insert result to map.</param>
+    /// <returns>The corresponding `VV` insert result.</returns>
+    private static VarKeyVarIdentityInsertResult MapScalar8VarIdentityInsertResult(Scalar8VarIdentityInsertResult result)
+        => result switch
+        {
+            Scalar8VarIdentityInsertResult.Inserted => VarKeyVarIdentityInsertResult.Inserted,
+            Scalar8VarIdentityInsertResult.AlreadyPresent => VarKeyVarIdentityInsertResult.AlreadyPresent,
+            Scalar8VarIdentityInsertResult.KeyConflict => VarKeyVarIdentityInsertResult.KeyConflict,
+            Scalar8VarIdentityInsertResult.Full => VarKeyVarIdentityInsertResult.Full,
+            _ => VarKeyVarIdentityInsertResult.Invalid
+        };
+
+    /// <summary>
+    /// Checks whether a routed `VV` terminal identity root owns the incoming encoded variable key.<br/>
+    /// Terminal roots are exact-key shapes; a nonmatching key must be split away before insertion can continue safely.<br/>
+    /// </summary>
+    /// <param name="rootOffset">The terminal identity root offset reached by routing.</param>
+    /// <param name="key">The encoded variable key expected on the root.</param>
+    /// <returns><see langword="true"/> when the terminal root key matches <paramref name="key"/>; otherwise <see langword="false"/>.</returns>
+    private bool IsVarKeyVarIdentityTerminalRootForKey(long rootOffset, ReadOnlySpan<byte> key)
+    {
+        byte[] rootBytes = ReadTerminalIdentityRootBytes(rootOffset);
+        return TerminalIdentityRootLayout.ReadShape(rootBytes) == TerminalIdentityRootLayout.ShapeVarKey &&
+            IsTerminalIdentityRootForKey(rootBytes, key, out _);
+    }
+
+    /// <summary>
+    /// Splits a route that reached a `VV` exact-key terminal identity root for a different variable key.<br/>
+    /// The existing terminal root remains the owner of its stored key, while the incoming key is inserted into a new ordinary `VV` shelf and byte routing separates the two keys at their first remaining difference.<br/>
+    /// This preserves exact-key correctness after hot duplicate extraction creates terminal roots under route prefixes that later receive nearby keys.<br/>
+    /// </summary>
+    /// <param name="pathTarget">The routed path target that reached the mismatched terminal root.</param>
+    /// <param name="maxKeyLength">The maximum encoded key length accepted by the owning index.</param>
+    /// <param name="maxIdentityLength">The maximum raw identity length accepted by the owning index.</param>
+    /// <param name="key">The incoming encoded variable key.</param>
+    /// <param name="identity">The incoming raw variable identity.</param>
+    /// <param name="allowDuplicateKeys">Whether duplicate keys with different identities are allowed.</param>
+    /// <returns>The routed insert result for the incoming tuple.</returns>
+    private VarKeyVarIdentityRoutedInsertResult SplitMismatchedVarKeyVarIdentityTerminalRoute(
+        VarKeyVarIdentityRoutePathTarget pathTarget,
+        int maxKeyLength,
+        int maxIdentityLength,
+        ReadOnlySpan<byte> key,
+        ReadOnlySpan<byte> identity,
+        bool allowDuplicateKeys)
+    {
+        if ((uint)key.Length == 0 || key.Length > maxKeyLength || (uint)identity.Length == 0 || identity.Length > maxIdentityLength)
+        {
+            return new VarKeyVarIdentityRoutedInsertResult(
+                VarKeyVarIdentityRoutedInsertKind.Invalid,
+                VarKeyVarIdentityInsertResult.Invalid,
+                pathTarget.Target.Offset,
+                0,
+                default,
+                0,
+                0,
+                pathTarget.Target.RouterDepth);
+        }
+
+        byte[] rootBytes = ReadTerminalIdentityRootBytes(pathTarget.Target.Offset);
+        if (TerminalIdentityRootLayout.ReadShape(rootBytes) != TerminalIdentityRootLayout.ShapeVarKey)
+        {
+            throw new InvalidDataException("The routed VV terminal target is not a VV terminal identity root.");
+        }
+
+        int terminalKeyLength = TerminalIdentityRootLayout.ReadKeyLength(rootBytes);
+        byte[] terminalKey = rootBytes.AsSpan(TerminalIdentityRootLayout.KeyBytesOffset, terminalKeyLength).ToArray();
+        VarKeyVarIdentityProfile profile = VarKeyVarIdentityProfile.Create(4 * 1024, maxKeyLength, maxIdentityLength);
+        byte[] incomingShelf = VarKeyVarIdentity.CreateEmpty(profile);
+        VarKeyVarIdentityInsertResult insertResult = VarKeyVarIdentity.InsertWithMutationHintInPlace(
+            incomingShelf,
+            profile,
+            key,
+            identity,
+            allowDuplicateKeys,
+            hintStartDepth: pathTarget.Target.RouterDepth,
+            maxHintBytes: 0,
+            out _,
+            out byte[] rewrittenIncomingShelf);
+        if (insertResult != VarKeyVarIdentityInsertResult.Inserted)
+        {
+            return new VarKeyVarIdentityRoutedInsertResult(
+                insertResult == VarKeyVarIdentityInsertResult.KeyConflict ? VarKeyVarIdentityRoutedInsertKind.KeyConflict : VarKeyVarIdentityRoutedInsertKind.Invalid,
+                insertResult,
+                pathTarget.Target.Offset,
+                0,
+                default,
+                0,
+                profile.ShelfExtentSize,
+                pathTarget.Target.RouterDepth);
+        }
+
+        RawDataReservation incomingShelfReservation = kernel.Reserve(profile.ShelfExtentSize);
+        rewrittenIncomingShelf.CopyTo(incomingShelfReservation.Span);
+        ushort firstDepth = 0;
+        long replacementOffset;
+        try
+        {
+            replacementOffset = CreateVarKeyVarIdentityTerminalMismatchRouterChain(
+                firstDepth,
+                pathTarget.Target.AllocationClassId,
+                terminalKey,
+                pathTarget.Target.Offset,
+                key,
+                incomingShelfReservation.Extent.Offset,
+                maxKeyLength);
+        }
+        catch (InvalidDataException ex) when (ex.Message.Contains("remaining variable-key route is exhausted", StringComparison.Ordinal))
+        {
+            kernel.ReleaseMemoryExtent(incomingShelfReservation.Extent.Offset, profile.ShelfExtentSize);
+            return DeterminalizeMismatchedVarKeyVarIdentityRoute(
+                pathTarget,
+                maxKeyLength,
+                maxIdentityLength,
+                terminalKey,
+                key,
+                identity,
+                allowDuplicateKeys);
+        }
+
+        RepointMatchingRoutes(pathTarget.ParentRouterOffset, pathTarget.Target.Offset, replacementOffset);
+        DataKernelCommitTelemetry telemetry = CommitAndInvalidateRouterReadCache();
+        return new VarKeyVarIdentityRoutedInsertResult(
+            VarKeyVarIdentityRoutedInsertKind.WalkedShelfTransformSplit,
+            VarKeyVarIdentityInsertResult.Inserted,
+            incomingShelfReservation.Extent.Offset,
+            replacementOffset,
+            telemetry,
+            1,
+            profile.ShelfExtentSize,
+            pathTarget.Target.RouterDepth,
+            firstDepth);
+    }
+
+    /// <summary>
+    /// Creates a byte-router chain that separates an existing exact-key terminal `VV` target from one incoming nonmatching key.<br/>
+    /// Nonmatching branches use the incoming ordinary shelf as fallback so later nearby keys keep a mutable landing point instead of entering the exact-key terminal route.<br/>
+    /// </summary>
+    /// <param name="firstDepth">The first encoded-key byte depth below the parent route.</param>
+    /// <param name="allocationClassId">The router allocation class id to persist on created routers.</param>
+    /// <param name="terminalKey">The encoded key stored by the existing terminal root.</param>
+    /// <param name="terminalTargetOffset">The existing exact-key terminal root offset.</param>
+    /// <param name="incomingKey">The incoming encoded key that must not enter the terminal root.</param>
+    /// <param name="incomingShelfOffset">The ordinary shelf containing the incoming tuple and serving as fallback.</param>
+    /// <param name="maxKeyLength">The maximum encoded key length accepted by the owning index.</param>
+    /// <returns>The top router offset that should replace the parent route target.</returns>
+    private long CreateVarKeyVarIdentityTerminalMismatchRouterChain(
+        ushort firstDepth,
+        ushort allocationClassId,
+        ReadOnlySpan<byte> terminalKey,
+        long terminalTargetOffset,
+        ReadOnlySpan<byte> incomingKey,
+        long incomingShelfOffset,
+        int maxKeyLength)
+    {
+        int terminalDepth = Math.Min(Math.Max(terminalKey.Length, incomingKey.Length), maxKeyLength - 1);
+        for (int depth = firstDepth; depth <= terminalDepth; depth++)
+        {
+            if (GetVarKeyScalar8Prefix(terminalKey, depth) != GetVarKeyScalar8Prefix(incomingKey, depth))
+            {
+                return CreateVarKeyVarIdentityTerminalMismatchRouterChainCore(
+                    depth,
+                    firstDepth,
+                    allocationClassId,
+                    terminalKey,
+                    terminalTargetOffset,
+                    incomingKey,
+                    incomingShelfOffset);
+            }
+        }
+
+        throw new InvalidDataException("The VV terminal route mismatch cannot be split because the remaining variable-key route is exhausted.");
+    }
+
+    /// <summary>
+    /// Converts a mismatched exact-key terminal `VV` route back into an ordinary `VV` shelf when no remaining route byte can separate the terminal and incoming keys.<br/>
+    /// This is a correctness fallback for small terminal groups created under compressed or aliased route context where later nearby keys cannot be split beneath the current parent route.<br/>
+    /// The fallback stores the terminal key once per restored tuple again, which is less compact but preserves exact-key lookup and future ordinary split behavior.<br/>
+    /// </summary>
+    /// <param name="pathTarget">The route target that reached the mismatched terminal root.</param>
+    /// <param name="maxKeyLength">The maximum encoded key length accepted by the owning index.</param>
+    /// <param name="maxIdentityLength">The maximum identity length accepted by the owning index.</param>
+    /// <param name="terminalKey">The encoded key stored by the terminal root.</param>
+    /// <param name="incomingKey">The incoming encoded key.</param>
+    /// <param name="incomingIdentity">The incoming raw identity.</param>
+    /// <param name="allowDuplicateKeys">Whether duplicate keys with different identities are allowed.</param>
+    /// <returns>The routed insert result for the de-terminalized route.</returns>
+    private VarKeyVarIdentityRoutedInsertResult DeterminalizeMismatchedVarKeyVarIdentityRoute(
+        VarKeyVarIdentityRoutePathTarget pathTarget,
+        int maxKeyLength,
+        int maxIdentityLength,
+        ReadOnlySpan<byte> terminalKey,
+        ReadOnlySpan<byte> incomingKey,
+        ReadOnlySpan<byte> incomingIdentity,
+        bool allowDuplicateKeys)
+    {
+        byte[] rootBytes = ReadTerminalIdentityRootBytes(pathTarget.Target.Offset);
+        int terminalShelfExtentSize = TerminalIdentityRootLayout.ReadShelfExtentSize(rootBytes);
+        long oldFirstShelfOffset = TerminalIdentityRootLayout.ReadFirstShelfOffset(rootBytes);
+        using PooledTerminalVarIdentitySet terminalIdentities = ReadScalar8VarIdentityTerminalIdentitiesPooled(pathTarget.Target.Offset, terminalKey, terminalShelfExtentSize);
+        VarKeyVarIdentityProfile profile = VarKeyVarIdentityProfile.Create(32 * 1024, maxKeyLength, maxIdentityLength);
+        if (!TryBuildDeterminalizedVarKeyVarIdentityShelf(profile, terminalKey, terminalIdentities, incomingKey, incomingIdentity, allowDuplicateKeys, out byte[] shelfBytes, out VarKeyVarIdentityInsertResult insertResult))
+        {
+            profile = VarKeyVarIdentityProfile.Create(128 * 1024, maxKeyLength, maxIdentityLength);
+            if (!TryBuildDeterminalizedVarKeyVarIdentityShelf(profile, terminalKey, terminalIdentities, incomingKey, incomingIdentity, allowDuplicateKeys, out shelfBytes, out insertResult))
+            {
+                throw new InvalidDataException($"The VV terminal route could not be de-terminalized into an ordinary shelf. TerminalKey={Convert.ToHexString(terminalKey)}; IncomingKey={Convert.ToHexString(incomingKey)}; TerminalIdentities={terminalIdentities.Count.ToString(CultureInfo.InvariantCulture)}; RouteDepth={pathTarget.Target.RouterDepth.ToString(CultureInfo.InvariantCulture)}.");
+            }
+        }
+
+        if (insertResult != VarKeyVarIdentityInsertResult.Inserted)
+        {
+            return new VarKeyVarIdentityRoutedInsertResult(
+                insertResult == VarKeyVarIdentityInsertResult.AlreadyPresent ? VarKeyVarIdentityRoutedInsertKind.NoOp : VarKeyVarIdentityRoutedInsertKind.Invalid,
+                insertResult,
+                pathTarget.Target.Offset,
+                0,
+                default,
+                terminalIdentities.Count,
+                profile.ShelfExtentSize,
+                pathTarget.Target.RouterDepth);
+        }
+
+        RawDataReservation shelfReservation = kernel.Reserve(profile.ShelfExtentSize);
+        shelfBytes.CopyTo(shelfReservation.Span);
+        RepointMatchingRoutes(pathTarget.ParentRouterOffset, pathTarget.Target.Offset, shelfReservation.Extent.Offset);
+        ClearTerminalIdentityReadCaches();
+        DataKernelCommitTelemetry telemetry = CommitAndInvalidateRouterReadCache();
+        ReleaseTerminalVarIdentityShelfChain(oldFirstShelfOffset, terminalShelfExtentSize);
+        kernel.ReleaseMemoryExtent(pathTarget.Target.Offset, TerminalIdentityRootLayout.Size);
+        return new VarKeyVarIdentityRoutedInsertResult(
+            VarKeyVarIdentityRoutedInsertKind.WalkedShelfTransformSplit,
+            VarKeyVarIdentityInsertResult.Inserted,
+            pathTarget.Target.Offset,
+            shelfReservation.Extent.Offset,
+            telemetry,
+            terminalIdentities.Count + 1,
+            profile.ShelfExtentSize,
+            pathTarget.Target.RouterDepth);
+    }
+
+    /// <summary>
+    /// Builds an ordinary `VV` shelf from one terminal key's identity set plus one incoming tuple.<br/>
+    /// The method writes through the normal `VV` insert helper so tuple ordering, duplicate detection, and packed shelf bytes stay identical to ordinary inserts.<br/>
+    /// </summary>
+    /// <param name="profile">The candidate ordinary shelf profile.</param>
+    /// <param name="terminalKey">The encoded terminal key to repeat for restored terminal identities.</param>
+    /// <param name="terminalIdentities">The sorted terminal identity workspace.</param>
+    /// <param name="incomingKey">The incoming encoded key.</param>
+    /// <param name="incomingIdentity">The incoming identity.</param>
+    /// <param name="allowDuplicateKeys">Whether duplicate keys with different identities are allowed.</param>
+    /// <param name="shelfBytes">Receives the ordinary shelf bytes when all rows fit.</param>
+    /// <param name="insertResult">Receives the incoming tuple result.</param>
+    /// <returns><see langword="true"/> when the candidate profile held every restored row and the incoming tuple.</returns>
+    private static bool TryBuildDeterminalizedVarKeyVarIdentityShelf(
+        VarKeyVarIdentityProfile profile,
+        ReadOnlySpan<byte> terminalKey,
+        PooledTerminalVarIdentitySet terminalIdentities,
+        ReadOnlySpan<byte> incomingKey,
+        ReadOnlySpan<byte> incomingIdentity,
+        bool allowDuplicateKeys,
+        out byte[] shelfBytes,
+        out VarKeyVarIdentityInsertResult insertResult)
+    {
+        shelfBytes = VarKeyVarIdentity.CreateEmpty(profile);
+        for (int i = 0; i < terminalIdentities.Count; i++)
+        {
+            insertResult = VarKeyVarIdentity.InsertWithMutationHint(
+                shelfBytes,
+                profile,
+                terminalKey,
+                terminalIdentities.ReadAt(i),
+                allowDuplicateKeys: true,
+                hintStartDepth: 0,
+                maxHintBytes: 0,
+                out _,
+                out byte[] rewrittenTerminalShelf);
+            if (insertResult != VarKeyVarIdentityInsertResult.Inserted)
+            {
+                return false;
+            }
+
+            shelfBytes = rewrittenTerminalShelf;
+        }
+
+        insertResult = VarKeyVarIdentity.InsertWithMutationHint(
+            shelfBytes,
+            profile,
+            incomingKey,
+            incomingIdentity,
+            allowDuplicateKeys,
+            hintStartDepth: 0,
+            maxHintBytes: 0,
+            out _,
+            out byte[] rewrittenIncomingShelf);
+        if (insertResult != VarKeyVarIdentityInsertResult.Inserted)
+        {
+            return insertResult == VarKeyVarIdentityInsertResult.AlreadyPresent;
+        }
+
+        shelfBytes = rewrittenIncomingShelf;
+        return true;
+    }
+
+    /// <summary>
+    /// Builds the bounded router chain for a `VV` terminal-root mismatch once the separating byte depth is known.<br/>
+    /// Routers are allocated from the deepest byte back to <paramref name="firstDepth"/> so each parent can point at its child without a second rewrite pass.<br/>
+    /// </summary>
+    /// <param name="splitDepth">The encoded-key byte depth where the terminal and incoming keys first differ.</param>
+    /// <param name="firstDepth">The first encoded-key byte depth below the parent route.</param>
+    /// <param name="allocationClassId">The router allocation class id to persist on created routers.</param>
+    /// <param name="terminalKey">The encoded key stored by the existing terminal root.</param>
+    /// <param name="terminalTargetOffset">The existing exact-key terminal root offset.</param>
+    /// <param name="incomingKey">The incoming encoded key.</param>
+    /// <param name="incomingShelfOffset">The ordinary incoming shelf and default fallback target.</param>
+    /// <returns>The top router offset for publication into the parent route.</returns>
+    private long CreateVarKeyVarIdentityTerminalMismatchRouterChainCore(
+        int splitDepth,
+        int firstDepth,
+        ushort allocationClassId,
+        ReadOnlySpan<byte> terminalKey,
+        long terminalTargetOffset,
+        ReadOnlySpan<byte> incomingKey,
+        long incomingShelfOffset)
+    {
+        long nextTargetOffset = terminalTargetOffset;
+        for (int depth = splitDepth; depth >= firstDepth; depth--)
+        {
+            long[] targets = CreateFilledScalar8Scalar8RouteTargets(incomingShelfOffset);
+            byte terminalPrefix = GetVarKeyScalar8Prefix(terminalKey, depth);
+            byte incomingPrefix = GetVarKeyScalar8Prefix(incomingKey, depth);
+            targets[terminalPrefix] = nextTargetOffset;
+            if (depth == splitDepth && terminalPrefix != incomingPrefix)
+            {
+                targets[incomingPrefix] = incomingShelfOffset;
+            }
+
+            RawDataReservation reservation = kernel.Reserve(RouterLayout.Size);
+            RouterWriter writer = new(reservation.Span);
+            writer.InitializeExpandedOneByte(checked((ushort)depth), allocationClassId, targets);
+            nextTargetOffset = reservation.Extent.Offset;
+        }
+
+        return nextTargetOffset;
+    }
+
+    /// <summary>
+    /// Publishes the first tuple for an unset route in an expanded direct `VV` exact-stem chain.<br/>
+    /// Exact-stem transforms leave unrelated sibling prefixes unset so each new prefix acquires an independent ordered shelf instead of aliasing an existing extent.<br/>
+    /// The shelf image is prepared before serialized publication, which revalidates the exact route and commits the shelf plus router rewrite together.<br/>
+    /// </summary>
+    /// <param name="rootRouterOffset">The root router offset identifying the owning `VV` index.<br/></param>
+    /// <param name="routerOffset">The expanded direct router containing the unset route.<br/></param>
+    /// <param name="prefixByte">The exact direct prefix expected to remain unset.<br/></param>
+    /// <param name="profile">The initial shelf profile for the new independent extent.<br/></param>
+    /// <param name="key">The raw variable key to insert.<br/></param>
+    /// <param name="identity">The raw variable identity to insert.<br/></param>
+    /// <param name="allowDuplicateKeys">Whether different identities may share the key.<br/></param>
+    /// <param name="result">Receives the routed insert result when publication succeeds.<br/></param>
+    /// <returns><see langword="true"/> when this call initialized the route; otherwise false when another publisher won the race.<br/></returns>
+    private bool TryInsertVarKeyVarIdentityDirectColdRoute(
+        long rootRouterOffset,
+        long routerOffset,
+        byte prefixByte,
+        VarKeyVarIdentityProfile profile,
+        ReadOnlySpan<byte> key,
+        ReadOnlySpan<byte> identity,
+        bool allowDuplicateKeys,
+        out VarKeyVarIdentityRoutedInsertResult result)
+    {
+        byte[] shelfBytes = VarKeyVarIdentity.CreateEmpty(profile);
+        if (!VarKeyVarIdentityMutableShelf.TryCreate(shelfBytes, profile, ownsBytes: false, rentSidecars: false, out VarKeyVarIdentityMutableShelf preparedShelf))
+            throw new InvalidDataException("The prepared VV child cold-route shelf is invalid.");
+
+        VarKeyVarIdentityInsertResult insertResult = preparedShelf.InsertWithMutationHint(
+            key,
+            identity,
+            allowDuplicateKeys,
+            hintStartDepth: 0,
+            maxHintBytes: 0,
+            out _);
+        if (insertResult != VarKeyVarIdentityInsertResult.Inserted)
+            throw new InvalidDataException($"Expected VV child cold-route shelf insert, got {insertResult}.");
+
+        PrimitiveTopologyOwnerKey topologyOwnerKey = new(6, 9, rootRouterOffset, routerOffset, prefixByte);
+        object topologyOwner = GetPrimitiveTopologyOwner(topologyOwnerKey);
+        try
+        {
+            lock (topologyOwner)
+            {
+                ReportPrimitiveTopologyOwnerEnteredForValidation(topologyOwnerKey);
+                lock (writePublicationSync)
+                {
+                    kernel.EnterExclusiveStoragePublication();
+                    try
+                    {
+                        byte[] routerBytes = new byte[RouterLayout.Size];
+                        kernel.Read(routerOffset, routerBytes);
+                        RouterReader reader = new(routerBytes);
+                        if (!reader.IsValid || !reader.HasDirectIndex)
+                            throw new InvalidDataException("The VV child cold-route parent is not a valid expanded direct router.");
+
+                        if (reader.GetDirectTarget(prefixByte) != 0)
+                        {
+                            result = default;
+                            return false;
+                        }
+
+                        RawDataReservation shelfReservation = kernel.Reserve(profile.ShelfExtentSize);
+                        preparedShelf.Bytes.AsSpan(0, profile.ShelfExtentSize).CopyTo(shelfReservation.Span);
+                        RawDataReservation routerRewrite = kernel.ReserveAt(routerOffset, RouterLayout.Size);
+                        routerBytes.CopyTo(routerRewrite.Span);
+                        RouterWriter writer = new(routerRewrite.Span);
+                        writer.WriteRoute(prefixByte, prefixByte, prefixByte, shelfReservation.Extent.Offset);
+                        InvalidateRouterReadCacheForRouterRewrite(routerOffset);
+                        DataKernelCommitTelemetry telemetry = CommitAndDeferRouterReadCacheInvalidation();
+                        result = new VarKeyVarIdentityRoutedInsertResult(
+                            VarKeyVarIdentityRoutedInsertKind.WalkedNoSplit,
+                            VarKeyVarIdentityInsertResult.Inserted,
+                            shelfReservation.Extent.Offset,
+                            shelfReservation.Extent.Offset,
+                            telemetry,
+                            1,
+                            profile.ShelfExtentSize,
+                            reader.KeyDepth);
+                        return true;
+                    }
+                    finally
+                    {
+                        kernel.ExitExclusiveStoragePublication();
+                    }
+                }
+            }
+        }
+        finally
+        {
+            preparedShelf.Release(clearShelfBytes: true);
+        }
+    }
+
+    /// <summary>
+    /// Selects the initial `VV` shelf profile for a lazily created routed prefix.<br/>
+    /// File-backed sessions preserve the existing write-intent policy; memory-backed sessions use a smaller process-level profile so empty or lightly populated prefixes do not retain disk-sized shelf slack.<br/>
+    /// </summary>
+    /// <param name="maxKeyLength">The maximum raw key length in bytes.</param>
+    /// <param name="maxIdentityLength">The maximum raw identity length in bytes.</param>
+    /// <returns>The initial `VV` shelf profile for the current backing kind and write intent.</returns>
+    private VarKeyVarIdentityProfile SelectInitialVarKeyVarIdentityProfile(int maxKeyLength, int maxIdentityLength)
+    {
+        if (BackingKind != DataKernelBackingKind.Memory)
+        {
+            return VarKeyVarIdentityProfile.SelectInitial(currentWriteIntent, maxKeyLength, maxIdentityLength);
+        }
+
+        return ParseMemoryVarKeyVarIdentityShelfKiB() switch
+        {
+            4 => VarKeyVarIdentityProfile.Create(VarKeyVarIdentityProfile.Default4KiB.ShelfExtentSize, maxKeyLength, maxIdentityLength),
+            8 => VarKeyVarIdentityProfile.Create(VarKeyVarIdentityProfile.Default8KiB.ShelfExtentSize, maxKeyLength, maxIdentityLength),
+            16 => VarKeyVarIdentityProfile.Create(VarKeyVarIdentityProfile.Default16KiB.ShelfExtentSize, maxKeyLength, maxIdentityLength),
+            32 => VarKeyVarIdentityProfile.Create(VarKeyVarIdentityProfile.Default32KiB.ShelfExtentSize, maxKeyLength, maxIdentityLength),
+            64 => VarKeyVarIdentityProfile.Create(VarKeyVarIdentityProfile.Default64KiB.ShelfExtentSize, maxKeyLength, maxIdentityLength),
+            128 => VarKeyVarIdentityProfile.Create(VarKeyVarIdentityProfile.Default128KiB.ShelfExtentSize, maxKeyLength, maxIdentityLength),
+            _ => VarKeyVarIdentityProfile.Create(VarKeyVarIdentityProfile.Default8KiB.ShelfExtentSize, maxKeyLength, maxIdentityLength)
+        };
+    }
+
+    /// <summary>
+    /// Parses the process-level memory `VV` initial shelf-size override in KiB.<br/>
+    /// The environment lookup happens only on lazy route creation, not during ordinary routed walks or shelf mutation.<br/>
+    /// </summary>
+    /// <returns>The requested memory `VV` initial shelf size in KiB, or 8 when absent or invalid.</returns>
+    private static int ParseMemoryVarKeyVarIdentityShelfKiB()
+    {
+        string? value = Environment.GetEnvironmentVariable("LIBRADEX_MEMORY_VV_SHELF_KB");
+        return int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int kib)
+            ? kib
+            : 8;
     }
 
     internal VarKeyVarIdentityRangeReader OpenVarKeyVarIdentityRangeReader(
@@ -520,6 +2500,296 @@ public sealed partial class LibraDexFileSession
     }
 
     /// <summary>
+    /// Starts an internal `VV` writer context that can stage warmed ordinary shelf-local rewrites before serialized publication.<br/>
+    /// Terminal var-identity routes, cold route creation, and split/growth topology remain on the existing durability-batch path for this first `VV` concurrency slice.<br/>
+    /// </summary>
+    /// <returns>A writer-local mutation context for ordinary `VV` shelf changes.<br/></returns>
+    internal LibraDexWriteContext BeginVarKeyVarIdentityWriteContext()
+    {
+        long operationToken = Interlocked.Increment(ref diagnosticWriteWindowNextOperationToken);
+        if (operationToken == 0)
+        {
+            operationToken = Interlocked.Increment(ref diagnosticWriteWindowNextOperationToken);
+        }
+
+        return new LibraDexWriteContext(operationToken);
+    }
+
+    /// <summary>
+    /// Attempts one routed `VV` insert through a writer-local ordinary-shelf context without allowing topology changes.<br/>
+    /// The method supports warmed ordinary shelves only; terminal routes, growth, split, and chain rewrites throw so callers can use the existing topology path.<br/>
+    /// </summary>
+    /// <param name="writeContext">The writer context that owns staged ordinary shelf mutations.<br/></param>
+    /// <param name="rootRouterOffset">The root router offset for the index.<br/></param>
+    /// <param name="maxKeyLength">The maximum encoded key length accepted by the index profile.<br/></param>
+    /// <param name="maxIdentityLength">The maximum raw identity length accepted by the index profile.<br/></param>
+    /// <param name="key">The encoded raw key bytes to insert.<br/></param>
+    /// <param name="identity">The raw variable-length identity bytes to insert.<br/></param>
+    /// <param name="allowDuplicateKeys">Whether duplicate keys with different identities are allowed.<br/></param>
+    /// <param name="maxRouterHops">The maximum number of router pages to follow.<br/></param>
+    /// <returns>The storage-facing routed insert result for the writer-local attempt.<br/></returns>
+    internal VarKeyVarIdentityRoutedInsertResult InsertWalkedRoutedVarKeyVarIdentityNoSplitForWriteContext(
+        LibraDexWriteContext writeContext,
+        long rootRouterOffset,
+        int maxKeyLength,
+        int maxIdentityLength,
+        ReadOnlySpan<byte> key,
+        ReadOnlySpan<byte> identity,
+        bool allowDuplicateKeys,
+        int maxRouterHops = DefaultVarKeyVarIdentityMaxRouterHops)
+    {
+        VarKeyVarIdentityRoutePathTarget pathTarget;
+        lock (routerReadCacheSync)
+        {
+            pathTarget = WalkVarKeyVarIdentityRoutePathTarget(rootRouterOffset, key, maxRouterHops);
+        }
+
+        VarKeyVarIdentityRouteTarget target = pathTarget.Target;
+        if (target.Kind != VarKeyVarIdentityRouteTargetKind.Shelf)
+        {
+            throw new InvalidOperationException("The VV writer-context path supports only ordinary warmed shelf routes.");
+        }
+
+        RecordVarKeyVarIdentityRouteClaimForWriteContext(writeContext, pathTarget);
+        VarKeyVarIdentityMutableShelf shelf = ReadVarKeyVarIdentityMutableShelfForWriteContext(writeContext, target.Offset, maxKeyLength, maxIdentityLength);
+        VarKeyVarIdentityProfile profile = shelf.Profile;
+        int beforeItemCount = shelf.ItemCount;
+        VarKeyVarIdentityInsertResult insertResult = shelf.InsertWithMutationHint(
+            key,
+            identity,
+            allowDuplicateKeys,
+            hintStartDepth: target.RouterDepth,
+            maxHintBytes: 0,
+            out _);
+        if (insertResult == VarKeyVarIdentityInsertResult.Full)
+        {
+            throw new InvalidOperationException("The VV writer-context path does not yet support shelf growth or split transforms.");
+        }
+
+        VarKeyVarIdentityRoutedInsertKind kind = insertResult switch
+        {
+            VarKeyVarIdentityInsertResult.Inserted => VarKeyVarIdentityRoutedInsertKind.WalkedNoSplit,
+            VarKeyVarIdentityInsertResult.KeyConflict => VarKeyVarIdentityRoutedInsertKind.KeyConflict,
+            _ => VarKeyVarIdentityRoutedInsertKind.NoOp
+        };
+        return new VarKeyVarIdentityRoutedInsertResult(
+            kind,
+            insertResult,
+            target.Offset,
+            insertResult == VarKeyVarIdentityInsertResult.Inserted ? target.Offset : 0,
+            default,
+            insertResult == VarKeyVarIdentityInsertResult.Inserted ? beforeItemCount + 1 : beforeItemCount,
+            profile.ShelfExtentSize,
+            target.RouterDepth);
+    }
+
+    /// <summary>
+    /// Attempts one exact `VV` tuple delete through a writer-local ordinary-shelf context.<br/>
+    /// Terminal var-identity roots throw so callers can fall back to the existing durability-batch terminal delete path.<br/>
+    /// </summary>
+    /// <param name="writeContext">The writer context that owns staged ordinary shelf mutations.<br/></param>
+    /// <param name="rootRouterOffset">The root router offset for the index.<br/></param>
+    /// <param name="maxKeyLength">The maximum encoded key length accepted by the index profile.<br/></param>
+    /// <param name="maxIdentityLength">The maximum raw identity length accepted by the index profile.<br/></param>
+    /// <param name="key">The exact encoded raw key bytes.<br/></param>
+    /// <param name="identity">The exact raw identity bytes to delete.<br/></param>
+    /// <param name="maxRouterHops">The maximum number of router pages to follow.<br/></param>
+    /// <returns><see langword="true"/> when one live tuple was marked deleted in the writer-local shelf.</returns>
+    internal bool DeleteVarKeyVarIdentityExactTupleForWriteContext(
+        LibraDexWriteContext writeContext,
+        long rootRouterOffset,
+        int maxKeyLength,
+        int maxIdentityLength,
+        ReadOnlySpan<byte> key,
+        ReadOnlySpan<byte> identity,
+        int maxRouterHops = DefaultVarKeyVarIdentityMaxRouterHops)
+    {
+        VarKeyVarIdentityRoutePathTarget pathTarget;
+        lock (routerReadCacheSync)
+        {
+            pathTarget = WalkVarKeyVarIdentityRoutePathTarget(rootRouterOffset, key, maxRouterHops);
+        }
+
+        VarKeyVarIdentityRouteTarget target = pathTarget.Target;
+        if (target.Kind != VarKeyVarIdentityRouteTargetKind.Shelf)
+        {
+            throw new InvalidOperationException("The VV writer-context exact delete path supports only ordinary warmed shelf routes.");
+        }
+
+        RecordVarKeyVarIdentityRouteClaimForWriteContext(writeContext, pathTarget);
+        VarKeyVarIdentityMutableShelf shelf = ReadVarKeyVarIdentityMutableShelfForWriteContext(writeContext, target.Offset, maxKeyLength, maxIdentityLength);
+        return shelf.MarkTupleDeleted(key, identity);
+    }
+
+    /// <summary>
+    /// Deletes an inclusive encoded-key `VV` range through writer-local ordinary-shelf contexts.<br/>
+    /// Router targets are traversed, ordinary shelves are tombstoned, and terminal var-identity roots are rejected for fallback handling.<br/>
+    /// </summary>
+    /// <param name="writeContext">The writer context that owns staged ordinary shelf mutations.<br/></param>
+    /// <param name="rootRouterOffset">The root router offset for the index.<br/></param>
+    /// <param name="maxKeyLength">The maximum encoded key length accepted by the index profile.<br/></param>
+    /// <param name="maxIdentityLength">The maximum raw identity length accepted by the index profile.<br/></param>
+    /// <param name="lowerKey">The inclusive lower encoded raw key.<br/></param>
+    /// <param name="upperKey">The inclusive upper encoded raw key.<br/></param>
+    /// <param name="maxRouterHops">The maximum number of router pages to follow.<br/></param>
+    /// <returns>The number of live tuples marked deleted in writer-local shelves.<br/></returns>
+    internal long DeleteVarKeyVarIdentityKeyRangeForWriteContext(
+        LibraDexWriteContext writeContext,
+        long rootRouterOffset,
+        int maxKeyLength,
+        int maxIdentityLength,
+        ReadOnlySpan<byte> lowerKey,
+        ReadOnlySpan<byte> upperKey,
+        int maxRouterHops = DefaultVarKeyVarIdentityMaxRouterHops)
+    {
+        ArgumentNullException.ThrowIfNull(writeContext);
+        if (lowerKey.SequenceCompareTo(upperKey) > 0)
+        {
+            return 0;
+        }
+
+        lock (routerReadCacheSync)
+        {
+            long deleted = 0;
+            using RouteVisitedOffsetSet visitedShelves = RouteVisitedOffsetSet.Rent();
+            using RouteVisitedOffsetSet visitedRouters = RouteVisitedOffsetSet.Rent();
+            byte lowerPrefix = GetVarKeyScalar8Prefix(lowerKey, 0);
+            byte upperPrefix = GetVarKeyScalar8Prefix(upperKey, 0);
+            for (int prefix = lowerPrefix; prefix <= upperPrefix; prefix++)
+            {
+                long targetOffset = FindRouterTarget(rootRouterOffset, (byte)prefix);
+                if (targetOffset == 0)
+                {
+                    continue;
+                }
+
+                deleted += DeleteVarKeyVarIdentityRangeFromTargetForWriteContext(
+                    writeContext,
+                    rootRouterOffset,
+                    prefix,
+                    targetOffset,
+                    maxKeyLength,
+                    maxIdentityLength,
+                    lowerKey,
+                    upperKey,
+                    visitedShelves,
+                    visitedRouters,
+                    maxRouterHops);
+            }
+
+            return deleted;
+        }
+    }
+
+    /// <summary>
+    /// Recursively deletes one `VV` range target through a writer-local ordinary-shelf context.<br/>
+    /// Router targets are traversed, ordinary shelves are tombstoned, and terminal var-identity roots are rejected for fallback handling.<br/>
+    /// </summary>
+    /// <param name="writeContext">The writer context that owns staged ordinary shelf mutations.<br/></param>
+    /// <param name="parentRouterOffset">The parent router whose route slot selected <paramref name="targetOffset"/>.<br/></param>
+    /// <param name="routeIndex">The parent-router route slot that selected <paramref name="targetOffset"/>.<br/></param>
+    /// <param name="targetOffset">The routed target offset to process.<br/></param>
+    /// <param name="maxKeyLength">The maximum encoded key length accepted by the index profile.<br/></param>
+    /// <param name="maxIdentityLength">The maximum raw identity length accepted by the index profile.<br/></param>
+    /// <param name="lowerKey">The inclusive lower encoded raw key.<br/></param>
+    /// <param name="upperKey">The inclusive upper encoded raw key.<br/></param>
+    /// <param name="visitedShelves">The visited shelf set used to avoid repeated mutation of shared targets.<br/></param>
+    /// <param name="visitedRouters">The visited router set used to avoid route cycles.<br/></param>
+    /// <param name="remainingRouterHops">The remaining router hop budget.<br/></param>
+    /// <returns>The number of live tuples marked deleted.<br/></returns>
+    private long DeleteVarKeyVarIdentityRangeFromTargetForWriteContext(
+        LibraDexWriteContext writeContext,
+        long parentRouterOffset,
+        int routeIndex,
+        long targetOffset,
+        int maxKeyLength,
+        int maxIdentityLength,
+        ReadOnlySpan<byte> lowerKey,
+        ReadOnlySpan<byte> upperKey,
+        RouteVisitedOffsetSet visitedShelves,
+        RouteVisitedOffsetSet visitedRouters,
+        int remainingRouterHops)
+    {
+        VarKeyVarIdentityRouteTargetKind kind = ClassifyVarKeyVarIdentityRouteTarget(targetOffset);
+        if (kind == VarKeyVarIdentityRouteTargetKind.TerminalVarIdentityRoot)
+        {
+            throw new InvalidOperationException("The VV writer-context range delete path does not yet support terminal var-identity routes.");
+        }
+
+        if (kind == VarKeyVarIdentityRouteTargetKind.Shelf)
+        {
+            RecordVarKeyVarIdentityRouteClaimForWriteContext(writeContext, parentRouterOffset, routeIndex, targetOffset);
+            if (!visitedShelves.Add(targetOffset))
+            {
+                return 0;
+            }
+
+            VarKeyVarIdentityMutableShelf shelf = ReadVarKeyVarIdentityMutableShelfForWriteContext(writeContext, targetOffset, maxKeyLength, maxIdentityLength);
+            return shelf.MarkKeyRangeDeleted(lowerKey, upperKey);
+        }
+
+        if (kind != VarKeyVarIdentityRouteTargetKind.Router)
+        {
+            throw new InvalidDataException("The routed VV writer-context range delete target is not a shelf, terminal var-identity root, or router.");
+        }
+
+        if (!visitedRouters.Add(targetOffset))
+        {
+            return 0;
+        }
+
+        if (remainingRouterHops <= 0)
+        {
+            throw new InvalidDataException("The routed VV writer-context range delete exceeded the configured router hop count.");
+        }
+
+        long deletedFromChildren = 0;
+        byte[] routerBytes = new byte[RouterLayout.Size];
+        ReadRouterPageUsingArenaCache(targetOffset, routerBytes);
+        RouterReader reader = new(routerBytes);
+        if (!reader.IsValid)
+        {
+            throw new InvalidDataException("The routed VV writer-context range delete router is invalid.");
+        }
+
+        byte lowerPrefix = GetVarKeyScalar8Prefix(lowerKey, reader.KeyDepth);
+        byte upperPrefix = GetVarKeyScalar8Prefix(upperKey, reader.KeyDepth);
+        for (int prefix = lowerPrefix; prefix <= upperPrefix; prefix++)
+        {
+            int childRouteIndex;
+            long childTargetOffset;
+            if (reader.PrefixByteCount == 1)
+            {
+                childTargetOffset = reader.FindTarget((byte)prefix, out childRouteIndex);
+            }
+            else
+            {
+                childTargetOffset = reader.FindTarget(prefix == lowerPrefix ? lowerKey : upperKey, reader.KeyDepth, out childRouteIndex);
+            }
+
+            if (childTargetOffset == 0)
+            {
+                continue;
+            }
+
+            deletedFromChildren += DeleteVarKeyVarIdentityRangeFromTargetForWriteContext(
+                writeContext,
+                targetOffset,
+                childRouteIndex,
+                childTargetOffset,
+                maxKeyLength,
+                maxIdentityLength,
+                lowerKey,
+                upperKey,
+                visitedShelves,
+                visitedRouters,
+                remainingRouterHops - 1);
+        }
+
+        return deletedFromChildren;
+    }
+
+    /// <summary>
     /// Deletes one exact `VV` tuple from the routed varlen-key tree.<br/>
     /// The route walk targets the owning key shelf and the mutable shelf sidecar tombstones only the matching key/identity pair.<br/>
     /// </summary>
@@ -540,6 +2810,11 @@ public sealed partial class LibraDexFileSession
     {
         VarKeyVarIdentityRoutePathTarget pathTarget = WalkVarKeyVarIdentityRoutePathTarget(rootRouterOffset, key, maxRouterHops);
         VarKeyVarIdentityRouteTarget target = pathTarget.Target;
+        if (target.Kind == VarKeyVarIdentityRouteTargetKind.TerminalVarIdentityRoot)
+        {
+            return DeleteVarKeyVarIdentityTerminalExactTuple(target.Offset, key, identity);
+        }
+
         if (target.Kind != VarKeyVarIdentityRouteTargetKind.Shelf)
         {
             throw new InvalidDataException("The classified route walker did not terminate at a VV shelf for exact tuple delete.");
@@ -571,6 +2846,33 @@ public sealed partial class LibraDexFileSession
         int remainingRouterHops)
     {
         VarKeyVarIdentityRouteTargetKind kind = ClassifyVarKeyVarIdentityRouteTarget(targetOffset);
+        if (kind == VarKeyVarIdentityRouteTargetKind.TerminalVarIdentityRoot)
+        {
+            byte[] rootBytes = ReadTerminalIdentityRootBytes(targetOffset);
+            if (TerminalIdentityRootLayout.ReadShape(rootBytes) != TerminalIdentityRootLayout.ShapeVarKey)
+            {
+                throw new InvalidDataException("The routed VV terminal var identity root is invalid.");
+            }
+
+            int keyLength = TerminalIdentityRootLayout.ReadKeyLength(rootBytes);
+            ReadOnlySpan<byte> terminalKey = rootBytes.AsSpan(TerminalIdentityRootLayout.KeyBytesOffset, keyLength);
+            if (terminalKey.SequenceCompareTo(lowerKey) < 0 || terminalKey.SequenceCompareTo(upperKey) > 0)
+            {
+                return 0;
+            }
+
+            int shelfExtentSize = TerminalIdentityRootLayout.ReadShelfExtentSize(rootBytes);
+            using PooledTerminalVarIdentitySet identities = ReadScalar8VarIdentityTerminalIdentitiesPooled(targetOffset, terminalKey, shelfExtentSize);
+            int deleted = identities.Count;
+            if (deleted == 0)
+            {
+                return 0;
+            }
+
+            _ = RewriteScalar8VarIdentityTerminalRoute(targetOffset, TerminalIdentityRootLayout.ShapeVarKey, terminalKey, shelfExtentSize, ReadOnlySpan<byte[]>.Empty);
+            return deleted;
+        }
+
         if (kind == VarKeyVarIdentityRouteTargetKind.Shelf)
         {
             if (!visitedShelves.Add(targetOffset))
@@ -596,7 +2898,7 @@ public sealed partial class LibraDexFileSession
 
         if (kind != VarKeyVarIdentityRouteTargetKind.Router)
         {
-            throw new InvalidDataException("The routed VV delete target is not a shelf or router.");
+            throw new InvalidDataException("The routed VV delete target is not a shelf, terminal identity root, or router.");
         }
 
         if (!visitedRouters.Add(targetOffset))
@@ -642,16 +2944,19 @@ public sealed partial class LibraDexFileSession
             return deletedFromChildren;
         }
 
-        byte lowerPrefix = GetVarKeyScalar8Prefix(lowerKey, reader.KeyDepth);
-        byte upperPrefix = GetVarKeyScalar8Prefix(upperKey, reader.KeyDepth);
+        bool scanDescendantRoutes = reader.KeyDepth > 0;
+        byte lowerPrefix = scanDescendantRoutes ? byte.MinValue : GetVarKeyScalar8Prefix(lowerKey, reader.KeyDepth);
+        byte upperPrefix = scanDescendantRoutes ? byte.MaxValue : GetVarKeyScalar8Prefix(upperKey, reader.KeyDepth);
+        long previousChildTargetOffset = 0;
         for (int prefix = lowerPrefix; prefix <= upperPrefix; prefix++)
         {
             long childTargetOffset = reader.FindTarget((byte)prefix);
-            if (childTargetOffset == 0)
+            if (childTargetOffset == 0 || childTargetOffset == previousChildTargetOffset)
             {
                 continue;
             }
 
+            previousChildTargetOffset = childTargetOffset;
             deletedFromChildren += DeleteVarKeyVarIdentityRangeFromTarget(
                 childTargetOffset,
                 maxKeyLength,
@@ -664,6 +2969,47 @@ public sealed partial class LibraDexFileSession
         }
 
         return deletedFromChildren;
+    }
+
+    /// <summary>
+    /// Deletes one exact raw identity from a `VV` terminal duplicate route whose root stores the key once and identities in terminal var-identity shelves.<br/>
+    /// The method rewrites the terminal identity chain with all surviving identities, so duplicate-key paths and ordinary shelf paths preserve the same exact tuple delete contract.<br/>
+    /// </summary>
+    /// <param name="rootOffset">The terminal identity root reached by the exact key route.<br/></param>
+    /// <param name="key">The encoded variable key expected on the terminal root.<br/></param>
+    /// <param name="identity">The exact raw identity to remove.<br/></param>
+    /// <returns><see langword="true"/> when a matching terminal identity was removed.<br/></returns>
+    private bool DeleteVarKeyVarIdentityTerminalExactTuple(long rootOffset, ReadOnlySpan<byte> key, ReadOnlySpan<byte> identity)
+    {
+        byte[] rootBytes = ReadTerminalIdentityRootBytes(rootOffset);
+        if (TerminalIdentityRootLayout.ReadShape(rootBytes) != TerminalIdentityRootLayout.ShapeVarKey ||
+            !IsTerminalIdentityRootForKey(rootBytes, key, out _))
+        {
+            return false;
+        }
+
+        int shelfExtentSize = TerminalIdentityRootLayout.ReadShelfExtentSize(rootBytes);
+        byte[][] identities = ReadScalar8VarIdentityTerminalIdentities(rootOffset, key, shelfExtentSize);
+        int deleteIndex = LowerBoundTerminalVarIdentity(identities, identity);
+        if (deleteIndex >= identities.Length ||
+            Scalar8VarIdentityLayout.CompareIdentityBytes(identities[deleteIndex], identity) != 0)
+        {
+            return false;
+        }
+
+        byte[][] survivors = new byte[identities.Length - 1][];
+        if (deleteIndex > 0)
+        {
+            Array.Copy(identities, 0, survivors, 0, deleteIndex);
+        }
+
+        if (deleteIndex + 1 < identities.Length)
+        {
+            Array.Copy(identities, deleteIndex + 1, survivors, deleteIndex, identities.Length - deleteIndex - 1);
+        }
+
+        _ = RewriteScalar8VarIdentityTerminalRoute(rootOffset, TerminalIdentityRootLayout.ShapeVarKey, key, shelfExtentSize, survivors);
+        return true;
     }
 
     /// <summary>
@@ -688,6 +3034,11 @@ public sealed partial class LibraDexFileSession
         int RightItemCount,
         VarKeyVarIdentityInsertResult InsertResult,
         DataKernelCommitTelemetry Commit) SplitRoutedVarKeyVarIdentityByShelfTransform(
+        long parentRouterOffset,
+        bool parentHasDirectIndex,
+        int parentRangeStart,
+        int parentRangeEnd,
+        ushort parentFinalKeyDepth,
         long childRouterOffset,
         VarKeyVarIdentityMutableShelf existingShelf,
         byte rightPrefixByte,
@@ -719,6 +3070,61 @@ public sealed partial class LibraDexFileSession
             out VarKeyVarIdentityInsertResult insertResult))
         {
             return (childRouterOffset, 0, 0, 0, 0, insertResult, default);
+        }
+
+        if (parentHasDirectIndex &&
+            parentRangeStart < parentRangeEnd &&
+            splitKeyDepth == parentFinalKeyDepth)
+        {
+            lock (writePublicationSync)
+            {
+                kernel.EnterExclusiveStoragePublication();
+                try
+                {
+            if (selectedRightPrefixByte <= parentRangeStart || selectedRightPrefixByte > parentRangeEnd)
+                throw new InvalidDataException($"The VV parent-range split boundary {selectedRightPrefixByte} is outside owning direct route run {parentRangeStart}-{parentRangeEnd} at depth {parentFinalKeyDepth}.");
+
+            RawDataReservation leftRewrite = kernel.ReserveAt(childRouterOffset, profile.ShelfExtentSize);
+            leftShelfBytes.CopyTo(leftRewrite.Span);
+            RawDataReservation parentRightAppend = kernel.Reserve(profile.ShelfExtentSize);
+            rightShelfBytes.CopyTo(parentRightAppend.Span);
+            byte[] parentBytes = new byte[RouterLayout.Size];
+            kernel.Read(parentRouterOffset, parentBytes);
+            RouterReader currentParent = new(parentBytes);
+            if (!currentParent.IsValid ||
+                !TryGetVarKeyParentTargetRange(
+                    currentParent,
+                    parentRangeStart,
+                    childRouterOffset,
+                    out bool currentHasDirectIndex,
+                    out int currentRangeStart,
+                    out int currentRangeEnd,
+                    out ushort currentFinalKeyDepth) ||
+                !currentHasDirectIndex ||
+                currentRangeStart != parentRangeStart ||
+                currentRangeEnd != parentRangeEnd ||
+                currentFinalKeyDepth != parentFinalKeyDepth)
+            {
+                throw new InvalidDataException("The VV parent route changed during shared-range transform publication.");
+            }
+
+            RawDataReservation parentRewrite = kernel.ReserveAt(parentRouterOffset, RouterLayout.Size);
+            parentBytes.CopyTo(parentRewrite.Span);
+            RouterWriter parentWriter = new(parentRewrite.Span);
+            for (int prefix = parentRangeStart; prefix <= parentRangeEnd; prefix++)
+                parentWriter.WriteRouteTarget(prefix, prefix < selectedRightPrefixByte ? childRouterOffset : parentRightAppend.Extent.Offset);
+
+            varKeyVarIdentityReadShelfCache.TryRemove(childRouterOffset, out _);
+            varKeyVarIdentityReadOnlyShelfCache.TryRemove(childRouterOffset, out _);
+            InvalidateRouterReadCacheForRouterRewrite(parentRouterOffset);
+            DataKernelCommitTelemetry parentCommit = CommitAndDeferRouterReadCacheInvalidation();
+            return (childRouterOffset, childRouterOffset, parentRightAppend.Extent.Offset, leftItemCount, rightItemCount, insertResult, parentCommit);
+                }
+                finally
+                {
+                    kernel.ExitExclusiveStoragePublication();
+                }
+            }
         }
 
         RawDataReservation leftAppend = kernel.Reserve(profile.ShelfExtentSize);
@@ -759,7 +3165,11 @@ public sealed partial class LibraDexFileSession
                 ushort routerDepth = checked((ushort)(childRouterKeyDepth + i + 1));
                 long[] targets = routerDepth == splitKeyDepth
                     ? CreateSplitScalar8Scalar8RouteTargets(leftAppend.Extent.Offset, rightAppend.Extent.Offset, selectedRightPrefixByte)
-                    : CreateFilledScalar8Scalar8RouteTargets(nextRouterOffset);
+                    : CreateVarKeyScalar8IntermediateSplitRouteTargets(
+                        nextRouterOffset,
+                        leftAppend.Extent.Offset,
+                        rightAppend.Extent.Offset,
+                        selectedPrefixStem[routerDepth - childRouterKeyDepth]);
                 RawDataReservation appendedRouter = kernel.Reserve(RouterLayout.Size);
                 RouterWriter appendedWriter = new(appendedRouter.Span);
                 appendedWriter.InitializeExpandedOneByte(routerDepth, allocationClassId, targets);
@@ -769,7 +3179,11 @@ public sealed partial class LibraDexFileSession
             childWriter.InitializeExpandedOneByte(
                 childRouterKeyDepth,
                 allocationClassId,
-                CreateUniformScalar8Scalar8RouteTargets(nextRouterOffset, leftAppend.Extent.Offset, rightAppend.Extent.Offset, selectedRightPrefixByte));
+                CreateVarKeyScalar8IntermediateSplitRouteTargets(
+                    nextRouterOffset,
+                    leftAppend.Extent.Offset,
+                    rightAppend.Extent.Offset,
+                    selectedPrefixStem[0]));
         }
 
         int varKeyVarIdentityRouterArenaLength = profile.ShelfExtentSize;
@@ -1130,16 +3544,6 @@ public sealed partial class LibraDexFileSession
             return VarKeyScalar8TransformRouterPlan.ExpandedOneByte;
         }
 
-        int stemLength = splitKeyDepth - childRouterKeyDepth;
-        if (stemLength >= VarKeyScalar8MultiByteRouterMinStemBytes &&
-            stemLength < VarKeyScalar8MultiByteRouterMaxPrefixBytes &&
-            selectedPrefixStem.Length == stemLength)
-        {
-            return VarKeyScalar8TransformRouterPlan.CompressedMultiByte(
-                checked((byte)(stemLength + 1)),
-                selectedPrefixStem.ToArray());
-        }
-
         return VarKeyScalar8TransformRouterPlan.ExpandedOneByteChain;
     }
 
@@ -1255,6 +3659,243 @@ public sealed partial class LibraDexFileSession
         return keyComparison != 0
             ? keyComparison
             : VarKeyVarIdentityLayout.CompareIdentityBytes(leftIdentity, rightIdentity);
+    }
+
+    /// <summary>
+    /// Records the committed router slot that selected one `VV` shelf for writer-context mutation.<br/>
+    /// Publication revalidates this claim so a warmed shelf writer cannot overwrite stale bytes after another writer grows, splits, or relinks the route.<br/>
+    /// </summary>
+    /// <param name="writeContext">The writer context that owns the staged shelf.<br/></param>
+    /// <param name="pathTarget">The route path evidence captured from committed state.<br/></param>
+    private static void RecordVarKeyVarIdentityRouteClaimForWriteContext(
+        LibraDexWriteContext writeContext,
+        VarKeyVarIdentityRoutePathTarget pathTarget)
+    {
+        if (pathTarget.Target.Kind == VarKeyVarIdentityRouteTargetKind.Shelf)
+        {
+            RecordVarKeyVarIdentityRouteClaimForWriteContext(
+                writeContext,
+                pathTarget.ParentRouterOffset,
+                pathTarget.RouteIndex,
+                pathTarget.Target.Offset);
+        }
+    }
+
+    /// <summary>
+    /// Records one committed `VV` parent-router route slot for writer-context mutation.<br/>
+    /// Range traversal uses this overload because it discovers child targets while walking router pages rather than through a full path-target wrapper.<br/>
+    /// </summary>
+    /// <param name="writeContext">The writer context that owns the staged shelf.<br/></param>
+    /// <param name="parentRouterOffset">The parent router that selected the shelf.<br/></param>
+    /// <param name="routeIndex">The route slot inside the parent router.</param>
+    /// <param name="targetOffset">The expected routed shelf offset.</param>
+    private static void RecordVarKeyVarIdentityRouteClaimForWriteContext(
+        LibraDexWriteContext writeContext,
+        long parentRouterOffset,
+        int routeIndex,
+        long targetOffset)
+    {
+        writeContext.VarKeyVarIdentityRouteClaims[targetOffset] = new VarKeyVarIdentityRouteClaim(
+            parentRouterOffset,
+            routeIndex,
+            targetOffset);
+    }
+
+    /// <summary>
+    /// Validates every committed `VV` route slot used by a writer-context shelf rewrite.<br/>
+    /// If another writer changed the selecting route before publication, this writer fails before any staged shelf bytes are flushed.<br/>
+    /// </summary>
+    /// <param name="writeContext">The writer context whose route claims should still match committed state.<br/></param>
+    /// <exception cref="InvalidOperationException">Thrown when a claimed shelf is no longer selected by the captured parent route.<br/></exception>
+    private void ValidateVarKeyVarIdentityRouteClaimsForWriteContext(LibraDexWriteContext writeContext)
+    {
+        byte[] routerBytes = new byte[RouterLayout.Size];
+        foreach (VarKeyVarIdentityRouteClaim claim in writeContext.VarKeyVarIdentityRouteClaims.Values)
+        {
+            kernel.Read(claim.ParentRouterOffset, routerBytes);
+            RouterReader reader = new(routerBytes);
+            if (!reader.IsValid ||
+                claim.RouteIndex < 0 ||
+                claim.RouteIndex >= reader.RouteCount ||
+                reader.GetRouteTargetAt(claim.RouteIndex) != claim.ExpectedTargetOffset ||
+                !IsVarKeyVarIdentityShelfForRouteClaim(claim.ExpectedTargetOffset))
+            {
+                throw new InvalidOperationException("The VV writer-context route claim no longer matches committed router state.");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Reads the physical target magic for a `VV` route claim without consulting route-target caches.<br/>
+    /// Publish-time validation uses this narrow probe so a same-offset shelf-to-router transform cannot be hidden by an earlier cached shelf classification.<br/>
+    /// </summary>
+    /// <param name="targetOffset">The claimed routed shelf offset.<br/></param>
+    /// <returns><see langword="true"/> when the offset still contains a `VV` shelf header; otherwise, <see langword="false"/>.</returns>
+    private bool IsVarKeyVarIdentityShelfForRouteClaim(long targetOffset)
+    {
+        if (targetOffset <= 0)
+        {
+            return false;
+        }
+
+        Span<byte> magicBytes = stackalloc byte[sizeof(uint)];
+        kernel.Read(targetOffset, magicBytes);
+        return BinaryPrimitives.ReadUInt32LittleEndian(magicBytes) == VarKeyVarIdentityLayout.Magic;
+    }
+
+    /// <summary>
+    /// Reads one ordinary `VV` shelf into a writer-local mutable view and claims the shelf for that writer context.<br/>
+    /// Repeated reads by the same context reuse the already decoded mutable shelf; another context targeting the same shelf receives a retryable ownership exception.<br/>
+    /// </summary>
+    /// <param name="writeContext">The writer context that owns staged shelf changes until publish or abort.<br/></param>
+    /// <param name="shelfOffset">The ordinary `VV` shelf offset to read.<br/></param>
+    /// <param name="maxKeyLength">The maximum encoded key length accepted by the profile family.<br/></param>
+    /// <param name="maxIdentityLength">The maximum raw identity length accepted by the profile family.<br/></param>
+    /// <returns>A writer-local mutable shelf view.</returns>
+    /// <exception cref="InvalidDataException">Thrown when the loaded shelf bytes fail `VV` validation.<br/></exception>
+    internal VarKeyVarIdentityMutableShelf ReadVarKeyVarIdentityMutableShelfForWriteContext(
+        LibraDexWriteContext writeContext,
+        long shelfOffset,
+        int maxKeyLength,
+        int maxIdentityLength)
+    {
+        ArgumentNullException.ThrowIfNull(writeContext);
+        if (writeContext.VarKeyVarIdentityMutableBatchShelves.TryGetValue(shelfOffset, out VarKeyVarIdentityMutableShelf? existing))
+        {
+            return existing;
+        }
+
+        ClaimVarKeyVarIdentityShelfForWriteContext(writeContext, shelfOffset);
+        Span<byte> header = stackalloc byte[VarKeyVarIdentityLayout.HeaderSize];
+        kernel.Read(shelfOffset, header);
+        if (VarKeyVarIdentityLayout.ReadMagic(header) != VarKeyVarIdentityLayout.Magic ||
+            VarKeyVarIdentityLayout.ReadFormatVersion(header) != VarKeyVarIdentityLayout.FormatVersion ||
+            VarKeyVarIdentityLayout.ReadHeaderSize(header) != VarKeyVarIdentityLayout.HeaderSize)
+        {
+            throw new InvalidDataException("The writer-context routed VV shelf header is invalid.");
+        }
+
+        int shelfExtentSize = VarKeyVarIdentityLayout.ReadShelfExtentSize(header);
+        VarKeyVarIdentityProfile profile = VarKeyVarIdentityProfile.Create(shelfExtentSize, maxKeyLength, maxIdentityLength);
+        byte[] shelfBytes = new byte[shelfExtentSize];
+        header.CopyTo(shelfBytes.AsSpan(0, header.Length));
+        kernel.Read(shelfOffset, shelfBytes);
+        if (!VarKeyVarIdentityMutableShelf.TryCreate(shelfBytes, profile, ownsBytes: false, rentSidecars: false, out VarKeyVarIdentityMutableShelf shelf))
+        {
+            throw new InvalidDataException("The writer-context routed VV mutable shelf bytes are invalid.");
+        }
+
+        writeContext.VarKeyVarIdentityMutableBatchShelves.Add(shelfOffset, shelf);
+        return shelf;
+    }
+
+    /// <summary>
+    /// Publishes all dirty ordinary `VV` shelf changes staged in a writer-local context through the serialized DataKernel publication seam.<br/>
+    /// The method normalizes tombstones exactly like the durability-batch flusher before publishing the writer-local shelf images.<br/>
+    /// </summary>
+    /// <param name="writeContext">The writer context to publish.<br/></param>
+    /// <returns>The DataKernel commit telemetry for the publication.<br/></returns>
+    internal DataKernelCommitTelemetry PublishVarKeyVarIdentityWriteContext(LibraDexWriteContext writeContext)
+    {
+        ArgumentNullException.ThrowIfNull(writeContext);
+        lock (writePublicationSync)
+        {
+            DataKernelCommitTelemetry telemetry;
+            kernel.EnterExclusiveStoragePublication();
+            try
+            {
+                ValidateVarKeyVarIdentityRouteClaimsForWriteContext(writeContext);
+                foreach (KeyValuePair<long, VarKeyVarIdentityMutableShelf> mutableShelf in writeContext.VarKeyVarIdentityMutableBatchShelves)
+                {
+                    if (!mutableShelf.Value.IsDirty)
+                    {
+                        continue;
+                    }
+
+                    _ = mutableShelf.Value.NormalizeDeletedSlotsForPublication();
+                    RewriteBatchShelfBytes(mutableShelf.Key, mutableShelf.Value.Bytes.AsSpan(0, mutableShelf.Value.Profile.ShelfExtentSize));
+                    varKeyVarIdentityReadShelfCache.TryRemove(mutableShelf.Key, out _);
+                    varKeyVarIdentityReadOnlyShelfCache.TryRemove(mutableShelf.Key, out _);
+                }
+
+                telemetry = kernel.Commit();
+            }
+            finally
+            {
+                kernel.ExitExclusiveStoragePublication();
+            }
+
+            ReleaseVarKeyVarIdentityShelfOwnersForWriteContext(writeContext);
+            ReleaseVarKeyVarIdentityMutableShelvesForWriteContext(writeContext, clearShelfBytes: true);
+            writeContext.VarKeyVarIdentityRouteClaims.Clear();
+            return telemetry;
+        }
+    }
+
+    /// <summary>
+    /// Abandons all ordinary `VV` shelf changes staged in a writer-local context and releases its shelf ownership claims.<br/>
+    /// No staged bytes enter DataKernel until publication, so abort only releases context-local mutable views.<br/>
+    /// </summary>
+    /// <param name="writeContext">The writer context to abandon.<br/></param>
+    internal void AbortVarKeyVarIdentityWriteContext(LibraDexWriteContext writeContext)
+    {
+        ArgumentNullException.ThrowIfNull(writeContext);
+        ReleaseVarKeyVarIdentityShelfOwnersForWriteContext(writeContext);
+        ReleaseVarKeyVarIdentityMutableShelvesForWriteContext(writeContext, clearShelfBytes: true);
+        writeContext.VarKeyVarIdentityRouteClaims.Clear();
+    }
+
+    private void ClaimVarKeyVarIdentityShelfForWriteContext(LibraDexWriteContext writeContext, long shelfOffset)
+    {
+        lock (writeContextAdmissionSync)
+        {
+            if (varKeyVarIdentityWriterShelfOwners.TryGetValue(shelfOffset, out LibraDexWriteContext? owner))
+            {
+                if (ReferenceEquals(owner, writeContext))
+                {
+                    return;
+                }
+
+                throw new LibraDexWriteContextVarKeyVarIdentityShelfOwnershipException(shelfOffset);
+            }
+
+            varKeyVarIdentityWriterShelfOwners.Add(shelfOffset, writeContext);
+        }
+    }
+
+    private void ReleaseVarKeyVarIdentityShelfOwnersForWriteContext(LibraDexWriteContext writeContext)
+    {
+        lock (writeContextAdmissionSync)
+        {
+            foreach (long shelfOffset in writeContext.VarKeyVarIdentityMutableBatchShelves.Keys)
+            {
+                if (varKeyVarIdentityWriterShelfOwners.TryGetValue(shelfOffset, out LibraDexWriteContext? owner) &&
+                    ReferenceEquals(owner, writeContext))
+                {
+                    varKeyVarIdentityWriterShelfOwners.Remove(shelfOffset);
+                }
+            }
+
+            SignalReleasedWriteContextShelves();
+        }
+    }
+
+    private static void ReleaseVarKeyVarIdentityMutableShelvesForWriteContext(LibraDexWriteContext writeContext, bool clearShelfBytes)
+    {
+        if (clearShelfBytes)
+        {
+            foreach (VarKeyVarIdentityMutableShelf mutableShelf in writeContext.VarKeyVarIdentityMutableBatchShelves.Values)
+            {
+                mutableShelf.Bytes.AsSpan(0, mutableShelf.Profile.ShelfExtentSize).Clear();
+            }
+        }
+
+        foreach (VarKeyVarIdentityMutableShelf mutableShelf in writeContext.VarKeyVarIdentityMutableBatchShelves.Values)
+        {
+            mutableShelf.Release(clearShelfBytes);
+        }
+
+        writeContext.VarKeyVarIdentityMutableBatchShelves.Clear();
     }
 
     private byte[] ReadVarKeyVarIdentityShelfBytes(long shelfOffset, int maxKeyLength, int maxIdentityLength, out VarKeyVarIdentityProfile profile)
@@ -1393,8 +4034,8 @@ public sealed partial class LibraDexFileSession
 
         RawDataReservation shelfRewrite = kernel.ReserveAt(shelfOffset, shelf.Profile.ShelfExtentSize);
         shelf.Bytes.AsSpan(0, shelf.Profile.ShelfExtentSize).CopyTo(shelfRewrite.Span);
-        varKeyVarIdentityReadShelfCache.Remove(shelfOffset);
-        varKeyVarIdentityReadOnlyShelfCache.Remove(shelfOffset);
+        varKeyVarIdentityReadShelfCache.TryRemove(shelfOffset, out _);
+        varKeyVarIdentityReadOnlyShelfCache.TryRemove(shelfOffset, out _);
         return CommitAndInvalidateRouterReadCache();
     }
 }

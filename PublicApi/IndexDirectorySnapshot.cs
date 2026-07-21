@@ -7,7 +7,7 @@ namespace LibraDex;
 /// Caches fixed index-directory state after file initialization, open, or directory update.<br/>
 /// The snapshot is an outer model and may allocate arrays because it is not a hot byte view.<br/>
 /// </summary>
-public sealed class IndexDirectorySnapshot
+internal sealed class IndexDirectorySnapshot
 {
     private readonly IndexDirectorySlotSnapshot[] activeSlots;
 

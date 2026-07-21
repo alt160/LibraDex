@@ -88,6 +88,54 @@ internal sealed class VarKeyVarIdentityReadOnly
         return slotIndex < ItemCount && CompareSlotTuple(bytes.Span, slotIndex, VarKeyVarIdentityLayout.CreateKeyPrefix(key), key, identity) == 0;
     }
 
+    /// <summary>
+    /// Counts tuples whose raw key is inside an inclusive range using only decoded slot/key metadata.<br/>
+    /// The identity payload is intentionally ignored because key-range counts only need slot membership, not tuple materialization or identity validation.<br/>
+    /// </summary>
+    /// <param name="lowerKey">The inclusive lower raw key bound.<br/></param>
+    /// <param name="upperKey">The inclusive upper raw key bound.<br/></param>
+    /// <returns>The number of shelf-local tuples in the requested key range.<br/></returns>
+    public int CountItemsInKeyRange(ReadOnlySpan<byte> lowerKey, ReadOnlySpan<byte> upperKey)
+    {
+        if (lowerKey.SequenceCompareTo(upperKey) > 0)
+        {
+            return 0;
+        }
+
+        int lowerSlot = LowerBoundKey(lowerKey);
+        int upperSlot = UpperBoundKey(upperKey);
+        return Math.Max(0, upperSlot - lowerSlot);
+    }
+
+    /// <summary>
+    /// Finds the first sorted slot whose key is greater than the supplied raw key.<br/>
+    /// Inclusive range counts use this as the exclusive high slot so boundary shelves can count by slot indexes instead of walking every matching record.<br/>
+    /// </summary>
+    /// <param name="key">The inclusive high raw key bound.<br/></param>
+    /// <returns>The first slot after all keys less than or equal to <paramref name="key"/>.<br/></returns>
+    public int UpperBoundKey(ReadOnlySpan<byte> key)
+    {
+        uint prefix = VarKeyVarIdentityLayout.CreateKeyPrefix(key);
+        int low = 0;
+        int high = ItemCount;
+        ReadOnlySpan<byte> localBytes = bytes.Span;
+        while (low < high)
+        {
+            int middle = low + ((high - low) >> 1);
+            int comparison = CompareSlotKey(localBytes, middle, prefix, key);
+            if (comparison <= 0)
+            {
+                low = middle + 1;
+            }
+            else
+            {
+                high = middle;
+            }
+        }
+
+        return low;
+    }
+
     internal uint ReadRecordOffsetAt(int slotIndex)
     {
         return recordOffsets[slotIndex];

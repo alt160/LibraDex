@@ -10,7 +10,7 @@ namespace LibraDex;
 /// <param name="DevDate1UtcTicks">The first developer/application UTC tick value, or zero when unset.</param>
 /// <param name="DevDate2UtcTicks">The second developer/application UTC tick value, or zero when unset.</param>
 /// <param name="DevNumber">One raw 8-byte developer/application numeric value.</param>
-public readonly record struct SuperblockDeveloperMetadata(
+internal readonly record struct SuperblockDeveloperMetadata(
     string DevIdentity,
     string DevCustomText,
     Guid DevGuid,

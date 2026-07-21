@@ -9,7 +9,7 @@ namespace LibraDex;
 /// The reader owns routed traversal state and loads matching shelf ranges on demand through the owning session, leaving DK/session responsible for cache-backed reads.<br/>
 /// This cursor keeps the fixed-identity-width shape aligned with `VS8` and `VV` so comparisons can separately measure identities, keys, or full tuples.<br/>
 /// </summary>
-public sealed class VarKeyScalar16RangeReader : IDisposable
+internal sealed class VarKeyScalar16RangeReader : IDisposable
 {
     private const int DefaultShelfCapacity = 8;
 
@@ -18,6 +18,7 @@ public sealed class VarKeyScalar16RangeReader : IDisposable
     private int[] endSlots;
     private long[]? pendingOffsets;
     private int[]? pendingHops;
+    private byte[]? pendingFlags;
     private RouteVisitedOffsetSet? visitedShelves;
     private RouteVisitedOffsetSet? visitedRouters;
     private LibraDexFileSession? session;
@@ -58,6 +59,7 @@ public sealed class VarKeyScalar16RangeReader : IDisposable
         this.upperKey = upperKey.ToArray();
         pendingOffsets = ArrayPool<long>.Shared.Rent(DefaultShelfCapacity);
         pendingHops = ArrayPool<int>.Shared.Rent(DefaultShelfCapacity);
+        pendingFlags = ArrayPool<byte>.Shared.Rent(DefaultShelfCapacity);
         visitedShelves = RouteVisitedOffsetSet.Rent();
         visitedRouters = RouteVisitedOffsetSet.Rent();
         traversalComplete = false;
@@ -69,7 +71,7 @@ public sealed class VarKeyScalar16RangeReader : IDisposable
             long targetOffset = session.FindRouterTarget(rootRouterOffset, (byte)prefix);
             if (targetOffset != 0)
             {
-                PushTarget(targetOffset, maxRouterHops);
+                PushTarget(targetOffset, maxRouterHops, prefix == lowerPrefix, prefix == upperPrefix);
             }
         }
     }
@@ -305,10 +307,16 @@ public sealed class VarKeyScalar16RangeReader : IDisposable
             ArrayPool<int>.Shared.Return(pendingHops, clearArray: false);
         }
 
+        if (pendingFlags is not null)
+        {
+            ArrayPool<byte>.Shared.Return(pendingFlags, clearArray: false);
+        }
+
         visitedShelves?.Dispose();
         visitedRouters?.Dispose();
         pendingOffsets = null;
         pendingHops = null;
+        pendingFlags = null;
         visitedShelves = null;
         visitedRouters = null;
         session = null;
@@ -371,7 +379,7 @@ public sealed class VarKeyScalar16RangeReader : IDisposable
         byte[] routerBytes = new byte[RouterLayout.Size];
         while (pendingCount > 0)
         {
-            PopTarget(out long targetOffset, out int remainingHops);
+            PopTarget(out long targetOffset, out int remainingHops, out bool lowerEdge, out bool upperEdge);
             if (remainingHops <= 0)
             {
                 throw new InvalidDataException("The routed VS16 range read exceeded the configured router hop count.");
@@ -414,27 +422,77 @@ public sealed class VarKeyScalar16RangeReader : IDisposable
 
             if (router.PrefixByteCount > 1)
             {
+                if (lowerEdge && upperEdge && localLowerKey.SequenceEqual(localUpperKey))
+                {
+                    long exactTargetOffset = router.FindTarget(localLowerKey, router.KeyDepth, out _);
+                    if (exactTargetOffset != 0)
+                    {
+                        PushTarget(exactTargetOffset, remainingHops - 1, lowerEdge: true, upperEdge: true);
+                    }
+
+                    continue;
+                }
+
+                int lowerRouteIndex = -1;
+                int upperRouteIndex = -1;
+                if (lowerEdge)
+                {
+                    _ = router.FindTarget(localLowerKey, router.KeyDepth, out lowerRouteIndex);
+                }
+
+                if (upperEdge)
+                {
+                    _ = router.FindTarget(localUpperKey, router.KeyDepth, out upperRouteIndex);
+                }
+
                 for (int routeIndex = router.RouteCount - 1; routeIndex >= 0; routeIndex--)
                 {
-                    long childTargetOffset = router.GetRouteTargetAt(routeIndex);
-                    if (childTargetOffset != 0)
+                    if (router.TrySelectMultiByteRangeRoute(
+                        routeIndex,
+                        localLowerKey,
+                        localUpperKey,
+                        maxKeyLength,
+                        lowerEdge,
+                        upperEdge,
+                        lowerRouteIndex,
+                        upperRouteIndex,
+                        out long childTargetOffset,
+                        out bool childLowerEdge,
+                        out bool childUpperEdge))
                     {
-                        PushTarget(childTargetOffset, remainingHops - 1);
+                        PushTarget(childTargetOffset, remainingHops - 1, childLowerEdge, childUpperEdge);
                     }
                 }
 
                 continue;
             }
 
-            byte lowerPrefix = LibraDexFileSession.GetVarKeyScalar8Prefix(localLowerKey, router.KeyDepth);
-            byte upperPrefix = LibraDexFileSession.GetVarKeyScalar8Prefix(localUpperKey, router.KeyDepth);
-            for (int prefix = upperPrefix; prefix >= lowerPrefix; prefix--)
+            byte lowerPrefix = lowerEdge ? LibraDexFileSession.GetVarKeyScalar8Prefix(localLowerKey, router.KeyDepth) : byte.MinValue;
+            byte upperPrefix = upperEdge ? LibraDexFileSession.GetVarKeyScalar8Prefix(localUpperKey, router.KeyDepth) : byte.MaxValue;
+            int prefix = upperPrefix;
+            while (prefix >= lowerPrefix)
             {
                 long childTargetOffset = router.FindTarget((byte)prefix);
-                if (childTargetOffset != 0)
+                if (childTargetOffset == 0)
                 {
-                    PushTarget(childTargetOffset, remainingHops - 1);
+                    prefix--;
+                    continue;
                 }
+
+                int runEnd = prefix;
+                int runStart = prefix;
+                while (runStart > lowerPrefix && router.FindTarget((byte)(runStart - 1)) == childTargetOffset)
+                {
+                    runStart--;
+                }
+
+                bool singlePrefixRun = runStart == runEnd;
+                PushTarget(
+                    childTargetOffset,
+                    remainingHops - 1,
+                    singlePrefixRun && lowerEdge && runStart == lowerPrefix,
+                    singlePrefixRun && upperEdge && runEnd == upperPrefix);
+                prefix = runStart - 1;
             }
         }
 
@@ -449,37 +507,48 @@ public sealed class VarKeyScalar16RangeReader : IDisposable
         }
     }
 
-    private void PushTarget(long offset, int remainingHops)
+    private void PushTarget(long offset, int remainingHops, bool lowerEdge, bool upperEdge)
     {
         long[] localOffsets = pendingOffsets ?? throw new ObjectDisposedException(nameof(VarKeyScalar16RangeReader));
         int[] localHops = pendingHops ?? throw new ObjectDisposedException(nameof(VarKeyScalar16RangeReader));
+        byte[] localFlags = pendingFlags ?? throw new ObjectDisposedException(nameof(VarKeyScalar16RangeReader));
         if (pendingCount == localOffsets.Length)
         {
             int newLength = checked(localOffsets.Length * 2);
             long[] newOffsets = ArrayPool<long>.Shared.Rent(newLength);
             int[] newHops = ArrayPool<int>.Shared.Rent(newLength);
+            byte[] newFlags = ArrayPool<byte>.Shared.Rent(newLength);
             localOffsets.AsSpan(0, pendingCount).CopyTo(newOffsets);
             localHops.AsSpan(0, pendingCount).CopyTo(newHops);
+            localFlags.AsSpan(0, pendingCount).CopyTo(newFlags);
             ArrayPool<long>.Shared.Return(localOffsets, clearArray: false);
             ArrayPool<int>.Shared.Return(localHops, clearArray: false);
+            ArrayPool<byte>.Shared.Return(localFlags, clearArray: false);
             pendingOffsets = newOffsets;
             pendingHops = newHops;
+            pendingFlags = newFlags;
             localOffsets = newOffsets;
             localHops = newHops;
+            localFlags = newFlags;
         }
 
         localOffsets[pendingCount] = offset;
         localHops[pendingCount] = remainingHops;
+        localFlags[pendingCount] = (byte)((lowerEdge ? 1 : 0) | (upperEdge ? 2 : 0));
         pendingCount++;
     }
 
-    private void PopTarget(out long offset, out int remainingHops)
+    private void PopTarget(out long offset, out int remainingHops, out bool lowerEdge, out bool upperEdge)
     {
         long[] localOffsets = pendingOffsets ?? throw new ObjectDisposedException(nameof(VarKeyScalar16RangeReader));
         int[] localHops = pendingHops ?? throw new ObjectDisposedException(nameof(VarKeyScalar16RangeReader));
+        byte[] localFlags = pendingFlags ?? throw new ObjectDisposedException(nameof(VarKeyScalar16RangeReader));
         pendingCount--;
         offset = localOffsets[pendingCount];
         remainingHops = localHops[pendingCount];
+        byte flags = localFlags[pendingCount];
+        lowerEdge = (flags & 1) != 0;
+        upperEdge = (flags & 2) != 0;
     }
 
     private void GrowShelves()

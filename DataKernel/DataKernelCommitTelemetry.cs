@@ -4,7 +4,7 @@ namespace LibraDex;
 /// Reports the raw write shape of a DataKernel commit.<br/>
 /// The counters describe the syscalls LibraDex issued, not lower-level operating-system cache behavior.<br/>
 /// </summary>
-/// <param name="TelemetryEnabled">Whether telemetry was enabled for the commit.</param>
+/// <param name="Level">The diagnostics level used for the commit.</param>
 /// <param name="StagedExtentCount">The number of logical append extents represented by the commit.</param>
 /// <param name="StagedSegmentCount">The number of staged write buffers committed.</param>
 /// <param name="WriteCallCount">The number of positional write calls issued by the DataKernel.</param>
@@ -27,8 +27,8 @@ namespace LibraDex;
 /// <param name="FileCommitBufferBuildTicks">The Stopwatch ticks spent building vectored write buffers for grouped file commits.</param>
 /// <param name="FileCommitGapReadTicks">The Stopwatch ticks spent reading unchanged gap bytes bridged into grouped file commits.</param>
 /// <param name="FileCommitBackingWriteTicks">The Stopwatch ticks spent issuing file-backed write calls.</param>
-public readonly record struct DataKernelCommitTelemetry(
-    bool TelemetryEnabled,
+internal readonly record struct DataKernelCommitTelemetry(
+    LibraDexDiagnosticsLevel Level,
     long StagedExtentCount,
     long StagedSegmentCount,
     long WriteCallCount,

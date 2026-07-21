@@ -973,6 +973,153 @@ internal static partial class RawHarness
 
 
     /// <summary>
+    /// Measures SQLite scalar-key exact probes for the `SV8` comparison schema.<br/>
+    /// Each generated key is queried separately with equality on `k`, matching the LibraDex specific-key probe path and avoiding BETWEEN-range cursor behavior.<br/>
+    /// </summary>
+    /// <param name="connection">The open SQLite connection.</param>
+    /// <param name="duplicateModulo">The generated scalar-key modulo.</param>
+    /// <param name="keyDistribution">The requested key distribution.</param>
+    /// <param name="identityLength">The configured maximum identity length, used for validation context only.</param>
+    /// <param name="firstKey">The first generated scalar key to probe.</param>
+    /// <param name="keyCount">The number of generated scalar keys to probe.</param>
+    /// <param name="itemCount">The total generated item count.</param>
+    /// <param name="iterations">The number of measured probe passes.</param>
+    /// <param name="iterationMode">The payload shape to read from each matching row.</param>
+    /// <returns>The SQLite exact-key read measurement row.</returns>
+    private static VarKeyScalar8ReadMeasurement MeasureSqliteScalar8VarIdentityExactKeyReads(
+        SqliteConnection connection,
+        int duplicateModulo,
+        string keyDistribution,
+        int identityLength,
+        int firstKey,
+        int keyCount,
+        int itemCount,
+        int iterations,
+        VarIdentityIterationMode iterationMode)
+    {
+        _ = identityLength;
+        int expected = CountScalar8VarIdentityExactKeys(itemCount, duplicateModulo, firstKey, keyCount);
+        long checksum = 0;
+        long total = 0;
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = CreateSqliteVarIdentityExactKeyReadCommandText(iterationMode);
+        SqliteParameter keyParameter = command.Parameters.Add("$key", SqliteType.Integer);
+        Stopwatch watch = Stopwatch.StartNew();
+        for (int i = 0; i < iterations; i++)
+        {
+            int iterationCount = 0;
+            for (int keyIndex = 0; keyIndex < keyCount; keyIndex++)
+            {
+                int key = firstKey + keyIndex;
+                int expectedForKey = CountScalar8VarIdentityKeyRange(itemCount, duplicateModulo, key, key);
+                keyParameter.Value = unchecked((long)CreateScalar8VarIdentitySqliteKey(key, duplicateModulo, keyDistribution));
+                int count = 0;
+                using SqliteDataReader reader = command.ExecuteReader();
+                while (reader.Read())
+                {
+                    checksum += ChecksumSqliteScalar8VarIdentityCurrent(reader, iterationMode);
+                    count++;
+                }
+
+                if (count != expectedForKey)
+                {
+                    throw new InvalidDataException($"SQLite SV8 exact-key read expected {expectedForKey} identities for key {key}, got {count}.");
+                }
+
+                iterationCount += count;
+            }
+
+            if (iterationCount != expected)
+            {
+                throw new InvalidDataException($"SQLite SV8 exact-key pass expected {expected} identities, got {iterationCount}.");
+            }
+
+            total += iterationCount;
+        }
+
+        watch.Stop();
+        return CreateVarKeyScalar8ReadMeasurement(iterations, expected, total, watch.Elapsed, checksum);
+    }
+
+
+    /// <summary>
+    /// Measures SQLite scalar-key rotating range reads for the `SV8` comparison schema.<br/>
+    /// Each measured pass runs multiple same-width ordered range scans with matching generated-key window starts, mirroring the LibraDex rotating range reader measurement.<br/>
+    /// </summary>
+    /// <param name="connection">The open SQLite connection.</param>
+    /// <param name="duplicateModulo">The generated scalar-key modulo.</param>
+    /// <param name="keyDistribution">The requested key distribution.</param>
+    /// <param name="identityLength">The configured maximum identity length, used for validation context only.</param>
+    /// <param name="rangeKeyCount">The number of adjacent generated scalar keys per window.</param>
+    /// <param name="windowCount">The number of windows to read per measured pass.</param>
+    /// <param name="windowStep">The generated-key step between window starts.</param>
+    /// <param name="itemCount">The total generated item count.</param>
+    /// <param name="iterations">The number of measured read passes.</param>
+    /// <param name="iterationMode">The payload shape to read from each matching row.</param>
+    /// <returns>The SQLite rotating-range read measurement row.</returns>
+    private static VarKeyScalar8ReadMeasurement MeasureSqliteScalar8VarIdentityRotatingRangeReads(
+        SqliteConnection connection,
+        int duplicateModulo,
+        string keyDistribution,
+        int identityLength,
+        int rangeKeyCount,
+        int windowCount,
+        int windowStep,
+        int itemCount,
+        int iterations,
+        VarIdentityIterationMode iterationMode)
+    {
+        _ = identityLength;
+        int expected = CountScalar8VarIdentityRotatingRanges(itemCount, duplicateModulo, rangeKeyCount, windowCount, windowStep);
+        int maxStart = duplicateModulo - rangeKeyCount;
+        int startModulo = maxStart + 1;
+        long checksum = 0;
+        long total = 0;
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = CreateSqliteVarIdentityRangeReadCommandText(iterationMode);
+        SqliteParameter lowerParameter = command.Parameters.Add("$lower", SqliteType.Integer);
+        SqliteParameter upperParameter = command.Parameters.Add("$upper", SqliteType.Integer);
+        Stopwatch watch = Stopwatch.StartNew();
+        for (int i = 0; i < iterations; i++)
+        {
+            int iterationCount = 0;
+            for (int windowIndex = 0; windowIndex < windowCount; windowIndex++)
+            {
+                int lowerKey = checked((windowIndex * windowStep) % startModulo);
+                int upperKey = lowerKey + rangeKeyCount - 1;
+                int expectedForWindow = CountScalar8VarIdentityKeyRange(itemCount, duplicateModulo, lowerKey, upperKey);
+                lowerParameter.Value = unchecked((long)CreateScalar8VarIdentitySqliteKey(lowerKey, duplicateModulo, keyDistribution));
+                upperParameter.Value = unchecked((long)CreateScalar8VarIdentitySqliteKey(upperKey, duplicateModulo, keyDistribution));
+                int count = 0;
+                using SqliteDataReader reader = command.ExecuteReader();
+                while (reader.Read())
+                {
+                    checksum += ChecksumSqliteScalar8VarIdentityCurrent(reader, iterationMode);
+                    count++;
+                }
+
+                if (count != expectedForWindow)
+                {
+                    throw new InvalidDataException($"SQLite SV8 rotating range expected {expectedForWindow} identities for keys {lowerKey}-{upperKey}, got {count}.");
+                }
+
+                iterationCount += count;
+            }
+
+            if (iterationCount != expected)
+            {
+                throw new InvalidDataException($"SQLite SV8 rotating range pass expected {expected} identities, got {iterationCount}.");
+            }
+
+            total += iterationCount;
+        }
+
+        watch.Stop();
+        return CreateVarKeyScalar8ReadMeasurement(iterations, expected, total, watch.Elapsed, checksum);
+    }
+
+
+    /// <summary>
     /// Measures one SQLite transaction write row using the requested key order.<br/>
     /// The SQLite case intentionally mirrors the LibraDex walked rows by inserting every item inside one transaction rather than committing per inserted identity.<br/>
     /// </summary>
@@ -3281,7 +3428,7 @@ internal static partial class RawHarness
             FlushToDiskOnCommit: flush,
             MaxCommitGapCoalesceBytes: 512);
 
-        DataKernelTelemetryOptions telemetryOptions = new(telemetryEnabled);
+        DataKernelTelemetryOptions telemetryOptions = new(telemetryEnabled ? LibraDexDiagnosticsLevel.Counters : LibraDexDiagnosticsLevel.Off);
         int blockCount = checked((int)((totalBytes + blockSize - 1) / blockSize));
         RawDataExtent[] extents = new RawDataExtent[blockCount];
         byte[] block = appendMode == AppendMode.Append

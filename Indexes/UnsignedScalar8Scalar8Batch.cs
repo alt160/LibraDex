@@ -6,7 +6,7 @@ namespace LibraDex;
 /// Batches unsigned scalar `SS8-8` mutations by deferring durability publication until commit.<br/>
 /// The typed batch keeps caller syntax in unsigned scalar values while delegating storage work to the encoded batch path.<br/>
 /// </summary>
-public sealed class UnsignedScalar8Scalar8Batch : IDisposable
+internal sealed class UnsignedScalar8Scalar8Batch : IDisposable
 {
     private readonly Scalar8Scalar8Batch encodedBatch;
 
@@ -47,6 +47,17 @@ public sealed class UnsignedScalar8Scalar8Batch : IDisposable
     public UnsignedScalar8Scalar8BatchCommitResult Commit()
     {
         return UnsignedScalar8Scalar8ResultMapper.MapBatchCommit(encodedBatch.Commit());
+    }
+
+    /// <summary>
+    /// Publishes all staged writes accumulated by the typed batch and closes this batch boundary.<br/>
+    /// This is the preferred spelling for new code because it describes visibility and durability cadence without implying a database transaction commit.<br/>
+    /// The current implementation delegates to <see cref="Commit"/> so compatibility behavior remains identical.<br/>
+    /// </summary>
+    /// <returns>The aggregate batch outcome and DataKernel publication telemetry.</returns>
+    public UnsignedScalar8Scalar8BatchCommitResult Publish()
+    {
+        return Commit();
     }
 
     /// <summary>

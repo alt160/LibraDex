@@ -31,7 +31,7 @@ internal readonly record struct VarLenOptimizerReplacementSubtree(
     long TargetOffset,
     VarLenOptimizerReplacementBuildResult Build);
 
-public sealed partial class LibraDexFileSession
+internal sealed partial class LibraDexFileSession
 {
     private struct VarKeyScalar8OptimizerItem
     {

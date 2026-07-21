@@ -898,6 +898,8 @@ internal static partial class RawHarness
 
         public IndexKeys KeyContract => shape.KeyContract;
 
+        public IdentityKeyMultiplicity IdentityKeyMultiplicity => shape.IdentityKeyMultiplicity;
+
         public CatalogIndexKeyFamily KeyFamily => shape.KeyFamily;
 
         public CatalogIndexIdentityFamily IdentityFamily => shape.IdentityFamily;

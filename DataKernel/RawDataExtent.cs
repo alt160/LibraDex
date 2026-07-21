@@ -6,4 +6,4 @@ namespace LibraDex;
 /// </summary>
 /// <param name="Offset">The direct file offset where the extent starts.</param>
 /// <param name="Length">The extent length in bytes.</param>
-public readonly record struct RawDataExtent(long Offset, int Length);
+internal readonly record struct RawDataExtent(long Offset, int Length);

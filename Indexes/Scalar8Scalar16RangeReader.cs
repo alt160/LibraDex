@@ -9,7 +9,7 @@ namespace LibraDex;
 /// The reader keeps routed traversal state and shelf-local slot ranges so callers can stream keys, identities, or full tuples without per-row materialization.<br/>
 /// Shelf bytes are retained for the reader lifetime because the fixed shelf projection is stack-only; row access recreates that projection over the retained shelf buffer.<br/>
 /// </summary>
-public sealed class Scalar8Scalar16RangeReader : IDisposable
+internal sealed class Scalar8Scalar16RangeReader : IDisposable
 {
     private const int DefaultShelfCapacity = 8;
 
@@ -707,33 +707,60 @@ public sealed class Scalar8Scalar16RangeReader : IDisposable
 
             byte startPrefix = lowerEdge ? GetPrefix(lowerEncodedKey, router.KeyDepth) : (byte)0;
             byte endPrefix = upperEdge ? GetPrefix(upperEncodedKey, router.KeyDepth) : byte.MaxValue;
-            long previousTargetOffset = 0;
             if (descendingTraversal)
             {
-                for (int prefix = startPrefix; prefix <= endPrefix; prefix++)
+                int prefix = startPrefix;
+                while (prefix <= endPrefix)
                 {
                     long childTargetOffset = router.FindTarget((byte)prefix);
-                    if (childTargetOffset == 0 || childTargetOffset == previousTargetOffset)
+                    if (childTargetOffset == 0)
                     {
+                        prefix++;
                         continue;
                     }
 
-                    previousTargetOffset = childTargetOffset;
-                    PushTarget(childTargetOffset, remainingHops - 1, lowerEdge && prefix == startPrefix, upperEdge && prefix == endPrefix);
+                    int runStart = prefix;
+                    int runEnd = prefix;
+                    while (runEnd < endPrefix && router.FindTarget((byte)(runEnd + 1)) == childTargetOffset)
+                    {
+                        runEnd++;
+                    }
+
+                    bool singlePrefixRun = runStart == runEnd;
+                    PushTarget(
+                        childTargetOffset,
+                        remainingHops - 1,
+                        singlePrefixRun && lowerEdge && runStart == startPrefix,
+                        singlePrefixRun && upperEdge && runEnd == endPrefix);
+                    prefix = runEnd + 1;
                 }
             }
             else
             {
-                for (int prefix = endPrefix; prefix >= startPrefix; prefix--)
+                int prefix = endPrefix;
+                while (prefix >= startPrefix)
                 {
                     long childTargetOffset = router.FindTarget((byte)prefix);
-                    if (childTargetOffset == 0 || childTargetOffset == previousTargetOffset)
+                    if (childTargetOffset == 0)
                     {
+                        prefix--;
                         continue;
                     }
 
-                    previousTargetOffset = childTargetOffset;
-                    PushTarget(childTargetOffset, remainingHops - 1, lowerEdge && prefix == startPrefix, upperEdge && prefix == endPrefix);
+                    int runEnd = prefix;
+                    int runStart = prefix;
+                    while (runStart > startPrefix && router.FindTarget((byte)(runStart - 1)) == childTargetOffset)
+                    {
+                        runStart--;
+                    }
+
+                    bool singlePrefixRun = runStart == runEnd;
+                    PushTarget(
+                        childTargetOffset,
+                        remainingHops - 1,
+                        singlePrefixRun && lowerEdge && runStart == startPrefix,
+                        singlePrefixRun && upperEdge && runEnd == endPrefix);
+                    prefix = runStart - 1;
                 }
             }
         }

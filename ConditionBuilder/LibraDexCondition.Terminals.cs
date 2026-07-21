@@ -288,167 +288,15 @@ public sealed class LibraDexConditionEndCondition
         IdentityDeduplication deduplication = IdentityDeduplication.Distinct) => LibraDexIdentityExecutionPlanner.Exists(Materialize(resolveIndex), deduplication);
 
     /// <summary>
-    /// Counts matching identities for this adopted condition.<br/>
-    /// Count remains condition-terminal so future shelf/run counters can be introduced beneath the same adopted-builder call shape instead of reviving root index aggregate facades.<br/>
+    /// Counts matching physical tuples for this adopted condition.<br/>
+    /// The default preserves tuple multiplicity so LibraDex can answer single-leaf range counts from shelf and route metadata instead of materializing identities.<br/>
     /// </summary>
     /// <param name="resolveIndex">Function that resolves a condition index name to an opened LibraDex index.</param>
-    /// <param name="deduplication">The duplicate identity policy to apply before counting.</param>
-    /// <returns>The number of matching identities after the selected duplicate policy is applied.</returns>
+    /// <param name="deduplication">The duplicate identity policy to apply before counting; use <see cref="IdentityDeduplication.Distinct"/> only when distinct identity cardinality is required.</param>
+    /// <returns>The number of matching tuples after the selected duplicate policy is applied.</returns>
     public long Count(
         Func<string, IIndex> resolveIndex,
-        IdentityDeduplication deduplication = IdentityDeduplication.Distinct) => LibraDexIdentityExecutionPlanner.Count(Materialize(resolveIndex), deduplication);
-
-    /// <summary>
-    /// Deletes tuples matched by this adopted condition through the criteria-scoped mutation bridge.<br/>
-    /// This direct terminal is intentionally scoped to a single materialized primitive/composite leaf whose index can delete the exact matched tuples.<br/>
-    /// Use <see cref="DeleteFrom(string, Func{string, IIndex})"/> when a composed, inverse, external, or cross-index condition should select identities and mutate one explicit physical target index.<br/>
-    /// </summary>
-    /// <param name="resolveIndex">Function that resolves a condition index name to an opened LibraDex index.</param>
-    /// <returns>A mutation result describing matched and deleted tuple counts.</returns>
-    public LibraDexIdentityMutationResult Delete(Func<string, IIndex> resolveIndex) => Materialize(resolveIndex).Mutate.Delete().Execute();
-
-    /// <summary>
-    /// Deletes tuples matched by this adopted condition using a dictionary of opened indexes keyed by index name.<br/>
-    /// This overload matches the dictionary materialization helper so generated callers can keep retrieval and mutation binding code in the same shape.<br/>
-    /// Like the resolver overload, this direct terminal is scoped to a single materialized primitive/composite leaf; composed selectors should use <see cref="DeleteFrom(string, IReadOnlyDictionary{string, IIndex})"/>.<br/>
-    /// </summary>
-    /// <param name="indexes">The opened indexes keyed by LibraDex index name.</param>
-    /// <returns>A mutation result describing matched and deleted tuple counts.</returns>
-    public LibraDexIdentityMutationResult Delete(IReadOnlyDictionary<string, IIndex> indexes) => Materialize(indexes).Mutate.Delete().Execute();
-
-    /// <summary>
-    /// Deletes tuples from one explicit target index whose identities are matched by this adopted condition.<br/>
-    /// The condition may be composed across indexes in the same identity group; only the named target index is physically mutated, which keeps composed mutation low-ceremony without guessing a target.<br/>
-    /// The target index is scanned for matching identities in this first bridge, while exact tuple deletion still preserves non-unique keys and sibling identities.<br/>
-    /// </summary>
-    /// <param name="targetIndexName">The index name whose tuples should be physically deleted.</param>
-    /// <param name="resolveIndex">Function that resolves condition and target index names to opened LibraDex indexes.</param>
-    /// <returns>A mutation result describing target tuples matched and deleted.</returns>
-    public LibraDexIdentityMutationResult DeleteFrom(string targetIndexName, Func<string, IIndex> resolveIndex)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(targetIndexName);
-        ArgumentNullException.ThrowIfNull(resolveIndex);
-        IIndex targetIndex = resolveIndex(targetIndexName);
-        return LibraDexIdentityExecutionPlanner.ExecuteTargetDelete(Materialize(resolveIndex), targetIndex);
-    }
-
-    /// <summary>
-    /// Deletes tuples from one explicit target index using a dictionary of opened indexes keyed by index name.<br/>
-    /// This is the map-bound counterpart to <see cref="DeleteFrom(string, Func{string, IIndex})"/> for generated callers that already hold opened group indexes in a lookup table.<br/>
-    /// </summary>
-    /// <param name="targetIndexName">The index name whose tuples should be physically deleted.</param>
-    /// <param name="indexes">The opened indexes keyed by LibraDex index name.</param>
-    /// <returns>A mutation result describing target tuples matched and deleted.</returns>
-    public LibraDexIdentityMutationResult DeleteFrom(string targetIndexName, IReadOnlyDictionary<string, IIndex> indexes)
-    {
-        IIndex targetIndex = ResolveTargetIndex(targetIndexName, indexes);
-        return LibraDexIdentityExecutionPlanner.ExecuteTargetDelete(Materialize(indexes), targetIndex);
-    }
-
-    /// <summary>
-    /// Replaces the keys of tuples matched by this adopted condition through the criteria-scoped mutation bridge.<br/>
-    /// This is the condition-terminal convenience form of `Materialize(resolveIndex).Mutate.SetKey(newKey).Execute()` and keeps common update code on the adopted builder surface.<br/>
-    /// This direct terminal is intentionally scoped to a single materialized primitive/composite leaf whose index can capture matching key/identity tuples and delete exact old tuples.<br/>
-    /// Use <see cref="SetKeyOn(string, Func{string, IIndex}, object?)"/> when a composed, inverse, external, or cross-index condition should select identities and re-key one explicit physical target index.<br/>
-    /// </summary>
-    /// <param name="resolveIndex">Function that resolves a condition index name to an opened LibraDex index.</param>
-    /// <param name="newKey">The replacement key to assign to every matched tuple.</param>
-    /// <returns>A mutation result describing matched and re-keyed tuple counts.</returns>
-    public LibraDexIdentityMutationResult SetKey(Func<string, IIndex> resolveIndex, object? newKey) => Materialize(resolveIndex).Mutate.SetKey(newKey).Execute();
-
-    /// <summary>
-    /// Replaces the keys of tuples matched by this adopted condition using a dictionary of opened indexes keyed by index name.<br/>
-    /// This overload is the map-bound counterpart to <see cref="SetKey(Func{string, IIndex}, object)"/> for generated callers that already hold opened group indexes in a lookup table.<br/>
-    /// Like the resolver overload, this direct terminal is scoped to a single materialized primitive/composite leaf; composed selectors should use <see cref="SetKeyOn(string, IReadOnlyDictionary{string, IIndex}, object?)"/>.<br/>
-    /// </summary>
-    /// <param name="indexes">The opened indexes keyed by LibraDex index name.</param>
-    /// <param name="newKey">The replacement key to assign to every matched tuple.</param>
-    /// <returns>A mutation result describing matched and re-keyed tuple counts.</returns>
-    public LibraDexIdentityMutationResult SetKey(IReadOnlyDictionary<string, IIndex> indexes, object? newKey) => Materialize(indexes).Mutate.SetKey(newKey).Execute();
-
-    /// <summary>
-    /// Replaces keys on one explicit target index for tuples whose identities are matched by this adopted condition.<br/>
-    /// The condition may be composed across indexes in the same identity group; only the named target index is physically re-keyed, which keeps intent explicit without introducing transaction ceremony.<br/>
-    /// Replacement tuples are verified or inserted before old target tuples are removed.<br/>
-    /// </summary>
-    /// <param name="targetIndexName">The index name whose tuples should be physically re-keyed.</param>
-    /// <param name="resolveIndex">Function that resolves condition and target index names to opened LibraDex indexes.</param>
-    /// <param name="newKey">The replacement key to assign on the target index.</param>
-    /// <returns>A mutation result describing target tuples matched and re-keyed.</returns>
-    public LibraDexIdentityMutationResult SetKeyOn(string targetIndexName, Func<string, IIndex> resolveIndex, object? newKey)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(targetIndexName);
-        ArgumentNullException.ThrowIfNull(resolveIndex);
-        IIndex targetIndex = resolveIndex(targetIndexName);
-        return LibraDexIdentityExecutionPlanner.ExecuteTargetSetKey(Materialize(resolveIndex), targetIndex, hasNewKey: true, newKey, newKeyFactory: null);
-    }
-
-    /// <summary>
-    /// Replaces keys on one explicit target index using a dictionary of opened indexes keyed by index name.<br/>
-    /// This is the map-bound counterpart to <see cref="SetKeyOn(string, Func{string, IIndex}, object)"/> for generated callers that already hold opened group indexes in a lookup table.<br/>
-    /// </summary>
-    /// <param name="targetIndexName">The index name whose tuples should be physically re-keyed.</param>
-    /// <param name="indexes">The opened indexes keyed by LibraDex index name.</param>
-    /// <param name="newKey">The replacement key to assign on the target index.</param>
-    /// <returns>A mutation result describing target tuples matched and re-keyed.</returns>
-    public LibraDexIdentityMutationResult SetKeyOn(string targetIndexName, IReadOnlyDictionary<string, IIndex> indexes, object? newKey)
-    {
-        IIndex targetIndex = ResolveTargetIndex(targetIndexName, indexes);
-        return LibraDexIdentityExecutionPlanner.ExecuteTargetSetKey(Materialize(indexes), targetIndex, hasNewKey: true, newKey, newKeyFactory: null);
-    }
-
-    /// <summary>
-    /// Replaces the keys of tuples matched by this adopted condition using a factory evaluated per matched identity.<br/>
-    /// The factory receives the identity object for each original tuple and returns the replacement key, allowing callers to express deterministic key migration without opening a separate cursor facade.<br/>
-    /// This direct terminal is intentionally scoped to a single materialized primitive/composite leaf whose index can capture matching key/identity tuples and delete exact old tuples.<br/>
-    /// Use <see cref="SetKeyOnUsing(string, Func{string, IIndex}, Func{object, object?})"/> when a composed, inverse, external, or cross-index condition should select identities and derive replacement keys for one explicit physical target index.<br/>
-    /// </summary>
-    /// <param name="resolveIndex">Function that resolves a condition index name to an opened LibraDex index.</param>
-    /// <param name="newKeyFactory">Factory that receives a matched identity and returns its replacement key.</param>
-    /// <returns>A mutation result describing matched and re-keyed tuple counts.</returns>
-    public LibraDexIdentityMutationResult SetKeyUsing(Func<string, IIndex> resolveIndex, Func<object, object?> newKeyFactory) => Materialize(resolveIndex).Mutate.SetKeyUsing(newKeyFactory).Execute();
-
-    /// <summary>
-    /// Replaces the keys of tuples matched by this adopted condition using a map-bound index resolver and per-identity key factory.<br/>
-    /// The factory receives the identity object for each original tuple and returns the replacement key, while the dictionary supplies the opened indexes referenced by condition leaves.<br/>
-    /// Like the resolver overload, this direct terminal is scoped to a single materialized primitive/composite leaf; composed selectors should use <see cref="SetKeyOnUsing(string, IReadOnlyDictionary{string, IIndex}, Func{object, object?})"/>.<br/>
-    /// </summary>
-    /// <param name="indexes">The opened indexes keyed by LibraDex index name.</param>
-    /// <param name="newKeyFactory">Factory that receives a matched identity and returns its replacement key.</param>
-    /// <returns>A mutation result describing matched and re-keyed tuple counts.</returns>
-    public LibraDexIdentityMutationResult SetKeyUsing(IReadOnlyDictionary<string, IIndex> indexes, Func<object, object?> newKeyFactory) => Materialize(indexes).Mutate.SetKeyUsing(newKeyFactory).Execute();
-
-    /// <summary>
-    /// Replaces keys on one explicit target index using a replacement-key factory evaluated per matched target tuple identity.<br/>
-    /// The condition supplies the identity set, the target index supplies the physical tuple stream, and the factory maps each target identity to its new key.<br/>
-    /// </summary>
-    /// <param name="targetIndexName">The index name whose tuples should be physically re-keyed.</param>
-    /// <param name="resolveIndex">Function that resolves condition and target index names to opened LibraDex indexes.</param>
-    /// <param name="newKeyFactory">Factory that receives a matched identity and returns its target-index replacement key.</param>
-    /// <returns>A mutation result describing target tuples matched and re-keyed.</returns>
-    public LibraDexIdentityMutationResult SetKeyOnUsing(string targetIndexName, Func<string, IIndex> resolveIndex, Func<object, object?> newKeyFactory)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(targetIndexName);
-        ArgumentNullException.ThrowIfNull(resolveIndex);
-        ArgumentNullException.ThrowIfNull(newKeyFactory);
-        IIndex targetIndex = resolveIndex(targetIndexName);
-        return LibraDexIdentityExecutionPlanner.ExecuteTargetSetKey(Materialize(resolveIndex), targetIndex, hasNewKey: false, newKey: null, newKeyFactory);
-    }
-
-    /// <summary>
-    /// Replaces keys on one explicit target index using a map-bound index resolver and per-identity replacement-key factory.<br/>
-    /// This overload keeps generated composed mutation code on dictionary lookups while preserving explicit physical target selection.<br/>
-    /// </summary>
-    /// <param name="targetIndexName">The index name whose tuples should be physically re-keyed.</param>
-    /// <param name="indexes">The opened indexes keyed by LibraDex index name.</param>
-    /// <param name="newKeyFactory">Factory that receives a matched identity and returns its target-index replacement key.</param>
-    /// <returns>A mutation result describing target tuples matched and re-keyed.</returns>
-    public LibraDexIdentityMutationResult SetKeyOnUsing(string targetIndexName, IReadOnlyDictionary<string, IIndex> indexes, Func<object, object?> newKeyFactory)
-    {
-        ArgumentNullException.ThrowIfNull(newKeyFactory);
-        IIndex targetIndex = ResolveTargetIndex(targetIndexName, indexes);
-        return LibraDexIdentityExecutionPlanner.ExecuteTargetSetKey(Materialize(indexes), targetIndex, hasNewKey: false, newKey: null, newKeyFactory);
-    }
+        IdentityDeduplication deduplication = IdentityDeduplication.Preserve) => LibraDexIdentityExecutionPlanner.Count(Materialize(resolveIndex), deduplication);
 
     /// <summary>
     /// Creates condition-scoped grouping helpers for this adopted condition.<br/>
@@ -551,25 +399,6 @@ public sealed class LibraDexConditionEndCondition
     {
         ArgumentNullException.ThrowIfNull(indexes);
         return indexName => indexes.TryGetValue(indexName, out IIndex? index) ? index : null;
-    }
-
-    /// <summary>
-    /// Resolves one explicit target index from a dictionary-bound mutation call.<br/>
-    /// Targeted delete and re-key overloads share this helper so missing-target diagnostics do not drift between static-key and factory-key mutations.<br/>
-    /// </summary>
-    /// <param name="targetIndexName">The index name whose tuples should be physically mutated.</param>
-    /// <param name="indexes">The opened indexes keyed by LibraDex index name.</param>
-    /// <returns>The opened target index.</returns>
-    private IIndex ResolveTargetIndex(string targetIndexName, IReadOnlyDictionary<string, IIndex> indexes)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(targetIndexName);
-        ArgumentNullException.ThrowIfNull(indexes);
-        if (!indexes.TryGetValue(targetIndexName, out IIndex? targetIndex))
-        {
-            throw new KeyNotFoundException($"Target index '{targetIndexName}' was not supplied for condition group '{Group}'.");
-        }
-
-        return targetIndex;
     }
 
     /// <summary>

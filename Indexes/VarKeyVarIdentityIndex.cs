@@ -1,13 +1,19 @@
+using System.Threading;
+
 namespace LibraDex;
 
 /// <summary>
 /// Provides a public raw-byte wrapper over one routed `VV` index: varlen key bytes and varlen identity bytes.<br/>
 /// This surface intentionally stays codec-free so text, blob, and unmanaged projections can be layered later without changing the persisted shelf shape.<br/>
 /// </summary>
-public sealed class VarKeyVarIdentityIndex : IDisposable
+internal sealed class VarKeyVarIdentityIndex : IDisposable
 {
+    internal const int DefaultMaxRouterHops = 64;
+
     private readonly LibraDexFileSession session;
     private readonly bool ownsSession;
+    private readonly object singleOperationFallbackSync = new();
+    private readonly ReaderWriterLockSlim singleOperationTopologySync = new(LockRecursionPolicy.SupportsRecursion);
     private bool disposed;
 
     internal VarKeyVarIdentityIndex(
@@ -104,10 +110,79 @@ public sealed class VarKeyVarIdentityIndex : IDisposable
         bool allowDuplicateKeys = true)
     {
         ThrowIfDisposed();
-        using VarKeyVarIdentityBatch batch = BeginBatch();
-        VarKeyVarIdentityIndexInsertResult result = batch.Insert(key, identity, allowDuplicateKeys);
-        VarKeyVarIdentityBatchCommitResult commit = batch.Commit();
-        return result with { Commit = commit.Commit, DeferredCommitRequests = commit.DeferredCommitRequests };
+        byte[] encodedKey = LibraDexVarLenKeyCodec.Encode(key, MaxPhysicalKeyLength, nameof(key));
+        return InsertEncoded(encodedKey, identity, allowDuplicateKeys);
+    }
+
+    private VarKeyVarIdentityIndexInsertResult InsertEncoded(
+        ReadOnlySpan<byte> encodedKey,
+        ReadOnlySpan<byte> identity,
+        bool allowDuplicateKeys = true)
+    {
+        ValidateEncodedTupleLengths(encodedKey, identity);
+        if (!session.IsDurabilityBatchActive &&
+            session.FindRouterTarget(RootRouterOffset, LibraDexFileSession.GetVarKeyScalar8Prefix(encodedKey, 0)) != 0)
+        {
+            while (true)
+            {
+                singleOperationTopologySync.EnterReadLock();
+                try
+                {
+                    LibraDexWriteContext writeContext = session.BeginVarKeyVarIdentityWriteContext();
+                    try
+                    {
+                        VarKeyVarIdentityRoutedInsertResult writerResult = session.InsertWalkedRoutedVarKeyVarIdentityNoSplitForWriteContext(
+                            writeContext,
+                            RootRouterOffset,
+                            MaxPhysicalKeyLength,
+                            MaxIdentityLength,
+                            encodedKey,
+                            identity,
+                            allowDuplicateKeys,
+                            maxRouterHops: DefaultMaxRouterHops);
+                        VarKeyVarIdentityIndexInsertResult outcome = VarKeyVarIdentityIndexInsertResult.FromStorage(writerResult);
+                        if (!outcome.Inserted)
+                        {
+                            session.AbortVarKeyVarIdentityWriteContext(writeContext);
+                            return outcome;
+                        }
+
+                        DataKernelCommitTelemetry writerCommit = session.PublishVarKeyVarIdentityWriteContext(writeContext);
+                        return outcome with { Commit = writerCommit };
+                    }
+                    catch (LibraDexWriteContextVarKeyVarIdentityShelfOwnershipException ex)
+                    {
+                        session.AbortVarKeyVarIdentityWriteContext(writeContext);
+                        session.WaitForWriteContextShelfRelease(ex.ShelfOffset, CancellationToken.None);
+                    }
+                    catch (InvalidOperationException)
+                    {
+                        session.AbortVarKeyVarIdentityWriteContext(writeContext);
+                        break;
+                    }
+                }
+                finally
+                {
+                    singleOperationTopologySync.ExitReadLock();
+                }
+            }
+        }
+
+        singleOperationTopologySync.EnterWriteLock();
+        lock (singleOperationFallbackSync)
+        {
+            try
+            {
+                using VarKeyVarIdentityBatch batch = BeginBatch();
+                VarKeyVarIdentityIndexInsertResult result = batch.InsertEncoded(encodedKey, identity, allowDuplicateKeys);
+                VarKeyVarIdentityBatchCommitResult commit = batch.Commit();
+                return result with { Commit = commit.Commit, DeferredCommitRequests = commit.DeferredCommitRequests };
+            }
+            finally
+            {
+                singleOperationTopologySync.ExitWriteLock();
+            }
+        }
     }
 
     /// <summary>
@@ -125,10 +200,34 @@ public sealed class VarKeyVarIdentityIndex : IDisposable
     {
         ThrowIfDisposed();
         byte[] encodedKey = LibraDexVarLenKeyCodec.Encode(key, MaxPhysicalKeyLength, nameof(key));
-        using VarKeyVarIdentityBatch batch = BeginBatch();
-        VarKeyVarIdentityIndexInsertResult result = batch.InsertEncoded(encodedKey, identity, allowDuplicateKeys);
-        VarKeyVarIdentityBatchCommitResult commit = batch.Commit();
-        return result with { Commit = commit.Commit, DeferredCommitRequests = commit.DeferredCommitRequests };
+        return InsertEncoded(encodedKey, identity, allowDuplicateKeys);
+    }
+
+    /// <summary>
+    /// Inserts one developer-facing key payload and raw-byte identity into this routed `VV` index using the caller's active durability scope.<br/>
+    /// This is for catalog/workbench group-batch paths that already own the commit boundary and must avoid nested one-row batches.<br/>
+    /// </summary>
+    /// <param name="key">The developer-facing key payload bytes.<br/></param>
+    /// <param name="identity">The raw identity bytes associated with the key.<br/></param>
+    /// <param name="allowDuplicateKeys">Whether multiple identities may share the same key.<br/></param>
+    /// <returns>The operation-facing insert outcome without committing the active durability scope.</returns>
+    internal VarKeyVarIdentityIndexInsertResult InsertInCurrentScope(
+        ReadOnlySpan<byte> key,
+        ReadOnlySpan<byte> identity,
+        bool allowDuplicateKeys = true)
+    {
+        ThrowIfDisposed();
+        byte[] encodedKey = LibraDexVarLenKeyCodec.Encode(key, MaxPhysicalKeyLength, nameof(key));
+        ValidateEncodedTupleLengths(encodedKey, identity);
+        VarKeyVarIdentityRoutedInsertResult result = session.InsertWalkedRoutedVarKeyVarIdentity(
+            RootRouterOffset,
+            MaxPhysicalKeyLength,
+            MaxIdentityLength,
+            encodedKey,
+            identity,
+            allowDuplicateKeys,
+            maxRouterHops: DefaultMaxRouterHops);
+        return VarKeyVarIdentityIndexInsertResult.FromStorage(result);
     }
 
     /// <summary>
@@ -144,10 +243,50 @@ public sealed class VarKeyVarIdentityIndex : IDisposable
         ThrowIfDisposed();
         byte[] encodedLowerKey = LibraDexVarLenKeyCodec.Encode(lowerKey, MaxPhysicalKeyLength, nameof(lowerKey));
         byte[] encodedUpperKey = LibraDexVarLenKeyCodec.Encode(upperKey, MaxPhysicalKeyLength, nameof(upperKey));
-        using VarKeyVarIdentityBatch batch = BeginBatch();
-        long deleted = batch.DeleteRange(encodedLowerKey, encodedUpperKey);
-        _ = batch.Commit();
-        return deleted;
+        if (!session.IsDurabilityBatchActive)
+        {
+            while (true)
+            {
+                LibraDexWriteContext writeContext = session.BeginVarKeyVarIdentityWriteContext();
+                try
+                {
+                    long writerDeleted = session.DeleteVarKeyVarIdentityKeyRangeForWriteContext(
+                        writeContext,
+                        RootRouterOffset,
+                        MaxPhysicalKeyLength,
+                        MaxIdentityLength,
+                        encodedLowerKey,
+                        encodedUpperKey,
+                        maxRouterHops: DefaultMaxRouterHops);
+                    if (writerDeleted == 0)
+                    {
+                        session.AbortVarKeyVarIdentityWriteContext(writeContext);
+                        return 0;
+                    }
+
+                    _ = session.PublishVarKeyVarIdentityWriteContext(writeContext);
+                    return writerDeleted;
+                }
+                catch (LibraDexWriteContextVarKeyVarIdentityShelfOwnershipException ex)
+                {
+                    session.AbortVarKeyVarIdentityWriteContext(writeContext);
+                    session.WaitForWriteContextShelfRelease(ex.ShelfOffset, CancellationToken.None);
+                }
+                catch (InvalidOperationException)
+                {
+                    session.AbortVarKeyVarIdentityWriteContext(writeContext);
+                    break;
+                }
+            }
+        }
+
+        lock (singleOperationFallbackSync)
+        {
+            using VarKeyVarIdentityBatch batch = BeginBatch();
+            long deleted = batch.DeleteRange(encodedLowerKey, encodedUpperKey);
+            _ = batch.Commit();
+            return deleted;
+        }
     }
 
     /// <summary>
@@ -162,10 +301,51 @@ public sealed class VarKeyVarIdentityIndex : IDisposable
     {
         ThrowIfDisposed();
         byte[] encodedKey = LibraDexVarLenKeyCodec.Encode(key, MaxPhysicalKeyLength, nameof(key));
-        using VarKeyVarIdentityBatch batch = BeginBatch();
-        bool deleted = batch.DeleteExactTuple(encodedKey, identity);
-        _ = batch.Commit();
-        return deleted;
+        ValidateEncodedTupleLengths(encodedKey, identity);
+        if (!session.IsDurabilityBatchActive)
+        {
+            while (true)
+            {
+                LibraDexWriteContext writeContext = session.BeginVarKeyVarIdentityWriteContext();
+                try
+                {
+                    bool writerDeleted = session.DeleteVarKeyVarIdentityExactTupleForWriteContext(
+                        writeContext,
+                        RootRouterOffset,
+                        MaxPhysicalKeyLength,
+                        MaxIdentityLength,
+                        encodedKey,
+                        identity,
+                        maxRouterHops: DefaultMaxRouterHops);
+                    if (!writerDeleted)
+                    {
+                        session.AbortVarKeyVarIdentityWriteContext(writeContext);
+                        return false;
+                    }
+
+                    _ = session.PublishVarKeyVarIdentityWriteContext(writeContext);
+                    return true;
+                }
+                catch (LibraDexWriteContextVarKeyVarIdentityShelfOwnershipException ex)
+                {
+                    session.AbortVarKeyVarIdentityWriteContext(writeContext);
+                    session.WaitForWriteContextShelfRelease(ex.ShelfOffset, CancellationToken.None);
+                }
+                catch (InvalidOperationException)
+                {
+                    session.AbortVarKeyVarIdentityWriteContext(writeContext);
+                    break;
+                }
+            }
+        }
+
+        lock (singleOperationFallbackSync)
+        {
+            using VarKeyVarIdentityBatch batch = BeginBatch();
+            bool deleted = batch.DeleteExactTuple(encodedKey, identity);
+            _ = batch.Commit();
+            return deleted;
+        }
     }
 
     /// <summary>
@@ -187,6 +367,7 @@ public sealed class VarKeyVarIdentityIndex : IDisposable
             MaxIdentityLength,
             LibraDexVarLenKeyCodec.Encode(lowerKey, MaxPhysicalKeyLength, nameof(lowerKey)),
             LibraDexVarLenKeyCodec.Encode(upperKey, MaxPhysicalKeyLength, nameof(upperKey)),
+            maxRouterHops: DefaultMaxRouterHops,
             decodeLogicalKeys: true);
     }
 
@@ -206,6 +387,7 @@ public sealed class VarKeyVarIdentityIndex : IDisposable
             MaxIdentityLength,
             LibraDexVarLenKeyCodec.Encode(lowerKey, MaxPhysicalKeyLength, nameof(lowerKey)),
             LibraDexVarLenKeyCodec.Encode(upperKey, MaxPhysicalKeyLength, nameof(upperKey)),
+            maxRouterHops: DefaultMaxRouterHops,
             decodeLogicalKeys: true);
     }
 
@@ -218,7 +400,84 @@ public sealed class VarKeyVarIdentityIndex : IDisposable
             MaxIdentityLength,
             lowerKey,
             upperKey,
+            maxRouterHops: DefaultMaxRouterHops,
             decodeLogicalKeys: false);
+    }
+
+    /// <summary>
+    /// Counts every ordinary routed `VV` tuple from shelf-local count metadata.<br/>
+    /// This bypasses range-reader progression for count-all while preserving routed shelf and terminal duplicate-key handling.<br/>
+    /// </summary>
+    /// <returns>The ordinary routed tuple count.<br/></returns>
+    public long CountOrdinaryIdentities()
+    {
+        ThrowIfDisposed();
+        return session.CountVarKeyVarIdentityIdentities(RootRouterOffset, MaxPhysicalKeyLength, MaxIdentityLength);
+    }
+
+    /// <summary>
+    /// Counts ordinary routed `VV` tuples whose logical raw keys are inside an inclusive range.<br/>
+    /// The logical keys are encoded once at the index boundary, then delegated to the encoded physical count primitive so range predicates share the same key ordering as readers and deletes.<br/>
+    /// </summary>
+    /// <param name="lowerKey">The inclusive lower raw key.<br/></param>
+    /// <param name="upperKey">The inclusive upper raw key.<br/></param>
+    /// <returns>The number of matching routed `VV` tuples.<br/></returns>
+    /// <exception cref="ObjectDisposedException">Thrown when the index has already been disposed.</exception>
+    public long CountIdentityRange(ReadOnlySpan<byte> lowerKey, ReadOnlySpan<byte> upperKey)
+    {
+        ThrowIfDisposed();
+        return CountEncodedIdentityRange(
+            LibraDexVarLenKeyCodec.Encode(lowerKey, MaxPhysicalKeyLength, nameof(lowerKey)),
+            LibraDexVarLenKeyCodec.Encode(upperKey, MaxPhysicalKeyLength, nameof(upperKey)));
+    }
+
+    /// <summary>
+    /// Counts ordinary routed `VV` tuples whose already encoded physical keys are inside an inclusive range.<br/>
+    /// This is the low-level aggregate entry point for codecs that already own logical-to-physical key encoding and should not pay for another encode pass.<br/>
+    /// </summary>
+    /// <param name="lowerKey">The inclusive lower encoded key.<br/></param>
+    /// <param name="upperKey">The inclusive upper encoded key.<br/></param>
+    /// <returns>The number of matching routed `VV` tuples.<br/></returns>
+    internal long CountEncodedIdentityRange(ReadOnlySpan<byte> lowerKey, ReadOnlySpan<byte> upperKey)
+    {
+        ThrowIfDisposed();
+        return session.CountVarKeyVarIdentityRange(
+            RootRouterOffset,
+            MaxPhysicalKeyLength,
+            MaxIdentityLength,
+            lowerKey,
+            upperKey);
+    }
+
+    /// <summary>
+    /// Counts ordinary routed `VV` tuples whose already encoded physical keys start with the supplied encoded prefix.<br/>
+    /// Prefix counting stays shape-native so contained route targets can use shelf metadata while boundary or ambiguous targets fall back to exact range counting.<br/>
+    /// </summary>
+    /// <param name="encodedPrefix">The encoded key prefix to match.<br/></param>
+    /// <returns>The number of matching routed `VV` tuples.<br/></returns>
+    internal long CountEncodedIdentityPrefix(ReadOnlySpan<byte> encodedPrefix)
+    {
+        ThrowIfDisposed();
+        using VarKeyVarIdentityRangeReader reader = OpenEncodedRangeReader(
+            encodedPrefix,
+            CreateEncodedPrefixUpperBound(encodedPrefix, MaxPhysicalKeyLength));
+        return reader.Count;
+    }
+
+    /// <summary>
+    /// Creates the inclusive encoded upper bound for an encoded-prefix query.<br/>
+    /// The lower bound is the prefix itself; padding the remaining physical key space with `0xFF` preserves exact-prefix and longer-key matches under LibraDex variable-key byte ordering.<br/>
+    /// </summary>
+    /// <param name="encodedPrefix">The encoded key prefix being matched.<br/></param>
+    /// <param name="maxKeyLength">The maximum encoded key length accepted by the index.<br/></param>
+    /// <returns>The inclusive upper encoded key for the prefix extent.<br/></returns>
+    private static byte[] CreateEncodedPrefixUpperBound(ReadOnlySpan<byte> encodedPrefix, int maxKeyLength)
+    {
+        int length = Math.Max(encodedPrefix.Length, maxKeyLength);
+        byte[] upper = new byte[length];
+        encodedPrefix.CopyTo(upper);
+        upper.AsSpan(encodedPrefix.Length).Fill(0xFF);
+        return upper;
     }
 
     /// <summary>
@@ -342,13 +601,26 @@ public sealed class VarKeyVarIdentityIndex : IDisposable
             throw new ObjectDisposedException(nameof(VarKeyVarIdentityIndex));
         }
     }
+
+    private void ValidateEncodedTupleLengths(ReadOnlySpan<byte> key, ReadOnlySpan<byte> identity)
+    {
+        if (key.Length <= 0 || key.Length > MaxPhysicalKeyLength)
+        {
+            throw new ArgumentOutOfRangeException(nameof(key), key.Length, $"VV encoded key length must be from 1 to {MaxPhysicalKeyLength} bytes.");
+        }
+
+        if (identity.Length <= 0 || identity.Length > MaxIdentityLength)
+        {
+            throw new ArgumentOutOfRangeException(nameof(identity), identity.Length, $"VV identity length must be from 1 to {MaxIdentityLength} bytes.");
+        }
+    }
 }
 
 /// <summary>
 /// Batches raw-byte `VV` mutations by deferring durability publication until commit.<br/>
 /// The batch is a developer-controlled durability cadence for bulk identity-index mutation, with abort implemented as discarding unpublished staged writes.<br/>
 /// </summary>
-public sealed class VarKeyVarIdentityBatch : IDisposable
+internal sealed class VarKeyVarIdentityBatch : IDisposable
 {
     private readonly VarKeyVarIdentityIndex index;
     private readonly LibraDexFileSessionDurabilityBatch durabilityBatch;
@@ -401,7 +673,7 @@ public sealed class VarKeyVarIdentityBatch : IDisposable
             encodedKey,
             identity,
             allowDuplicateKeys,
-            maxRouterHops: 8);
+            maxRouterHops: VarKeyVarIdentityIndex.DefaultMaxRouterHops);
 
         VarKeyVarIdentityIndexInsertResult publicResult = VarKeyVarIdentityIndexInsertResult.FromStorage(result);
         attemptedInsertCount++;
@@ -475,7 +747,7 @@ public sealed class VarKeyVarIdentityBatch : IDisposable
     {
         ThrowIfCompleted();
         completed = true;
-        (DataKernelCommitTelemetry commit, long deferredRequests) = durabilityBatch.Commit();
+        (DataKernelCommitTelemetry commit, long deferredRequests, _) = durabilityBatch.Commit();
         return new VarKeyVarIdentityBatchCommitResult(
             attemptedInsertCount,
             insertedCount,
@@ -567,7 +839,7 @@ public sealed class VarKeyVarIdentityBatch : IDisposable
 /// <param name="RouterDepth">The route depth reached by the insert before any split transform.</param>
 /// <param name="Commit">The DataKernel commit telemetry for one-shot inserts; default when the result came from an uncommitted batch insert.</param>
 /// <param name="DeferredCommitRequests">The deferred lower-level commit request count for one-shot inserts; zero when the result came from an uncommitted batch insert.</param>
-public readonly record struct VarKeyVarIdentityIndexInsertResult(
+internal readonly record struct VarKeyVarIdentityIndexInsertResult(
     bool Inserted,
     bool AlreadyPresent,
     bool KeyConflict,
@@ -608,7 +880,7 @@ public readonly record struct VarKeyVarIdentityIndexInsertResult(
 /// <param name="InitialShelfRouteCreateCount">The number of root-prefix routes initialized by the batch.</param>
 /// <param name="DeferredCommitRequests">The number of lower-level commit requests folded into this batch commit.</param>
 /// <param name="Commit">The DataKernel commit telemetry for the batch publication.</param>
-public readonly record struct VarKeyVarIdentityBatchCommitResult(
+internal readonly record struct VarKeyVarIdentityBatchCommitResult(
     long AttemptedInsertCount,
     long InsertedCount,
     long AlreadyPresentCount,
@@ -623,6 +895,6 @@ public readonly record struct VarKeyVarIdentityBatchCommitResult(
 /// </summary>
 /// <param name="AttemptedInsertCount">The number of insert calls made before abort.</param>
 /// <param name="DeferredCommitRequests">The number of staged lower-level commit requests discarded by the abort.</param>
-public readonly record struct VarKeyVarIdentityBatchAbortResult(
+internal readonly record struct VarKeyVarIdentityBatchAbortResult(
     long AttemptedInsertCount,
     long DeferredCommitRequests);

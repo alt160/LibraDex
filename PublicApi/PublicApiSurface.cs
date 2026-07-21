@@ -481,6 +481,12 @@ public interface IIndex
     IndexKeys KeyContract { get; }
 
     /// <summary>
+    /// Gets the index-wide identity-to-key multiplicity contract persisted for this index.<br/>
+    /// This is the planner-facing proof source for whether one identity may appear under multiple keys in the same logical index.<br/>
+    /// </summary>
+    IdentityKeyMultiplicity IdentityKeyMultiplicity { get; }
+
+    /// <summary>
     /// Gets the logical key family recorded for this index.<br/>
     /// </summary>
     CatalogIndexKeyFamily KeyFamily { get; }
@@ -507,6 +513,16 @@ public interface IIndex
     /// Non-binary and variable-width index families return <see langword="null"/> so projection planners can distinguish exact byte-range-capable indexes from scan-backed fallbacks.<br/>
     /// </summary>
     int? FixedKeyByteWidth => null;
+
+    /// <summary>
+    /// Counts the physical key/identity tuples currently visible through this index.<br/>
+    /// Implementations should answer from maintained index metadata or shelf/range count metadata instead of materializing identities whenever the physical shape supports it.<br/>
+    /// </summary>
+    /// <returns>The number of stored index tuples.</returns>
+    long Count()
+    {
+        throw new NotSupportedException($"Index '{Name}' does not expose a physical tuple count.");
+    }
 
     /// <summary>
     /// Inserts one runtime key and runtime identity after validating both values against the persisted CLR type contract for this index.<br/>
@@ -561,6 +577,14 @@ public interface IIndex
     /// <returns>A prepared non-generic key-membership descriptor.</returns>
     LibraDexPreparedObjectSet PrepareInSet(IEnumerable<object> keys);
 }
+
+/// <summary>
+/// Represents one runtime key/identity tuple projected from a selected LibraDex index.<br/>
+/// The values are runtime objects because this shape is meant for tooling, adapters, and workbench views that choose an index by name rather than carrying generic type parameters.<br/>
+/// </summary>
+/// <param name="Key">The indexed key value from the selected index.</param>
+/// <param name="Identity">The identity value stored for the key.</param>
+public readonly record struct LibraDexRuntimeTuple(object? Key, object Identity);
 
 /// <summary>
 /// Represents a programmatic identity criterion over one identity group.<br/>
@@ -1409,6 +1433,116 @@ public sealed class LibraDexGroupReader<TGroupKey, TResult> : IDisposable
 }
 
 /// <summary>
+/// Represents a row-streaming grouped reader that exposes group boundaries without materializing member lists.<br/>
+/// This reader is intended for large grouped-result scans where callers want every member row but do not need an owned `IReadOnlyList` for each group.<br/>
+/// </summary>
+/// <typeparam name="TGroupKey">The group key type.</typeparam>
+/// <typeparam name="TResult">The grouped member result type.</typeparam>
+public sealed class LibraDexGroupRowReader<TGroupKey, TResult> : IDisposable
+{
+    private readonly IEnumerator<LibraDexGroupRow<TGroupKey, TResult>> enumerator;
+    private LibraDexGroupRow<TGroupKey, TResult> current;
+    private bool hasCurrent;
+
+    internal LibraDexGroupRowReader(IEnumerable<LibraDexGroupRow<TGroupKey, TResult>> rows)
+    {
+        ArgumentNullException.ThrowIfNull(rows);
+        enumerator = rows.GetEnumerator();
+    }
+
+    /// <summary>
+    /// Gets the current group key.<br/>
+    /// The reader must be positioned on a row before this property is read.<br/>
+    /// </summary>
+    public TGroupKey CurrentKey => Current.Key;
+
+    /// <summary>
+    /// Gets the current grouped identity or result row.<br/>
+    /// The reader must be positioned on a row before this property is read.<br/>
+    /// </summary>
+    public TResult CurrentItem => Current.Item;
+
+    /// <summary>
+    /// Gets whether the current row is the first streamed row in its group.<br/>
+    /// Callers can use this as the group-boundary signal without requiring a per-group member list.<br/>
+    /// </summary>
+    public bool IsFirstInGroup => Current.IsFirstInGroup;
+
+    /// <summary>
+    /// Gets the zero-based ordinal of the current group in the streamed result.<br/>
+    /// This ordinal follows the reader's group-order contract and is not a durable catalog position.<br/>
+    /// </summary>
+    public long GroupOrdinal => Current.GroupOrdinal;
+
+    /// <summary>
+    /// Gets the zero-based ordinal of the current row inside its group.<br/>
+    /// This value increments as rows are streamed and does not require knowing the group's final count.<br/>
+    /// </summary>
+    public long ItemOrdinalInGroup => Current.ItemOrdinalInGroup;
+
+    /// <summary>
+    /// Gets the current streamed grouped row.<br/>
+    /// </summary>
+    public LibraDexGroupRow<TGroupKey, TResult> Current
+    {
+        get
+        {
+            if (!hasCurrent)
+            {
+                throw new InvalidOperationException("The grouped row reader is not positioned on a row.");
+            }
+
+            return current;
+        }
+    }
+
+    /// <summary>
+    /// Advances to the next grouped row.<br/>
+    /// Group boundaries are reported through <see cref="IsFirstInGroup"/> and <see cref="GroupOrdinal"/>.<br/>
+    /// </summary>
+    /// <returns><see langword="true"/> when a row is available; otherwise, <see langword="false"/>.</returns>
+    public bool MoveNext()
+    {
+        if (!enumerator.MoveNext())
+        {
+            hasCurrent = false;
+            current = default;
+            return false;
+        }
+
+        current = enumerator.Current;
+        hasCurrent = true;
+        return true;
+    }
+
+    /// <summary>
+    /// Releases the grouped row reader.<br/>
+    /// </summary>
+    public void Dispose()
+    {
+        enumerator.Dispose();
+    }
+}
+
+/// <summary>
+/// Represents one row from a row-streaming grouped reader.<br/>
+/// The row carries enough group-boundary metadata for callers to process large grouped results without forcing per-group member-list allocation.<br/>
+/// </summary>
+/// <typeparam name="TGroupKey">The group key type.</typeparam>
+/// <typeparam name="TResult">The grouped member result type.</typeparam>
+/// <param name="Key">The current group key.</param>
+/// <param name="Item">The current grouped item.</param>
+/// <param name="IsFirstInGroup">Whether this is the first streamed item for the group.</param>
+/// <param name="GroupOrdinal">The zero-based streamed group ordinal.</param>
+/// <param name="ItemOrdinalInGroup">The zero-based item ordinal inside the group.</param>
+public readonly record struct LibraDexGroupRow<TGroupKey, TResult>(
+    TGroupKey Key,
+    TResult Item,
+    bool IsFirstInGroup,
+    long GroupOrdinal,
+    long ItemOrdinalInGroup);
+
+/// <summary>
 /// Represents one grouped result and its metadata.<br/>
 /// Group metadata should be inspectable without forcing full group enumeration once physical group readers are connected.<br/>
 /// </summary>
@@ -1539,13 +1673,27 @@ public sealed class CatalogStats
             routeChanges++;
         }
 
-        bytesWritten += result.RouteCreateCommit.BytesWritten + result.InsertCommit.BytesWritten;
+        bytesWritten += result.RouteCreateDiagnostics.BytesWritten + result.InsertDiagnostics.BytesWritten;
+    }
+
+    /// <summary>
+    /// Records insert counters accumulated by one successfully published typed batch.<br/>
+    /// Aggregation keeps ordinary batch inserts free of per-row stats calls while preserving catalog totals for inserted tuples, initial route creation, and operation-local writes.<br/>
+    /// </summary>
+    /// <param name="insertedCount">The number of tuples inserted by the published batch.<br/></param>
+    /// <param name="routeChangeCount">The number of initial shelf routes created by the published batch.<br/></param>
+    /// <param name="operationBytesWritten">The bytes attributed to insert-local and route-create operations before the final durability commit.<br/></param>
+    internal void RecordBatchInserts(long insertedCount, long routeChangeCount, long operationBytesWritten)
+    {
+        inserts += insertedCount;
+        routeChanges += routeChangeCount;
+        bytesWritten += operationBytesWritten;
     }
 
     internal void RecordCommit(LibraDexGenericBatchCommitResult result)
     {
         commits++;
-        bytesWritten += result.Commit.BytesWritten;
+        bytesWritten += result.CommitDiagnostics.BytesWritten;
     }
 
     internal void RecordDelete()
@@ -1567,6 +1715,7 @@ public sealed class CatalogStats
 /// <summary>
 /// Provides explicit catalog-level maintenance operations.<br/>
 /// Maintenance operations are separate from normal query/mutation calls so optimization, validation, and cache work remain developer-controlled.<br/>
+/// Connected physical maintenance must be treated as write behavior and serialized with the owning catalog session write window.<br/>
 /// </summary>
 public sealed class CatalogMaintenance
 {
@@ -1810,17 +1959,31 @@ public sealed class LibraDexIndexStats<TKey, TIdentity>
             routeChanges++;
         }
 
-        bytesWritten += result.RouteCreateCommit.BytesWritten + result.InsertCommit.BytesWritten;
+        bytesWritten += result.RouteCreateDiagnostics.BytesWritten + result.InsertDiagnostics.BytesWritten;
+    }
+
+    /// <summary>
+    /// Records insert counters accumulated by one successfully published typed batch.<br/>
+    /// The modification timestamp is sampled once at publication instead of once per tuple, while insert, route-change, and operation-byte totals remain exact.<br/>
+    /// </summary>
+    /// <param name="insertedCount">The number of tuples inserted by the published batch.<br/></param>
+    /// <param name="routeChangeCount">The number of initial shelf routes created by the published batch.<br/></param>
+    /// <param name="operationBytesWritten">The bytes attributed to insert-local and route-create operations before the final durability commit.<br/></param>
+    internal void RecordBatchInserts(long insertedCount, long routeChangeCount, long operationBytesWritten)
+    {
+        inserts += insertedCount;
+        routeChanges += routeChangeCount;
+        bytesWritten += operationBytesWritten;
+        if (insertedCount > 0)
+        {
+            lastModifiedUtc = DateTimeOffset.UtcNow;
+        }
     }
 
     internal void RecordCommit(LibraDexGenericBatchCommitResult result)
     {
         commits++;
-        bytesWritten += result.Commit.BytesWritten;
-        if (result.InsertedCount > 0)
-        {
-            lastModifiedUtc = DateTimeOffset.UtcNow;
-        }
+        bytesWritten += result.CommitDiagnostics.BytesWritten;
     }
 
     internal void RecordDelete()
@@ -1844,6 +2007,7 @@ public sealed class LibraDexIndexStats<TKey, TIdentity>
 /// <summary>
 /// Provides explicit index-level maintenance operations.<br/>
 /// Index maintenance owns route optimization, shelf repacking, validation, and cache-oriented work for one logical index.<br/>
+/// Connected physical maintenance and optimizer publication are write behavior, even when scheduled as background work.<br/>
 /// </summary>
 public sealed class LibraDexIndexMaintenance<TKey, TIdentity>
 {

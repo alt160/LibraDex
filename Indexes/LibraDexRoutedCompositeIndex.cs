@@ -10,7 +10,7 @@ namespace LibraDex;
 /// Each composite part is stored as its own tier value, so repeated leading values are represented once as a route node rather than duplicated into every terminal key.<br/>
 /// This slice intentionally proves condition semantics before the mini-router node format is persisted into DataKernel pages.<br/>
 /// </summary>
-public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExecutor, IIdentityPrimitiveMutator, IIdentityPrimitiveTupleExecutor, IIdentityExactTupleMutator
+public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExecutor, IIdentityPrimitiveMutator, IIdentityPrimitiveTupleExecutor, IIdentityPrimitiveTupleStreamer, IIdentityExactTupleMutator
 {
     private const int MaxCompositeDepth = 16;
     private readonly LibraDexIndexShapeSpec shape;
@@ -138,6 +138,8 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
     /// </summary>
     public IndexKeys KeyContract => shape.KeyContract;
 
+    public IdentityKeyMultiplicity IdentityKeyMultiplicity => shape.IdentityKeyMultiplicity;
+
     /// <summary>
     /// Gets the logical key family.<br/>
     /// </summary>
@@ -225,6 +227,11 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
         ArgumentNullException.ThrowIfNull(key);
         ValidateIdentity(identity);
         key.ValidateAgainst(shape);
+        if (persist)
+        {
+            ThrowIfSessionDurabilityBatchActiveForMutation();
+        }
+
         CompositeNode node = root;
         CompositeNode[] path = persist && session is not null && slotIndex is not null
             ? new CompositeNode[shape.CompositeParts.Count + 1]
@@ -252,7 +259,11 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
             itemCount++;
         }
 
-        if (inserted && persist && session is not null && slotIndex is int durableSlotIndex)
+        if (inserted &&
+            persist &&
+            session is not null &&
+            session.BackingKind == DataKernelBackingKind.File &&
+            slotIndex is int durableSlotIndex)
         {
             if (path.Length != 0 && root.DurableOffset > 0)
             {
@@ -318,6 +329,8 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
     /// <returns><see langword="true"/> when the old tuple existed and was removed after the replacement was available.</returns>
     public bool Rekey(object identity, LibraDexCompositeKey oldKey, LibraDexCompositeKey newKey)
     {
+        ThrowIfSessionDurabilityBatchActiveForMutation();
+
         if (LibraDexObjectTuple.ValueEquals(oldKey, newKey))
         {
             return false;
@@ -366,6 +379,8 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
     /// <returns>The number of old tuples removed after the replacement tuple was available.</returns>
     public long Rekey(object identity, LibraDexCompositeKey newKey)
     {
+        ThrowIfSessionDurabilityBatchActiveForMutation();
+
         ValidateIdentity(identity);
         newKey.ValidateAgainst(shape);
         LibraDexCompositeKey[] oldKeys = EnumerateEntries()
@@ -428,11 +443,39 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
 
     long IIdentityPrimitiveExecutor.CountIdentityPrimitive(LibraDexIdentityPrimitiveRequest request)
     {
-        return IterateIdentityPrimitive(request).LongCount();
+        return CountIdentityPrimitive(request);
+    }
+
+    /// <summary>
+    /// Executes count as a routed-composite aggregate over condition-materialized primitive requests.<br/>
+    /// Whole-index counts read the index-level tuple count, while exact and composite-match counts reuse route pruning and count terminal identity lists without streaming identities.<br/>
+    /// </summary>
+    /// <param name="request">The aggregate request to execute.<br/></param>
+    /// <returns>The aggregate count result and physical plan classification.<br/></returns>
+    LibraDexPrimitiveAggregateResult IIdentityPrimitiveAggregateExecutor.ExecuteIdentityPrimitiveAggregate(LibraDexPrimitiveAggregateRequest request)
+    {
+        if (request.Kind != LibraDexPrimitiveAggregateKind.Count)
+        {
+            throw new NotSupportedException($"{request.Kind} is not connected to routed composite aggregation yet.");
+        }
+
+        if (request.Scope != AggregateScope.Tuples)
+        {
+            throw new NotSupportedException($"{request.Scope} aggregate scope is not connected to routed composite aggregation yet.");
+        }
+
+        LibraDexPrimitiveAggregatePlanKind planKind = request.PrimitiveRequest.CriteriaKind == LibraDexCriteriaKind.All
+            ? LibraDexPrimitiveAggregatePlanKind.Metadata
+            : LibraDexPrimitiveAggregatePlanKind.RangeSlots;
+        return LibraDexPrimitiveAggregateResult.ForCount(
+            CountIdentityPrimitive(request.PrimitiveRequest),
+            planKind);
     }
 
     LibraDexIdentityMutationResult IIdentityPrimitiveMutator.DeleteIdentityPrimitive(LibraDexIdentityPrimitiveRequest request)
     {
+        ThrowIfSessionDurabilityBatchActiveForMutation();
+
         long deleted = request.CriteriaKind switch
         {
             LibraDexCriteriaKind.All => DeleteAll(),
@@ -462,6 +505,11 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
             LibraDexCriteriaKind.CompositeMatch => EnumerateCompositeMatchTuples(RequireCompositePredicate(request.Values, 0)).ToArray(),
             _ => throw new NotSupportedException($"{request.CriteriaKind} is not connected to routed composite tuple execution.")
         };
+    }
+
+    IEnumerable<LibraDexObjectTuple> IIdentityPrimitiveTupleStreamer.IterateTuplePrimitive(LibraDexIdentityPrimitiveRequest request)
+    {
+        return IterateTuplePrimitive(request);
     }
 
     bool IIdentityExactTupleMutator.ContainsExactTuple(object? key, object identity)
@@ -499,6 +547,93 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
         };
     }
 
+    /// <summary>
+    /// Counts identities matched by one normalized routed-composite primitive without streaming identity objects.<br/>
+    /// Whole-index counts use the index-level item count; exact-key counts read the terminal identity list count; composite predicates reuse route pruning and count terminal matches directly.<br/>
+    /// </summary>
+    /// <param name="request">The primitive request produced by the condition materializer.<br/></param>
+    /// <returns>The number of matching routed-composite identities.<br/></returns>
+    private long CountIdentityPrimitive(LibraDexIdentityPrimitiveRequest request)
+    {
+        return request.CriteriaKind switch
+        {
+            LibraDexCriteriaKind.All => itemCount,
+            LibraDexCriteriaKind.Find => CountExact(RequireCompositeKey(request.Values, 0)),
+            LibraDexCriteriaKind.CompositeMatch => CountCompositeMatch(RequireCompositePredicate(request.Values, 0)),
+            _ => throw new NotSupportedException($"{request.CriteriaKind} is not connected to routed composite counting.")
+        };
+    }
+
+    /// <summary>
+    /// Streams key/identity tuples matched by one normalized composite primitive.<br/>
+    /// This keeps condition readers and grouping terminals on the routed composite traversal path without forcing `ExecuteTuplePrimitive(...).ToArray()` first.<br/>
+    /// </summary>
+    /// <param name="request">The normalized primitive request produced by the condition materializer.<br/></param>
+    /// <returns>A forward-only tuple sequence over matching composite key/identity pairs.<br/></returns>
+    private IEnumerable<LibraDexObjectTuple> IterateTuplePrimitive(LibraDexIdentityPrimitiveRequest request)
+    {
+        return request.CriteriaKind switch
+        {
+            LibraDexCriteriaKind.All => IterateAllTupleObjects(request.TakeLimit),
+            LibraDexCriteriaKind.Find => ApplyTupleTake(EnumerateExactTuples(RequireCompositeKey(request.Values, 0)), request.TakeLimit),
+            LibraDexCriteriaKind.CompositeMatch => ApplyTupleTake(EnumerateCompositeMatchTuples(RequireCompositePredicate(request.Values, 0)), request.TakeLimit),
+            _ => ((IIdentityPrimitiveTupleExecutor)this).ExecuteTuplePrimitive(request)
+        };
+    }
+
+    /// <summary>
+    /// Streams all routed composite entries as object tuples with an optional take limit.<br/>
+    /// The traversal still reconstructs explicit composite-key containers at terminal paths because callers need stable full-key values for grouping and mutation.<br/>
+    /// </summary>
+    /// <param name="takeLimit">The optional maximum number of tuples to return.<br/></param>
+    /// <returns>A forward-only tuple sequence over all composite entries.<br/></returns>
+    private IEnumerable<LibraDexObjectTuple> IterateAllTupleObjects(int? takeLimit)
+    {
+        int yielded = 0;
+        foreach (LibraDexCompositeEntry entry in EnumerateEntries())
+        {
+            if (takeLimit is not null && yielded >= takeLimit.Value)
+            {
+                yield break;
+            }
+
+            yielded++;
+            yield return new LibraDexObjectTuple(entry.Key, entry.Identity);
+        }
+    }
+
+    /// <summary>
+    /// Applies an optional take limit to an already-streaming composite tuple source.<br/>
+    /// This avoids routing exact and predicate tuple requests through list materialization only to trim the result afterwards.<br/>
+    /// </summary>
+    /// <param name="tuples">The source tuple stream.<br/></param>
+    /// <param name="takeLimit">The optional maximum number of tuples to return.<br/></param>
+    /// <returns>A forward-only tuple sequence capped by the requested limit.<br/></returns>
+    private static IEnumerable<LibraDexObjectTuple> ApplyTupleTake(IEnumerable<LibraDexObjectTuple> tuples, int? takeLimit)
+    {
+        if (takeLimit is null)
+        {
+            foreach (LibraDexObjectTuple tuple in tuples)
+            {
+                yield return tuple;
+            }
+
+            yield break;
+        }
+
+        int yielded = 0;
+        foreach (LibraDexObjectTuple tuple in tuples)
+        {
+            if (yielded >= takeLimit.Value)
+            {
+                yield break;
+            }
+
+            yielded++;
+            yield return tuple;
+        }
+    }
+
     private IEnumerable<object> FindExact(LibraDexCompositeKey key)
     {
         key.ValidateAgainst(shape);
@@ -517,6 +652,29 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
         {
             yield return identity;
         }
+    }
+
+    /// <summary>
+    /// Counts identities stored at one complete composite key without yielding the identity objects.<br/>
+    /// The route walk mirrors exact retrieval, including lazy durable child lookup, and then reads the terminal node's in-memory identity count.<br/>
+    /// </summary>
+    /// <param name="key">The complete composite key to locate.<br/></param>
+    /// <returns>The number of identities stored at the exact composite key.<br/></returns>
+    private long CountExact(LibraDexCompositeKey key)
+    {
+        key.ValidateAgainst(shape);
+        CompositeNode? node = root;
+        for (int i = 0; i < shape.CompositeParts.Count; i++)
+        {
+            CompositePartKey partKey = CreatePartKey(shape.CompositeParts[i], key.Values[i].Value);
+            if (!TryGetChildForExact(node, i, partKey, out node))
+            {
+                return 0;
+            }
+        }
+
+        EnsureNodeLoaded(node, shape.CompositeParts.Count);
+        return node.Identities.Count;
     }
 
     /// <summary>
@@ -540,6 +698,8 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
     /// <returns>The number of terminal key/identity tuples removed.</returns>
     private long DeleteAll()
     {
+        ThrowIfSessionDurabilityBatchActiveForMutation();
+
         EnsureNodeLoaded(root, tier: 0);
         long deleted = itemCount;
         if (deleted == 0)
@@ -561,6 +721,8 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
     /// <returns>The number of key/identity tuples removed.</returns>
     private long DeleteExact(LibraDexCompositeKey key)
     {
+        ThrowIfSessionDurabilityBatchActiveForMutation();
+
         key.ValidateAgainst(shape);
         CompositeNode? node = root;
         for (int i = 0; i < shape.CompositeParts.Count; i++)
@@ -627,6 +789,8 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
     /// <returns><see langword="true"/> when one tuple was removed.</returns>
     private bool DeleteExactTuple(LibraDexCompositeKey key, object identity)
     {
+        ThrowIfSessionDurabilityBatchActiveForMutation();
+
         key.ValidateAgainst(shape);
         ValidateIdentity(identity);
         CompositeNode? node = root;
@@ -661,6 +825,69 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
         {
             yield return identity;
         }
+    }
+
+    /// <summary>
+    /// Counts identities matched by one composite predicate without yielding identity objects.<br/>
+    /// The traversal uses the same part-aware route pruning as `CompositeMatch` retrieval and counts only terminal nodes whose optional full-key predicate passes.<br/>
+    /// </summary>
+    /// <param name="predicate">The composite predicate materialized from the condition builder.<br/></param>
+    /// <returns>The number of matching routed-composite identities.<br/></returns>
+    private long CountCompositeMatch(LibraDexCompositePredicate predicate)
+    {
+        predicate.ValidateAgainst(shape);
+        object?[] values = predicate.HasFullKeyCriterion
+            ? new object?[shape.CompositeParts.Count]
+            : Array.Empty<object?>();
+        return CountCompositeMatch(root, tier: 0, predicate, values);
+    }
+
+    /// <summary>
+    /// Recursively counts terminal identities below one routed composite node while applying composite part predicates.<br/>
+    /// Child traversal is still pruned by page-native exact/range/prefix helpers where available, but the terminal work reads identity-list counts instead of enumerating identities.<br/>
+    /// </summary>
+    /// <param name="node">The current routed node.<br/></param>
+    /// <param name="tier">The current composite part ordinal.<br/></param>
+    /// <param name="predicate">The composite predicate being applied.<br/></param>
+    /// <param name="fullKeyValues">The reusable full-key path buffer, or an empty array when no full-key predicate exists.<br/></param>
+    /// <returns>The number of matching identities below the node.<br/></returns>
+    private long CountCompositeMatch(
+        CompositeNode node,
+        int tier,
+        LibraDexCompositePredicate predicate,
+        object?[] fullKeyValues)
+    {
+        if (tier >= shape.CompositeParts.Count)
+        {
+            EnsureNodeLoaded(node, tier);
+            return MatchesFullKeyIfNeeded(predicate, fullKeyValues)
+                ? node.Identities.Count
+                : 0;
+        }
+
+        long count = 0;
+        LibraDexCompositeKeyPartSpec part = shape.CompositeParts[tier];
+        if (predicate.TryGetPart(part.Name, out LibraDexCompositePartCriterion? criterion))
+        {
+            foreach (CompositeNode child in MatchedChildren(node, tier, criterion!))
+            {
+                SetFullKeyValue(fullKeyValues, tier, child);
+                count += CountCompositeMatch(child, tier + 1, predicate, fullKeyValues);
+                ClearFullKeyValue(fullKeyValues, tier);
+            }
+
+            return count;
+        }
+
+        EnsureNodeLoaded(node, tier);
+        foreach (CompositeChild child in node.Children)
+        {
+            SetFullKeyValue(fullKeyValues, tier, child.Node);
+            count += CountCompositeMatch(child.Node, tier + 1, predicate, fullKeyValues);
+            ClearFullKeyValue(fullKeyValues, tier);
+        }
+
+        return count;
     }
 
     /// <summary>
@@ -699,7 +926,7 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
             EnsureNodeLoaded(node, tier);
             if (MatchesFullKeyIfNeeded(predicate, values))
             {
-                LibraDexCompositeKey key = LibraDexCompositeKey.Of(values.ToArray());
+                LibraDexCompositeKey key = LibraDexCompositeKey.TakePositionalValues(values.ToArray());
                 foreach (object identity in node.Identities)
                 {
                     yield return new LibraDexObjectTuple(key, identity);
@@ -797,6 +1024,8 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
     /// <returns>The number of terminal key/identity tuples removed.</returns>
     private long DeleteCompositeMatch(LibraDexCompositePredicate predicate)
     {
+        ThrowIfSessionDurabilityBatchActiveForMutation();
+
         predicate.ValidateAgainst(shape);
         object?[] values = predicate.HasFullKeyCriterion
             ? new object?[shape.CompositeParts.Count]
@@ -860,6 +1089,19 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
         }
 
         return deleted;
+    }
+
+    /// <summary>
+    /// Rejects composite tree mutation while any explicit session durability batch is active.<br/>
+    /// Routed composite indexes mutate an in-memory tier tree and may publish a durable root snapshot outside the fixed-scalar batch path, so they must not overlap an unrelated owner of the same session dirty-write boundary.<br/>
+    /// </summary>
+    /// <exception cref="InvalidOperationException">Thrown when the owning session already has an active durability batch.<br/></exception>
+    private void ThrowIfSessionDurabilityBatchActiveForMutation()
+    {
+        if (session?.IsDurabilityBatchActive == true)
+        {
+            throw new InvalidOperationException("Immediate LibraDex composite mutation cannot run while another session durability batch is active; publish, abort, or disable the active batch before issuing unrelated no-batch writes.");
+        }
     }
 
     /// <summary>
@@ -2069,7 +2311,9 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
     /// </summary>
     private void PersistAfterWholeTreeMutation()
     {
-        if (session is null || slotIndex is not int durableSlotIndex)
+        if (session is null ||
+            session.BackingKind != DataKernelBackingKind.File ||
+            slotIndex is not int durableSlotIndex)
         {
             return;
         }
@@ -2213,7 +2457,7 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
         EnsureNodeLoaded(node, tier);
         if (tier >= shape.CompositeParts.Count)
         {
-            LibraDexCompositeKey key = LibraDexCompositeKey.Of(values.ToArray());
+            LibraDexCompositeKey key = LibraDexCompositeKey.TakePositionalValues(values.ToArray());
             foreach (object identity in node.Identities)
             {
                 yield return new LibraDexCompositeEntry(key, identity);

@@ -10,7 +10,9 @@ namespace LibraDex;
 internal sealed class RouteTargetKindCache : IDisposable
 {
     private const int DefaultCapacity = 32;
+    private const int MaxCapacity = 64 * 1024;
 
+    private readonly object sync = new();
     private long[]? offsets;
     private int[]? kinds;
     private int count;
@@ -51,22 +53,25 @@ internal sealed class RouteTargetKindCache : IDisposable
     /// <returns><see langword="true"/> when the offset is cached.</returns>
     public bool TryGet(long offset, out int kind)
     {
-        long[]? localOffsets = offsets;
-        int[]? localKinds = kinds;
-        if (localOffsets is not null && localKinds is not null)
+        lock (sync)
         {
-            for (int i = count - 1; i >= 0; i--)
+            long[]? localOffsets = offsets;
+            int[]? localKinds = kinds;
+            if (localOffsets is not null && localKinds is not null)
             {
-                if (localOffsets[i] == offset)
+                for (int i = count - 1; i >= 0; i--)
                 {
-                    kind = localKinds[i];
-                    return true;
+                    if (localOffsets[i] == offset)
+                    {
+                        kind = localKinds[i];
+                        return true;
+                    }
                 }
             }
-        }
 
-        kind = 0;
-        return false;
+            kind = 0;
+            return false;
+        }
     }
 
     /// <summary>
@@ -77,27 +82,37 @@ internal sealed class RouteTargetKindCache : IDisposable
     /// <param name="kind">The shape-local target-kind integer.</param>
     public void Set(long offset, int kind)
     {
-        long[] localOffsets = offsets ?? throw new ObjectDisposedException(nameof(RouteTargetKindCache));
-        int[] localKinds = kinds ?? throw new ObjectDisposedException(nameof(RouteTargetKindCache));
-        for (int i = count - 1; i >= 0; i--)
+        lock (sync)
         {
-            if (localOffsets[i] == offset)
+            long[] localOffsets = offsets ?? throw new ObjectDisposedException(nameof(RouteTargetKindCache));
+            int[] localKinds = kinds ?? throw new ObjectDisposedException(nameof(RouteTargetKindCache));
+            for (int i = count - 1; i >= 0; i--)
             {
-                localKinds[i] = kind;
-                return;
+                if (localOffsets[i] == offset)
+                {
+                    localKinds[i] = kind;
+                    return;
+                }
             }
-        }
 
-        if (count == localOffsets.Length)
-        {
-            Grow();
-            localOffsets = offsets!;
-            localKinds = kinds!;
-        }
+            if (count == localOffsets.Length)
+            {
+                if (localOffsets.Length >= MaxCapacity)
+                {
+                    count = 0;
+                }
+                else
+                {
+                    Grow();
+                    localOffsets = offsets!;
+                    localKinds = kinds!;
+                }
+            }
 
-        localOffsets[count] = offset;
-        localKinds[count] = kind;
-        count++;
+            localOffsets[count] = offset;
+            localKinds[count] = kind;
+            count++;
+        }
     }
 
     /// <summary>
@@ -106,7 +121,10 @@ internal sealed class RouteTargetKindCache : IDisposable
     /// </summary>
     public void Clear()
     {
-        count = 0;
+        lock (sync)
+        {
+            count = 0;
+        }
     }
 
     /// <summary>
@@ -115,11 +133,17 @@ internal sealed class RouteTargetKindCache : IDisposable
     /// </summary>
     public void Dispose()
     {
-        long[]? localOffsets = offsets;
-        int[]? localKinds = kinds;
-        offsets = null;
-        kinds = null;
-        count = 0;
+        long[]? localOffsets;
+        int[]? localKinds;
+        lock (sync)
+        {
+            localOffsets = offsets;
+            localKinds = kinds;
+            offsets = null;
+            kinds = null;
+            count = 0;
+        }
+
         if (localOffsets is not null)
         {
             ArrayPool<long>.Shared.Return(localOffsets, clearArray: false);

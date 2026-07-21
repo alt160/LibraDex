@@ -7,7 +7,7 @@ namespace LibraDex;
 /// <param name="RootOffset">The file offset of the root router.</param>
 /// <param name="FinalTargetOffset">The final placeholder target reached by the chain.</param>
 /// <param name="RouterCount">The number of routers created in the chain.</param>
-public readonly record struct RouteChainCreationResult(
+internal readonly record struct RouteChainCreationResult(
     long RootOffset,
     long FinalTargetOffset,
     int RouterCount);

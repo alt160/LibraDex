@@ -438,7 +438,7 @@ public sealed class CatalogIndexFactories
 /// Provides index factories scoped to one index set.<br/>
 /// The index-set name is persisted into rich index metadata so grouped lookup can be rehydrated after reopening a catalog.<br/>
 /// </summary>
-public sealed class CatalogIdentityGroupIndexes
+public sealed partial class CatalogIdentityGroupIndexes
 {
     private readonly Catalog catalog;
     private readonly CatalogIndexFactories owner;
@@ -456,6 +456,12 @@ public sealed class CatalogIdentityGroupIndexes
     /// </summary>
     public string Name { get; }
 
+    /// <summary>
+    /// Gets the catalog-level required identity CLR type, or null when this catalog allows mixed identity types.<br/>
+    /// Owners such as Abraxas use this to reject unconstrained catalogs before record IDs can be mirrored into indexes with an incompatible identity contract.<br/>
+    /// </summary>
+    public Type? RequiredIdentityType => catalog.Options.RequiredIdentityType;
+
     internal Catalog Catalog => catalog;
 
     /// <summary>
@@ -469,6 +475,30 @@ public sealed class CatalogIdentityGroupIndexes
     /// Identity family selection is separate from `.As...` key-family selection so catalog-root external sources can carry identity type without looking like an index-key projection.<br/>
     /// </summary>
     public CatalogIdentityGroupIdentityTypeSelector Identities => new(this);
+
+    /// <summary>
+    /// Creates the narrow Abraxas-facing identity query adapter for this index set.<br/>
+    /// The adapter executes completed condition descriptors through the existing catalog condition bridge and returns only caller-owned identities, leaving record hydration and mutation outside LibraDex.<br/>
+    /// </summary>
+    /// <typeparam name="TIdentity">The identity type expected by the Abraxas integration boundary.</typeparam>
+    /// <returns>An identity-only query adapter bound to this index set.</returns>
+    public AbraxasIdentityQueryAdapter<TIdentity> AbraxasIdentityQuery<TIdentity>()
+    {
+        catalog.ValidateIdentityType(typeof(TIdentity), CatalogIndexIdentityFamily.Scalar, nameof(AbraxasIdentityQuery));
+        return new(this);
+    }
+
+    /// <summary>
+    /// Creates the narrow Abraxas-facing identity write adapter for this index set.<br/>
+    /// The adapter binds queued writer access to named generic indexes while keeping source-object mutation and hydration outside LibraDex.<br/>
+    /// </summary>
+    /// <typeparam name="TIdentity">The identity type expected by the Abraxas integration boundary.</typeparam>
+    /// <returns>An identity-only write adapter bound to this index set.</returns>
+    public AbraxasIdentityWriteAdapter<TIdentity> AbraxasIdentityWrite<TIdentity>()
+    {
+        catalog.ValidateIdentityType(typeof(TIdentity), CatalogIndexIdentityFamily.Scalar, nameof(AbraxasIdentityWrite));
+        return new(this);
+    }
 
     /// <summary>
     /// Gets the optional inverse key-map surface for this index set.<br/>
@@ -833,6 +863,273 @@ public sealed class CatalogIdentityGroupIndexes
         return GetTargetCursor<string, ulong>(targetIndex, condition, skip, take, direction);
     }
 
+    /// <summary>
+    /// Materializes key/identity tuples from one target index after applying a completed condition over this index set.<br/>
+    /// This non-generic projection is intended for diagnostics, adapters, and workbench views that need to inspect one selected physical index without hydrating source records.<br/>
+    /// </summary>
+    /// <param name="targetIndex">The selected target index whose key/identity entries should be returned.</param>
+    /// <param name="condition">The completed condition used to filter visible identities.</param>
+    /// <param name="skip">The number of target-index entries to skip.</param>
+    /// <param name="take">The optional maximum number of target-index entries to return.</param>
+    /// <param name="direction">The requested target-index key traversal direction.</param>
+    /// <returns>Runtime key/identity tuples from the selected target index.</returns>
+    public IReadOnlyList<LibraDexRuntimeTuple> GetTuples(
+        IIndex targetIndex,
+        LibraDexConditionEndCondition condition,
+        int skip = 0,
+        int? take = null,
+        QueryDirection direction = QueryDirection.Ascending)
+    {
+        ArgumentNullException.ThrowIfNull(targetIndex);
+        ArgumentNullException.ThrowIfNull(condition);
+        if (!string.Equals(condition.Group, Name, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("The supplied condition belongs to a different LibraDex index set.");
+        }
+
+        if (!string.Equals(targetIndex.Group, Name, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("The target index belongs to a different LibraDex index set.");
+        }
+
+        if (TryReadDirectTargetAllTuples(targetIndex, condition, skip, take, direction, out IReadOnlyList<LibraDexRuntimeTuple>? directRows))
+        {
+            return directRows;
+        }
+
+        IIdentityCriterion criterion = condition.MaterializeWithProjectionBridge(
+            name => this[name].Open(),
+            ResolveProjectionIndex);
+        if (TryReadDirectTargetLeafTuples(targetIndex, criterion, skip, take, direction, out IReadOnlyList<LibraDexRuntimeTuple>? leafRows))
+        {
+            return leafRows;
+        }
+
+        List<LibraDexRuntimeTuple> rows = new();
+        foreach (LibraDexObjectTuple tuple in LibraDexConditionCursorExecutor.IterateTargetIndexTuples(criterion, targetIndex, skip, take, direction))
+        {
+            rows.Add(new LibraDexRuntimeTuple(tuple.Key, tuple.Identity));
+        }
+
+        return rows;
+    }
+
+    /// <summary>
+    /// Streams key/identity tuples from one target index after applying a completed condition over this index set.<br/>
+    /// This iterator is intended for adapters that need ordered key context without hydrating source records or reaching into internal tuple executor contracts.<br/>
+    /// </summary>
+    /// <param name="targetIndex">The selected target index whose key/identity entries should be returned.<br/></param>
+    /// <param name="condition">The completed condition used to filter visible identities.<br/></param>
+    /// <param name="direction">The requested target-index key traversal direction.<br/></param>
+    /// <returns>Runtime key/identity tuples from the selected target index.<br/></returns>
+    public IEnumerable<LibraDexRuntimeTuple> IterateTuples(
+        IIndex targetIndex,
+        LibraDexConditionEndCondition condition,
+        QueryDirection direction = QueryDirection.Ascending)
+    {
+        ArgumentNullException.ThrowIfNull(targetIndex);
+        ArgumentNullException.ThrowIfNull(condition);
+        if (!string.Equals(condition.Group, Name, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("The supplied condition belongs to a different LibraDex index set.");
+        }
+
+        if (!string.Equals(targetIndex.Group, Name, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("The target index belongs to a different LibraDex index set.");
+        }
+
+        IReadOnlyList<LibraDexConditionLeafDescriptor> leaves = condition.Leaves;
+        if (leaves.Count == 1 &&
+            leaves[0].Operator == LibraDexConditionOperatorKind.All &&
+            string.Equals(leaves[0].IndexName, targetIndex.Name, StringComparison.Ordinal))
+        {
+            LibraDexIdentityPrimitiveRequest request = new(LibraDexCriteriaKind.All, Array.Empty<object?>(), TakeLimit: null, direction);
+            if (targetIndex is IIdentityPrimitiveTupleStreamer tupleStreamer)
+            {
+                foreach (LibraDexObjectTuple tuple in tupleStreamer.IterateTuplePrimitive(request))
+                    yield return new LibraDexRuntimeTuple(tuple.Key, tuple.Identity);
+
+                yield break;
+            }
+
+            if (targetIndex is IIdentityPrimitiveTupleExecutor tupleExecutor)
+            {
+                IReadOnlyList<LibraDexObjectTuple> tuples = tupleExecutor.ExecuteTuplePrimitive(request);
+                for (int i = 0; i < tuples.Count; i++)
+                    yield return new LibraDexRuntimeTuple(tuples[i].Key, tuples[i].Identity);
+
+                yield break;
+            }
+        }
+
+        IIdentityCriterion criterion = condition.MaterializeWithProjectionBridge(
+            name => this[name].Open(),
+            ResolveProjectionIndex);
+        foreach (LibraDexObjectTuple tuple in LibraDexConditionCursorExecutor.IterateTargetIndexTuples(criterion, targetIndex, skip: 0, take: null, direction))
+            yield return new LibraDexRuntimeTuple(tuple.Key, tuple.Identity);
+    }
+
+    /// <summary>
+    /// Reads an unfiltered `All` tuple projection from the supplied target index without rematerializing the condition index handle.<br/>
+    /// This preserves physical target-index inspection for workbench and diagnostic callers when an index implementation keeps mutable in-memory state that a fresh logical open cannot share.<br/>
+    /// The method intentionally handles only the single-leaf, same-index `All` shape; filtered and composed conditions still flow through the condition cursor bridge.<br/>
+    /// </summary>
+    /// <param name="targetIndex">The selected target index whose tuples should be streamed.<br/></param>
+    /// <param name="condition">The completed condition requested by the caller.<br/></param>
+    /// <param name="skip">The number of target tuples to skip.<br/></param>
+    /// <param name="take">The optional maximum number of target tuples to return.<br/></param>
+    /// <param name="direction">The requested tuple traversal direction.<br/></param>
+    /// <param name="rows">Receives materialized runtime tuples when the direct path applies.<br/></param>
+    /// <returns><see langword="true"/> when the direct target-index path handled the request.<br/></returns>
+    private static bool TryReadDirectTargetAllTuples(
+        IIndex targetIndex,
+        LibraDexConditionEndCondition condition,
+        int skip,
+        int? take,
+        QueryDirection direction,
+        [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out IReadOnlyList<LibraDexRuntimeTuple>? rows)
+    {
+        rows = null;
+        IReadOnlyList<LibraDexConditionLeafDescriptor> leaves = condition.Leaves;
+        if (leaves.Count != 1 ||
+            leaves[0].Operator != LibraDexConditionOperatorKind.All ||
+            !string.Equals(leaves[0].IndexName, targetIndex.Name, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        int? takeLimit = take is null ? null : checked(skip + take.Value);
+        LibraDexIdentityPrimitiveRequest request = new(LibraDexCriteriaKind.All, Array.Empty<object?>(), takeLimit, direction);
+        if (targetIndex is IIdentityPrimitiveTupleStreamer tupleStreamer)
+        {
+            rows = MaterializeRuntimeTuples(tupleStreamer.IterateTuplePrimitive(request), skip, take);
+            return true;
+        }
+
+        if (targetIndex is not IIdentityPrimitiveTupleExecutor tupleExecutor)
+        {
+            return false;
+        }
+
+        IReadOnlyList<LibraDexObjectTuple> tuples = tupleExecutor.ExecuteTuplePrimitive(
+            request);
+        int start = Math.Min(skip, tuples.Count);
+        int count = take is null
+            ? tuples.Count - start
+            : Math.Min(take.Value, tuples.Count - start);
+        LibraDexRuntimeTuple[] materialized = new LibraDexRuntimeTuple[count];
+        for (int i = 0; i < count; i++)
+        {
+            LibraDexObjectTuple tuple = tuples[start + i];
+            materialized[i] = new LibraDexRuntimeTuple(tuple.Key, tuple.Identity);
+        }
+
+        rows = materialized;
+        return true;
+    }
+
+    /// <summary>
+    /// Reads a single-leaf tuple projection directly from the caller-supplied target index after condition materialization normalized the primitive request.<br/>
+    /// The materialized criterion may hold a freshly opened logical index, so matching by group/name preserves workbench tuple semantics without relying on reference equality.<br/>
+    /// </summary>
+    /// <param name="targetIndex">The selected target index whose tuples should be streamed.</param>
+    /// <param name="criterion">The materialized criterion tree.</param>
+    /// <param name="skip">The number of target tuples to skip.</param>
+    /// <param name="take">The optional maximum number of target tuples to return.</param>
+    /// <param name="direction">The requested tuple traversal direction.</param>
+    /// <param name="rows">Receives materialized runtime tuples when the direct path applies.</param>
+    /// <returns><see langword="true"/> when the direct target-index path handled the request.</returns>
+    private static bool TryReadDirectTargetLeafTuples(
+        IIndex targetIndex,
+        IIdentityCriterion criterion,
+        int skip,
+        int? take,
+        QueryDirection direction,
+        [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out IReadOnlyList<LibraDexRuntimeTuple>? rows)
+    {
+        rows = null;
+        if (criterion.NodeKind != LibraDexIdentityCriterionNodeKind.Leaf ||
+            criterion.Index is not IIndex criterionIndex ||
+            criterion.CriteriaKind is null ||
+            !string.Equals(criterionIndex.Group, targetIndex.Group, StringComparison.Ordinal) ||
+            !string.Equals(criterionIndex.Name, targetIndex.Name, StringComparison.Ordinal))
+        {
+            if (targetIndex is LibraDexStringScalar8Index stringIndex &&
+                stringIndex.TryReadProjectionTuples(criterion, skip, take, direction, out IReadOnlyList<LibraDexRuntimeTuple>? projectionRows))
+            {
+                rows = projectionRows;
+                return true;
+            }
+
+            return false;
+        }
+
+        int? takeLimit = take is null ? null : checked(skip + take.Value);
+        LibraDexIdentityPrimitiveRequest request = new(criterion.CriteriaKind.Value, criterion.Values, takeLimit, direction);
+        if (targetIndex is IIdentityPrimitiveTupleStreamer tupleStreamer)
+        {
+            rows = MaterializeRuntimeTuples(tupleStreamer.IterateTuplePrimitive(request), skip, take);
+            return true;
+        }
+
+        if (targetIndex is not IIdentityPrimitiveTupleExecutor tupleExecutor)
+        {
+            return false;
+        }
+
+        IReadOnlyList<LibraDexObjectTuple> tuples = tupleExecutor.ExecuteTuplePrimitive(
+            request);
+        int start = Math.Min(skip, tuples.Count);
+        int count = take is null
+            ? tuples.Count - start
+            : Math.Min(take.Value, tuples.Count - start);
+        LibraDexRuntimeTuple[] materialized = new LibraDexRuntimeTuple[count];
+        for (int i = 0; i < count; i++)
+        {
+            LibraDexObjectTuple tuple = tuples[start + i];
+            materialized[i] = new LibraDexRuntimeTuple(tuple.Key, tuple.Identity);
+        }
+
+        rows = materialized;
+        return true;
+    }
+
+    /// <summary>
+    /// Materializes runtime tuples from a streaming primitive tuple source after applying the public adapter skip/take window.<br/>
+    /// This helper keeps streaming-capable physical indexes from building an intermediate primitive tuple list before `GetTuples` creates its required caller-owned result.<br/>
+    /// </summary>
+    /// <param name="tuples">The forward-only tuple source.</param>
+    /// <param name="skip">The number of tuples to skip.</param>
+    /// <param name="take">The optional maximum number of tuples to return.</param>
+    /// <returns>Caller-owned runtime tuples for the requested adapter window.</returns>
+    private static IReadOnlyList<LibraDexRuntimeTuple> MaterializeRuntimeTuples(IEnumerable<LibraDexObjectTuple> tuples, int skip, int? take)
+    {
+        if (take == 0)
+        {
+            return Array.Empty<LibraDexRuntimeTuple>();
+        }
+
+        List<LibraDexRuntimeTuple> materialized = take.HasValue ? new List<LibraDexRuntimeTuple>(take.Value) : new List<LibraDexRuntimeTuple>();
+        int seen = 0;
+        foreach (LibraDexObjectTuple tuple in tuples)
+        {
+            if (seen < skip)
+            {
+                seen++;
+                continue;
+            }
+
+            materialized.Add(new LibraDexRuntimeTuple(tuple.Key, tuple.Identity));
+            if (take.HasValue && materialized.Count >= take.Value)
+            {
+                break;
+            }
+        }
+
+        return materialized.ToArray();
+    }
+
     private LibraDexIndexCursor<TKey, TIdentity> GetTargetCursor<TKey, TIdentity>(
         IIndex targetIndex,
         LibraDexConditionEndCondition condition,
@@ -873,7 +1170,8 @@ public sealed class CatalogIdentityGroupIndexes
 
     /// <summary>
     /// Resolves a maintained projection index for one projection-backed condition leaf inside this index set.<br/>
-    /// Binary suffix conditions currently map to the owning index's hidden reversed exact-byte projection when the catalog metadata declares one.<br/>
+    /// String projections delegate to the logical string facade so folded, sort-key, and reversed projection wrappers preserve their public key types.<br/>
+    /// Binary suffix conditions map to the owning index's hidden reversed exact-byte projection when the catalog metadata declares one.<br/>
     /// </summary>
     /// <param name="descriptor">The condition leaf requesting a projection route.</param>
     /// <param name="classification">The planner classification that identified the projection need.</param>
@@ -882,10 +1180,21 @@ public sealed class CatalogIdentityGroupIndexes
         LibraDexConditionLeafDescriptor descriptor,
         LibraDexConditionLeafClassification classification)
     {
+        if (!owner.TryGetInfo(Name, descriptor.IndexName, out CatalogIndexInfo info))
+        {
+            return null;
+        }
+
+        if (descriptor.ValueKind == LibraDexConditionValueKind.String &&
+            info.KeyFamily == CatalogIndexKeyFamily.String &&
+            info.IdentityFamily == CatalogIndexIdentityFamily.Scalar)
+        {
+            return this[descriptor.IndexName].String.Open().ResolveProjection(descriptor, classification);
+        }
+
         if (classification.ProjectionKind != LibraDexIndexProjectionKind.Exact ||
             descriptor.ValueKind != LibraDexConditionValueKind.Binary ||
             descriptor.Operator != LibraDexConditionOperatorKind.EndsWith ||
-            !owner.TryGetInfo(Name, descriptor.IndexName, out CatalogIndexInfo info) ||
             info.ExactReversedProjectionSlotIndex < 0)
         {
             return null;
@@ -905,7 +1214,7 @@ public sealed class CatalogIdentityGroupIndexes
                 .Invoke(catalog, new object?[]
                 {
                     info.ExactReversedProjectionSlotIndex,
-                    new IndexOptions { Keys = info.KeyContract },
+                    new IndexOptions { Keys = info.KeyContract, IdentityKeyMultiplicity = info.IdentityKeyMultiplicity },
                     keyWidth,
                     identityWidth
                 });
@@ -1429,15 +1738,18 @@ public sealed class CatalogIdentityGroupIdentityTypeSelector
     /// <summary>
     /// Gets a typed condition-building view for `string` identities.<br/>
     /// </summary>
-    public CatalogIdentityGroupIndexes<string> String => new(group);
+    public CatalogIdentityGroupIndexes<string> String => Create<string>();
 
     /// <summary>
     /// Gets a typed condition-building view for raw byte-array identities.<br/>
     /// </summary>
-    public CatalogIdentityGroupIndexes<byte[]> Bytes => new(group);
+    public CatalogIdentityGroupIndexes<byte[]> Bytes => Create<byte[]>();
 
     private CatalogIdentityGroupIndexes<TIdentity> Create<TIdentity>()
-        => new CatalogIdentityGroupIndexes<TIdentity>(group);
+    {
+        group.Catalog.ValidateIdentityType(typeof(TIdentity), CatalogIndexIdentityFamily.Scalar, nameof(CatalogIdentityGroupIdentityTypeSelector));
+        return new CatalogIdentityGroupIndexes<TIdentity>(group);
+    }
 }
 
 /// <summary>
@@ -1610,6 +1922,42 @@ public sealed class CatalogNamedIndexBuilder
     }
 
     /// <summary>
+    /// Selects a UInt64 key family with raw variable-length identity bytes for this named index.<br/>
+    /// This maps to routed `SV8` storage and is intended for path/blob identity tests where a scalar key still needs normal condition-builder range predicates.<br/>
+    /// </summary>
+    /// <param name="maxIdentityBytes">Maximum raw identity byte count accepted by this index.</param>
+    /// <returns>A UInt64 variable-identity lifecycle builder.</returns>
+    public CatalogNamedUInt64VarIdentityKeyBuilder UInt64VarIdentityKeys(int maxIdentityBytes)
+    {
+        Scalar8VarIdentityProfile.Create(Scalar8VarIdentityProfile.Default8KiB.ShelfExtentSize, maxIdentityBytes);
+        return new CatalogNamedUInt64VarIdentityKeyBuilder(
+            catalog,
+            owner,
+            Group,
+            Name,
+            maxIdentityBytes);
+    }
+
+    /// <summary>
+    /// Selects a raw-byte variable-key family with raw variable-length identity bytes for this named index.<br/>
+    /// This internal catalog-owned `VV` path is intended for workbench and adapter tests that need byte-native keys and identities before a string/blob condition facade is promoted.<br/>
+    /// </summary>
+    /// <param name="maxKeyBytes">Maximum physical variable-key bytes, including the internal sentinel byte.<br/></param>
+    /// <param name="maxIdentityBytes">Maximum raw identity byte count accepted by this index.<br/></param>
+    /// <returns>A raw `VV` lifecycle builder.</returns>
+    internal CatalogNamedVarKeyVarIdentityKeyBuilder VarKeyVarIdentityKeys(int maxKeyBytes, int maxIdentityBytes)
+    {
+        VarKeyVarIdentityProfile.Create(VarKeyVarIdentityProfile.Default8KiB.ShelfExtentSize, maxKeyBytes, maxIdentityBytes);
+        return new CatalogNamedVarKeyVarIdentityKeyBuilder(
+            catalog,
+            owner,
+            Group,
+            Name,
+            maxKeyBytes,
+            maxIdentityBytes);
+    }
+
+    /// <summary>
     /// Selects the logical string-key family for this named index.<br/>
     /// The current physical string facade stores UInt64 identities, so the lifecycle builder is returned directly rather than taking an identity type parameter.<br/>
     /// </summary>
@@ -1634,8 +1982,8 @@ public sealed class CatalogNamedIndexBuilder
     /// </summary>
     /// <typeparam name="TKey">The public key type.</typeparam>
     /// <typeparam name="TIdentity">The public identity type.</typeparam>
-    /// <param name="keys">The index-wide duplicate-key contract.</param>
-    /// <param name="options">Optional per-index options.</param>
+    /// <param name="keys">The index-wide duplicate-key contract.<br/></param>
+    /// <param name="options">Optional per-index options.<br/></param>
     /// <returns>A typed index handle owned by the catalog lifetime.</returns>
     public LibraDexIndex<TKey, TIdentity> Create<TKey, TIdentity>(
         IndexKeys keys = IndexKeys.NonUnique,
@@ -1711,6 +2059,138 @@ public sealed class CatalogNamedIndexBuilder
         }
 
         return catalog.OpenIndex(info);
+    }
+
+    /// <summary>
+    /// Deletes every tuple in this target index whose identity is selected by <paramref name="condition"/>.<br/>
+    /// The condition describes selection only; this named index owns the physical mutation.<br/>
+    /// </summary>
+    /// <param name="condition">The completed condition selecting identities in this index's identity group.<br/></param>
+    /// <returns>The matched and deleted target-tuple counts.<br/></returns>
+    public LibraDexIdentityMutationResult Delete(LibraDexConditionEndCondition condition)
+    {
+        ArgumentNullException.ThrowIfNull(condition);
+        CatalogIdentityGroupIndexes indexes = RequireConditionGroup(condition.Group);
+        IIndex target = Open();
+        IIdentityCriterion criterion = condition.Materialize(name => indexes.Index(name));
+        return LibraDexIdentityExecutionPlanner.ExecuteTargetDelete(criterion, target);
+    }
+
+    /// <summary>
+    /// Deletes every tuple in this target index whose identity wins the grouped aggregate selection in <paramref name="condition"/>.<br/>
+    /// Any <c>Return</c> or <c>ReturnKeys</c> projection is intentionally ignored; grouping, filtering, and aggregate-winner selection remain in force.<br/>
+    /// </summary>
+    /// <typeparam name="TResult">The condition's retrieval result type, which does not affect mutation selection.<br/></typeparam>
+    /// <param name="condition">The completed typed condition selecting aggregate-winning identities.<br/></param>
+    /// <returns>The matched and deleted target-tuple counts.<br/></returns>
+    public LibraDexIdentityMutationResult Delete<TResult>(LibraDexCondition<TResult> condition)
+    {
+        ArgumentNullException.ThrowIfNull(condition);
+        CatalogIdentityGroupIndexes indexes = RequireConditionGroup(condition.Group);
+        return LibraDexIdentityExecutionPlanner.ExecuteTargetDelete(condition.IterateSelectedIdentities(indexes), Open());
+    }
+
+    /// <summary>
+    /// Deletes every physical tuple from this target index while retaining the index and its catalog definition.<br/>
+    /// Use this explicit name when the intended scope is the whole index; selective deletion uses <see cref="Delete(LibraDexConditionEndCondition)"/>.<br/>
+    /// </summary>
+    /// <returns>The matched and deleted target-tuple counts.<br/></returns>
+    public LibraDexIdentityMutationResult DeleteAll()
+        => LibraDexIdentityExecutionPlanner.ExecuteTargetDeleteAll(Open());
+
+    /// <summary>
+    /// Replaces the target-index key of every tuple whose identity is selected by <paramref name="condition"/>.<br/>
+    /// Replacement tuples are established before old tuples are removed so a failed insert does not discard the original tuple.<br/>
+    /// </summary>
+    /// <param name="condition">The completed condition selecting identities in this index's identity group.<br/></param>
+    /// <param name="newKey">The replacement target-index key.<br/></param>
+    /// <returns>The matched and changed target-tuple counts.<br/></returns>
+    public LibraDexIdentityMutationResult SetKey(LibraDexConditionEndCondition condition, object? newKey)
+    {
+        ArgumentNullException.ThrowIfNull(condition);
+        CatalogIdentityGroupIndexes indexes = RequireConditionGroup(condition.Group);
+        IIdentityCriterion criterion = condition.Materialize(name => indexes.Index(name));
+        return LibraDexIdentityExecutionPlanner.ExecuteTargetSetKey(criterion, Open(), hasNewKey: true, newKey, newKeyFactory: null);
+    }
+
+    /// <summary>
+    /// Replaces the target-index key of every tuple whose identity wins the grouped aggregate selection in <paramref name="condition"/>.<br/>
+    /// Any declared return projection is ignored without weakening the grouped aggregate selection.<br/>
+    /// </summary>
+    /// <typeparam name="TResult">The condition's retrieval result type, which does not affect mutation selection.<br/></typeparam>
+    /// <param name="condition">The completed typed condition selecting aggregate-winning identities.<br/></param>
+    /// <param name="newKey">The replacement target-index key.<br/></param>
+    /// <returns>The matched and changed target-tuple counts.<br/></returns>
+    public LibraDexIdentityMutationResult SetKey<TResult>(LibraDexCondition<TResult> condition, object? newKey)
+    {
+        ArgumentNullException.ThrowIfNull(condition);
+        CatalogIdentityGroupIndexes indexes = RequireConditionGroup(condition.Group);
+        return LibraDexIdentityExecutionPlanner.ExecuteTargetSetKey(
+            condition.IterateSelectedIdentities(indexes),
+            Open(),
+            hasNewKey: true,
+            newKey,
+            newKeyFactory: null,
+            factoryUsesOldKey: false);
+    }
+
+    /// <summary>
+    /// Replaces each selected target tuple's key using a transform of that tuple's current key.<br/>
+    /// The transform runs only after the condition has selected identities and the target index has captured their exact tuples.<br/>
+    /// </summary>
+    /// <param name="condition">The completed condition selecting identities in this index's identity group.<br/></param>
+    /// <param name="newKeyFactory">A transform receiving the current target-index key and returning its replacement.<br/></param>
+    /// <returns>The matched and changed target-tuple counts.<br/></returns>
+    public LibraDexIdentityMutationResult SetKeyUsing(
+        LibraDexConditionEndCondition condition,
+        Func<object, object?> newKeyFactory)
+    {
+        ArgumentNullException.ThrowIfNull(condition);
+        ArgumentNullException.ThrowIfNull(newKeyFactory);
+        CatalogIdentityGroupIndexes indexes = RequireConditionGroup(condition.Group);
+        IIdentityCriterion criterion = condition.Materialize(name => indexes.Index(name));
+        return LibraDexIdentityExecutionPlanner.ExecuteTargetSetKey(
+            LibraDexIdentityExecutionPlanner.Iterate(criterion, LibraDexIdentityQueryOptions.Default),
+            Open(),
+            hasNewKey: false,
+            newKey: null,
+            newKeyFactory,
+            factoryUsesOldKey: true);
+    }
+
+    /// <summary>
+    /// Replaces each aggregate-selected target tuple's key using a transform of that tuple's current key.<br/>
+    /// Any declared return projection is ignored; the same grouped aggregate winners used by retrieval supply the mutation identity set.<br/>
+    /// </summary>
+    /// <typeparam name="TResult">The condition's retrieval result type, which does not affect mutation selection.<br/></typeparam>
+    /// <param name="condition">The completed typed condition selecting aggregate-winning identities.<br/></param>
+    /// <param name="newKeyFactory">A transform receiving the current target-index key and returning its replacement.<br/></param>
+    /// <returns>The matched and changed target-tuple counts.<br/></returns>
+    public LibraDexIdentityMutationResult SetKeyUsing<TResult>(
+        LibraDexCondition<TResult> condition,
+        Func<object, object?> newKeyFactory)
+    {
+        ArgumentNullException.ThrowIfNull(condition);
+        ArgumentNullException.ThrowIfNull(newKeyFactory);
+        CatalogIdentityGroupIndexes indexes = RequireConditionGroup(condition.Group);
+        return LibraDexIdentityExecutionPlanner.ExecuteTargetSetKey(
+            condition.IterateSelectedIdentities(indexes),
+            Open(),
+            hasNewKey: false,
+            newKey: null,
+            newKeyFactory,
+            factoryUsesOldKey: true);
+    }
+
+    private CatalogIdentityGroupIndexes RequireConditionGroup(string conditionGroup)
+    {
+        if (!string.Equals(Group, conditionGroup, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"Condition group '{conditionGroup}' cannot mutate target index '{Name}' in identity group '{Group}'.");
+        }
+
+        return catalog[Group];
     }
 
 
@@ -2141,8 +2621,8 @@ public sealed class CatalogNamedBigIntVarIdentityKeyBuilder
     /// <summary>
     /// Opens the named BigInt variable-identity index when it exists, or creates it when missing.<br/>
     /// </summary>
-    /// <param name="keys">The index-wide duplicate-key contract for create.</param>
-    /// <param name="options">Optional per-index options for create.</param>
+    /// <param name="keys">The index-wide duplicate-key contract for create.<br/></param>
+    /// <param name="options">Optional per-index options for create.<br/></param>
     /// <returns>A BigInt index facade over raw variable-length identity bytes.</returns>
     public LibraDexBigIntVarIdentityIndex CreateOrOpen(IndexKeys keys = IndexKeys.NonUnique, IndexOptions? options = null)
     {
@@ -2151,6 +2631,180 @@ public sealed class CatalogNamedBigIntVarIdentityKeyBuilder
             : Create(keys, options);
     }
 
+}
+
+/// <summary>
+/// Provides terminal lifecycle verbs for one named UInt64-key/raw-variable-identity index.<br/>
+/// The builder keeps variable identity storage explicit so callers do not confuse raw path identities with fixed-width `byte[]` scalar identities.<br/>
+/// </summary>
+public sealed class CatalogNamedUInt64VarIdentityKeyBuilder
+{
+    private readonly Catalog catalog;
+    private readonly CatalogIndexFactories owner;
+    private readonly string group;
+    private readonly string name;
+    private readonly int maxIdentityBytes;
+
+    internal CatalogNamedUInt64VarIdentityKeyBuilder(
+        Catalog catalog,
+        CatalogIndexFactories owner,
+        string group,
+        string name,
+        int maxIdentityBytes)
+    {
+        ArgumentNullException.ThrowIfNull(catalog);
+        ArgumentNullException.ThrowIfNull(owner);
+        Scalar8VarIdentityProfile.Create(Scalar8VarIdentityProfile.Default8KiB.ShelfExtentSize, maxIdentityBytes);
+        this.catalog = catalog;
+        this.owner = owner;
+        this.group = group;
+        this.name = name;
+        this.maxIdentityBytes = maxIdentityBytes;
+    }
+
+    /// <summary>
+    /// Creates the named UInt64 variable-identity index.<br/>
+    /// Creation persists the variable identity byte cap so metadata-driven reopen can reconstruct the same `SV8` facade later.<br/>
+    /// </summary>
+    /// <param name="keys">The index-wide duplicate-key contract.</param>
+    /// <param name="options">Optional per-index options.</param>
+    /// <returns>A UInt64 key index facade over raw variable-length identity bytes.</returns>
+    public LibraDexUInt64VarIdentityIndex Create(IndexKeys keys = IndexKeys.NonUnique, IndexOptions? options = null)
+    {
+        if (owner.TryGetInfo(group, name, out _))
+        {
+            throw new InvalidOperationException("The requested grouped LibraDex UInt64 variable-identity index already exists.");
+        }
+
+        return catalog.CreateUInt64VarIdentityIndex(
+            group,
+            name,
+            owner.ResolveCreateSlot(null),
+            maxIdentityBytes,
+            CatalogIndexFactoryOptions.Resolve(keys, options));
+    }
+
+    /// <summary>
+    /// Opens the named UInt64 variable-identity index and validates its persisted identity byte cap.<br/>
+    /// </summary>
+    /// <returns>A UInt64 key index facade over raw variable-length identity bytes.</returns>
+    public LibraDexUInt64VarIdentityIndex Open()
+    {
+        if (!owner.TryGetInfo(group, name, out CatalogIndexInfo info))
+        {
+            throw new InvalidDataException("The requested grouped LibraDex UInt64 variable-identity index does not exist.");
+        }
+
+        LibraDexUInt64VarIdentityIndex index = catalog.OpenUInt64VarIdentityIndex(info);
+        if (index.MaxIdentityBytes != maxIdentityBytes)
+        {
+            throw new InvalidDataException("The requested UInt64 variable-identity cap does not match persisted catalog metadata.");
+        }
+
+        return index;
+    }
+
+    /// <summary>
+    /// Opens the named UInt64 variable-identity index when it exists, or creates it when missing.<br/>
+    /// </summary>
+    /// <param name="keys">The index-wide duplicate-key contract for create.</param>
+    /// <param name="options">Optional per-index options for create.</param>
+    /// <returns>A UInt64 key index facade over raw variable-length identity bytes.</returns>
+    public LibraDexUInt64VarIdentityIndex CreateOrOpen(IndexKeys keys = IndexKeys.NonUnique, IndexOptions? options = null)
+    {
+        return owner.TryGetInfo(group, name, out _)
+            ? Open()
+            : Create(keys, options);
+    }
+}
+
+/// <summary>
+/// Provides terminal lifecycle verbs for one named raw-byte variable-key/raw-variable-identity index.<br/>
+/// The builder stays internal while the promoted public API decides how string/blob codecs should surface over `VV` storage.<br/>
+/// </summary>
+internal sealed class CatalogNamedVarKeyVarIdentityKeyBuilder
+{
+    private readonly Catalog catalog;
+    private readonly CatalogIndexFactories owner;
+    private readonly string group;
+    private readonly string name;
+    private readonly int maxKeyBytes;
+    private readonly int maxIdentityBytes;
+
+    internal CatalogNamedVarKeyVarIdentityKeyBuilder(
+        Catalog catalog,
+        CatalogIndexFactories owner,
+        string group,
+        string name,
+        int maxKeyBytes,
+        int maxIdentityBytes)
+    {
+        ArgumentNullException.ThrowIfNull(catalog);
+        ArgumentNullException.ThrowIfNull(owner);
+        VarKeyVarIdentityProfile.Create(VarKeyVarIdentityProfile.Default8KiB.ShelfExtentSize, maxKeyBytes, maxIdentityBytes);
+        this.catalog = catalog;
+        this.owner = owner;
+        this.group = group;
+        this.name = name;
+        this.maxKeyBytes = maxKeyBytes;
+        this.maxIdentityBytes = maxIdentityBytes;
+    }
+
+    /// <summary>
+    /// Creates the named raw `VV` index.<br/>
+    /// Creation persists both variable byte caps so metadata-driven reopen can reconstruct the same raw tuple facade later.<br/>
+    /// </summary>
+    /// <param name="keys">The index-wide duplicate-key contract.</param>
+    /// <param name="options">Optional per-index options.</param>
+    /// <returns>A raw variable-key/variable-identity index facade.</returns>
+    internal VarKeyVarIdentityIndex Create(IndexKeys keys = IndexKeys.NonUnique, IndexOptions? options = null)
+    {
+        if (owner.TryGetInfo(group, name, out _))
+        {
+            throw new InvalidOperationException("The requested grouped LibraDex raw VV index already exists.");
+        }
+
+        return catalog.CreateVarKeyVarIdentityIndex(
+            group,
+            name,
+            owner.ResolveCreateSlot(null),
+            maxKeyBytes,
+            maxIdentityBytes,
+            CatalogIndexFactoryOptions.Resolve(keys, options));
+    }
+
+    /// <summary>
+    /// Opens the named raw `VV` index and validates its persisted key and identity byte caps.<br/>
+    /// </summary>
+    /// <returns>A raw variable-key/variable-identity index facade.</returns>
+    internal VarKeyVarIdentityIndex Open()
+    {
+        if (!owner.TryGetInfo(group, name, out CatalogIndexInfo info))
+        {
+            throw new InvalidDataException("The requested grouped LibraDex raw VV index does not exist.");
+        }
+
+        VarKeyVarIdentityIndex index = catalog.OpenVarKeyVarIdentityIndex(info);
+        if (index.MaxPhysicalKeyLength != maxKeyBytes || index.MaxIdentityLength != maxIdentityBytes)
+        {
+            throw new InvalidDataException("The requested raw VV byte caps do not match persisted catalog metadata.");
+        }
+
+        return index;
+    }
+
+    /// <summary>
+    /// Opens the named raw `VV` index when it exists, or creates it when missing.<br/>
+    /// </summary>
+    /// <param name="keys">The index-wide duplicate-key contract for create.</param>
+    /// <param name="options">Optional per-index options for create.</param>
+    /// <returns>A raw variable-key/variable-identity index facade.</returns>
+    internal VarKeyVarIdentityIndex CreateOrOpen(IndexKeys keys = IndexKeys.NonUnique, IndexOptions? options = null)
+    {
+        return owner.TryGetInfo(group, name, out _)
+            ? Open()
+            : Create(keys, options);
+    }
 }
 
 /// <summary>
@@ -2178,14 +2832,16 @@ public sealed class CatalogNamedStringKeyBuilder
     /// Creates a string-key/scalar-identity index with exact UTF-8 storage and optional maintained string projections.<br/>
     /// Projection slots are allocated automatically from the catalog directory so normal callers do not manage slot placement.<br/>
     /// String storage uses the standard variable-key cap; callers do not tune varlen key length per index.<br/>
+    /// The current facade requires `StringKeys.Exact` because exact storage is the primary projection used for tuple capture, mutation, and projection maintenance.<br/>
     /// </summary>
-    /// <param name="stringKeys">The string projection profile to physically maintain.</param>
+    /// <param name="stringKeys">The valid string projection profile to physically maintain.</param>
     /// <param name="directions">The string projection byte directions to physically maintain.</param>
     /// <param name="sortOrder">The key traversal order recorded for maintained string projections.</param>
     /// <param name="foldedCulture">Optional culture name for folded-text projection values; null or empty means invariant culture.</param>
     /// <param name="sortKeyCulture">Optional culture name for sort-key projection values; null or empty means invariant culture.</param>
     /// <param name="stringComparisonPolicy">Optional runtime index-level string comparison policy for managed residual comparison and prepared membership fallback.</param>
     /// <returns>A string index facade over the exact and maintained projection indexes.</returns>
+    /// <exception cref="ArgumentOutOfRangeException">Thrown when <paramref name="stringKeys"/> is not a valid public string-key profile.<br/></exception>
     public LibraDexStringScalar8Index Create(
         StringKeys stringKeys = StringKeys.ExactAndFolded,
         LibraDexProjectionDirectionSet directions = LibraDexProjectionDirectionSet.Forward,
@@ -2194,10 +2850,8 @@ public sealed class CatalogNamedStringKeyBuilder
         string? sortKeyCulture = null,
         LibraDexStringComparisonPolicy? stringComparisonPolicy = null)
     {
-        if ((stringKeys & StringKeys.Exact) == 0)
-        {
-            throw new NotSupportedException("String facade creation requires exact string storage.");
-        }
+        catalog.ValidateIdentityType(typeof(ulong), CatalogIndexIdentityFamily.Scalar, nameof(Create));
+        ValidateStringKeys(stringKeys);
 
         HashSet<int> reservedSlots = new();
         int ResolveAutoSlot()
@@ -2217,8 +2871,7 @@ public sealed class CatalogNamedStringKeyBuilder
         int exactSlot = ResolveAutoSlot();
         VarKeyScalar8Index? exactReversed = null;
         int exactReversedSlot = -1;
-        if ((directions & LibraDexProjectionDirectionSet.Reversed) != 0 &&
-            (stringKeys & StringKeys.Exact) != 0)
+        if ((directions & LibraDexProjectionDirectionSet.Reversed) != 0)
         {
             exactReversedSlot = ResolveAutoSlot();
             exactReversed = catalog.CreateVarKeyScalar8Index($"{name}#exact-rev", exactReversedSlot, StringVarKeyPhysicalMaxLength);
@@ -2226,7 +2879,7 @@ public sealed class CatalogNamedStringKeyBuilder
 
         VarKeyScalar8Index? folded = null;
         int foldedSlot = -1;
-        if ((stringKeys & StringKeys.Folded) != 0)
+        if (HasFoldedText(stringKeys))
         {
             foldedSlot = ResolveAutoSlot();
             folded = catalog.CreateVarKeyScalar8Index($"{name}#folded", foldedSlot, StringVarKeyPhysicalMaxLength);
@@ -2234,7 +2887,7 @@ public sealed class CatalogNamedStringKeyBuilder
 
         VarKeyScalar8Index? sortKey = null;
         int sortKeySlot = -1;
-        if ((stringKeys & StringKeys.SortKey) != 0)
+        if (HasSortKey(stringKeys))
         {
             sortKeySlot = ResolveAutoSlot();
             sortKey = catalog.CreateVarKeyScalar8Index($"{name}#sortkey", sortKeySlot, StringVarKeyPhysicalMaxLength);
@@ -2243,7 +2896,7 @@ public sealed class CatalogNamedStringKeyBuilder
         VarKeyScalar8Index? foldedReversed = null;
         int foldedReversedSlot = -1;
         if ((directions & LibraDexProjectionDirectionSet.Reversed) != 0 &&
-            (stringKeys & StringKeys.Folded) != 0)
+            HasFoldedText(stringKeys))
         {
             foldedReversedSlot = ResolveAutoSlot();
             foldedReversed = catalog.CreateVarKeyScalar8Index($"{name}#folded-rev", foldedReversedSlot, StringVarKeyPhysicalMaxLength);
@@ -2252,7 +2905,7 @@ public sealed class CatalogNamedStringKeyBuilder
         LibraDexStringComparisonPolicy? effectiveStringComparisonPolicy = stringComparisonPolicy ?? catalog.Options.StringComparisonPolicy;
         CatalogIndexMetadata metadata = CreateStringMetadata(stringKeys, exactReversedSlot, foldedSlot, sortKeySlot, foldedReversedSlot, directions, sortOrder, foldedCulture, sortKeyCulture, effectiveStringComparisonPolicy);
         VarKeyScalar8Index exact = catalog.CreateVarKeyScalar8Index(name, exactSlot, StringVarKeyPhysicalMaxLength, metadata);
-        return new LibraDexStringScalar8Index(group, name, exact, exactReversed, folded, sortKey, foldedReversed, foldedCulture, sortKeyCulture, effectiveStringComparisonPolicy);
+        return new LibraDexStringScalar8Index(catalog, group, name, exact, exactReversed, folded, sortKey, foldedReversed, foldedCulture, sortKeyCulture, effectiveStringComparisonPolicy);
     }
 
     /// <summary>
@@ -2263,6 +2916,7 @@ public sealed class CatalogNamedStringKeyBuilder
     /// <returns>A string index facade over the reopened exact and maintained projection indexes.</returns>
     public LibraDexStringScalar8Index Open(LibraDexStringComparisonPolicy? stringComparisonPolicy = null)
     {
+        catalog.ValidateIdentityType(typeof(ulong), CatalogIndexIdentityFamily.Scalar, nameof(Open));
         if (!owner.TryGetInfo(group, name, out CatalogIndexInfo info))
         {
             throw new InvalidDataException($"String index '{group}/{name}' was not found in the catalog.");
@@ -2283,6 +2937,7 @@ public sealed class CatalogNamedStringKeyBuilder
             ? catalog.OpenVarKeyScalar8Index(info.FoldedReversedProjectionSlotIndex, info.VarKeyMaxKeyLength)
             : null;
         return new LibraDexStringScalar8Index(
+            catalog,
             group,
             name,
             exact,
@@ -2299,14 +2954,16 @@ public sealed class CatalogNamedStringKeyBuilder
     /// Opens an existing string-key/scalar-identity index or creates it when the logical index is missing.<br/>
     /// Creation persists projection ownership metadata; reopen uses that metadata so generated callers can keep targeting the logical index name only.<br/>
     /// String storage uses the standard variable-key cap; callers do not tune varlen key length per index.<br/>
+    /// When creation is required, the current facade requires `StringKeys.Exact` because exact storage is the primary projection used for tuple capture, mutation, and projection maintenance.<br/>
     /// </summary>
-    /// <param name="stringKeys">The string projection profile to physically maintain on create.</param>
+    /// <param name="stringKeys">The valid string projection profile to physically maintain on create.</param>
     /// <param name="directions">The string projection byte directions to physically maintain on create.</param>
     /// <param name="sortOrder">The key traversal order recorded for maintained string projections when the index is created.</param>
     /// <param name="foldedCulture">Optional culture name for folded-text projection values; null or empty means invariant culture.</param>
     /// <param name="sortKeyCulture">Optional culture name for sort-key projection values; null or empty means invariant culture.</param>
     /// <param name="stringComparisonPolicy">Optional runtime index-level string comparison policy for managed residual comparison and prepared membership fallback.</param>
     /// <returns>A string index facade over the exact and maintained projection indexes.</returns>
+    /// <exception cref="ArgumentOutOfRangeException">Thrown when creation is required and <paramref name="stringKeys"/> is not a valid public string-key profile.<br/></exception>
     public LibraDexStringScalar8Index CreateOrOpen(
         StringKeys stringKeys = StringKeys.ExactAndFolded,
         LibraDexProjectionDirectionSet directions = LibraDexProjectionDirectionSet.Forward,
@@ -2378,23 +3035,37 @@ public sealed class CatalogNamedStringKeyBuilder
     private static IReadOnlyList<LibraDexIndexProjectionKind> CreateProjectionKinds(StringKeys stringKeys)
     {
         List<LibraDexIndexProjectionKind> kinds = new();
-        if ((stringKeys & StringKeys.Exact) != 0)
-        {
-            kinds.Add(LibraDexIndexProjectionKind.Exact);
-        }
+        kinds.Add(LibraDexIndexProjectionKind.Exact);
 
-        if ((stringKeys & StringKeys.Folded) != 0)
+        if (HasFoldedText(stringKeys))
         {
             kinds.Add(LibraDexIndexProjectionKind.FoldedText);
         }
 
-        if ((stringKeys & StringKeys.SortKey) != 0)
+        if (HasSortKey(stringKeys))
         {
             kinds.Add(LibraDexIndexProjectionKind.SortKey);
         }
 
         return kinds;
     }
+
+    private static void ValidateStringKeys(StringKeys stringKeys)
+    {
+        if (stringKeys != StringKeys.Exact &&
+            stringKeys != StringKeys.ExactAndFolded &&
+            stringKeys != StringKeys.ExactAndSortKey &&
+            stringKeys != StringKeys.ExactFoldedAndSortKey)
+        {
+            throw new ArgumentOutOfRangeException(nameof(stringKeys), stringKeys, "The string-key profile is not supported by the string facade.");
+        }
+    }
+
+    private static bool HasFoldedText(StringKeys stringKeys)
+        => stringKeys == StringKeys.ExactAndFolded || stringKeys == StringKeys.ExactFoldedAndSortKey;
+
+    private static bool HasSortKey(StringKeys stringKeys)
+        => stringKeys == StringKeys.ExactAndSortKey || stringKeys == StringKeys.ExactFoldedAndSortKey;
 
     private static void ValidateStringInfo(CatalogIndexInfo info)
     {
@@ -2601,7 +3272,7 @@ public sealed class CatalogNamedTypedIndexBuilder<TKey, TIdentity>
 /// <param name="SlotIndex">The fixed directory slot containing the index.</param>
 /// <param name="Name">The public index name stored in the slot.</param>
 /// <param name="RootRouterOffset">The root-router offset for diagnostics and compatibility reporting.</param>
-/// <param name="ItemCount">The catalog directory's cached item count for the index, when maintained.</param>
+/// <param name="ItemCount">The catalog directory's cached item count for the index, when maintained; use <see cref="IsDirectoryItemCountAuthoritative"/> before treating it as a live count.</param>
 /// <param name="Generation">The index generation recorded in the directory slot.</param>
 /// <param name="KeyProfileId">The persisted key profile identifier.</param>
 /// <param name="IdentityProfileId">The persisted identity profile identifier.</param>
@@ -2613,6 +3284,7 @@ public sealed class CatalogNamedTypedIndexBuilder<TKey, TIdentity>
 /// <param name="KeyFamily">The logical key family recorded in rich metadata.</param>
 /// <param name="IdentityFamily">The logical identity family recorded in rich metadata.</param>
 /// <param name="KeyContract">The persisted duplicate-key contract recorded in rich metadata.</param>
+/// <param name="IdentityKeyMultiplicity">The persisted identity-to-key multiplicity contract recorded in rich metadata.</param>
 /// <param name="StringKeys">The persisted string-key projection contract recorded in rich metadata.</param>
 /// <param name="GuidKeys">The persisted GUID-key projection contract recorded in rich metadata.</param>
 /// <param name="DateKeys">The persisted date-key projection contract recorded in rich metadata.</param>
@@ -2649,6 +3321,7 @@ public readonly record struct CatalogIndexInfo(
     CatalogIndexKeyFamily KeyFamily,
     CatalogIndexIdentityFamily IdentityFamily,
     IndexKeys KeyContract,
+    IdentityKeyMultiplicity IdentityKeyMultiplicity,
     StringKeys StringKeys,
     GuidKeys GuidKeys,
     DateKeys DateKeys,
@@ -2670,6 +3343,14 @@ public readonly record struct CatalogIndexInfo(
     string StringComparisonCulture,
     string StringComparisonCustomComparerTypeName)
 {
+    /// <summary>
+    /// Gets whether <see cref="ItemCount"/> is an authoritative live count for this catalog entry.<br/>
+    /// Fixed-N BigInteger scalar and fixed-N variable-identity shapes count from shelf metadata instead of maintaining the directory count when ordinary shelf writes occur.<br/>
+    /// </summary>
+    public bool IsDirectoryItemCountAuthoritative =>
+        Projections.Count == 0 ||
+        Projections[0].Kind is not (LibraDexIndexProjectionKind.BigIntFixed or LibraDexIndexProjectionKind.BigIntFixedVarIdentity);
+
     /// <summary>
     /// Attempts to reconstruct the logical shape descriptor recorded for this catalog entry.<br/>
     /// Entries created before shape metadata was persisted, or entries whose CLR type names cannot be resolved in the current process, return <see langword="false"/>.<br/>
@@ -2710,7 +3391,8 @@ public readonly record struct CatalogIndexInfo(
             Directions,
             SortOrder,
             Projections,
-            CompositeParts);
+            CompositeParts,
+            IdentityKeyMultiplicity);
         return true;
     }
 
@@ -2732,34 +3414,35 @@ public readonly record struct CatalogIndexInfo(
         return FromSlot(
             slot,
             new CatalogIndexMetadata(
-                string.Empty,
-                slot.Name,
-                string.Empty,
-                string.Empty,
-                CatalogIndexKeyFamily.Unknown,
-                CatalogIndexIdentityFamily.Unknown,
-                IndexKeys.NonUnique,
-                StringKeys.Exact,
-                GuidKeys.Exact,
-                DateKeys.Exact,
-                DateTimeKeyEncoding.CalendarSdt,
-                LibraDexProjectionDirectionSet.Forward,
-                LibraDexIndexSortOrder.Ascending,
-                Array.Empty<LibraDexIndexProjectionSpec>(),
-                Array.Empty<LibraDexCompositeKeyPartSpec>(),
-                0,
-                0,
-                -1,
-                -1,
-                -1,
-                -1,
-                string.Empty,
-                string.Empty,
-                LibraDexStringComparisonPolicyKind.Invariant,
-                CompareOptions.None,
-                string.Empty,
-                string.Empty,
-                false));
+                Group: string.Empty,
+                IndexName: slot.Name,
+                KeyTypeName: string.Empty,
+                IdentityTypeName: string.Empty,
+                KeyFamily: CatalogIndexKeyFamily.Unknown,
+                IdentityFamily: CatalogIndexIdentityFamily.Unknown,
+                KeyContract: IndexKeys.NonUnique,
+                StringKeys: StringKeys.Exact,
+                GuidKeys: GuidKeys.Exact,
+                DateKeys: DateKeys.Exact,
+                DateTimeKeyEncoding: DateTimeKeyEncoding.CalendarSdt,
+                Directions: LibraDexProjectionDirectionSet.Forward,
+                SortOrder: LibraDexIndexSortOrder.Ascending,
+                Projections: Array.Empty<LibraDexIndexProjectionSpec>(),
+                CompositeParts: Array.Empty<LibraDexCompositeKeyPartSpec>(),
+                VarKeyMaxKeyLength: 0,
+                VarIdentityMaxLength: 0,
+                ExactReversedProjectionSlotIndex: -1,
+                FoldedProjectionSlotIndex: -1,
+                SortKeyProjectionSlotIndex: -1,
+                FoldedReversedProjectionSlotIndex: -1,
+                FoldedCulture: string.Empty,
+                SortKeyCulture: string.Empty,
+                StringComparisonPolicyKind: LibraDexStringComparisonPolicyKind.Invariant,
+                StringComparisonCompareOptions: CompareOptions.None,
+                StringComparisonCulture: string.Empty,
+                StringComparisonCustomComparerTypeName: string.Empty,
+                HasShapeMetadata: false,
+                IdentityKeyMultiplicity: IdentityKeyMultiplicity.MultipleKeysPerIdentity));
     }
 
     internal static CatalogIndexInfo FromSlot(IndexDirectorySlotSnapshot slot, CatalogIndexMetadata metadata)
@@ -2780,6 +3463,7 @@ public readonly record struct CatalogIndexInfo(
             metadata.KeyFamily,
             metadata.IdentityFamily,
             metadata.KeyContract,
+            metadata.IdentityKeyMultiplicity,
             metadata.StringKeys,
             metadata.GuidKeys,
             metadata.DateKeys,

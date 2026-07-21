@@ -13,8 +13,10 @@ public sealed class LibraDexRangeReader<TKey, TIdentity> : IDisposable
     private readonly LibraDexGenericScalarShape shape;
     private readonly IReadOnlyList<LibraDexTuple<TKey, TIdentity>>? bufferedRows;
     private readonly Action? recordDelete;
+    private readonly Func<TKey, TIdentity, bool>? deleteTuple;
     private readonly Func<TKey, TIdentity, TKey, LibraDexGenericInsertResult>? rekeyTuple;
     private readonly QueryDirection direction;
+    private DataKernel.CoherentReadLease? coherentRead;
     private int bufferedOrdinal = -1;
     private int directedOrdinal = -1;
     private int? remainingLimit;
@@ -26,14 +28,18 @@ public sealed class LibraDexRangeReader<TKey, TIdentity> : IDisposable
         int? takeLimit = null,
         QueryDirection direction = QueryDirection.Ascending,
         Action? recordDelete = null,
-        Func<TKey, TIdentity, TKey, LibraDexGenericInsertResult>? rekeyTuple = null)
+        Func<TKey, TIdentity, bool>? deleteTuple = null,
+        Func<TKey, TIdentity, TKey, LibraDexGenericInsertResult>? rekeyTuple = null,
+        DataKernel.CoherentReadLease? coherentRead = null)
     {
         this.innerReader = innerReader;
         this.shape = shape;
         remainingLimit = takeLimit;
         this.direction = direction;
         this.recordDelete = recordDelete;
+        this.deleteTuple = deleteTuple;
         this.rekeyTuple = rekeyTuple;
+        this.coherentRead = coherentRead;
     }
 
     internal LibraDexRangeReader(
@@ -67,6 +73,7 @@ public sealed class LibraDexRangeReader<TKey, TIdentity> : IDisposable
         get
         {
             ThrowIfDisposed();
+            using DataKernel.CoherentReadUse coherentUse = UseCoherentRead();
             if (bufferedRows is not null)
             {
                 return ApplyLimitToCount(bufferedRows.Count);
@@ -94,6 +101,7 @@ public sealed class LibraDexRangeReader<TKey, TIdentity> : IDisposable
         get
         {
             ThrowIfDisposed();
+            using DataKernel.CoherentReadUse coherentUse = UseCoherentRead();
             if (bufferedRows is not null)
             {
                 return bufferedOrdinal;
@@ -126,6 +134,7 @@ public sealed class LibraDexRangeReader<TKey, TIdentity> : IDisposable
         get
         {
             ThrowIfDisposed();
+            using DataKernel.CoherentReadUse coherentUse = UseCoherentRead();
             if (bufferedRows is not null)
             {
                 return CurrentBufferedRow.Key;
@@ -153,6 +162,7 @@ public sealed class LibraDexRangeReader<TKey, TIdentity> : IDisposable
         get
         {
             ThrowIfDisposed();
+            using DataKernel.CoherentReadUse coherentUse = UseCoherentRead();
             if (bufferedRows is not null)
             {
                 return CurrentBufferedRow.Identity;
@@ -181,6 +191,7 @@ public sealed class LibraDexRangeReader<TKey, TIdentity> : IDisposable
     public bool TryReadNextIdentity(out TIdentity identity)
     {
         ThrowIfDisposed();
+        using DataKernel.CoherentReadUse coherentUse = UseCoherentRead();
         if (bufferedRows is not null)
         {
             if (!MoveNextBuffered())
@@ -674,6 +685,7 @@ public sealed class LibraDexRangeReader<TKey, TIdentity> : IDisposable
     public bool TryReadNextKey(out TKey key)
     {
         ThrowIfDisposed();
+        using DataKernel.CoherentReadUse coherentUse = UseCoherentRead();
         if (bufferedRows is not null)
         {
             if (!MoveNextBuffered())
@@ -800,6 +812,7 @@ public sealed class LibraDexRangeReader<TKey, TIdentity> : IDisposable
     public bool TryReadNext(out TKey key, out TIdentity identity)
     {
         ThrowIfDisposed();
+        using DataKernel.CoherentReadUse coherentUse = UseCoherentRead();
         if (bufferedRows is not null)
         {
             if (!MoveNextBuffered())
@@ -1052,6 +1065,7 @@ public sealed class LibraDexRangeReader<TKey, TIdentity> : IDisposable
     public bool MoveNext()
     {
         ThrowIfDisposed();
+        using DataKernel.CoherentReadUse coherentUse = UseCoherentRead();
         if (bufferedRows is not null)
         {
             return MoveNextBuffered();
@@ -1108,7 +1122,8 @@ public sealed class LibraDexRangeReader<TKey, TIdentity> : IDisposable
     /// <summary>
     /// Deletes the current row from the backing fixed-scalar index and positions this cursor before the next surviving row.<br/>
     /// Call this only after a successful move/read operation has positioned the cursor on a row; current key and identity properties become invalid until the next successful move.<br/>
-    /// The next <see cref="MoveNext"/> or `TryReadNext*` call continues with the tuple that shifted into the deleted slot, so deletion does not skip a surviving row in the same shelf.<br/>
+    /// When the owning index supplies an exact tuple delete callback, the cursor delegates through that path so `SS8-8` cursor deletes share the same queued mutation bridge as direct exact deletes.<br/>
+    /// Otherwise the concrete reader mutates its retained shelf and the next <see cref="MoveNext"/> or `TryReadNext*` call continues with the tuple that shifted into the deleted slot.<br/>
     /// Buffered readers are immutable snapshots and do not support cursor-local mutation.<br/>
     /// </summary>
     /// <returns><see langword="true"/> when the positioned row was deleted.</returns>
@@ -1123,6 +1138,21 @@ public sealed class LibraDexRangeReader<TKey, TIdentity> : IDisposable
         if (direction == QueryDirection.Descending)
         {
             throw new NotSupportedException("Descending LibraDex range readers do not support cursor-local deletion yet.");
+        }
+
+        ReleaseCoherentRead();
+
+        if (deleteTuple is not null)
+        {
+            TKey key = CurrentKey;
+            TIdentity identity = CurrentIdentity;
+            bool deletedByIndex = deleteTuple(key, identity);
+            if (deletedByIndex)
+            {
+                InvalidateCurrentAfterExternalMutation();
+            }
+
+            return deletedByIndex;
         }
 
         bool deleted = shape switch
@@ -1153,6 +1183,7 @@ public sealed class LibraDexRangeReader<TKey, TIdentity> : IDisposable
     public int Skip(int count)
     {
         ThrowIfDisposed();
+        using DataKernel.CoherentReadUse coherentUse = UseCoherentRead();
         if (count < 0)
         {
             throw new ArgumentOutOfRangeException(nameof(count), count, "Skip count cannot be negative.");
@@ -1244,6 +1275,7 @@ public sealed class LibraDexRangeReader<TKey, TIdentity> : IDisposable
             return new LibraDexGenericInsertResult(false, false, default, default);
         }
 
+        ReleaseCoherentRead();
         LibraDexGenericInsertResult insert = localRekey(oldKey, identity, newKey);
         InvalidateCurrentAfterExternalMutation();
         return insert;
@@ -1309,11 +1341,35 @@ public sealed class LibraDexRangeReader<TKey, TIdentity> : IDisposable
         }
 
         disposed = true;
-        if (bufferedRows is null)
+        try
         {
-            ((IDisposable)innerReader).Dispose();
+            if (bufferedRows is null)
+            {
+                ((IDisposable)innerReader).Dispose();
+            }
+        }
+        finally
+        {
+            ReleaseCoherentRead();
         }
     }
+
+    /// <summary>
+    /// Releases the logical multi-read snapshot before cursor mutation or final cursor disposal.<br/>
+    /// Releasing before mutation prevents a file-backed read lock from recursively blocking the write and prevents a memory-backed cursor from continuing to claim its pre-mutation snapshot.<br/>
+    /// </summary>
+    private void ReleaseCoherentRead()
+    {
+        Interlocked.Exchange(ref coherentRead, null)?.Dispose();
+    }
+
+    /// <summary>
+    /// Activates the retained memory snapshot only for the current concrete cursor call.<br/>
+    /// Between calls the cursor keeps its snapshot alive for copy-on-write consistency without making unrelated same-thread index operations observe stale bytes.<br/>
+    /// </summary>
+    /// <returns>An allocation-free activation value, or its no-op default for buffered and post-mutation readers.<br/></returns>
+    private DataKernel.CoherentReadUse UseCoherentRead()
+        => coherentRead is null ? default : coherentRead.Use();
 
     private LibraDexTuple<TKey, TIdentity> CurrentBufferedRow
     {

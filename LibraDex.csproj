@@ -8,6 +8,9 @@
 
   <ItemGroup>
     <Compile Remove="LibraDex.Harness\**\*.cs" />
+    <Compile Remove="LibraDex.FileSearch\**\*.cs" />
+    <Compile Remove="LibraDex.FileSearch.Runner\**\*.cs" />
+    <Compile Remove="LibraDex.ShapeBench\**\*.cs" />
   </ItemGroup>
 
 </Project>

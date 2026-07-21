@@ -9,17 +9,20 @@ namespace LibraDex;
 /// The reader owns routed traversal state and loads matching shelf ranges on demand through the owning session, leaving DK/session responsible for cache-backed reads.<br/>
 /// This is the preferred public range-read surface for varlen key/varlen identity indexes because callers can inspect, skip, copy, or materialize each row intentionally.<br/>
 /// </summary>
-public sealed class VarKeyVarIdentityRangeReader : IDisposable
+internal sealed class VarKeyVarIdentityRangeReader : IDisposable
 {
     private const int DefaultShelfCapacity = 8;
 
     private VarKeyVarIdentityReadOnly[] shelves;
+    private byte[]?[] terminalKeys;
+    private byte[]?[] terminalShelfBytes;
     private int[] startSlots;
     private int[] endSlots;
     private long[]? pendingOffsets;
     private int[]? pendingHops;
+    private byte[]? pendingFlags;
     private RouteVisitedOffsetSet? visitedShelves;
-    private RouteVisitedOffsetSet? visitedRouters;
+    private RouteVisitedContextSet? visitedRouters;
     private LibraDexFileSession? session;
     private byte[]? lowerKey;
     private byte[]? upperKey;
@@ -38,6 +41,8 @@ public sealed class VarKeyVarIdentityRangeReader : IDisposable
     internal VarKeyVarIdentityRangeReader()
     {
         shelves = ArrayPool<VarKeyVarIdentityReadOnly>.Shared.Rent(DefaultShelfCapacity);
+        terminalKeys = ArrayPool<byte[]?>.Shared.Rent(DefaultShelfCapacity);
+        terminalShelfBytes = ArrayPool<byte[]?>.Shared.Rent(DefaultShelfCapacity);
         startSlots = ArrayPool<int>.Shared.Rent(DefaultShelfCapacity);
         endSlots = ArrayPool<int>.Shared.Rent(DefaultShelfCapacity);
     }
@@ -61,8 +66,9 @@ public sealed class VarKeyVarIdentityRangeReader : IDisposable
         this.upperKey = upperKey.ToArray();
         pendingOffsets = ArrayPool<long>.Shared.Rent(DefaultShelfCapacity);
         pendingHops = ArrayPool<int>.Shared.Rent(DefaultShelfCapacity);
+        pendingFlags = ArrayPool<byte>.Shared.Rent(DefaultShelfCapacity);
         visitedShelves = RouteVisitedOffsetSet.Rent();
-        visitedRouters = RouteVisitedOffsetSet.Rent();
+        visitedRouters = RouteVisitedContextSet.Rent();
         traversalComplete = false;
 
         byte lowerPrefix = LibraDexFileSession.GetVarKeyScalar8Prefix(lowerKey, 0);
@@ -72,7 +78,7 @@ public sealed class VarKeyVarIdentityRangeReader : IDisposable
             long targetOffset = session.FindRouterTarget(rootRouterOffset, (byte)prefix);
             if (targetOffset != 0)
             {
-                PushTarget(targetOffset, maxRouterHops);
+                PushTarget(targetOffset, maxRouterHops, prefix == lowerPrefix, prefix == upperPrefix);
             }
         }
     }
@@ -105,7 +111,16 @@ public sealed class VarKeyVarIdentityRangeReader : IDisposable
     {
         get
         {
-            ReadOnlySpan<byte> encoded = CurrentShelf.ReadKeyAt(currentSlotIndex);
+            ThrowIfDisposed();
+            if ((uint)ordinal >= (uint)rowCount || (uint)currentShelfIndex >= (uint)shelfCount)
+            {
+                throw new InvalidOperationException("The VV range reader is not positioned on a row.");
+            }
+
+            byte[]? terminalKey = terminalKeys[currentShelfIndex];
+            ReadOnlySpan<byte> encoded = terminalKey is not null
+                ? terminalKey
+                : CurrentShelf.ReadKeyAt(currentSlotIndex);
             return decodeLogicalKeys ? LibraDexVarLenKeyCodec.DecodePayloadSpan(encoded) : encoded;
         }
     }
@@ -114,13 +129,46 @@ public sealed class VarKeyVarIdentityRangeReader : IDisposable
     /// Gets whether the current logical key is the null-key sentinel.<br/>
     /// This is false for raw encoded readers and for logical empty keys; callers can combine it with <see cref="CurrentKeyLength"/> to distinguish null from empty.<br/>
     /// </summary>
-    public bool CurrentKeyIsNull => decodeLogicalKeys && LibraDexVarLenKeyCodec.IsNull(CurrentShelf.ReadKeyAt(currentSlotIndex));
+    public bool CurrentKeyIsNull
+    {
+        get
+        {
+            if (!decodeLogicalKeys)
+            {
+                return false;
+            }
+
+            ThrowIfDisposed();
+            if ((uint)ordinal >= (uint)rowCount || (uint)currentShelfIndex >= (uint)shelfCount)
+            {
+                throw new InvalidOperationException("The VV range reader is not positioned on a row.");
+            }
+
+            byte[]? terminalKey = terminalKeys[currentShelfIndex];
+            return LibraDexVarLenKeyCodec.IsNull(terminalKey is not null ? terminalKey : CurrentShelf.ReadKeyAt(currentSlotIndex));
+        }
+    }
 
     /// <summary>
     /// Gets the raw identity bytes for the current row.<br/>
     /// The returned span is valid until <see cref="MoveNext"/> is called again or the reader is disposed.<br/>
     /// </summary>
-    public ReadOnlySpan<byte> CurrentIdentity => CurrentShelf.ReadIdentityAt(currentSlotIndex);
+    public ReadOnlySpan<byte> CurrentIdentity
+    {
+        get
+        {
+            ThrowIfDisposed();
+            if ((uint)ordinal >= (uint)rowCount || (uint)currentShelfIndex >= (uint)shelfCount)
+            {
+                throw new InvalidOperationException("The VV range reader is not positioned on a row.");
+            }
+
+            byte[]? terminalBytes = terminalShelfBytes[currentShelfIndex];
+            return terminalBytes is not null
+                ? TerminalVarIdentityShelfLayout.ReadIdentityAt(terminalBytes, currentSlotIndex)
+                : CurrentShelf.ReadIdentityAt(currentSlotIndex);
+        }
+    }
 
     /// <summary>
     /// Gets the current key length without copying the key payload.<br/>
@@ -307,7 +355,18 @@ public sealed class VarKeyVarIdentityRangeReader : IDisposable
         }
 
         disposed = true;
+        for (int i = 0; i < shelfCount; i++)
+        {
+            byte[]? terminalBytes = terminalShelfBytes[i];
+            if (terminalBytes is not null)
+            {
+                ArrayPool<byte>.Shared.Return(terminalBytes, clearArray: false);
+            }
+        }
+
         ArrayPool<VarKeyVarIdentityReadOnly>.Shared.Return(shelves, clearArray: true);
+        ArrayPool<byte[]?>.Shared.Return(terminalKeys, clearArray: true);
+        ArrayPool<byte[]?>.Shared.Return(terminalShelfBytes, clearArray: true);
         ArrayPool<int>.Shared.Return(startSlots, clearArray: false);
         ArrayPool<int>.Shared.Return(endSlots, clearArray: false);
         if (pendingOffsets is not null)
@@ -320,10 +379,16 @@ public sealed class VarKeyVarIdentityRangeReader : IDisposable
             ArrayPool<int>.Shared.Return(pendingHops, clearArray: false);
         }
 
+        if (pendingFlags is not null)
+        {
+            ArrayPool<byte>.Shared.Return(pendingFlags, clearArray: false);
+        }
+
         visitedShelves?.Dispose();
         visitedRouters?.Dispose();
         pendingOffsets = null;
         pendingHops = null;
+        pendingFlags = null;
         visitedShelves = null;
         visitedRouters = null;
         session = null;
@@ -364,6 +429,39 @@ public sealed class VarKeyVarIdentityRangeReader : IDisposable
         }
 
         shelves[shelfCount] = shelf;
+        terminalKeys[shelfCount] = null;
+        terminalShelfBytes[shelfCount] = null;
+        startSlots[shelfCount] = startSlot;
+        endSlots[shelfCount] = endSlot;
+        shelfCount++;
+        rowCount = checked(rowCount + endSlot - startSlot);
+    }
+
+    /// <summary>
+    /// Adds one terminal `VV` identity-only shelf range to the logical key/identity reader.<br/>
+    /// The terminal root carries the exact key, so each row in the terminal shelf projects that same key with a different sorted identity payload.<br/>
+    /// The rented terminal shelf bytes are owned by this reader and returned to the array pool on dispose.<br/>
+    /// </summary>
+    /// <param name="keyBytes">The exact encoded key bytes read from the terminal root.</param>
+    /// <param name="shelfBytes">The terminal variable-identity shelf bytes rented from the session.</param>
+    /// <param name="startSlot">The inclusive first terminal identity slot.</param>
+    /// <param name="endSlot">The exclusive terminal identity slot end.</param>
+    private void AddTerminalShelfRange(byte[] keyBytes, byte[] shelfBytes, int startSlot, int endSlot)
+    {
+        if (endSlot <= startSlot)
+        {
+            ArrayPool<byte>.Shared.Return(shelfBytes, clearArray: false);
+            return;
+        }
+
+        if (shelfCount == shelves.Length)
+        {
+            GrowShelves();
+        }
+
+        shelves[shelfCount] = null!;
+        terminalKeys[shelfCount] = keyBytes;
+        terminalShelfBytes[shelfCount] = shelfBytes;
         startSlots[shelfCount] = startSlot;
         endSlots[shelfCount] = endSlot;
         shelfCount++;
@@ -379,14 +477,14 @@ public sealed class VarKeyVarIdentityRangeReader : IDisposable
 
         LibraDexFileSession localSession = session ?? throw new ObjectDisposedException(nameof(VarKeyVarIdentityRangeReader));
         RouteVisitedOffsetSet localVisitedShelves = visitedShelves ?? throw new ObjectDisposedException(nameof(VarKeyVarIdentityRangeReader));
-        RouteVisitedOffsetSet localVisitedRouters = visitedRouters ?? throw new ObjectDisposedException(nameof(VarKeyVarIdentityRangeReader));
+        RouteVisitedContextSet localVisitedRouters = visitedRouters ?? throw new ObjectDisposedException(nameof(VarKeyVarIdentityRangeReader));
         ReadOnlySpan<byte> localLowerKey = lowerKey ?? throw new ObjectDisposedException(nameof(VarKeyVarIdentityRangeReader));
         ReadOnlySpan<byte> localUpperKey = upperKey ?? throw new ObjectDisposedException(nameof(VarKeyVarIdentityRangeReader));
         int previousRowCount = rowCount;
         byte[] routerBytes = new byte[RouterLayout.Size];
         while (pendingCount > 0)
         {
-            PopTarget(out long targetOffset, out int remainingHops);
+            PopTarget(out long targetOffset, out int remainingHops, out bool lowerEdge, out bool upperEdge);
             if (remainingHops <= 0)
             {
                 throw new InvalidDataException("The routed VV range read exceeded the configured router hop count.");
@@ -410,12 +508,58 @@ public sealed class VarKeyVarIdentityRangeReader : IDisposable
                 continue;
             }
 
-            if (kind != VarKeyVarIdentityRouteTargetKind.Router)
+            if (kind == VarKeyVarIdentityRouteTargetKind.TerminalVarIdentityRoot)
             {
-                throw new InvalidDataException("The routed VV range target is not a shelf or router.");
+                if (!localVisitedShelves.Add(targetOffset))
+                {
+                    continue;
+                }
+
+                byte[] rootBytes = localSession.ReadTerminalIdentityRootBytes(targetOffset);
+                if (TerminalIdentityRootLayout.ReadShape(rootBytes) != TerminalIdentityRootLayout.ShapeVarKey)
+                {
+                    throw new InvalidDataException("The routed VV terminal range root has the wrong shape.");
+                }
+
+                int keyLength = TerminalIdentityRootLayout.ReadKeyLength(rootBytes);
+                byte[] keyBytes = rootBytes.AsSpan(TerminalIdentityRootLayout.KeyBytesOffset, keyLength).ToArray();
+                if (keyBytes.AsSpan().SequenceCompareTo(localLowerKey) < 0 ||
+                    keyBytes.AsSpan().SequenceCompareTo(localUpperKey) > 0)
+                {
+                    continue;
+                }
+
+                int shelfExtentSize = TerminalIdentityRootLayout.ReadShelfExtentSize(rootBytes);
+                long terminalShelfOffset = TerminalIdentityRootLayout.ReadFirstShelfOffset(rootBytes);
+                while (terminalShelfOffset != 0)
+                {
+                    if (!localVisitedShelves.Add(terminalShelfOffset))
+                    {
+                        break;
+                    }
+
+                    byte[] terminalBytes = localSession.ReadTerminalVarIdentityShelfBytes(terminalShelfOffset, shelfExtentSize);
+                    TerminalVarIdentityShelfLayout.Validate(terminalBytes, shelfExtentSize);
+                    int itemCount = TerminalVarIdentityShelfLayout.ReadItemCount(terminalBytes);
+                    long nextOffset = TerminalVarIdentityShelfLayout.ReadNextShelfOffset(terminalBytes);
+                    AddTerminalShelfRange(keyBytes, terminalBytes, 0, itemCount);
+                    terminalShelfOffset = nextOffset;
+                }
+
+                if (rowCount > previousRowCount)
+                {
+                    return true;
+                }
+
+                continue;
             }
 
-            if (!localVisitedRouters.Add(targetOffset))
+            if (kind != VarKeyVarIdentityRouteTargetKind.Router)
+            {
+                throw new InvalidDataException("The routed VV range target is not a shelf, terminal identity root, or router.");
+            }
+
+            if (!localVisitedRouters.Add(targetOffset, lowerEdge, upperEdge))
             {
                 continue;
             }
@@ -429,26 +573,59 @@ public sealed class VarKeyVarIdentityRangeReader : IDisposable
 
             if (router.PrefixByteCount > 1)
             {
+                if (lowerEdge && upperEdge && localLowerKey.SequenceEqual(localUpperKey))
+                {
+                    long exactTargetOffset = router.FindTarget(localLowerKey, router.KeyDepth, out _);
+                    if (exactTargetOffset != 0)
+                    {
+                        PushTarget(exactTargetOffset, remainingHops - 1, lowerEdge: true, upperEdge: true);
+                    }
+
+                    continue;
+                }
+
+                int lowerRouteIndex = -1;
+                int upperRouteIndex = -1;
+                if (lowerEdge)
+                {
+                    _ = router.FindTarget(localLowerKey, router.KeyDepth, out lowerRouteIndex);
+                }
+
+                if (upperEdge)
+                {
+                    _ = router.FindTarget(localUpperKey, router.KeyDepth, out upperRouteIndex);
+                }
+
                 for (int routeIndex = router.RouteCount - 1; routeIndex >= 0; routeIndex--)
                 {
-                    long childTargetOffset = router.GetRouteTargetAt(routeIndex);
-                    if (childTargetOffset != 0)
+                    if (router.TrySelectMultiByteRangeRoute(
+                        routeIndex,
+                        localLowerKey,
+                        localUpperKey,
+                        maxKeyLength,
+                        lowerEdge,
+                        upperEdge,
+                        lowerRouteIndex,
+                        upperRouteIndex,
+                        out long childTargetOffset,
+                        out bool childLowerEdge,
+                        out bool childUpperEdge))
                     {
-                        PushTarget(childTargetOffset, remainingHops - 1);
+                        PushTarget(childTargetOffset, remainingHops - 1, childLowerEdge, childUpperEdge);
                     }
                 }
 
                 continue;
             }
 
-            byte lowerPrefix = LibraDexFileSession.GetVarKeyScalar8Prefix(localLowerKey, router.KeyDepth);
-            byte upperPrefix = LibraDexFileSession.GetVarKeyScalar8Prefix(localUpperKey, router.KeyDepth);
+            byte lowerPrefix = lowerEdge ? LibraDexFileSession.GetVarKeyScalar8Prefix(localLowerKey, router.KeyDepth) : byte.MinValue;
+            byte upperPrefix = upperEdge ? LibraDexFileSession.GetVarKeyScalar8Prefix(localUpperKey, router.KeyDepth) : byte.MaxValue;
             for (int prefix = upperPrefix; prefix >= lowerPrefix; prefix--)
             {
                 long childTargetOffset = router.FindTarget((byte)prefix);
                 if (childTargetOffset != 0)
                 {
-                    PushTarget(childTargetOffset, remainingHops - 1);
+                    PushTarget(childTargetOffset, remainingHops - 1, lowerEdge && prefix == lowerPrefix, upperEdge && prefix == upperPrefix);
                 }
             }
         }
@@ -464,52 +641,71 @@ public sealed class VarKeyVarIdentityRangeReader : IDisposable
         }
     }
 
-    private void PushTarget(long offset, int remainingHops)
+    private void PushTarget(long offset, int remainingHops, bool lowerEdge, bool upperEdge)
     {
         long[] localOffsets = pendingOffsets ?? throw new ObjectDisposedException(nameof(VarKeyVarIdentityRangeReader));
         int[] localHops = pendingHops ?? throw new ObjectDisposedException(nameof(VarKeyVarIdentityRangeReader));
+        byte[] localFlags = pendingFlags ?? throw new ObjectDisposedException(nameof(VarKeyVarIdentityRangeReader));
         if (pendingCount == localOffsets.Length)
         {
             int newLength = checked(localOffsets.Length * 2);
             long[] newOffsets = ArrayPool<long>.Shared.Rent(newLength);
             int[] newHops = ArrayPool<int>.Shared.Rent(newLength);
+            byte[] newFlags = ArrayPool<byte>.Shared.Rent(newLength);
             localOffsets.AsSpan(0, pendingCount).CopyTo(newOffsets);
             localHops.AsSpan(0, pendingCount).CopyTo(newHops);
+            localFlags.AsSpan(0, pendingCount).CopyTo(newFlags);
             ArrayPool<long>.Shared.Return(localOffsets, clearArray: false);
             ArrayPool<int>.Shared.Return(localHops, clearArray: false);
+            ArrayPool<byte>.Shared.Return(localFlags, clearArray: false);
             pendingOffsets = newOffsets;
             pendingHops = newHops;
+            pendingFlags = newFlags;
             localOffsets = newOffsets;
             localHops = newHops;
+            localFlags = newFlags;
         }
 
         localOffsets[pendingCount] = offset;
         localHops[pendingCount] = remainingHops;
+        localFlags[pendingCount] = (byte)((lowerEdge ? 1 : 0) | (upperEdge ? 2 : 0));
         pendingCount++;
     }
 
-    private void PopTarget(out long offset, out int remainingHops)
+    private void PopTarget(out long offset, out int remainingHops, out bool lowerEdge, out bool upperEdge)
     {
         long[] localOffsets = pendingOffsets ?? throw new ObjectDisposedException(nameof(VarKeyVarIdentityRangeReader));
         int[] localHops = pendingHops ?? throw new ObjectDisposedException(nameof(VarKeyVarIdentityRangeReader));
+        byte[] localFlags = pendingFlags ?? throw new ObjectDisposedException(nameof(VarKeyVarIdentityRangeReader));
         pendingCount--;
         offset = localOffsets[pendingCount];
         remainingHops = localHops[pendingCount];
+        byte flags = localFlags[pendingCount];
+        lowerEdge = (flags & 1) != 0;
+        upperEdge = (flags & 2) != 0;
     }
 
     private void GrowShelves()
     {
         int newLength = checked(shelves.Length * 2);
         VarKeyVarIdentityReadOnly[] newShelves = ArrayPool<VarKeyVarIdentityReadOnly>.Shared.Rent(newLength);
+        byte[]?[] newTerminalKeys = ArrayPool<byte[]?>.Shared.Rent(newLength);
+        byte[]?[] newTerminalShelfBytes = ArrayPool<byte[]?>.Shared.Rent(newLength);
         int[] newStartSlots = ArrayPool<int>.Shared.Rent(newLength);
         int[] newEndSlots = ArrayPool<int>.Shared.Rent(newLength);
         Array.Copy(shelves, newShelves, shelfCount);
+        Array.Copy(terminalKeys, newTerminalKeys, shelfCount);
+        Array.Copy(terminalShelfBytes, newTerminalShelfBytes, shelfCount);
         startSlots.AsSpan(0, shelfCount).CopyTo(newStartSlots);
         endSlots.AsSpan(0, shelfCount).CopyTo(newEndSlots);
         ArrayPool<VarKeyVarIdentityReadOnly>.Shared.Return(shelves, clearArray: true);
+        ArrayPool<byte[]?>.Shared.Return(terminalKeys, clearArray: true);
+        ArrayPool<byte[]?>.Shared.Return(terminalShelfBytes, clearArray: true);
         ArrayPool<int>.Shared.Return(startSlots, clearArray: false);
         ArrayPool<int>.Shared.Return(endSlots, clearArray: false);
         shelves = newShelves;
+        terminalKeys = newTerminalKeys;
+        terminalShelfBytes = newTerminalShelfBytes;
         startSlots = newStartSlots;
         endSlots = newEndSlots;
     }

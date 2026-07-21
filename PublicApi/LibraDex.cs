@@ -6,7 +6,7 @@ namespace LibraDex;
 /// Provides the low-friction public entry point for opening LibraDex index families.<br/>
 /// The type lives directly under the `LibraDex` namespace so fully qualified calls and stack traces read as `LibraDex.Indexes.SS88.*` rather than repeating the project name.<br/>
 /// </summary>
-public static class Indexes
+internal static class Indexes
 {
     /// <summary>
     /// Creates a new generic fixed-scalar index and routes it to the matching current physical shelf shape.<br/>
@@ -24,7 +24,7 @@ public static class Indexes
     /// <param name="developerMetadata">Optional superblock developer metadata.</param>
     /// <param name="telemetryOptions">Optional telemetry policy; enabled by default for early validation.</param>
     /// <returns>A typed runtime wrapper over the created generic index.</returns>
-    public static LibraDexIndex<TKey, TIdentity> Create<TKey, TIdentity>(
+    internal static LibraDexIndex<TKey, TIdentity> Create<TKey, TIdentity>(
         string? path = null,
         DataKernelBackingKind backingKind = DataKernelBackingKind.File,
         int slotIndex = 0,
@@ -61,7 +61,7 @@ public static class Indexes
     /// <param name="options">Optional DataKernel policy; defaults to a facade policy with the superblock at file offset zero.</param>
     /// <param name="telemetryOptions">Optional telemetry policy; enabled by default for early validation.</param>
     /// <returns>A typed runtime wrapper over the opened generic index.</returns>
-    public static LibraDexIndex<TKey, TIdentity> Open<TKey, TIdentity>(
+    internal static LibraDexIndex<TKey, TIdentity> Open<TKey, TIdentity>(
         string path,
         int slotIndex = 0,
         LibraDexScalarWidth? keyWidth = null,
@@ -115,7 +115,7 @@ public static class Indexes
     /// <param name="developerMetadata">Optional superblock developer metadata for newly created sessions.</param>
     /// <param name="telemetryOptions">Optional telemetry policy; enabled by default for early validation.</param>
     /// <returns>A typed runtime wrapper over the opened or created generic index.</returns>
-    public static LibraDexIndex<TKey, TIdentity> CreateOrOpen<TKey, TIdentity>(
+    internal static LibraDexIndex<TKey, TIdentity> CreateOrOpen<TKey, TIdentity>(
         string? path = null,
         DataKernelBackingKind backingKind = DataKernelBackingKind.File,
         int slotIndex = 0,
@@ -280,7 +280,7 @@ public static class Indexes
     private static DataKernelOptions CreateDefaultOptions()
     {
         return new DataKernelOptions(
-            AppendBufferSize: 1024 * 1024,
+            AppendBufferSize: DataKernelOptions.DefaultAppendBufferSize,
             ReservedPrefixBytes: 0,
             FlushToDiskOnCommit: false,
             MaxCommitGapCoalesceBytes: 512);
@@ -405,7 +405,7 @@ public static class Indexes
     /// Provides factory methods for the raw-byte `SV8` index shape.<br/>
     /// The shape stores encoded 8-byte scalar keys and varlen identity bytes while keeping text/path/blob codecs outside this first public API layer.<br/>
     /// </summary>
-    public static class SV8
+    internal static class SV8
     {
         /// <summary>
         /// Creates a new routed raw-byte `SV8` index.<br/>
@@ -419,8 +419,9 @@ public static class Indexes
         /// <param name="options">Optional DataKernel policy; defaults to a facade policy with the superblock at file offset zero.</param>
         /// <param name="developerMetadata">Optional superblock developer metadata.</param>
         /// <param name="telemetryOptions">Optional telemetry policy; enabled by default for early validation.</param>
+        /// <param name="readCacheMaxBytes">The optional per-index immutable-shelf cache ceiling; zero means no limit.</param>
         /// <returns>A runtime wrapper over the created routed raw-byte `SV8` index.</returns>
-        public static Scalar8VarIdentityIndex Create(
+        internal static Scalar8VarIdentityIndex Create(
             string? path = null,
             DataKernelBackingKind backingKind = DataKernelBackingKind.File,
             int slotIndex = 0,
@@ -428,9 +429,11 @@ public static class Indexes
             int maxIdentityLength = 1024,
             DataKernelOptions? options = null,
             SuperblockDeveloperMetadata? developerMetadata = null,
-            DataKernelTelemetryOptions? telemetryOptions = null)
+            DataKernelTelemetryOptions? telemetryOptions = null,
+            long readCacheMaxBytes = 0)
         {
             ValidateMaxIdentityLength(maxIdentityLength, nameof(maxIdentityLength), "SV8");
+            ValidateReadCacheMaxBytes(readCacheMaxBytes);
             DataKernelOptions effectiveOptions = options ?? CreateDefaultOptions();
             DataKernelTelemetryOptions effectiveTelemetry = telemetryOptions ?? DataKernelTelemetryOptions.EnabledOptions;
             SuperblockDeveloperMetadata effectiveMetadata = developerMetadata ?? CreateDefaultDeveloperMetadata("SV8 index");
@@ -441,7 +444,7 @@ public static class Indexes
                 _ => throw new ArgumentOutOfRangeException(nameof(backingKind), backingKind, "Unsupported LibraDex backing kind.")
             };
 
-            return CreateIndexInSession(session, slotIndex, name, maxIdentityLength, ownsSession: true);
+            return CreateIndexInSession(session, slotIndex, name, maxIdentityLength, ownsSession: true, readCacheMaxBytes: readCacheMaxBytes);
         }
 
         /// <summary>
@@ -453,15 +456,18 @@ public static class Indexes
         /// <param name="maxIdentityLength">The maximum raw identity length accepted by the public wrapper.</param>
         /// <param name="options">Optional DataKernel policy; defaults to a facade policy with the superblock at file offset zero.</param>
         /// <param name="telemetryOptions">Optional telemetry policy; enabled by default for early validation.</param>
+        /// <param name="readCacheMaxBytes">The optional per-index immutable-shelf cache ceiling; zero means no limit.</param>
         /// <returns>A runtime wrapper over the opened routed raw-byte `SV8` index.</returns>
-        public static Scalar8VarIdentityIndex Open(
+        internal static Scalar8VarIdentityIndex Open(
             string path,
             int slotIndex = 0,
             int maxIdentityLength = 1024,
             DataKernelOptions? options = null,
-            DataKernelTelemetryOptions? telemetryOptions = null)
+            DataKernelTelemetryOptions? telemetryOptions = null,
+            long readCacheMaxBytes = 0)
         {
             ValidateMaxIdentityLength(maxIdentityLength, nameof(maxIdentityLength), "SV8");
+            ValidateReadCacheMaxBytes(readCacheMaxBytes);
             string requiredPath = RequireExistingPath(path, "SV8");
             DataKernelOptions effectiveOptions = options ?? CreateDefaultOptions();
             DataKernelTelemetryOptions effectiveTelemetry = telemetryOptions ?? DataKernelTelemetryOptions.EnabledOptions;
@@ -473,7 +479,7 @@ public static class Indexes
                     throw new InvalidDataException("The requested SV8 index slot is not active.");
                 }
 
-                return new Scalar8VarIdentityIndex(session, slotIndex, slot.Name, slot.RootRouterOffset, maxIdentityLength, ownsSession: true);
+                return new Scalar8VarIdentityIndex(session, slotIndex, slot.Name, slot.RootRouterOffset, maxIdentityLength, ownsSession: true, readCacheMaxBytes);
             }
             catch
             {
@@ -494,8 +500,9 @@ public static class Indexes
         /// <param name="options">Optional DataKernel policy; defaults to a facade policy with the superblock at file offset zero.</param>
         /// <param name="developerMetadata">Optional superblock developer metadata for newly created sessions.</param>
         /// <param name="telemetryOptions">Optional telemetry policy; enabled by default for early validation.</param>
+        /// <param name="readCacheMaxBytes">The optional per-index immutable-shelf cache ceiling; zero means no limit.</param>
         /// <returns>A runtime wrapper over the opened or created routed raw-byte `SV8` index.</returns>
-        public static Scalar8VarIdentityIndex CreateOrOpen(
+        internal static Scalar8VarIdentityIndex CreateOrOpen(
             string? path = null,
             DataKernelBackingKind backingKind = DataKernelBackingKind.File,
             int slotIndex = 0,
@@ -503,12 +510,14 @@ public static class Indexes
             int maxIdentityLength = 1024,
             DataKernelOptions? options = null,
             SuperblockDeveloperMetadata? developerMetadata = null,
-            DataKernelTelemetryOptions? telemetryOptions = null)
+            DataKernelTelemetryOptions? telemetryOptions = null,
+            long readCacheMaxBytes = 0)
         {
             ValidateMaxIdentityLength(maxIdentityLength, nameof(maxIdentityLength), "SV8");
+            ValidateReadCacheMaxBytes(readCacheMaxBytes);
             if (backingKind == DataKernelBackingKind.Memory)
             {
-                return Create(path, backingKind, slotIndex, name, maxIdentityLength, options, developerMetadata, telemetryOptions);
+                return Create(path, backingKind, slotIndex, name, maxIdentityLength, options, developerMetadata, telemetryOptions, readCacheMaxBytes);
             }
 
             string requiredPath = RequirePath(path, "SV8");
@@ -516,7 +525,7 @@ public static class Indexes
             DataKernelTelemetryOptions effectiveTelemetry = telemetryOptions ?? DataKernelTelemetryOptions.EnabledOptions;
             if (!File.Exists(requiredPath))
             {
-                return Create(requiredPath, DataKernelBackingKind.File, slotIndex, name, maxIdentityLength, effectiveOptions, developerMetadata, effectiveTelemetry);
+                return Create(requiredPath, DataKernelBackingKind.File, slotIndex, name, maxIdentityLength, effectiveOptions, developerMetadata, effectiveTelemetry, readCacheMaxBytes);
             }
 
             LibraDexFileSession session = LibraDexFileSession.Open(requiredPath, effectiveOptions, effectiveTelemetry);
@@ -524,10 +533,10 @@ public static class Indexes
             {
                 if (TryFindSlot(session, slotIndex, out IndexDirectorySlotSnapshot slot))
                 {
-                    return new Scalar8VarIdentityIndex(session, slotIndex, slot.Name, slot.RootRouterOffset, maxIdentityLength, ownsSession: true);
+                    return new Scalar8VarIdentityIndex(session, slotIndex, slot.Name, slot.RootRouterOffset, maxIdentityLength, ownsSession: true, readCacheMaxBytes);
                 }
 
-                return CreateIndexInSession(session, slotIndex, name, maxIdentityLength, ownsSession: true);
+                return CreateIndexInSession(session, slotIndex, name, maxIdentityLength, ownsSession: true, readCacheMaxBytes: readCacheMaxBytes);
             }
             catch
             {
@@ -536,7 +545,13 @@ public static class Indexes
             }
         }
 
-        private static Scalar8VarIdentityIndex CreateIndexInSession(LibraDexFileSession session, int slotIndex, string name, int maxIdentityLength, bool ownsSession)
+        private static Scalar8VarIdentityIndex CreateIndexInSession(
+            LibraDexFileSession session,
+            int slotIndex,
+            string name,
+            int maxIdentityLength,
+            bool ownsSession,
+            long readCacheMaxBytes)
         {
             try
             {
@@ -546,7 +561,7 @@ public static class Indexes
                 }
 
                 (RouterSnapshot root, _) = session.CreateRootRouterIndex(CreateSlot(slotIndex, name));
-                return new Scalar8VarIdentityIndex(session, slotIndex, name, root.Offset, maxIdentityLength, ownsSession);
+                return new Scalar8VarIdentityIndex(session, slotIndex, name, root.Offset, maxIdentityLength, ownsSession, readCacheMaxBytes);
             }
             catch
             {
@@ -558,13 +573,26 @@ public static class Indexes
                 throw;
             }
         }
+
+        /// <summary>
+        /// Validates the optional per-index immutable-shelf read-cache ceiling.<br/>
+        /// Zero preserves the design-intent default of retaining routed shelves without an arbitrary hidden cap.<br/>
+        /// </summary>
+        /// <param name="readCacheMaxBytes">The requested retained-byte ceiling, or zero for no limit.<br/></param>
+        private static void ValidateReadCacheMaxBytes(long readCacheMaxBytes)
+        {
+            if (readCacheMaxBytes < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(readCacheMaxBytes), readCacheMaxBytes, "The SV8 per-index read-cache limit cannot be negative.");
+            }
+        }
     }
 
     /// <summary>
     /// Provides factory methods for the raw-byte `SV16` index shape.<br/>
     /// The shape stores encoded 16-byte scalar keys and varlen identity bytes while keeping text/path/blob codecs outside this first public API layer.<br/>
     /// </summary>
-    public static class SV16
+    internal static class SV16
     {
         /// <summary>
         /// Creates a new routed raw-byte `SV16` index.<br/>
@@ -579,7 +607,7 @@ public static class Indexes
         /// <param name="developerMetadata">Optional superblock developer metadata.</param>
         /// <param name="telemetryOptions">Optional telemetry policy; enabled by default for early validation.</param>
         /// <returns>A runtime wrapper over the created routed raw-byte `SV16` index.</returns>
-        public static Scalar16VarIdentityIndex Create(
+        internal static Scalar16VarIdentityIndex Create(
             string? path = null,
             DataKernelBackingKind backingKind = DataKernelBackingKind.File,
             int slotIndex = 0,
@@ -587,9 +615,11 @@ public static class Indexes
             int maxIdentityLength = 1024,
             DataKernelOptions? options = null,
             SuperblockDeveloperMetadata? developerMetadata = null,
-            DataKernelTelemetryOptions? telemetryOptions = null)
+            DataKernelTelemetryOptions? telemetryOptions = null,
+            long readCacheMaxBytes = 0)
         {
             ValidateMaxIdentityLength(maxIdentityLength, nameof(maxIdentityLength), "SV16");
+            ValidateReadCacheMaxBytes(readCacheMaxBytes);
             DataKernelOptions effectiveOptions = options ?? CreateDefaultOptions();
             DataKernelTelemetryOptions effectiveTelemetry = telemetryOptions ?? DataKernelTelemetryOptions.EnabledOptions;
             SuperblockDeveloperMetadata effectiveMetadata = developerMetadata ?? CreateDefaultDeveloperMetadata("SV16 index");
@@ -600,7 +630,7 @@ public static class Indexes
                 _ => throw new ArgumentOutOfRangeException(nameof(backingKind), backingKind, "Unsupported LibraDex backing kind.")
             };
 
-            return CreateIndexInSession(session, slotIndex, name, maxIdentityLength, ownsSession: true);
+            return CreateIndexInSession(session, slotIndex, name, maxIdentityLength, ownsSession: true, readCacheMaxBytes: readCacheMaxBytes);
         }
 
         /// <summary>
@@ -612,15 +642,18 @@ public static class Indexes
         /// <param name="maxIdentityLength">The maximum raw identity length accepted by the public wrapper.</param>
         /// <param name="options">Optional DataKernel policy; defaults to a facade policy with the superblock at file offset zero.</param>
         /// <param name="telemetryOptions">Optional telemetry policy; enabled by default for early validation.</param>
+        /// <param name="readCacheMaxBytes">The optional per-index immutable-shelf cache ceiling; zero means no limit.</param>
         /// <returns>A runtime wrapper over the opened routed raw-byte `SV16` index.</returns>
-        public static Scalar16VarIdentityIndex Open(
+        internal static Scalar16VarIdentityIndex Open(
             string path,
             int slotIndex = 0,
             int maxIdentityLength = 1024,
             DataKernelOptions? options = null,
-            DataKernelTelemetryOptions? telemetryOptions = null)
+            DataKernelTelemetryOptions? telemetryOptions = null,
+            long readCacheMaxBytes = 0)
         {
             ValidateMaxIdentityLength(maxIdentityLength, nameof(maxIdentityLength), "SV16");
+            ValidateReadCacheMaxBytes(readCacheMaxBytes);
             string requiredPath = RequireExistingPath(path, "SV16");
             DataKernelOptions effectiveOptions = options ?? CreateDefaultOptions();
             DataKernelTelemetryOptions effectiveTelemetry = telemetryOptions ?? DataKernelTelemetryOptions.EnabledOptions;
@@ -632,7 +665,7 @@ public static class Indexes
                     throw new InvalidDataException("The requested SV16 index slot is not active.");
                 }
 
-                return new Scalar16VarIdentityIndex(session, slotIndex, slot.Name, slot.RootRouterOffset, maxIdentityLength, ownsSession: true);
+                return new Scalar16VarIdentityIndex(session, slotIndex, slot.Name, slot.RootRouterOffset, maxIdentityLength, ownsSession: true, readCacheMaxBytes: readCacheMaxBytes);
             }
             catch
             {
@@ -653,8 +686,9 @@ public static class Indexes
         /// <param name="options">Optional DataKernel policy; defaults to a facade policy with the superblock at file offset zero.</param>
         /// <param name="developerMetadata">Optional superblock developer metadata for newly created sessions.</param>
         /// <param name="telemetryOptions">Optional telemetry policy; enabled by default for early validation.</param>
+        /// <param name="readCacheMaxBytes">The optional per-index immutable-shelf cache ceiling; zero means no limit.</param>
         /// <returns>A runtime wrapper over the opened or created routed raw-byte `SV16` index.</returns>
-        public static Scalar16VarIdentityIndex CreateOrOpen(
+        internal static Scalar16VarIdentityIndex CreateOrOpen(
             string? path = null,
             DataKernelBackingKind backingKind = DataKernelBackingKind.File,
             int slotIndex = 0,
@@ -662,12 +696,14 @@ public static class Indexes
             int maxIdentityLength = 1024,
             DataKernelOptions? options = null,
             SuperblockDeveloperMetadata? developerMetadata = null,
-            DataKernelTelemetryOptions? telemetryOptions = null)
+            DataKernelTelemetryOptions? telemetryOptions = null,
+            long readCacheMaxBytes = 0)
         {
             ValidateMaxIdentityLength(maxIdentityLength, nameof(maxIdentityLength), "SV16");
+            ValidateReadCacheMaxBytes(readCacheMaxBytes);
             if (backingKind == DataKernelBackingKind.Memory)
             {
-                return Create(path, backingKind, slotIndex, name, maxIdentityLength, options, developerMetadata, telemetryOptions);
+                return Create(path, backingKind, slotIndex, name, maxIdentityLength, options, developerMetadata, telemetryOptions, readCacheMaxBytes);
             }
 
             string requiredPath = RequirePath(path, "SV16");
@@ -675,7 +711,7 @@ public static class Indexes
             DataKernelTelemetryOptions effectiveTelemetry = telemetryOptions ?? DataKernelTelemetryOptions.EnabledOptions;
             if (!File.Exists(requiredPath))
             {
-                return Create(requiredPath, DataKernelBackingKind.File, slotIndex, name, maxIdentityLength, effectiveOptions, developerMetadata, effectiveTelemetry);
+                return Create(requiredPath, DataKernelBackingKind.File, slotIndex, name, maxIdentityLength, effectiveOptions, developerMetadata, effectiveTelemetry, readCacheMaxBytes);
             }
 
             LibraDexFileSession session = LibraDexFileSession.Open(requiredPath, effectiveOptions, effectiveTelemetry);
@@ -683,10 +719,10 @@ public static class Indexes
             {
                 if (TryFindSlot(session, slotIndex, out IndexDirectorySlotSnapshot slot))
                 {
-                    return new Scalar16VarIdentityIndex(session, slotIndex, slot.Name, slot.RootRouterOffset, maxIdentityLength, ownsSession: true);
+                    return new Scalar16VarIdentityIndex(session, slotIndex, slot.Name, slot.RootRouterOffset, maxIdentityLength, ownsSession: true, readCacheMaxBytes: readCacheMaxBytes);
                 }
 
-                return CreateIndexInSession(session, slotIndex, name, maxIdentityLength, ownsSession: true);
+                return CreateIndexInSession(session, slotIndex, name, maxIdentityLength, ownsSession: true, readCacheMaxBytes: readCacheMaxBytes);
             }
             catch
             {
@@ -695,7 +731,13 @@ public static class Indexes
             }
         }
 
-        private static Scalar16VarIdentityIndex CreateIndexInSession(LibraDexFileSession session, int slotIndex, string name, int maxIdentityLength, bool ownsSession)
+        private static Scalar16VarIdentityIndex CreateIndexInSession(
+            LibraDexFileSession session,
+            int slotIndex,
+            string name,
+            int maxIdentityLength,
+            bool ownsSession,
+            long readCacheMaxBytes)
         {
             try
             {
@@ -705,7 +747,7 @@ public static class Indexes
                 }
 
                 (RouterSnapshot root, _) = session.CreateRootRouterIndex(CreateSlot(slotIndex, name));
-                return new Scalar16VarIdentityIndex(session, slotIndex, name, root.Offset, maxIdentityLength, ownsSession);
+                return new Scalar16VarIdentityIndex(session, slotIndex, name, root.Offset, maxIdentityLength, ownsSession, readCacheMaxBytes);
             }
             catch
             {
@@ -717,13 +759,26 @@ public static class Indexes
                 throw;
             }
         }
+
+        /// <summary>
+        /// Validates the optional per-index `SV16` read-cache ceiling.<br/>
+        /// Zero deliberately means no limit, while positive values bound runtime retention without becoming persisted index metadata.<br/>
+        /// </summary>
+        /// <param name="readCacheMaxBytes">The requested retained-byte limit, or zero for no limit.<br/></param>
+        private static void ValidateReadCacheMaxBytes(long readCacheMaxBytes)
+        {
+            if (readCacheMaxBytes < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(readCacheMaxBytes), readCacheMaxBytes, "The SV16 per-index read-cache limit cannot be negative.");
+            }
+        }
     }
 
     /// <summary>
     /// Provides factory methods for the raw-byte `VS8` index shape.<br/>
     /// The shape stores varlen key bytes and encoded 8-byte scalar identities while keeping text/path/blob codecs outside this first public API layer.<br/>
     /// </summary>
-    public static class VS8
+    internal static class VS8
     {
         /// <summary>
         /// Creates a new routed raw-byte `VS8` index.<br/>
@@ -738,7 +793,7 @@ public static class Indexes
         /// <param name="developerMetadata">Optional superblock developer metadata.</param>
         /// <param name="telemetryOptions">Optional telemetry policy; enabled by default for early validation.</param>
         /// <returns>A runtime wrapper over the created routed raw-byte `VS8` index.</returns>
-        public static VarKeyScalar8Index Create(
+        internal static VarKeyScalar8Index Create(
             string? path = null,
             DataKernelBackingKind backingKind = DataKernelBackingKind.File,
             int slotIndex = 0,
@@ -772,7 +827,7 @@ public static class Indexes
         /// <param name="options">Optional DataKernel policy; defaults to a facade policy with the superblock at file offset zero.</param>
         /// <param name="telemetryOptions">Optional telemetry policy; enabled by default for early validation.</param>
         /// <returns>A runtime wrapper over the opened routed raw-byte `VS8` index.</returns>
-        public static VarKeyScalar8Index Open(
+        internal static VarKeyScalar8Index Open(
             string path,
             int slotIndex = 0,
             int maxKeyLength = 1024,
@@ -815,7 +870,7 @@ public static class Indexes
         /// <param name="developerMetadata">Optional superblock developer metadata for newly created sessions.</param>
         /// <param name="telemetryOptions">Optional telemetry policy; enabled by default for early validation.</param>
         /// <returns>A runtime wrapper over the opened or created routed raw-byte `VS8` index.</returns>
-        public static VarKeyScalar8Index CreateOrOpen(
+        internal static VarKeyScalar8Index CreateOrOpen(
             string? path = null,
             DataKernelBackingKind backingKind = DataKernelBackingKind.File,
             int slotIndex = 0,
@@ -886,7 +941,7 @@ public static class Indexes
     /// Provides factory methods for the raw-byte `VS16` index shape.<br/>
     /// The shape stores varlen key bytes and encoded 16-byte scalar identities while keeping text/path/blob codecs outside this first public API layer.<br/>
     /// </summary>
-    public static class VS16
+    internal static class VS16
     {
         /// <summary>
         /// Creates a new routed raw-byte `VS16` index.<br/>
@@ -901,7 +956,7 @@ public static class Indexes
         /// <param name="developerMetadata">Optional superblock developer metadata.</param>
         /// <param name="telemetryOptions">Optional telemetry policy; enabled by default for early validation.</param>
         /// <returns>A runtime wrapper over the created routed raw-byte `VS16` index.</returns>
-        public static VarKeyScalar16Index Create(
+        internal static VarKeyScalar16Index Create(
             string? path = null,
             DataKernelBackingKind backingKind = DataKernelBackingKind.File,
             int slotIndex = 0,
@@ -935,7 +990,7 @@ public static class Indexes
         /// <param name="options">Optional DataKernel policy; defaults to a facade policy with the superblock at file offset zero.</param>
         /// <param name="telemetryOptions">Optional telemetry policy; enabled by default for early validation.</param>
         /// <returns>A runtime wrapper over the opened routed raw-byte `VS16` index.</returns>
-        public static VarKeyScalar16Index Open(
+        internal static VarKeyScalar16Index Open(
             string path,
             int slotIndex = 0,
             int maxKeyLength = 1024,
@@ -978,7 +1033,7 @@ public static class Indexes
         /// <param name="developerMetadata">Optional superblock developer metadata for newly created sessions.</param>
         /// <param name="telemetryOptions">Optional telemetry policy; enabled by default for early validation.</param>
         /// <returns>A runtime wrapper over the opened or created routed raw-byte `VS16` index.</returns>
-        public static VarKeyScalar16Index CreateOrOpen(
+        internal static VarKeyScalar16Index CreateOrOpen(
             string? path = null,
             DataKernelBackingKind backingKind = DataKernelBackingKind.File,
             int slotIndex = 0,
@@ -1049,7 +1104,7 @@ public static class Indexes
     /// Provides factory methods for the raw-byte `VV` index shape.<br/>
     /// The shape stores varlen key bytes and varlen identity bytes while keeping text/blob/projection codecs outside this first public API layer.<br/>
     /// </summary>
-    public static class VV
+    internal static class VV
     {
         /// <summary>
         /// Creates a new routed raw-byte `VV` index.<br/>
@@ -1068,7 +1123,7 @@ public static class Indexes
         /// <exception cref="ArgumentException">Thrown when a file-backed path is missing or memory-backed open semantics are requested.</exception>
         /// <exception cref="ArgumentOutOfRangeException">Thrown when the maximum key or identity length is outside the current public limits.</exception>
         /// <exception cref="IOException">Thrown when the file-backed target already exists.</exception>
-        public static VarKeyVarIdentityIndex Create(
+        internal static VarKeyVarIdentityIndex Create(
             string? path = null,
             DataKernelBackingKind backingKind = DataKernelBackingKind.File,
             int slotIndex = 0,
@@ -1109,7 +1164,7 @@ public static class Indexes
         /// <exception cref="ArgumentOutOfRangeException">Thrown when the maximum key or identity length is outside the current public limits.</exception>
         /// <exception cref="FileNotFoundException">Thrown when the target file does not exist.</exception>
         /// <exception cref="InvalidDataException">Thrown when the slot is missing or inactive.</exception>
-        public static VarKeyVarIdentityIndex Open(
+        internal static VarKeyVarIdentityIndex Open(
             string path,
             int slotIndex = 0,
             int maxKeyLength = 1024,
@@ -1163,7 +1218,7 @@ public static class Indexes
         /// <returns>A runtime wrapper over the opened or created routed raw-byte `VV` index.</returns>
         /// <exception cref="ArgumentException">Thrown when a file-backed path is missing.</exception>
         /// <exception cref="ArgumentOutOfRangeException">Thrown when the maximum key or identity length is outside the current public limits.</exception>
-        public static VarKeyVarIdentityIndex CreateOrOpen(
+        internal static VarKeyVarIdentityIndex CreateOrOpen(
             string? path = null,
             DataKernelBackingKind backingKind = DataKernelBackingKind.File,
             int slotIndex = 0,
@@ -1303,7 +1358,7 @@ public static class Indexes
         private static DataKernelOptions CreateDefaultOptions()
         {
             return new DataKernelOptions(
-                AppendBufferSize: 1024 * 1024,
+                AppendBufferSize: DataKernelOptions.DefaultAppendBufferSize,
                 ReservedPrefixBytes: 0,
                 FlushToDiskOnCommit: false,
                 MaxCommitGapCoalesceBytes: 512);
@@ -1325,7 +1380,7 @@ public static class Indexes
     /// Provides factory methods for the first encoded `SS8-8` index shape.<br/>
     /// Factory methods choose file-backed or memory-backed sessions, resolve the fixed index-directory slot, and return a concrete `Scalar8Scalar8Index` wrapper.<br/>
     /// </summary>
-    public static class SS88
+    internal static class SS88
     {
         /// <summary>
         /// Creates a new encoded `SS8-8` index.<br/>
@@ -1342,7 +1397,7 @@ public static class Indexes
         /// <returns>A runtime wrapper over the created encoded `SS8-8` index.</returns>
         /// <exception cref="ArgumentException">Thrown when a file-backed path is missing or memory-backed open semantics are requested.</exception>
         /// <exception cref="IOException">Thrown when the file-backed target already exists.</exception>
-        public static Scalar8Scalar8Index Create(
+        internal static Scalar8Scalar8Index Create(
             string? path = null,
             DataKernelBackingKind backingKind = DataKernelBackingKind.File,
             int slotIndex = 0,
@@ -1379,7 +1434,7 @@ public static class Indexes
             /// <exception cref="ArgumentException">Thrown when <paramref name="path"/> is null or empty.</exception>
             /// <exception cref="FileNotFoundException">Thrown when the target file does not exist.</exception>
             /// <exception cref="InvalidDataException">Thrown when the slot is missing, inactive, or not an `SS8-8` profile.</exception>
-            public static Scalar8Scalar8Index Open(
+            internal static Scalar8Scalar8Index Open(
                 string path,
                 int slotIndex = 0,
                 DataKernelOptions? options = null,
@@ -1425,7 +1480,7 @@ public static class Indexes
             /// <returns>A runtime wrapper over the opened or created encoded `SS8-8` index.</returns>
             /// <exception cref="ArgumentException">Thrown when a file-backed path is missing.</exception>
             /// <exception cref="InvalidDataException">Thrown when an existing active slot is not an `SS8-8` profile.</exception>
-            public static Scalar8Scalar8Index CreateOrOpen(
+            internal static Scalar8Scalar8Index CreateOrOpen(
                 string? path = null,
                 DataKernelBackingKind backingKind = DataKernelBackingKind.File,
                 int slotIndex = 0,
@@ -1602,7 +1657,7 @@ public static class Indexes
             private static DataKernelOptions CreateDefaultOptions()
             {
                 return new DataKernelOptions(
-                    AppendBufferSize: 1024 * 1024,
+                    AppendBufferSize: DataKernelOptions.DefaultAppendBufferSize,
                     ReservedPrefixBytes: 0,
                     FlushToDiskOnCommit: false,
                     MaxCommitGapCoalesceBytes: 512);
@@ -1623,7 +1678,7 @@ public static class Indexes
             /// Provides typed factory methods for unsigned scalar-8 key and unsigned scalar-8 identity indexes over the encoded `SS8-8` core.<br/>
             /// The nested type keeps the codec choice explicit while preserving the short `Create`, `Open`, and `CreateOrOpen` factory names.<br/>
             /// </summary>
-            public static class Unsigned
+            internal static class Unsigned
             {
                 /// <summary>
                 /// Creates a new unsigned scalar `SS8-8` index.<br/>
@@ -1640,7 +1695,7 @@ public static class Indexes
                 /// <returns>A typed runtime wrapper over the created unsigned scalar `SS8-8` index.</returns>
                 /// <exception cref="ArgumentException">Thrown when a file-backed path is missing or memory-backed open semantics are requested.</exception>
                 /// <exception cref="IOException">Thrown when the file-backed target already exists.</exception>
-                public static UnsignedScalar8Scalar8Index Create(
+                internal static UnsignedScalar8Scalar8Index Create(
                     string? path = null,
                     DataKernelBackingKind backingKind = DataKernelBackingKind.File,
                     int slotIndex = 0,
@@ -1674,7 +1729,7 @@ public static class Indexes
                 /// <exception cref="ArgumentException">Thrown when <paramref name="path"/> is null or empty.</exception>
                 /// <exception cref="FileNotFoundException">Thrown when the target file does not exist.</exception>
                 /// <exception cref="InvalidDataException">Thrown when the slot is missing, inactive, or not an `SS8-8` profile.</exception>
-                public static UnsignedScalar8Scalar8Index Open(
+                internal static UnsignedScalar8Scalar8Index Open(
                     string path,
                     int slotIndex = 0,
                     DataKernelOptions? options = null,
@@ -1701,7 +1756,7 @@ public static class Indexes
                 /// <returns>A typed runtime wrapper over the opened or created unsigned scalar `SS8-8` index.</returns>
                 /// <exception cref="ArgumentException">Thrown when a file-backed path is missing.</exception>
                 /// <exception cref="InvalidDataException">Thrown when an existing active slot is not an `SS8-8` profile.</exception>
-                public static UnsignedScalar8Scalar8Index CreateOrOpen(
+                internal static UnsignedScalar8Scalar8Index CreateOrOpen(
                     string? path = null,
                     DataKernelBackingKind backingKind = DataKernelBackingKind.File,
                     int slotIndex = 0,

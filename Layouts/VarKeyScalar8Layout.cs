@@ -24,6 +24,8 @@ internal static class VarKeyScalar8Layout
     public const int RecordArenaEndOffset = 24;
     public const int SlotCapacityBytesOffset = 28;
     public const int SlotReserveKeyLengthFloor = 17;
+    public const uint DuplicateRunFlag = 1U;
+    public const int DuplicateRunKeyOffset = HeaderSize;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static uint ReadMagic(ReadOnlySpan<byte> source)
@@ -71,6 +73,12 @@ internal static class VarKeyScalar8Layout
     public static void WriteFlags(Span<byte> target, uint value)
     {
         BinaryPrimitives.WriteUInt32LittleEndian(target.Slice(FlagsOffset, sizeof(uint)), value);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool HasDuplicateRunFlag(ReadOnlySpan<byte> source)
+    {
+        return (ReadFlags(source) & DuplicateRunFlag) != 0;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -155,6 +163,64 @@ internal static class VarKeyScalar8Layout
     public static void WriteRecordArenaEnd(Span<byte> target, int value)
     {
         BinaryPrimitives.WriteInt32LittleEndian(target.Slice(RecordArenaEndOffset, sizeof(int)), value);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static long ReadDuplicateRunNextOffset(ReadOnlySpan<byte> source)
+    {
+        uint low = BinaryPrimitives.ReadUInt32LittleEndian(source.Slice(RecordArenaEndOffset, sizeof(uint)));
+        uint high = BinaryPrimitives.ReadUInt32LittleEndian(source.Slice(SlotCapacityBytesOffset, sizeof(uint)));
+        return (long)(((ulong)high << 32) | low);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static void WriteDuplicateRunNextOffset(Span<byte> target, long nextOffset)
+    {
+        ulong value = checked((ulong)nextOffset);
+        BinaryPrimitives.WriteUInt32LittleEndian(target.Slice(RecordArenaEndOffset, sizeof(uint)), (uint)value);
+        BinaryPrimitives.WriteUInt32LittleEndian(target.Slice(SlotCapacityBytesOffset, sizeof(uint)), (uint)(value >> 32));
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static int ReadDuplicateRunKeyLength(ReadOnlySpan<byte> source)
+    {
+        return ReadSlotStreamLength(source);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static void WriteDuplicateRunKeyLength(Span<byte> target, int keyLength)
+    {
+        WriteSlotStreamLength(target, keyLength);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static int GetDuplicateRunIdentityOffset(int keyLength)
+    {
+        return checked(DuplicateRunKeyOffset + keyLength);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static int GetDuplicateRunCapacity(VarKeyScalar8Profile profile, int keyLength)
+    {
+        return checked((profile.ShelfExtentSize - GetDuplicateRunIdentityOffset(keyLength)) / IdentitySize);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static ReadOnlySpan<byte> ReadDuplicateRunKey(ReadOnlySpan<byte> source)
+    {
+        return source.Slice(DuplicateRunKeyOffset, ReadDuplicateRunKeyLength(source));
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static ulong ReadDuplicateRunIdentity(ReadOnlySpan<byte> source, int keyLength, int slotIndex)
+    {
+        return BinaryPrimitives.ReadUInt64BigEndian(source.Slice(GetDuplicateRunIdentityOffset(keyLength) + (slotIndex * IdentitySize), IdentitySize));
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static void WriteDuplicateRunIdentity(Span<byte> target, int keyLength, int slotIndex, ulong encodedIdentity)
+    {
+        BinaryPrimitives.WriteUInt64BigEndian(target.Slice(GetDuplicateRunIdentityOffset(keyLength) + (slotIndex * IdentitySize), IdentitySize), encodedIdentity);
     }
 
     public static void Initialize(Span<byte> target, VarKeyScalar8Profile profile)

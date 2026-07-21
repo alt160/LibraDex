@@ -71,6 +71,8 @@ internal static class LibraDexKeyEquality<TKey>
     /// </summary>
     internal static IEqualityComparer<TKey> Comparer { get; } = typeof(TKey) == typeof(byte[])
         ? (IEqualityComparer<TKey>)(object)ByteArrayKeyEqualityComparer.Instance
+        : typeof(TKey) == typeof(LibraDexCompositeKey)
+            ? (IEqualityComparer<TKey>)(object)CompositeKeyEqualityComparer.Instance
         : EqualityComparer<TKey>.Default;
 
     private sealed class ByteArrayKeyEqualityComparer : IEqualityComparer<byte[]>
@@ -92,6 +94,73 @@ internal static class LibraDexKeyEquality<TKey>
             }
 
             return hash.ToHashCode();
+        }
+    }
+
+    private sealed class CompositeKeyEqualityComparer : IEqualityComparer<LibraDexCompositeKey>
+    {
+        internal static readonly CompositeKeyEqualityComparer Instance = new();
+
+        public bool Equals(LibraDexCompositeKey? x, LibraDexCompositeKey? y)
+        {
+            if (ReferenceEquals(x, y))
+            {
+                return true;
+            }
+
+            if (x is null || y is null || x.Count != y.Count)
+            {
+                return false;
+            }
+
+            for (int i = 0; i < x.Count; i++)
+            {
+                if (!LibraDexObjectTuple.ValueEquals(x.Values[i].Value, y.Values[i].Value))
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        public int GetHashCode(LibraDexCompositeKey obj)
+        {
+            ArgumentNullException.ThrowIfNull(obj);
+            HashCode hash = new();
+            for (int i = 0; i < obj.Count; i++)
+            {
+                AddValueHash(ref hash, obj.Values[i].Value);
+            }
+
+            return hash.ToHashCode();
+        }
+
+        /// <summary>
+        /// Adds one composite part value to a structural hash code.<br/>
+        /// Binary key parts hash by byte content so they match the tuple equality rules used by LibraDex key comparison.<br/>
+        /// </summary>
+        /// <param name="hash">The hash accumulator.<br/></param>
+        /// <param name="value">The composite part value.<br/></param>
+        private static void AddValueHash(ref HashCode hash, object? value)
+        {
+            if (value is null)
+            {
+                hash.Add(0);
+                return;
+            }
+
+            if (value is byte[] bytes)
+            {
+                for (int i = 0; i < bytes.Length; i++)
+                {
+                    hash.Add(bytes[i]);
+                }
+
+                return;
+            }
+
+            hash.Add(value);
         }
     }
 }

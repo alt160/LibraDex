@@ -169,6 +169,17 @@ public sealed class LibraDexCompositeKey
         this.values = values.ToArray();
     }
 
+    private LibraDexCompositeKey(LibraDexCompositeKeyValue[] values, bool takeOwnership)
+    {
+        ArgumentNullException.ThrowIfNull(values);
+        if (values.Length == 0)
+        {
+            throw new ArgumentException("Composite keys require at least one value.", nameof(values));
+        }
+
+        this.values = takeOwnership ? values : values.ToArray();
+    }
+
     /// <summary>
     /// Gets the ordered composite key values.<br/>
     /// The order must match the owning composite index shape unless every value is named and a future resolver supports name-based mapping.<br/>
@@ -214,6 +225,24 @@ public sealed class LibraDexCompositeKey
     public static LibraDexCompositeKey Named(params LibraDexCompositeKeyValue[] values)
     {
         return new LibraDexCompositeKey(values);
+    }
+
+    /// <summary>
+    /// Creates a positional composite key from an owned value array without copying it again.<br/>
+    /// Internal routed-index traversals already allocate a fresh key-part array for each yielded key, so this factory avoids the second defensive copy while keeping public factories immutable.<br/>
+    /// </summary>
+    /// <param name="values">The owned positional value array.</param>
+    /// <returns>A composite key descriptor.</returns>
+    internal static LibraDexCompositeKey TakePositionalValues(object?[] values)
+    {
+        ArgumentNullException.ThrowIfNull(values);
+        LibraDexCompositeKeyValue[] parts = new LibraDexCompositeKeyValue[values.Length];
+        for (int i = 0; i < values.Length; i++)
+        {
+            parts[i] = new LibraDexCompositeKeyValue(Name: null, values[i]);
+        }
+
+        return new LibraDexCompositeKey(parts, takeOwnership: true);
     }
 
     /// <summary>
@@ -731,7 +760,8 @@ public sealed class LibraDexIndexShapeSpec
         LibraDexProjectionDirectionSet directions,
         LibraDexIndexSortOrder sortOrder,
         IReadOnlyList<LibraDexIndexProjectionSpec> projections,
-        IReadOnlyList<LibraDexCompositeKeyPartSpec>? compositeParts = null)
+        IReadOnlyList<LibraDexCompositeKeyPartSpec>? compositeParts = null,
+        IdentityKeyMultiplicity identityKeyMultiplicity = IdentityKeyMultiplicity.MultipleKeysPerIdentity)
     {
         Group = group;
         Name = name;
@@ -748,6 +778,7 @@ public sealed class LibraDexIndexShapeSpec
         SortOrder = sortOrder;
         Projections = projections;
         CompositeParts = compositeParts ?? Array.Empty<LibraDexCompositeKeyPartSpec>();
+        IdentityKeyMultiplicity = identityKeyMultiplicity;
     }
 
     /// <summary>
@@ -784,6 +815,12 @@ public sealed class LibraDexIndexShapeSpec
     /// Gets the index-wide duplicate-key contract.<br/>
     /// </summary>
     public IndexKeys KeyContract { get; }
+
+    /// <summary>
+    /// Gets whether this logical index shape allows one identity to be stored under multiple keys.<br/>
+    /// Planners may only use tuple/range cardinality as identity-set cardinality when this contract is enforced by the opened index.<br/>
+    /// </summary>
+    public IdentityKeyMultiplicity IdentityKeyMultiplicity { get; }
 
     /// <summary>
     /// Gets the string projection flags requested by this shape.<br/>
@@ -863,6 +900,7 @@ public sealed class LibraDexIndexShapeSpec
         return new IndexOptions
         {
             Keys = KeyContract,
+            IdentityKeyMultiplicity = IdentityKeyMultiplicity,
             StringKeys = StringKeys,
             GuidKeys = GuidKeys,
             DateKeys = DateKeys,
@@ -933,17 +971,17 @@ public sealed class CatalogNamedIndexShapeBuilder
         LibraDexProjectionDirectionSet directions = LibraDexProjectionDirectionSet.Forward)
     {
         List<LibraDexIndexProjectionKind> kinds = new();
-        if ((stringKeys & StringKeys.Exact) != 0)
-        {
-            kinds.Add(LibraDexIndexProjectionKind.Exact);
-        }
+        ValidateStringKeys(stringKeys);
+        kinds.Add(LibraDexIndexProjectionKind.Exact);
 
-        if ((stringKeys & StringKeys.Folded) != 0)
+        if (stringKeys == StringKeys.ExactAndFolded ||
+            stringKeys == StringKeys.ExactFoldedAndSortKey)
         {
             kinds.Add(LibraDexIndexProjectionKind.FoldedText);
         }
 
-        if ((stringKeys & StringKeys.SortKey) != 0)
+        if (stringKeys == StringKeys.ExactAndSortKey ||
+            stringKeys == StringKeys.ExactFoldedAndSortKey)
         {
             kinds.Add(LibraDexIndexProjectionKind.SortKey);
         }
@@ -961,6 +999,17 @@ public sealed class CatalogNamedIndexShapeBuilder
             directions,
             sortOrder,
             kinds);
+    }
+
+    private static void ValidateStringKeys(StringKeys stringKeys)
+    {
+        if (stringKeys != StringKeys.Exact &&
+            stringKeys != StringKeys.ExactAndFolded &&
+            stringKeys != StringKeys.ExactAndSortKey &&
+            stringKeys != StringKeys.ExactFoldedAndSortKey)
+        {
+            throw new ArgumentOutOfRangeException(nameof(stringKeys), stringKeys, "The string-key profile is not supported by the string shape descriptor.");
+        }
     }
 
     /// <summary>

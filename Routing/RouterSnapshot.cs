@@ -20,7 +20,7 @@ namespace LibraDex;
 /// <param name="ArenaRouterPageIndex">The zero-based router page index inside the arena.</param>
 /// <param name="ArenaRouterPageCount">The total router page capacity inside the arena.</param>
 /// <param name="ArenaFlags">Optional arena-specific flags.</param>
-public readonly record struct RouterSnapshot(
+internal readonly record struct RouterSnapshot(
     long Offset,
     byte PrefixByteCount,
     ushort KeyDepth,

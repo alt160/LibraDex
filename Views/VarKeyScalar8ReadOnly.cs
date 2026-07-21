@@ -8,17 +8,34 @@ internal sealed class VarKeyScalar8ReadOnly
     private readonly VarKeyScalar8Profile profile;
     private readonly uint[] recordOffsets;
     private readonly uint[] keyPrefixes;
+    private readonly bool isDuplicateRun;
+    private readonly int duplicateRunKeyLength;
 
     public VarKeyScalar8ReadOnly(ReadOnlyMemory<byte> bytes, VarKeyScalar8Profile profile)
     {
         this.bytes = bytes;
         this.profile = profile;
-        IsValid = TryDecodeSlots(bytes.Span, profile, out recordOffsets, out keyPrefixes);
+        isDuplicateRun = VarKeyScalar8Layout.HasDuplicateRunFlag(bytes.Span);
+        if (isDuplicateRun)
+        {
+            IsValid = TryValidateDuplicateRun(bytes.Span, profile, out duplicateRunKeyLength);
+            recordOffsets = [];
+            keyPrefixes = [];
+        }
+        else
+        {
+            duplicateRunKeyLength = 0;
+            IsValid = TryDecodeSlots(bytes.Span, profile, out recordOffsets, out keyPrefixes);
+        }
     }
 
     public bool IsValid { get; }
 
-    public int ItemCount => IsValid ? recordOffsets.Length : 0;
+    public bool IsDuplicateRun => isDuplicateRun;
+
+    public long DuplicateRunNextOffset => IsDuplicateRun ? VarKeyScalar8Layout.ReadDuplicateRunNextOffset(bytes.Span) : 0;
+
+    public int ItemCount => IsValid ? (IsDuplicateRun ? VarKeyScalar8Layout.ReadItemCount(bytes.Span) : recordOffsets.Length) : 0;
 
     public int PhysicalItemCount => ItemCount;
 
@@ -28,6 +45,12 @@ internal sealed class VarKeyScalar8ReadOnly
 
     public int LowerBoundKey(ReadOnlySpan<byte> key)
     {
+        if (IsDuplicateRun)
+        {
+            int comparison = VarKeyScalar8Layout.ReadDuplicateRunKey(bytes.Span).SequenceCompareTo(key);
+            return comparison < 0 ? ItemCount : 0;
+        }
+
         uint prefix = VarKeyScalar8Layout.CreateKeyPrefix(key);
         int low = 0;
         int high = ItemCount;
@@ -51,6 +74,38 @@ internal sealed class VarKeyScalar8ReadOnly
 
     public int LowerBound(ReadOnlySpan<byte> key, ulong encodedIdentity)
     {
+        if (IsDuplicateRun)
+        {
+            int keyComparison = VarKeyScalar8Layout.ReadDuplicateRunKey(bytes.Span).SequenceCompareTo(key);
+            if (keyComparison < 0)
+            {
+                return ItemCount;
+            }
+
+            if (keyComparison > 0)
+            {
+                return 0;
+            }
+
+            int runLow = 0;
+            int runHigh = ItemCount;
+            while (runLow < runHigh)
+            {
+                int middle = runLow + ((runHigh - runLow) >> 1);
+                ulong identity = VarKeyScalar8Layout.ReadDuplicateRunIdentity(bytes.Span, duplicateRunKeyLength, middle);
+                if (identity < encodedIdentity)
+                {
+                    runLow = middle + 1;
+                }
+                else
+                {
+                    runHigh = middle;
+                }
+            }
+
+            return runLow;
+        }
+
         uint prefix = VarKeyScalar8Layout.CreateKeyPrefix(key);
         int low = 0;
         int high = ItemCount;
@@ -74,11 +129,21 @@ internal sealed class VarKeyScalar8ReadOnly
 
     public ReadOnlySpan<byte> ReadKeyAt(int slotIndex)
     {
+        if (IsDuplicateRun)
+        {
+            return VarKeyScalar8Layout.ReadDuplicateRunKey(bytes.Span);
+        }
+
         return VarKeyScalar8Layout.ReadKey(bytes.Span, checked((int)recordOffsets[slotIndex]));
     }
 
     public ulong ReadIdentityAt(int slotIndex)
     {
+        if (IsDuplicateRun)
+        {
+            return VarKeyScalar8Layout.ReadDuplicateRunIdentity(bytes.Span, duplicateRunKeyLength, slotIndex);
+        }
+
         return VarKeyScalar8Layout.ReadIdentity(bytes.Span, checked((int)recordOffsets[slotIndex]), out _);
     }
 
@@ -117,9 +182,97 @@ internal sealed class VarKeyScalar8ReadOnly
         return copied;
     }
 
+    /// <summary>
+    /// Counts tuples whose raw key is inside an inclusive range using the decoded slot index only.<br/>
+    /// This is the shelf-edge companion to routed metadata counting: fully covered shelves can use item-count metadata, while boundary shelves need only key-slot comparisons and never inspect identity payloads.<br/>
+    /// </summary>
+    /// <param name="lowerKey">The inclusive lower raw key bound.<br/></param>
+    /// <param name="upperKey">The inclusive upper raw key bound.<br/></param>
+    /// <returns>The number of shelf-local tuples in the requested key range.<br/></returns>
+    public int CountItemsInKeyRange(ReadOnlySpan<byte> lowerKey, ReadOnlySpan<byte> upperKey)
+    {
+        if (lowerKey.SequenceCompareTo(upperKey) > 0)
+        {
+            return 0;
+        }
+
+        if (IsDuplicateRun)
+        {
+            ReadOnlySpan<byte> runKey = VarKeyScalar8Layout.ReadDuplicateRunKey(bytes.Span);
+            return runKey.SequenceCompareTo(lowerKey) >= 0 && runKey.SequenceCompareTo(upperKey) <= 0
+                ? ItemCount
+                : 0;
+        }
+
+        int lowerSlot = LowerBoundKey(lowerKey);
+        int upperSlot = UpperBoundKey(upperKey);
+        return Math.Max(0, upperSlot - lowerSlot);
+    }
+
+    /// <summary>
+    /// Finds the first sorted slot whose key is greater than the supplied raw key.<br/>
+    /// Inclusive range counts use this as the exclusive high slot so boundary shelves can count by slot indexes instead of walking every matching record.<br/>
+    /// </summary>
+    /// <param name="key">The inclusive high raw key bound.<br/></param>
+    /// <returns>The first slot after all keys less than or equal to <paramref name="key"/>.<br/></returns>
+    public int UpperBoundKey(ReadOnlySpan<byte> key)
+    {
+        if (IsDuplicateRun)
+        {
+            int comparison = VarKeyScalar8Layout.ReadDuplicateRunKey(bytes.Span).SequenceCompareTo(key);
+            return comparison <= 0 ? ItemCount : 0;
+        }
+
+        uint prefix = VarKeyScalar8Layout.CreateKeyPrefix(key);
+        int low = 0;
+        int high = ItemCount;
+        ReadOnlySpan<byte> localBytes = bytes.Span;
+        while (low < high)
+        {
+            int middle = low + ((high - low) >> 1);
+            int comparison = CompareSlotKey(localBytes, middle, prefix, key);
+            if (comparison <= 0)
+            {
+                low = middle + 1;
+            }
+            else
+            {
+                high = middle;
+            }
+        }
+
+        return low;
+    }
+
     internal uint ReadRecordOffsetAt(int slotIndex)
     {
+        if (IsDuplicateRun)
+        {
+            return checked((uint)(VarKeyScalar8Layout.GetDuplicateRunIdentityOffset(duplicateRunKeyLength) + (slotIndex * VarKeyScalar8Layout.IdentitySize)));
+        }
+
         return recordOffsets[slotIndex];
+    }
+
+    internal static bool TryValidateDuplicateRun(ReadOnlySpan<byte> bytes, VarKeyScalar8Profile profile, out int keyLength)
+    {
+        keyLength = 0;
+        if (bytes.Length < profile.ShelfExtentSize ||
+            VarKeyScalar8Layout.ReadMagic(bytes) != VarKeyScalar8Layout.Magic ||
+            VarKeyScalar8Layout.ReadFormatVersion(bytes) != VarKeyScalar8Layout.FormatVersion ||
+            VarKeyScalar8Layout.ReadHeaderSize(bytes) != VarKeyScalar8Layout.HeaderSize ||
+            VarKeyScalar8Layout.ReadShelfExtentSize(bytes) != profile.ShelfExtentSize ||
+            !VarKeyScalar8Layout.HasDuplicateRunFlag(bytes))
+        {
+            return false;
+        }
+
+        int count = VarKeyScalar8Layout.ReadItemCount(bytes);
+        keyLength = VarKeyScalar8Layout.ReadDuplicateRunKeyLength(bytes);
+        return count >= 0 &&
+            keyLength > 0 &&
+            keyLength <= profile.MaxKeyLength &&
+            count <= VarKeyScalar8Layout.GetDuplicateRunCapacity(profile, keyLength);
     }
 
     internal static bool TryDecodeSlots(ReadOnlySpan<byte> bytes, VarKeyScalar8Profile profile, out uint[] recordOffsets, out uint[] keyPrefixes)
@@ -210,4 +363,10 @@ internal sealed class VarKeyScalar8ReadOnly
 
         return VarKeyScalar8Layout.CompareRecordTuple(localBytes, checked((int)recordOffsets[slotIndex]), key, encodedIdentity);
     }
+
+    /// <summary>
+    /// Gets the physical extent size of the validated shelf backing this view.<br/>
+    /// Diagnostic readers use this to distinguish logical shelf bytes touched from backing reads satisfied by session caches.<br/>
+    /// </summary>
+    internal int ShelfExtentSize => profile.ShelfExtentSize;
 }

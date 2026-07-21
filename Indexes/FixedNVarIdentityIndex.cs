@@ -70,6 +70,42 @@ internal sealed class FixedNVarIdentityIndex : IDisposable
         return identities;
     }
 
+    /// <summary>
+    /// Counts ordinary fixed-key / variable-identity tuples owned by this `FV` index.<br/>
+    /// Single-shelf indexes read the decoded shelf item count directly; routed indexes visit each reachable leaf shelf once and sum shelf-local item counts.<br/>
+    /// </summary>
+    /// <returns>The ordinary tuple count represented by fixed-key / variable-identity shelves.<br/></returns>
+    public long CountOrdinaryIdentities()
+    {
+        ThrowIfDisposed();
+        if (handle.IsRouted)
+        {
+            return session.CountRoutedFixedNVarIdentityIdentities(handle);
+        }
+
+        return session.ReadFixedNVarIdentityShelfItemCountNarrow(handle.RootOffset, handle.Profile);
+    }
+
+    /// <summary>
+    /// Counts ordinary fixed-key / variable-identity tuples whose keys are inside an inclusive encoded key range.<br/>
+    /// The count path reads shelf slot/key metadata only and does not copy raw identity byte arrays.<br/>
+    /// </summary>
+    /// <param name="lowerKey">The inclusive lower encoded fixed-width key.<br/></param>
+    /// <param name="upperKey">The inclusive upper encoded fixed-width key.<br/></param>
+    /// <returns>The number of tuples in the requested encoded key range.<br/></returns>
+    public long CountIdentityRange(ReadOnlySpan<byte> lowerKey, ReadOnlySpan<byte> upperKey)
+    {
+        ThrowIfDisposed();
+        if (handle.IsRouted)
+        {
+            return session.CountRoutedFixedNVarIdentityRange(handle, lowerKey, upperKey);
+        }
+
+        byte[] shelfBytes = session.ReadFixedNVarIdentityShelfBytes(handle.RootOffset, handle.Profile);
+        LibraDex.Views.FixedNVarIdentityReadOnly shelf = new(shelfBytes, handle.Profile);
+        return shelf.CountItemsInKeyRange(lowerKey, upperKey);
+    }
+
     public void Dispose()
     {
         disposed = true;

@@ -20,10 +20,29 @@ public enum IndexKeys
 }
 
 /// <summary>
+/// Selects whether one identity may be associated with multiple keys inside one logical index.<br/>
+/// This is separate from <see cref="IndexKeys"/>: key uniqueness controls how many identities can sit under one key, while identity-key multiplicity controls how many keys can point at one identity.<br/>
+/// </summary>
+public enum IdentityKeyMultiplicity
+{
+    /// <summary>
+    /// Allows the same identity to be stored under multiple keys in the same index.<br/>
+    /// This is the default secondary-index behavior and preserves current LibraDex tuple semantics.<br/>
+    /// </summary>
+    MultipleKeysPerIdentity = 0,
+
+    /// <summary>
+    /// Allows each identity to appear under only one key in the same logical index.<br/>
+    /// This contract must be enforced by mutation paths before planners may treat same-index tuple/range cardinality as identity-set cardinality.<br/>
+    /// </summary>
+    SingleKeyPerIdentity = 1
+}
+
+/// <summary>
 /// Selects how string keys are represented for search and ordering intent.<br/>
 /// `Exact` preserves the input text identity, `Folded` supports case-insensitive point lookup, and `SortKey` supports stable no-case range ordering without query-time collation.<br/>
+/// Every profile includes exact string storage because the current string facade uses exact storage for tuple capture, mutation, and projection maintenance.<br/>
 /// </summary>
-[Flags]
 public enum StringKeys
 {
     /// <summary>
@@ -33,40 +52,22 @@ public enum StringKeys
     Exact = 1,
 
     /// <summary>
-    /// Stores folded text for case-insensitive point lookup.<br/>
-    /// This avoids forcing callers to apply ad hoc normalization before every lookup.<br/>
-    /// </summary>
-    Folded = 2,
-
-    /// <summary>
-    /// Stores sort-key bytes for stable range ordering without collation work at query time.<br/>
-    /// This can be used alone or as a sub-index beside exact or folded keys depending on query intent.<br/>
-    /// </summary>
-    SortKey = 4,
-
-    /// <summary>
     /// Stores exact and folded representations.<br/>
     /// This profile favors mixed case-sensitive and case-insensitive point lookup without paying for sort-key storage.<br/>
     /// </summary>
-    ExactAndFolded = Exact | Folded,
+    ExactAndFolded = 3,
 
     /// <summary>
     /// Stores exact and sort-key representations.<br/>
     /// This profile favors case-sensitive identity plus stable range ordering.<br/>
     /// </summary>
-    ExactAndSortKey = Exact | SortKey,
-
-    /// <summary>
-    /// Stores folded and sort-key representations.<br/>
-    /// This profile favors no-case point and range lookup without preserving an exact-key index.<br/>
-    /// </summary>
-    FoldedAndSortKey = Folded | SortKey,
+    ExactAndSortKey = 5,
 
     /// <summary>
     /// Stores exact, folded, and sort-key representations.<br/>
     /// This is the widest string profile and should be selected deliberately because it creates multiple maintained key projections.<br/>
     /// </summary>
-    ExactFoldedAndSortKey = Exact | Folded | SortKey
+    ExactFoldedAndSortKey = 7
 }
 
 /// <summary>
@@ -154,6 +155,72 @@ public enum DateTimeKeyEncoding
 }
 
 /// <summary>
+/// Selects the caller-facing concurrency mode for LibraDex write helpers that explicitly accept concurrent caller traffic.<br/>
+/// The default single-owner mode preserves the normal low-overhead index contract; queued writer mode admits overlapping insert calls and uses shelf-local writer contexts where the physical shape supports them, while serializing same-shelf contention, topology fallback, and publication as needed.<br/>
+/// </summary>
+public enum LibraDexConcurrencyMode
+{
+    /// <summary>
+    /// Uses the normal single-owner index contract.<br/>
+    /// Callers or an owner such as Abraxas are responsible for serializing writes.<br/>
+    /// </summary>
+    SingleOwner = 0,
+
+    /// <summary>
+    /// Uses an explicit concurrent-write admission facade for overlapping caller writes.<br/>
+    /// In this slice the connected implementation is limited to `SS8-8` inserts and may fall back to serialized insertion for same-shelf contention, publication, or unsupported topology route shapes.<br/>
+    /// </summary>
+    QueuedWriter = 1
+}
+
+/// <summary>
+/// Provides explicit options for write helpers that opt into a LibraDex concurrency mode.<br/>
+/// These options are deliberately separate from index creation options because they describe a runtime writer facade, not persisted index shape or projection policy.<br/>
+/// </summary>
+public sealed class LibraDexConcurrencyOptions
+{
+    /// <summary>
+    /// Gets or initializes the requested concurrency mode.<br/>
+    /// `SingleOwner` preserves the default ownership contract; helper methods that create queued writers require <see cref="LibraDexConcurrencyMode.QueuedWriter"/> explicitly or by their own default.<br/>
+    /// </summary>
+    public LibraDexConcurrencyMode Mode { get; init; } = LibraDexConcurrencyMode.SingleOwner;
+
+    /// <summary>
+    /// Gets or initializes an expert override for the maximum number of active writers admitted to one file session.<br/>
+    /// A null value uses LibraDex's shape-specific policy: immediate writer actions default to one active publisher, while concurrent batches use a runtime CPU-derived staging budget.<br/>
+    /// Values must be positive and are intentionally scoped to runtime admission rather than persisted index metadata.<br/>
+    /// </summary>
+    public int? MaxActiveWriters { get; init; }
+
+    /// <summary>
+    /// Gets or initializes the maximum number of write actions retained in the session queue before new admission is rejected.<br/>
+    /// The default of 1,024 protects the process from an unbounded producer backlog while remaining well above ordinary desktop and service concurrency.<br/>
+    /// </summary>
+    public int MaxQueuedWriters { get; init; } = 1024;
+
+    /// <summary>
+    /// Gets or initializes the maximum time an action may wait for admission.<br/>
+    /// The default is infinite because cancellation is the normal shutdown mechanism; applications may set a finite timeout to impose a service deadline.<br/>
+    /// </summary>
+    public TimeSpan QueueTimeout { get; init; } = Timeout.InfiniteTimeSpan;
+
+    /// <summary>
+    /// Gets or initializes the number of tuple operations an admitted action may perform before it cooperatively releases and reacquires its queue position.<br/>
+    /// The default of 1,000 prevents one long-running producer from monopolizing immediate-writer admission without adding a clock read to every tuple.<br/>
+    /// </summary>
+    public int MaxActionItems { get; init; } = 1000;
+
+    /// <summary>
+    /// Gets a reusable options instance for queued-writer mode.<br/>
+    /// This keeps internal integration call sites compact while still making the selected mode explicit.<br/>
+    /// </summary>
+    public static LibraDexConcurrencyOptions QueuedWriter { get; } = new()
+    {
+        Mode = LibraDexConcurrencyMode.QueuedWriter
+    };
+}
+
+/// <summary>
 /// Public per-index options resolved at create/open time.<br/>
 /// These options represent index contracts or maintained projections; callers should not need to repeat them on every insert or query.<br/>
 /// </summary>
@@ -164,6 +231,12 @@ public sealed class IndexOptions
     /// `NonUnique` is the default because many index use cases map one logical key to multiple identities.<br/>
     /// </summary>
     public IndexKeys Keys { get; init; } = IndexKeys.NonUnique;
+
+    /// <summary>
+    /// Gets or initializes whether one identity can be stored under multiple keys in this index.<br/>
+    /// The default keeps normal secondary-index semantics; `SingleKeyPerIdentity` is an opt-in contract that can support stronger same-index count planning after every active write path enforces it.<br/>
+    /// </summary>
+    public IdentityKeyMultiplicity IdentityKeyMultiplicity { get; init; } = IdentityKeyMultiplicity.MultipleKeysPerIdentity;
 
     /// <summary>
     /// Gets or initializes the string key projection profile for string-key indexes.<br/>
@@ -201,4 +274,10 @@ public sealed class IndexOptions
     /// This overrides the catalog-level policy for managed residual comparison or prepared membership on this index, but it does not replace encoded-key, folded-text, sort-key, or structured projection routes.<br/>
     /// </summary>
     public LibraDexStringComparisonPolicy? StringComparisonPolicy { get; init; }
+
+    /// <summary>
+    /// Gets or initializes the session-local immutable-shelf read-cache ceiling for this index.<br/>
+    /// Zero keeps the design-intent default of no limit; a positive value bounds retained shelf bytes for this physical index only.<br/>
+    /// </summary>
+    public long ReadCacheMaxBytes { get; init; }
 }

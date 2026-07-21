@@ -991,12 +991,7 @@ public class LibraDexConditionOperator<TValue>
 
     private protected bool IsNegated => negate;
 
-    /// <summary>
-    /// Captures all identities visible through the selected index.<br/>
-    /// This is mainly useful for condition-scoped grouping and complement/universe operations; ordinary targeted selection should prefer a narrower operator.<br/>
-    /// </summary>
-    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
-    public LibraDexConditionContinueOrEnd All()
+    internal LibraDexConditionContinueOrEnd All()
         => Add(LibraDexConditionOperatorKind.All);
 
     /// <summary>

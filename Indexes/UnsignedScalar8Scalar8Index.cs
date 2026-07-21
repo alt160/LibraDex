@@ -6,7 +6,7 @@ namespace LibraDex;
 /// Provides the first typed public wrapper over an `SS8-8` index using unsigned scalar-8 keys and unsigned scalar-8 identities.<br/>
 /// The wrapper keeps codec choice explicit while delegating storage, routing, batching, and telemetry to the encoded `Scalar8Scalar8Index` core.<br/>
 /// </summary>
-public sealed class UnsignedScalar8Scalar8Index : IDisposable
+internal sealed class UnsignedScalar8Scalar8Index : IDisposable
 {
     private readonly Scalar8Scalar8Index encodedIndex;
 
@@ -48,6 +48,20 @@ public sealed class UnsignedScalar8Scalar8Index : IDisposable
     }
 
     /// <summary>
+    /// Starts an internal queued writer facade for typed unsigned scalar `SS8-8` inserts.<br/>
+    /// The facade accepts unsigned scalar values, serializes overlapping caller operations, and delegates publication behavior to the encoded queued writer.<br/>
+    /// This keeps Abraxas-style typed integration away from raw encoded values while preserving the current queued-writer contract.<br/>
+    /// </summary>
+    /// <param name="options">Optional concurrency options; defaults to queued-writer mode for this explicit queued-writer factory.<br/></param>
+    /// <returns>A typed queued writer facade for this unsigned scalar index.<br/></returns>
+    /// <exception cref="ObjectDisposedException">Thrown when the index has already been disposed.<br/></exception>
+    /// <exception cref="NotSupportedException">Thrown when the requested concurrency mode is not queued-writer mode.<br/></exception>
+    internal UnsignedScalar8Scalar8QueuedWriter BeginQueuedWriter(LibraDexConcurrencyOptions? options = null)
+    {
+        return new UnsignedScalar8Scalar8QueuedWriter(encodedIndex.BeginQueuedWriter(options));
+    }
+
+    /// <summary>
     /// Inserts one unsigned scalar key and unsigned scalar identity into this index.<br/>
     /// Values are encoded with the unsigned scalar-8 codec before they enter the shared encoded routed mutation path.<br/>
     /// </summary>
@@ -66,11 +80,7 @@ public sealed class UnsignedScalar8Scalar8Index : IDisposable
             Scalar8Scalar8Layout.EncodeUnsignedScalar8(key),
             Scalar8Scalar8Layout.EncodeUnsignedScalar8(identity),
             allowDuplicateKeys);
-        return new UnsignedScalar8Scalar8InsertResult(
-            UnsignedScalar8Scalar8ResultMapper.MapInsertOutcome(result.Outcome),
-            result.CreatedInitialShelfRoute,
-            result.RouteCreateCommit,
-            result.InsertCommit);
+        return UnsignedScalar8Scalar8ResultMapper.MapInsert(result);
     }
 
     /// <summary>
@@ -146,11 +156,46 @@ public sealed class UnsignedScalar8Scalar8Index : IDisposable
 }
 
 /// <summary>
+/// Provides a typed unsigned scalar facade over the encoded `SS8-8` queued writer.<br/>
+/// The wrapper serializes overlapping inserts through the encoded queued writer while keeping callers on unsigned key and identity values.<br/>
+/// </summary>
+internal sealed class UnsignedScalar8Scalar8QueuedWriter
+{
+    private readonly Scalar8Scalar8QueuedWriter encodedWriter;
+
+    internal UnsignedScalar8Scalar8QueuedWriter(Scalar8Scalar8QueuedWriter encodedWriter)
+    {
+        this.encodedWriter = encodedWriter;
+    }
+
+    /// <summary>
+    /// Inserts one unsigned scalar key and identity through the typed queued writer facade.<br/>
+    /// The values are encoded before entering the shared queued-writer path, so queued path attribution and commit telemetry remain identical to the encoded core.<br/>
+    /// </summary>
+    /// <param name="key">The unsigned scalar key to insert.<br/></param>
+    /// <param name="identity">The unsigned scalar identity value associated with the key.<br/></param>
+    /// <param name="allowDuplicateKeys">Whether multiple identities may share the same key.<br/></param>
+    /// <returns>The typed insert result and queued-writer attribution.<br/></returns>
+    /// <exception cref="InvalidDataException">Thrown when the resolved route graph or shelf bytes are invalid.<br/></exception>
+    internal UnsignedScalar8Scalar8InsertResult Insert(
+        ulong key,
+        ulong identity,
+        bool allowDuplicateKeys = true)
+    {
+        Scalar8Scalar8EncodedInsertResult result = encodedWriter.InsertEncoded(
+            Scalar8Scalar8Layout.EncodeUnsignedScalar8(key),
+            Scalar8Scalar8Layout.EncodeUnsignedScalar8(identity),
+            allowDuplicateKeys);
+        return UnsignedScalar8Scalar8ResultMapper.MapInsert(result);
+    }
+}
+
+/// <summary>
 /// Provides a forward-only typed cursor over unsigned scalar `SS8-8` range results.<br/>
 /// The reader wraps the encoded `SS8-8` cursor while preserving unsigned call-site values, giving the typed API the same datareader-style surface as the generic fixed facade.<br/>
 /// Use <see cref="TryReadNextIdentity(out ulong)"/> for identity-only streaming, <see cref="TryReadNextKey(out ulong)"/> for key-only streaming, and <see cref="TryReadNext(out ulong, out ulong)"/> when both tuple fields are needed.<br/>
 /// </summary>
-public sealed class UnsignedScalar8Scalar8RangeReader : IDisposable
+internal sealed class UnsignedScalar8Scalar8RangeReader : IDisposable
 {
     private readonly Scalar8Scalar8RangeReader encodedReader;
     private bool disposed;

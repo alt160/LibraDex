@@ -8,10 +8,11 @@ namespace LibraDex;
 /// Batches encoded `SS8-8` mutations by deferring durability publication until commit.<br/>
 /// The first batch model is not a SQL transaction: it is a developer-controlled durability cadence for bulk identity-index mutation, with abort implemented as discarding unpublished staged writes.<br/>
 /// </summary>
-public sealed class Scalar8Scalar8Batch : IDisposable
+internal sealed class Scalar8Scalar8Batch : IDisposable
 {
     private readonly Scalar8Scalar8Index index;
     private readonly LibraDexFileSessionDurabilityBatch durabilityBatch;
+    private readonly bool ownsDurabilityBatch;
     private readonly Dictionary<long, Scalar8Scalar8BatchShelfCacheEntry> shelfCache = [];
     private readonly Dictionary<Scalar8Scalar8BatchRouteCacheKey, Scalar8Scalar8RouteTarget> routeTargetCache = [];
     private long attemptedInsertCount;
@@ -30,9 +31,18 @@ public sealed class Scalar8Scalar8Batch : IDisposable
     internal Scalar8Scalar8Batch(
         Scalar8Scalar8Index index,
         LibraDexFileSessionDurabilityBatch durabilityBatch)
+        : this(index, durabilityBatch, ownsDurabilityBatch: true)
+    {
+    }
+
+    internal Scalar8Scalar8Batch(
+        Scalar8Scalar8Index index,
+        LibraDexFileSessionDurabilityBatch durabilityBatch,
+        bool ownsDurabilityBatch)
     {
         this.index = index;
         this.durabilityBatch = durabilityBatch;
+        this.ownsDurabilityBatch = ownsDurabilityBatch;
     }
 
     /// <summary>
@@ -92,6 +102,10 @@ public sealed class Scalar8Scalar8Batch : IDisposable
     public Scalar8Scalar8BatchCommitResult Commit()
     {
         ThrowIfCompleted();
+        if (!ownsDurabilityBatch)
+        {
+            throw new InvalidOperationException("A shared SS8-8 batch cannot publish the owning durability boundary directly.");
+        }
 
         completed = true;
         long flushStart = commitAttributionEnabled ? Stopwatch.GetTimestamp() : 0;
@@ -102,7 +116,7 @@ public sealed class Scalar8Scalar8Batch : IDisposable
         }
 
         long commitStart = commitAttributionEnabled ? Stopwatch.GetTimestamp() : 0;
-        (DataKernelCommitTelemetry commit, long deferredRequests) = durabilityBatch.Commit();
+        (DataKernelCommitTelemetry commit, long deferredRequests, _) = durabilityBatch.Commit();
         if (commitAttributionEnabled)
         {
             commitAttributionTelemetry.DataKernelCommitTicks += Stopwatch.GetTimestamp() - commitStart;
@@ -122,6 +136,17 @@ public sealed class Scalar8Scalar8Batch : IDisposable
     }
 
     /// <summary>
+    /// Publishes all staged writes accumulated by the encoded `SS8-8` batch and closes this batch boundary.<br/>
+    /// This is the preferred spelling for new code because it describes visibility and durability cadence without implying a database transaction commit.<br/>
+    /// The current implementation delegates to <see cref="Commit"/> so existing telemetry, cache promotion, and compatibility behavior remain identical.<br/>
+    /// </summary>
+    /// <returns>The aggregate batch outcome and DataKernel publication telemetry.</returns>
+    public Scalar8Scalar8BatchCommitResult Publish()
+    {
+        return Commit();
+    }
+
+    /// <summary>
     /// Aborts the batch by discarding staged writes that were not published.<br/>
     /// This is a revert-to-current-backing-state operation and is intentionally heavier than a normal successful commit path.<br/>
     /// </summary>
@@ -129,6 +154,10 @@ public sealed class Scalar8Scalar8Batch : IDisposable
     public Scalar8Scalar8BatchAbortResult Abort()
     {
         ThrowIfCompleted();
+        if (!ownsDurabilityBatch)
+        {
+            throw new InvalidOperationException("A shared SS8-8 batch cannot abort the owning durability boundary directly.");
+        }
 
         completed = true;
         shelfCache.Clear();
@@ -143,10 +172,49 @@ public sealed class Scalar8Scalar8Batch : IDisposable
     /// </summary>
     public void Dispose()
     {
-        if (!completed)
+        if (!completed && ownsDurabilityBatch)
         {
             Abort();
         }
+    }
+
+    /// <summary>
+    /// Flushes dirty cached shelves into a shared outer durability batch without committing the session.<br/>
+    /// Catalog group batching uses this to preserve the SS8-8 shelf-cache benefit while still publishing all participating indexes through one group commit.<br/>
+    /// </summary>
+    internal void PrepareSharedDurabilityCommit()
+    {
+        ThrowIfCompleted();
+        FlushShelfCache(forceFullRewrite: false, clearAfterFlush: false);
+    }
+
+    /// <summary>
+    /// Completes a shared outer durability commit after the owning batch manager has successfully published the session writes.<br/>
+    /// Clean shelf images are made available to the session-local reuse cache only after the DataKernel commit succeeds.<br/>
+    /// </summary>
+    internal void CompleteSharedDurabilityCommit()
+    {
+        ThrowIfCompleted();
+        StoreCleanShelfCacheEntriesAfterCommit();
+        shelfCache.Clear();
+        routeTargetCache.Clear();
+        completed = true;
+    }
+
+    /// <summary>
+    /// Drops shared-batch cached shelf state without touching the outer session durability batch.<br/>
+    /// This is the shared-batch counterpart to abort, used when the owner will discard pending DataKernel writes itself.<br/>
+    /// </summary>
+    internal void AbortSharedDurabilityBatch()
+    {
+        if (completed)
+        {
+            return;
+        }
+
+        shelfCache.Clear();
+        routeTargetCache.Clear();
+        completed = true;
     }
 
     /// <summary>
