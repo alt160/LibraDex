@@ -1088,7 +1088,8 @@ internal sealed class DataKernel : IDisposable
             newer.Previous = state.Previous;
         if (state.HoldsStorageReadLock)
         {
-            storageSync.ExitReadLock();
+            if (state.ActiveDepth > 0)
+                storageSync.ExitReadLock();
         }
         else if (state.HoldsStorageUpgradeableReadLock)
         {
@@ -2204,6 +2205,8 @@ internal sealed class DataKernel : IDisposable
             }
 
             current.ActiveDepth = 0;
+            if (current.HoldsStorageReadLock)
+                current.Owner.storageSync.ExitReadLock();
         }
 
         /// <summary>
@@ -2219,6 +2222,8 @@ internal sealed class DataKernel : IDisposable
                 throw new InvalidOperationException("A coherent read snapshot can be activated only by its owning thread.");
             }
 
+            if (current.ActiveDepth == 0 && current.HoldsStorageReadLock)
+                current.Owner.storageSync.EnterReadLock();
             current.ActiveDepth++;
             return new CoherentReadUse(current);
         }
@@ -2251,6 +2256,8 @@ internal sealed class DataKernel : IDisposable
             if (state is not null)
             {
                 state.ActiveDepth--;
+                if (state.ActiveDepth == 0 && state.HoldsStorageReadLock)
+                    state.Owner.storageSync.ExitReadLock();
             }
         }
     }

@@ -189,6 +189,21 @@ internal sealed partial class LibraDexFileSession
         if (tuples.Count == 0)
         {
             long canaryLimit = GetScalar8Scalar8GrowthCanaryLimit(0);
+            TimeSpan publicationTime = TimeSpan.Zero;
+            DataKernelCommitTelemetry rootCommit = default;
+            if (!requireEmptyRoot)
+            {
+                var publishTimer = Stopwatch.StartNew();
+                RawDataReservation rootRewrite = kernel.ReserveAt(rootRouterOffset, RouterLayout.Size);
+                new RouterWriter(rootRewrite.Span).InitializeExpandedOneByte(
+                    0,
+                    currentRoot.AllocationClassId,
+                    new long[RouterLayout.MaxOneByteRouteCount]);
+                rootCommit = CommitAndInvalidateRouterReadCache();
+                publishTimer.Stop();
+                publicationTime = publishTimer.Elapsed;
+            }
+
             return new Scalar8Scalar8SortedBuildResult(
                 0,
                 0,
@@ -198,9 +213,9 @@ internal sealed partial class LibraDexFileSession
                 RouterLayout.Size,
                 canaryLimit,
                 TimeSpan.Zero,
-                TimeSpan.Zero,
+                publicationTime,
                 default,
-                default);
+                rootCommit);
         }
 
         var state = new Scalar8Scalar8SortedBuildState(profile, currentRoot.AllocationClassId, cancellationToken);
