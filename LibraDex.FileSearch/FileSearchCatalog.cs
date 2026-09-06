@@ -4205,10 +4205,10 @@ internal sealed class FileSearchCatalog : IDisposable
         DateTime value2 = row.Operator == SearchOperator.Between ? ParseUtcDateTime(row.Value2, indexName) : default;
         return row.Operator switch
         {
-            SearchOperator.EqualTo => WithPreview(clause.Where(indexName).AsDate.EqualTo(value1), $"Where(\"{indexName}\").AsDate.EqualTo({FormatDate(value1)})", out preview),
-            SearchOperator.GreaterOrEqual => WithPreview(clause.Where(indexName).AsDate.GreaterOrEqual(value1), $"Where(\"{indexName}\").AsDate.GreaterOrEqual({FormatDate(value1)})", out preview),
-            SearchOperator.LessOrEqual => WithPreview(clause.Where(indexName).AsDate.LessOrEqual(value1), $"Where(\"{indexName}\").AsDate.LessOrEqual({FormatDate(value1)})", out preview),
-            SearchOperator.Between => WithPreview(clause.Where(indexName).AsDate.Between(value1, value2), $"Where(\"{indexName}\").AsDate.Between({FormatDate(value1)}, {FormatDate(value2)})", out preview),
+            SearchOperator.EqualTo => WithPreview(clause.Where(indexName).AsDateTime.EqualTo(value1), $"Where(\"{indexName}\").AsDateTime.EqualTo({FormatDate(value1)})", out preview),
+            SearchOperator.GreaterOrEqual => WithPreview(clause.Where(indexName).AsDateTime.GreaterOrEqual(value1), $"Where(\"{indexName}\").AsDateTime.GreaterOrEqual({FormatDate(value1)})", out preview),
+            SearchOperator.LessOrEqual => WithPreview(clause.Where(indexName).AsDateTime.LessOrEqual(value1), $"Where(\"{indexName}\").AsDateTime.LessOrEqual({FormatDate(value1)})", out preview),
+            SearchOperator.Between => WithPreview(clause.Where(indexName).AsDateTime.Between(value1, value2), $"Where(\"{indexName}\").AsDateTime.Between({FormatDate(value1)}, {FormatDate(value2)})", out preview),
             _ => throw new NotSupportedException($"Unsupported DateTime operator {row.Operator}.")
         };
     }

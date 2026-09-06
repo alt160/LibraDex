@@ -751,10 +751,32 @@ internal sealed partial class LibraDexFileSession
             }
 
             scalar16VarIdentityMutableBatchShelves.Remove(target.Offset);
-            RawDataReservation grownReservation = kernel.Reserve(grownProfile.ShelfExtentSize);
-            grownShelf.CopyTo(grownReservation.Span);
-            RepointRoute(pathTarget.ParentRouterOffset, pathTarget.RouteIndex, grownReservation.Extent.Offset);
-            DataKernelCommitTelemetry telemetry = CommitAndInvalidateRouterReadCache();
+            if (!TryPublishSharedShelfGrowth(
+                SharedShelfGrowthShapeScalar16VarIdentity,
+                "SV16",
+                rootRouterOffset,
+                pathTarget.ParentRouterOffset,
+                pathTarget.RouteIndex,
+                target.Offset,
+                profile.ShelfExtentSize,
+                grownProfile.ShelfExtentSize,
+                grownShelf,
+                deferRouterCacheInvalidation: false,
+                out DataKernelCommitTelemetry telemetry,
+                out long grownShelfOffset))
+            {
+                return InsertWalkedRoutedScalar16VarIdentity(
+                    rootRouterOffset,
+                    maxIdentityLength,
+                    encodedKeyHigh,
+                    encodedKeyLow,
+                    identity,
+                    allowDuplicateKeys,
+                    maxRouterHops,
+                    collectAttribution,
+                    out attribution);
+            }
+
             if (collectAttribution)
             {
                 structuralTicks += Stopwatch.GetTimestamp() - started;
@@ -765,7 +787,7 @@ internal sealed partial class LibraDexFileSession
                 Scalar16VarIdentityRoutedInsertKind.WalkedGrow,
                 grownResult,
                 target.Offset,
-                grownReservation.Extent.Offset,
+                grownShelfOffset,
                 telemetry,
                 beforeItemCount + 1,
                 grownProfile.ShelfExtentSize,
@@ -1660,6 +1682,15 @@ internal sealed partial class LibraDexFileSession
             throw new ArgumentOutOfRangeException(nameof(splitKeyDepth), splitKeyDepth, "The SV16 split depth cannot precede the transformed router depth.");
         }
 
+        if (!Scalar16VarIdentityMutableShelfView.TryCreate(leftShelf, profile, out Scalar16VarIdentityMutableShelfView stemShelf) ||
+            stemShelf.ItemCount == 0)
+        {
+            throw new InvalidDataException("The SV16 transform publisher requires a readable, non-empty left shelf to prove its exact route stem.");
+        }
+
+        ulong stemKeyHigh = stemShelf.ReadKeyHighAt(0);
+        ulong stemKeyLow = stemShelf.ReadKeyLowAt(0);
+
         RawDataReservation leftAppend = kernel.Reserve(profile.ShelfExtentSize);
         leftShelf.CopyTo(leftAppend.Span);
         leftShelfOffset = leftAppend.Extent.Offset;
@@ -1675,7 +1706,11 @@ internal sealed partial class LibraDexFileSession
             ushort routerDepth = checked((ushort)(childRouterKeyDepth + i + 1));
             long[] targets = routerDepth == splitKeyDepth
                 ? CreateSplitScalar8Scalar8RouteTargets(leftShelfOffset, rightShelfOffset, selectedRightPrefix)
-                : CreateFilledScalar8Scalar8RouteTargets(nextRouterOffset);
+                : CreateScalar8Scalar8IntermediateSplitRouteTargets(
+                    nextRouterOffset,
+                    leftShelfOffset,
+                    rightShelfOffset,
+                    GetScalar16VarIdentityPrefix(stemKeyHigh, stemKeyLow, routerDepth));
 
             RawDataReservation appendedRouter = kernel.Reserve(RouterLayout.Size);
             RouterWriter appendedWriter = new(appendedRouter.Span);
@@ -1688,7 +1723,13 @@ internal sealed partial class LibraDexFileSession
         sourceWriter.InitializeExpandedOneByte(
             childRouterKeyDepth,
             allocationClassId,
-            CreateUniformScalar8Scalar8RouteTargets(nextRouterOffset, leftShelfOffset, rightShelfOffset, selectedRightPrefix));
+            nextRouterOffset == 0
+                ? CreateSplitScalar8Scalar8RouteTargets(leftShelfOffset, rightShelfOffset, selectedRightPrefix)
+                : CreateScalar8Scalar8IntermediateSplitRouteTargets(
+                    nextRouterOffset,
+                    leftShelfOffset,
+                    rightShelfOffset,
+                    GetScalar16VarIdentityPrefix(stemKeyHigh, stemKeyLow, childRouterKeyDepth)));
 
         uint arenaFlags = profile.ShelfExtentSize > ushort.MaxValue + 1
             ? RouterLayout.ArenaLengthFromPageCountFlag
@@ -1788,7 +1829,11 @@ internal sealed partial class LibraDexFileSession
         }
 
         Scalar16VarIdentitySplitIdentitySource identitySource = new(mutableShelf, sourceSlots, incomingIndex, incomingIdentity);
-        int firstSplitDepth = FindFirstDifferingScalar16VarIdentityDepth(keyHighs, keyLows, currentRouterDepth + 1);
+        int firstSplitDepth = FindFirstDifferingScalar16VarIdentityDepth(keyHighs, keyLows, 0);
+        if (firstSplitDepth >= 0 && firstSplitDepth < currentRouterDepth + 1)
+        {
+            throw new InvalidDataException($"The SV16 transform source violates its routed prefix stem. FirstDifferentDepth={firstSplitDepth}; FirstOwnedDepth={currentRouterDepth + 1}; Count={keyHighs.Length}.");
+        }
         for (int depth = firstSplitDepth; depth >= 0 && depth < Scalar16VarIdentityLayout.KeySize; depth++)
         {
             if (TryBuildScalar16VarIdentitySplitAtDepth(keyHighs, keyLows, identitySource, profile, checked((ushort)depth), out selectedRightPrefix, out leftShelf, out rightShelf, out leftCount, out rightCount))

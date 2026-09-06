@@ -197,13 +197,71 @@ public sealed class CatalogIndexFactories
     }
 
     /// <summary>
+    /// Permanently removes one logical index definition from the supplied index set.<br/>
+    /// The catalog directory deactivates the owner slot and every owned text-projection companion atomically, then retires allocator-owned current-format topology only after the root removal is durable and coherent readers have quiesced.<br/>
+    /// Legacy, append-fallback, malformed, or otherwise unclassified extents remain conservatively unreachable for later closed-file compaction rather than being guessed into a reusable allocation class.<br/>
+    /// Existing handles to the dropped index become detached and must not be used after this method returns.<br/>
+    /// </summary>
+    /// <param name="indexSet">The identity-universe/index-set name containing the index.<br/></param>
+    /// <param name="name">The logical index name to remove.<br/></param>
+    /// <returns><c>true</c> when an active logical index was dropped; otherwise <c>false</c>.<br/></returns>
+    public bool Drop(string indexSet, string name)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(indexSet);
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        if (!TryGetInfo(indexSet, name, out CatalogIndexInfo info))
+            return false;
+
+        catalog.DropIndex(info);
+        return true;
+    }
+
+    /// <summary>
+    /// Permanently removes every logical index definition in one index set.<br/>
+    /// All logical-owner and owned projection slots are deactivated in one durable catalog-directory commit, so reopen observes either the complete prior set or no set.<br/>
+    /// Allocator-owned current-format topology is retired only after the directory removal is durable and coherent readers have quiesced; legacy or unclassified extents remain conservatively unreachable for later closed-file compaction.<br/>
+    /// Existing handles to any dropped index become detached and must not be used after this method returns.<br/>
+    /// </summary>
+    /// <param name="indexSet">The identity-universe/index-set name to remove.<br/></param>
+    /// <returns><c>true</c> when at least one active logical index was dropped; otherwise <c>false</c>.<br/></returns>
+    public bool DropIndexSet(string indexSet)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(indexSet);
+        CatalogIndexInfo[] infos = List();
+        var count = 0;
+        for (var i = 0; i < infos.Length; i++)
+        {
+            if (string.Equals(infos[i].Group, indexSet, StringComparison.Ordinal))
+                count++;
+        }
+
+        if (count == 0)
+            return false;
+
+        var owners = new CatalogIndexInfo[count];
+        var ownerIndex = 0;
+        for (var i = 0; i < infos.Length; i++)
+        {
+            if (string.Equals(infos[i].Group, indexSet, StringComparison.Ordinal))
+                owners[ownerIndex++] = infos[i];
+        }
+
+        catalog.DropIndexSet(indexSet, owners);
+        return true;
+    }
+
+    /// <summary>
     /// Creates an index from a logical shape descriptor.<br/>
     /// This is the programmatic counterpart to the grouped fluent factories: higher-level adapters can build one shape object, then pass it to catalog creation without reconstructing generic factory calls.<br/>
     /// </summary>
-    /// <param name="shape">The logical index shape to create.</param>
-    /// <param name="options">Optional per-index options override; null uses the contracts embedded in <paramref name="shape"/>.</param>
-    /// <returns>A strict non-generic index handle for the created index.</returns>
-    public IIndex Create(LibraDexIndexShapeSpec shape, IndexOptions? options = null)
+    /// <param name="shape">The logical index shape to create.<br/></param>
+    /// <param name="options">Optional per-index options override; null uses the contracts embedded in <paramref name="shape"/>.<br/></param>
+    /// <param name="identityLookupMode">The session-local identity-inversion lifecycle policy.<br/><see cref="IdentityLookupMode.BuildOnOpen"/> blocks until the created index's inversion is complete.<br/></param>
+    /// <returns>A strict non-generic index handle for the created index.<br/></returns>
+    public IIndex Create(
+        LibraDexIndexShapeSpec shape,
+        IndexOptions? options = null,
+        IdentityLookupMode identityLookupMode = IdentityLookupMode.Explicit)
     {
         ArgumentNullException.ThrowIfNull(shape);
         if (TryGetInfo(shape.Group, shape.Name, out _))
@@ -216,16 +274,19 @@ public sealed class CatalogIndexFactories
             return catalog.CreateCompositeIndex(shape, ResolveCreateSlot(null), options);
         }
 
-        return catalog.CreateIndex(shape, ResolveCreateSlot(null), options);
+        return catalog.CreateIndex(shape, ResolveCreateSlot(null), options, identityLookupMode);
     }
 
     /// <summary>
     /// Opens an existing index that matches a logical shape descriptor.<br/>
     /// The shape is used as an expected contract, and persisted catalog metadata is validated before the non-generic handle is returned.<br/>
     /// </summary>
-    /// <param name="shape">The expected logical index shape.</param>
-    /// <returns>A strict non-generic index handle for the opened index.</returns>
-    public IIndex Open(LibraDexIndexShapeSpec shape)
+    /// <param name="shape">The expected logical index shape.<br/></param>
+    /// <param name="identityLookupMode">The session-local identity-inversion lifecycle policy.<br/><see cref="IdentityLookupMode.BuildOnOpen"/> blocks until the opened index's inversion is complete.<br/></param>
+    /// <returns>A strict non-generic index handle for the opened index.<br/></returns>
+    public IIndex Open(
+        LibraDexIndexShapeSpec shape,
+        IdentityLookupMode identityLookupMode = IdentityLookupMode.Explicit)
     {
         ArgumentNullException.ThrowIfNull(shape);
         if (!TryGetInfo(shape.Group, shape.Name, out CatalogIndexInfo info))
@@ -234,22 +295,29 @@ public sealed class CatalogIndexFactories
         }
 
         ValidateShape(shape, info);
-        return catalog.OpenIndex(info);
+        IIndex index = catalog.OpenIndex(info);
+        if (identityLookupMode != IdentityLookupMode.Explicit)
+            index.IdentityLookup.Configure(identityLookupMode);
+        return index;
     }
 
     /// <summary>
     /// Opens an existing index matching a logical shape descriptor, or creates it when missing.<br/>
     /// This keeps descriptor-driven setup low-friction for generated code while preserving metadata validation on the open branch.<br/>
     /// </summary>
-    /// <param name="shape">The logical index shape to open or create.</param>
-    /// <param name="options">Optional per-index options override for the create branch; null uses the contracts embedded in <paramref name="shape"/>.</param>
-    /// <returns>A strict non-generic index handle for the existing or created index.</returns>
-    public IIndex CreateOrOpen(LibraDexIndexShapeSpec shape, IndexOptions? options = null)
+    /// <param name="shape">The logical index shape to open or create.<br/></param>
+    /// <param name="options">Optional per-index options override for the create branch; null uses the contracts embedded in <paramref name="shape"/>.<br/></param>
+    /// <param name="identityLookupMode">The session-local identity-inversion lifecycle policy.<br/><see cref="IdentityLookupMode.BuildOnOpen"/> blocks until the returned index's inversion is complete.<br/></param>
+    /// <returns>A strict non-generic index handle for the existing or created index.<br/></returns>
+    public IIndex CreateOrOpen(
+        LibraDexIndexShapeSpec shape,
+        IndexOptions? options = null,
+        IdentityLookupMode identityLookupMode = IdentityLookupMode.Explicit)
     {
         ArgumentNullException.ThrowIfNull(shape);
         return TryGetInfo(shape.Group, shape.Name, out _)
-            ? Open(shape)
-            : Create(shape, options);
+            ? Open(shape, identityLookupMode)
+            : Create(shape, options, identityLookupMode);
     }
 
     /// <summary>
@@ -508,6 +576,26 @@ public sealed partial class CatalogIdentityGroupIndexes
     public CatalogIndexSetInverse Inverse => catalog.GetIndexSetInverse(this);
 
     /// <summary>
+    /// Permanently removes one logical index definition from this index set.<br/>
+    /// The operation deactivates the logical owner and any owned text-projection companions in one durable catalog-directory commit, then retires allocator-owned current-format topology after publication and coherent-reader safety.<br/>
+    /// Legacy or unclassified topology remains conservatively unreachable for later closed-file compaction.<br/>
+    /// Existing handles to the dropped index become detached and must not be used after this method returns.<br/>
+    /// </summary>
+    /// <param name="name">The logical index name to remove.<br/></param>
+    /// <returns><c>true</c> when an active logical index was dropped; otherwise <c>false</c>.<br/></returns>
+    public bool Drop(string name)
+        => owner.Drop(Name, name);
+
+    /// <summary>
+    /// Permanently removes this complete index set in one durable catalog-directory commit.<br/>
+    /// Every logical index and owned projection becomes unreachable together; allocator-owned current-format topology becomes reusable after publication and coherent-reader safety, while legacy or unclassified topology remains for catalog compaction.<br/>
+    /// Existing handles to any index in this set become detached and must not be used after this method returns.<br/>
+    /// </summary>
+    /// <returns><c>true</c> when at least one active logical index was dropped; otherwise <c>false</c>.<br/></returns>
+    public bool Drop()
+        => owner.DropIndexSet(Name);
+
+    /// <summary>
     /// Starts an inverse-key-map condition from identities rather than from a forward key lookup.<br/>
     /// Use this when the caller already has identities, or when an identity range should be filtered by indexed key values without object hydration.<br/>
     /// </summary>
@@ -537,6 +625,26 @@ public sealed partial class CatalogIdentityGroupIndexes
     /// <returns>A value-family selector for the chosen index.</returns>
     public LibraDexConditionValueTypeSelector Where(string indexName)
         => LibraDexCondition.Group(Name).Where(indexName);
+
+    /// <summary>
+    /// Starts a reusable condition with an execution-time index-name parameter.<br/>
+    /// The selected name is read once when the condition executes, allowing the same descriptor to target another compatible index without a caller lambda.<br/>
+    /// </summary>
+    /// <param name="indexName">The parameter containing the current index name.</param>
+    /// <returns>A value-family selector for the chosen index.</returns>
+    public LibraDexConditionValueTypeSelector Where(LibraDexParameter<string> indexName)
+        => LibraDexCondition.Group(Name).Where(indexName);
+
+    /// <summary>
+    /// Starts a reusable condition with an execution-time opened-index parameter.<br/>
+    /// The selected handle is snapshotted when execution begins and its group remains validated by the ordinary condition materializer.<br/>
+    /// </summary>
+    /// <typeparam name="TIndex">The opened index handle type.</typeparam>
+    /// <param name="index">The parameter containing the current opened index.</param>
+    /// <returns>A value-family selector for the chosen index.</returns>
+    public LibraDexConditionValueTypeSelector Where<TIndex>(LibraDexParameter<TIndex> index)
+        where TIndex : IIndex
+        => LibraDexCondition.Group(Name).Where(index);
 
     /// <summary>
     /// Opens an index by name inside this index set using metadata-driven catalog lookup.<br/>
@@ -614,7 +722,7 @@ public sealed partial class CatalogIdentityGroupIndexes
     /// <param name="index">The opened generic index instance to select.</param>
     /// <returns>A typed operator for the selected index key type.</returns>
     public LibraDexConditionOperator<TKey> Where<TKey, TIdentity>(LibraDexIndex<TKey, TIdentity> index)
-        => Where((IIndex)index).As<TKey>();
+        => Where((IIndex)index).AsKnown<TKey>();
 
     /// <summary>
     /// Starts a low-friction condition builder from a string index facade and selects string operators automatically.<br/>
@@ -755,6 +863,37 @@ public sealed partial class CatalogIdentityGroupIndexes
         => owner.TryGetInfo(Name, name, out info);
 
     /// <summary>
+    /// Gets whether an active index definition exists in this identity group.<br/>
+    /// The method inspects catalog metadata only; use an index count or entry enumeration when the question is whether that index currently contains data.<br/>
+    /// </summary>
+    /// <param name="name">The index definition name.</param>
+    /// <returns><see langword="true"/> when the definition is active.</returns>
+    public bool HasIndex(string name)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        return owner.TryGetInfo(Name, name, out _);
+    }
+
+    /// <summary>
+    /// Gets whether at least one identity matches a completed condition in this identity group.<br/>
+    /// The condition is materialized through the normal execution planner, including execution-time availability guards; result projection and return-shape descriptors are intentionally irrelevant to this Boolean producer.<br/>
+    /// </summary>
+    /// <param name="condition">The completed condition to test.</param>
+    /// <returns><see langword="true"/> when the condition produces at least one identity.</returns>
+    public bool Exists(LibraDexConditionEndCondition condition)
+    {
+        ArgumentNullException.ThrowIfNull(condition);
+        if (!string.Equals(condition.Group, Name, StringComparison.Ordinal))
+            throw new InvalidOperationException("The supplied condition belongs to a different LibraDex index set.");
+
+        IIdentityCriterion criterion = condition.MaterializeWithProjectionBridge(
+            name => this[name].Open(),
+            ResolveProjectionIndex,
+            TryResolveConditionIndex);
+        return LibraDexIdentityExecutionPlanner.Exists(criterion, IdentityDeduplication.Distinct);
+    }
+
+    /// <summary>
     /// Materializes identities for a completed condition over this index set.<br/>
     /// Index names referenced by the condition are resolved from the index-set metadata at materialization time, preserving deferred selector binding without making callers build resolver dictionaries by hand.<br/>
     /// </summary>
@@ -782,7 +921,8 @@ public sealed partial class CatalogIdentityGroupIndexes
 
         IIdentityCriterion criterion = condition.MaterializeWithProjectionBridge(
             name => this[name].Open(),
-            ResolveProjectionIndex);
+            ResolveProjectionIndex,
+            TryResolveConditionIndex);
         return criterion.IDsWith(ordering, deduplication, skip, take, bookmark).ToList<TIdentity>();
     }
 
@@ -814,7 +954,8 @@ public sealed partial class CatalogIdentityGroupIndexes
 
         IIdentityCriterion criterion = condition.MaterializeWithProjectionBridge(
             name => this[name].Open(),
-            ResolveProjectionIndex);
+            ResolveProjectionIndex,
+            TryResolveConditionIndex);
         return new LibraDexIdentityCursor<TIdentity>(
             criterion.IDsWith(ordering, deduplication, skip, take, bookmark).Iterate<TIdentity>());
     }
@@ -899,7 +1040,8 @@ public sealed partial class CatalogIdentityGroupIndexes
 
         IIdentityCriterion criterion = condition.MaterializeWithProjectionBridge(
             name => this[name].Open(),
-            ResolveProjectionIndex);
+            ResolveProjectionIndex,
+            TryResolveConditionIndex);
         if (TryReadDirectTargetLeafTuples(targetIndex, criterion, skip, take, direction, out IReadOnlyList<LibraDexRuntimeTuple>? leafRows))
         {
             return leafRows;
@@ -965,9 +1107,101 @@ public sealed partial class CatalogIdentityGroupIndexes
 
         IIdentityCriterion criterion = condition.MaterializeWithProjectionBridge(
             name => this[name].Open(),
-            ResolveProjectionIndex);
+            ResolveProjectionIndex,
+            TryResolveConditionIndex);
         foreach (LibraDexObjectTuple tuple in LibraDexConditionCursorExecutor.IterateTargetIndexTuples(criterion, targetIndex, skip: 0, take: null, direction))
             yield return new LibraDexRuntimeTuple(tuple.Key, tuple.Identity);
+    }
+
+    /// <summary>
+    /// Streams every key/identity tuple from one target index in physical key order without requiring a manufactured universal condition.<br/>
+    /// Unfiltered selection remains implicit at the developer-facing condition grammar while adapters and ordered-result consumers can request the complete tuple stream directly.<br/>
+    /// Execution uses the index's native tuple primitive and therefore preserves explicit null and empty key states supported by binary and text indexes.<br/>
+    /// </summary>
+    /// <param name="targetIndex">The selected target index whose complete tuple stream should be returned.<br/></param>
+    /// <param name="direction">The requested target-index key traversal direction.<br/></param>
+    /// <returns>Every runtime key/identity tuple from the selected target index in the requested direction.<br/></returns>
+    /// <exception cref="InvalidOperationException">The target index belongs to a different identity group.<br/></exception>
+    /// <exception cref="NotSupportedException">The target index does not expose a native tuple primitive.<br/></exception>
+    public IEnumerable<LibraDexRuntimeTuple> IterateTuples(
+        IIndex targetIndex,
+        QueryDirection direction = QueryDirection.Ascending)
+    {
+        ArgumentNullException.ThrowIfNull(targetIndex);
+        if (!string.Equals(targetIndex.Group, Name, StringComparison.Ordinal))
+            throw new InvalidOperationException("The target index belongs to a different LibraDex index set.");
+
+        LibraDexIdentityPrimitiveRequest request = new(
+            LibraDexCriteriaKind.All,
+            Array.Empty<object?>(),
+            TakeLimit: null,
+            direction);
+        if (targetIndex is IIdentityPrimitiveTupleStreamer tupleStreamer)
+        {
+            foreach (LibraDexObjectTuple tuple in tupleStreamer.IterateTuplePrimitive(request))
+                yield return new LibraDexRuntimeTuple(tuple.Key, tuple.Identity);
+
+            yield break;
+        }
+
+        if (targetIndex is IIdentityPrimitiveTupleExecutor tupleExecutor)
+        {
+            IReadOnlyList<LibraDexObjectTuple> tuples = tupleExecutor.ExecuteTuplePrimitive(request);
+            for (int i = 0; i < tuples.Count; i++)
+                yield return new LibraDexRuntimeTuple(tuples[i].Key, tuples[i].Identity);
+
+            yield break;
+        }
+
+        throw new NotSupportedException(
+            $"Index '{targetIndex.Name}' does not expose a native tuple primitive for unfiltered iteration.");
+    }
+
+    /// <summary>
+    /// Streams condition-matched tuples from a target index beginning at an inclusive physical key boundary.<br/>
+    /// The boundary narrows the sorted target-index cursor before identity membership filtering, allowing detached bookmarks to seek near their logical anchor without replaying earlier target keys.<br/>
+    /// The caller remains responsible for discarding the anchor tuple itself because more than one identity may share the boundary key.<br/>
+    /// </summary>
+    /// <param name="targetIndex">The sorted target index whose tuples provide result order.<br/></param>
+    /// <param name="condition">The frozen completed condition used to select visible identities.<br/></param>
+    /// <param name="boundaryValue">The inclusive target-index key at which traversal begins.<br/></param>
+    /// <param name="direction">The requested target-index traversal direction.<br/></param>
+    /// <returns>Condition-matched tuples beginning at the inclusive key boundary.<br/></returns>
+    internal IEnumerable<LibraDexRuntimeTuple> IterateTuplesFrom(
+        IIndex targetIndex,
+        LibraDexConditionEndCondition condition,
+        object? boundaryValue,
+        QueryDirection direction)
+    {
+        ArgumentNullException.ThrowIfNull(targetIndex);
+        ArgumentNullException.ThrowIfNull(condition);
+        if (!string.Equals(condition.Group, Name, StringComparison.Ordinal))
+            throw new InvalidOperationException("The supplied condition belongs to a different LibraDex index set.");
+        if (!string.Equals(targetIndex.Group, Name, StringComparison.Ordinal))
+            throw new InvalidOperationException("The target index belongs to a different LibraDex index set.");
+
+        IIdentityCriterion filterCriterion = condition.MaterializeWithProjectionBridge(
+            name => this[name].Open(),
+            ResolveProjectionIndex,
+            TryResolveConditionIndex);
+        LibraDexCriteriaKind boundaryKind = direction == QueryDirection.Ascending
+            ? LibraDexCriteriaKind.AtOrAfter
+            : LibraDexCriteriaKind.AtOrBefore;
+        IIdentityCriterion boundaryCriterion = LibraDexIdentityCriterion.Leaf(
+            targetIndex,
+            boundaryKind,
+            new LibraDexQueryDiagnostics(LibraDexExecutionKind.FastPath),
+            boundaryValue);
+        IIdentityCriterion criterion = boundaryCriterion.And(filterCriterion);
+        foreach (LibraDexObjectTuple tuple in LibraDexConditionCursorExecutor.IterateTargetIndexTuples(
+            criterion,
+            targetIndex,
+            skip: 0,
+            take: null,
+            direction))
+        {
+            yield return new LibraDexRuntimeTuple(tuple.Key, tuple.Identity);
+        }
     }
 
     /// <summary>
@@ -1150,7 +1384,8 @@ public sealed partial class CatalogIdentityGroupIndexes
 
         IIdentityCriterion criterion = condition.MaterializeWithProjectionBridge(
             name => this[name].Open(),
-            ResolveProjectionIndex);
+            ResolveProjectionIndex,
+            TryResolveConditionIndex);
         _ = LibraDexConditionCursorExecutor.TryCreateDirectPrimitiveDeletePlan(
             criterion,
             targetIndex,
@@ -1176,6 +1411,19 @@ public sealed partial class CatalogIdentityGroupIndexes
     /// <param name="descriptor">The condition leaf requesting a projection route.</param>
     /// <param name="classification">The planner classification that identified the projection need.</param>
     /// <returns>The opened projection index, or <see langword="null"/> when no matching projection exists.</returns>
+    /// <summary>
+    /// Tries to open one condition index without throwing when its definition is currently absent.<br/>
+    /// This resolver is reserved for structural condition guards; ordinary leaves continue through the strict name-first open path.<br/>
+    /// </summary>
+    /// <param name="indexName">The index name inside this identity group.</param>
+    /// <returns>The opened index, or <see langword="null"/> when no active definition is resolvable.</returns>
+    private IIndex? TryResolveConditionIndex(string indexName)
+    {
+        return owner.TryGetInfo(Name, indexName, out CatalogIndexInfo info)
+            ? catalog.OpenIndex(info)
+            : null;
+    }
+
     private IIndex? ResolveProjectionIndex(
         LibraDexConditionLeafDescriptor descriptor,
         LibraDexConditionLeafClassification classification)
@@ -1216,7 +1464,8 @@ public sealed partial class CatalogIdentityGroupIndexes
                     info.ExactReversedProjectionSlotIndex,
                     new IndexOptions { Keys = info.KeyContract, IdentityKeyMultiplicity = info.IdentityKeyMultiplicity },
                     keyWidth,
-                    identityWidth
+                    identityWidth,
+                    IdentityLookupMode.Explicit
                 });
             return opened as IIndex;
         }
@@ -1409,6 +1658,26 @@ public sealed partial class CatalogIdentityGroupIndexes
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         return new CatalogCompositeIndexBuilder<TIdentity>(owner, Name, name, parts);
     }
+
+    /// <summary>
+    /// Opens an existing index matching a logical shape in this identity group, or creates it when missing.<br/>
+    /// The group check prevents higher-level adapters from accidentally creating a descriptor under a different identity universe while retaining the low-friction group-owned lifecycle boundary.<br/>
+    /// </summary>
+    /// <param name="shape">The logical shape whose group must match <see cref="Name"/>.<br/></param>
+    /// <param name="options">Optional per-index options override for the create branch; null uses the contracts embedded in <paramref name="shape"/>.<br/></param>
+    /// <param name="identityLookupMode">The session-local identity-inversion lifecycle policy.<br/><see cref="IdentityLookupMode.BuildOnOpen"/> blocks until the returned index's inversion is complete.<br/></param>
+    /// <returns>A strict non-generic index handle owned by this group's catalog.<br/></returns>
+    public IIndex CreateOrOpen(
+        LibraDexIndexShapeSpec shape,
+        IndexOptions? options = null,
+        IdentityLookupMode identityLookupMode = IdentityLookupMode.Explicit)
+    {
+        ArgumentNullException.ThrowIfNull(shape);
+        if (!string.Equals(shape.Group, Name, StringComparison.Ordinal))
+            throw new ArgumentException($"Index shape group '{shape.Group}' does not match bound identity group '{Name}'.", nameof(shape));
+
+        return owner.CreateOrOpen(shape, options, identityLookupMode);
+    }
 }
 
 /// <summary>
@@ -1458,6 +1727,24 @@ public sealed class CatalogIdentityGroupIndexes<TIdentity>
     /// <returns>A value-family selector for the chosen index.<br/></returns>
     public LibraDexConditionValueTypeSelector Where(string indexName)
         => inner.Where(indexName);
+
+    /// <summary>
+    /// Starts a reusable typed-index-set condition with an execution-time index-name parameter.<br/>
+    /// </summary>
+    /// <param name="indexName">The parameter containing the current index name.</param>
+    /// <returns>A value-family selector for the chosen index.</returns>
+    public LibraDexConditionValueTypeSelector Where(LibraDexParameter<string> indexName)
+        => inner.Where(indexName);
+
+    /// <summary>
+    /// Starts a reusable typed-index-set condition with an execution-time opened-index parameter.<br/>
+    /// </summary>
+    /// <typeparam name="TIndex">The opened index handle type.</typeparam>
+    /// <param name="index">The parameter containing the current opened index.</param>
+    /// <returns>A value-family selector for the chosen index.</returns>
+    public LibraDexConditionValueTypeSelector Where<TIndex>(LibraDexParameter<TIndex> index)
+        where TIndex : IIndex
+        => inner.Where(index);
 
     /// <summary>
     /// Opens an index by name inside this typed index set using metadata-driven catalog lookup.<br/>
@@ -1711,6 +1998,24 @@ public sealed class CatalogIdentityGroupIdentityTypeSelector
     public CatalogIdentityGroupIndexes<UInt128> UInt128 => Create<UInt128>();
 
     /// <summary>
+    /// Gets a typed condition-building view for exact `decimal` identities.<br/>
+    /// Decimal identities use the same canonical scalar-16 encoding as Decimal keys.<br/>
+    /// </summary>
+    public CatalogIdentityGroupIndexes<decimal> Decimal => Create<decimal>();
+
+    /// <summary>
+    /// Gets a typed condition-building view for native Single identities.<br/>
+    /// Single identities use the same canonical ordered scalar-8 encoding as Single keys, including canonical NaN and zero representations.<br/>
+    /// </summary>
+    public CatalogIdentityGroupIndexes<float> Single => Create<float>();
+
+    /// <summary>
+    /// Gets a typed condition-building view for native Double identities.<br/>
+    /// Double identities use the same canonical ordered scalar-8 encoding as Double keys, including canonical NaN and zero representations.<br/>
+    /// </summary>
+    public CatalogIdentityGroupIndexes<double> Double => Create<double>();
+
+    /// <summary>
     /// Gets a typed condition-building view for `Guid` identities.<br/>
     /// </summary>
     public CatalogIdentityGroupIndexes<Guid> Guid => Create<Guid>();
@@ -1851,6 +2156,33 @@ public sealed class CatalogNamedIndexBuilder
         => Scalar.Scalar<UInt128, TIdentity>();
 
     /// <summary>
+    /// Selects a Decimal key family with a scalar identity family for this named index.<br/>
+    /// Decimal keys route through the fixed-16 scalar shelf shape using LibraDex's exact canonical ordered encoding, so callers retain CLR Decimal equality and range semantics without scale adapters.<br/>
+    /// </summary>
+    /// <typeparam name="TIdentity">The scalar identity type.<br/></typeparam>
+    /// <returns>A typed lifecycle builder for a Decimal-key index.<br/></returns>
+    public CatalogNamedTypedIndexBuilder<decimal, TIdentity> DecimalKeys<TIdentity>()
+        => Scalar.Scalar<decimal, TIdentity>();
+
+    /// <summary>
+    /// Selects a native Single key family with a scalar identity family for this named index.<br/>
+    /// Single keys use a canonical ordered scalar-8 representation, so numeric ranges, infinities, and exact NaN lookups require no caller-supplied transform.<br/>
+    /// </summary>
+    /// <typeparam name="TIdentity">The scalar identity type.<br/></typeparam>
+    /// <returns>A typed lifecycle builder for a Single-key index.<br/></returns>
+    public CatalogNamedTypedIndexBuilder<float, TIdentity> SingleKeys<TIdentity>()
+        => Scalar.Scalar<float, TIdentity>();
+
+    /// <summary>
+    /// Selects a native Double key family with a scalar identity family for this named index.<br/>
+    /// Double keys use a canonical ordered scalar-8 representation, so numeric ranges, infinities, and exact NaN lookups require no caller-supplied transform.<br/>
+    /// </summary>
+    /// <typeparam name="TIdentity">The scalar identity type.<br/></typeparam>
+    /// <returns>A typed lifecycle builder for a Double-key index.<br/></returns>
+    public CatalogNamedTypedIndexBuilder<double, TIdentity> DoubleKeys<TIdentity>()
+        => Scalar.Scalar<double, TIdentity>();
+
+    /// <summary>
     /// Selects a GUID key family with a scalar identity family for this named index.<br/>
     /// </summary>
     /// <typeparam name="TIdentity">The scalar identity type.</typeparam>
@@ -1984,10 +2316,12 @@ public sealed class CatalogNamedIndexBuilder
     /// <typeparam name="TIdentity">The public identity type.</typeparam>
     /// <param name="keys">The index-wide duplicate-key contract.<br/></param>
     /// <param name="options">Optional per-index options.<br/></param>
-    /// <returns>A typed index handle owned by the catalog lifetime.</returns>
+    /// <param name="identityLookupMode">The session-local identity-inversion lifecycle policy.<br/><see cref="IdentityLookupMode.BuildOnOpen"/> blocks until the created index's inversion is complete.<br/></param>
+    /// <returns>A typed index handle owned by the catalog lifetime.<br/></returns>
     public LibraDexIndex<TKey, TIdentity> Create<TKey, TIdentity>(
         IndexKeys keys = IndexKeys.NonUnique,
-        IndexOptions? options = null)
+        IndexOptions? options = null,
+        IdentityLookupMode identityLookupMode = IdentityLookupMode.Explicit)
     {
         if (owner.TryGetInfo(Group, Name, out _))
         {
@@ -2002,7 +2336,8 @@ public sealed class CatalogNamedIndexBuilder
             identityWidth: null,
             ResolveKeyFamily<TKey>(),
             ResolveIdentityFamily<TIdentity>(),
-            Group);
+            Group,
+            identityLookupMode: identityLookupMode);
     }
 
     /// <summary>
@@ -2011,12 +2346,14 @@ public sealed class CatalogNamedIndexBuilder
     /// </summary>
     /// <typeparam name="TKey">The expected public key type.</typeparam>
     /// <typeparam name="TIdentity">The expected public identity type.</typeparam>
-    /// <param name="keys">The fallback duplicate-key contract for older scaffold entries without rich metadata.</param>
-    /// <param name="options">Optional per-index options.</param>
-    /// <returns>A typed index handle owned by the catalog lifetime.</returns>
+    /// <param name="keys">The fallback duplicate-key contract for older scaffold entries without rich metadata.<br/></param>
+    /// <param name="options">Optional per-index options.<br/></param>
+    /// <param name="identityLookupMode">The session-local identity-inversion lifecycle policy.<br/><see cref="IdentityLookupMode.BuildOnOpen"/> blocks until the opened index's inversion is complete.<br/></param>
+    /// <returns>A typed index handle owned by the catalog lifetime.<br/></returns>
     public LibraDexIndex<TKey, TIdentity> Open<TKey, TIdentity>(
         IndexKeys keys = IndexKeys.NonUnique,
-        IndexOptions? options = null)
+        IndexOptions? options = null,
+        IdentityLookupMode identityLookupMode = IdentityLookupMode.Explicit)
     {
         if (!owner.TryGetInfo(Group, Name, out CatalogIndexInfo info))
         {
@@ -2024,7 +2361,12 @@ public sealed class CatalogNamedIndexBuilder
         }
 
         ValidateRequestedTypes<TKey, TIdentity>(info);
-        return catalog.OpenGenericIndex<TKey, TIdentity>(info.SlotIndex, CatalogIndexFactoryOptions.Resolve(keys, options), keyWidth: null, identityWidth: null);
+        return catalog.OpenGenericIndex<TKey, TIdentity>(
+            info.SlotIndex,
+            CatalogIndexFactoryOptions.Resolve(keys, options),
+            keyWidth: null,
+            identityWidth: null,
+            identityLookupMode: identityLookupMode);
     }
 
     /// <summary>
@@ -2033,16 +2375,18 @@ public sealed class CatalogNamedIndexBuilder
     /// </summary>
     /// <typeparam name="TKey">The public key type.</typeparam>
     /// <typeparam name="TIdentity">The public identity type.</typeparam>
-    /// <param name="keys">The index-wide duplicate-key contract for a new index, or fallback contract for an older entry without rich metadata.</param>
-    /// <param name="options">Optional per-index options.</param>
-    /// <returns>A typed index handle owned by the catalog lifetime.</returns>
+    /// <param name="keys">The index-wide duplicate-key contract for a new index, or fallback contract for an older entry without rich metadata.<br/></param>
+    /// <param name="options">Optional per-index options.<br/></param>
+    /// <param name="identityLookupMode">The session-local identity-inversion lifecycle policy.<br/><see cref="IdentityLookupMode.BuildOnOpen"/> blocks until the returned index's inversion is complete.<br/></param>
+    /// <returns>A typed index handle owned by the catalog lifetime.<br/></returns>
     public LibraDexIndex<TKey, TIdentity> CreateOrOpen<TKey, TIdentity>(
         IndexKeys keys = IndexKeys.NonUnique,
-        IndexOptions? options = null)
+        IndexOptions? options = null,
+        IdentityLookupMode identityLookupMode = IdentityLookupMode.Explicit)
     {
         return owner.TryGetInfo(Group, Name, out _)
-            ? Open<TKey, TIdentity>(keys, options)
-            : Create<TKey, TIdentity>(keys, options);
+            ? Open<TKey, TIdentity>(keys, options, identityLookupMode)
+            : Create<TKey, TIdentity>(keys, options, identityLookupMode);
     }
 
     /// <summary>
@@ -2050,15 +2394,19 @@ public sealed class CatalogNamedIndexBuilder
     /// This is the preferred programmatic path for query builders, serializers, and adapters that enumerate an index set first and only choose criteria at runtime.<br/>
     /// The returned handle still validates runtime key values before creating queries, so callers do not lose the catalog's type contract by avoiding generic type arguments.<br/>
     /// </summary>
-    /// <returns>A non-generic index handle owned by the catalog lifetime.</returns>
-    public IIndex Open()
+    /// <param name="identityLookupMode">The session-local identity-inversion lifecycle policy.<br/><see cref="IdentityLookupMode.BuildOnOpen"/> blocks until the opened index's inversion is complete.<br/></param>
+    /// <returns>A non-generic index handle owned by the catalog lifetime.<br/></returns>
+    public IIndex Open(IdentityLookupMode identityLookupMode = IdentityLookupMode.Explicit)
     {
         if (!owner.TryGetInfo(Group, Name, out CatalogIndexInfo info))
         {
             throw new InvalidDataException("The requested grouped LibraDex index does not exist.");
         }
 
-        return catalog.OpenIndex(info);
+        IIndex index = catalog.OpenIndex(info);
+        if (identityLookupMode != IdentityLookupMode.Explicit)
+            index.IdentityLookup.Configure(identityLookupMode);
+        return index;
     }
 
     /// <summary>
@@ -2448,6 +2796,23 @@ public sealed class CatalogNamedBlobKeyBuilder
             CatalogIndexKeyFamily.Blob,
             CatalogIndexIdentityFamily.Scalar,
             directions);
+    }
+
+    /// <summary>
+    /// Selects a bounded variable-length blob-key index with scalar identities.<br/>
+    /// The maximum is the developer-facing payload byte count; LibraDex reserves and persists its internal key-state sentinel separately.<br/>
+    /// </summary>
+    /// <typeparam name="TIdentity">The scalar identity type encoded into an 8-byte identity lane.<br/></typeparam>
+    /// <param name="maxKeyBytes">The maximum raw blob payload length accepted by the index.<br/></param>
+    /// <returns>A lifecycle builder for the bounded variable-blob index.</returns>
+    public CatalogNamedVariableBlobKeyBuilder<TIdentity> Variable<TIdentity>(int maxKeyBytes)
+    {
+        return new CatalogNamedVariableBlobKeyBuilder<TIdentity>(
+            catalog,
+            owner,
+            group,
+            name,
+            maxKeyBytes);
     }
 }
 
@@ -2840,6 +3205,8 @@ public sealed class CatalogNamedStringKeyBuilder
     /// <param name="foldedCulture">Optional culture name for folded-text projection values; null or empty means invariant culture.</param>
     /// <param name="sortKeyCulture">Optional culture name for sort-key projection values; null or empty means invariant culture.</param>
     /// <param name="stringComparisonPolicy">Optional runtime index-level string comparison policy for managed residual comparison and prepared membership fallback.</param>
+    /// <param name="identityLookupMode">The session-local identity-inversion lifecycle policy.<br/><see cref="IdentityLookupMode.BuildOnOpen"/> blocks until the created index's inversion is complete.<br/></param>
+    /// <param name="sortKeyProfiles">Optional explicit culture and comparison-options profiles to maintain as owned sort-key subindexes; null preserves the legacy single <paramref name="sortKeyCulture"/> behavior.<br/></param>
     /// <returns>A string index facade over the exact and maintained projection indexes.</returns>
     /// <exception cref="ArgumentOutOfRangeException">Thrown when <paramref name="stringKeys"/> is not a valid public string-key profile.<br/></exception>
     public LibraDexStringScalar8Index Create(
@@ -2848,10 +3215,17 @@ public sealed class CatalogNamedStringKeyBuilder
         LibraDexIndexSortOrder sortOrder = LibraDexIndexSortOrder.Ascending,
         string? foldedCulture = null,
         string? sortKeyCulture = null,
-        LibraDexStringComparisonPolicy? stringComparisonPolicy = null)
+        LibraDexStringComparisonPolicy? stringComparisonPolicy = null,
+        IdentityLookupMode identityLookupMode = IdentityLookupMode.Explicit,
+        IReadOnlyList<LibraDexStringSortKeyProfile>? sortKeyProfiles = null)
     {
         catalog.ValidateIdentityType(typeof(ulong), CatalogIndexIdentityFamily.Scalar, nameof(Create));
         ValidateStringKeys(stringKeys);
+        IReadOnlyList<LibraDexStringSortKeyProfile> effectiveSortKeyProfiles = ResolveSortKeyProfiles(stringKeys, sortKeyCulture, sortKeyProfiles);
+        if (effectiveSortKeyProfiles.Count != 0)
+        {
+            stringKeys |= StringKeys.SortKey;
+        }
 
         HashSet<int> reservedSlots = new();
         int ResolveAutoSlot()
@@ -2885,12 +3259,36 @@ public sealed class CatalogNamedStringKeyBuilder
             folded = catalog.CreateVarKeyScalar8Index($"{name}#folded", foldedSlot, StringVarKeyPhysicalMaxLength);
         }
 
-        VarKeyScalar8Index? sortKey = null;
+        List<LibraDexStringSortKeyProjectionBinding> sortKeyBindings = new(effectiveSortKeyProfiles.Count);
+        List<LibraDexStringSortKeyProjectionMetadata> sortKeyMetadata = new(effectiveSortKeyProfiles.Count);
         int sortKeySlot = -1;
-        if (HasSortKey(stringKeys))
+        for (int i = 0; i < effectiveSortKeyProfiles.Count; i++)
         {
-            sortKeySlot = ResolveAutoSlot();
-            sortKey = catalog.CreateVarKeyScalar8Index($"{name}#sortkey", sortKeySlot, StringVarKeyPhysicalMaxLength);
+            LibraDexStringSortKeyProfile profile = effectiveSortKeyProfiles[i];
+            CultureInfo culture = ResolveSortKeyCulture(profile.CultureName);
+            ValidateSortKeyCompareOptions(culture, profile.CompareOptions);
+            SortVersion version = culture.CompareInfo.Version;
+            int slot = ResolveAutoSlot();
+            string physicalName = CreateSortKeyPhysicalName(name, i);
+            VarKeyScalar8Index physical = catalog.CreateVarKeyScalar8Index(physicalName, slot, StringVarKeyPhysicalMaxLength);
+            string cultureName = culture.Equals(CultureInfo.InvariantCulture) ? string.Empty : culture.Name;
+            sortKeyBindings.Add(new LibraDexStringSortKeyProjectionBinding(
+                physical,
+                physicalName,
+                cultureName,
+                profile.CompareOptions,
+                version.FullVersion,
+                version.SortId));
+            sortKeyMetadata.Add(new LibraDexStringSortKeyProjectionMetadata(
+                slot,
+                cultureName,
+                profile.CompareOptions,
+                version.FullVersion,
+                version.SortId));
+            if (i == 0)
+            {
+                sortKeySlot = slot;
+            }
         }
 
         VarKeyScalar8Index? foldedReversed = null;
@@ -2902,10 +3300,172 @@ public sealed class CatalogNamedStringKeyBuilder
             foldedReversed = catalog.CreateVarKeyScalar8Index($"{name}#folded-rev", foldedReversedSlot, StringVarKeyPhysicalMaxLength);
         }
 
+        VarKeyScalar8Index? normalized = null;
+        int normalizedSlot = -1;
+        if (HasNormalizedText(stringKeys))
+        {
+            normalizedSlot = ResolveAutoSlot();
+            normalized = catalog.CreateVarKeyScalar8Index($"{name}#normalized", normalizedSlot, StringVarKeyPhysicalMaxLength);
+        }
+
+        VarKeyScalar8Index? normalizedReversed = null;
+        int normalizedReversedSlot = -1;
+        if ((directions & LibraDexProjectionDirectionSet.Reversed) != 0 &&
+            HasNormalizedText(stringKeys))
+        {
+            normalizedReversedSlot = ResolveAutoSlot();
+            normalizedReversed = catalog.CreateVarKeyScalar8Index($"{name}#normalized-rev", normalizedReversedSlot, StringVarKeyPhysicalMaxLength);
+        }
+
         LibraDexStringComparisonPolicy? effectiveStringComparisonPolicy = stringComparisonPolicy ?? catalog.Options.StringComparisonPolicy;
-        CatalogIndexMetadata metadata = CreateStringMetadata(stringKeys, exactReversedSlot, foldedSlot, sortKeySlot, foldedReversedSlot, directions, sortOrder, foldedCulture, sortKeyCulture, effectiveStringComparisonPolicy);
+        CatalogIndexMetadata metadata = CreateStringMetadata(stringKeys, exactReversedSlot, foldedSlot, sortKeySlot, foldedReversedSlot, normalizedSlot, normalizedReversedSlot, directions, sortOrder, foldedCulture, sortKeyMetadata, effectiveStringComparisonPolicy);
         VarKeyScalar8Index exact = catalog.CreateVarKeyScalar8Index(name, exactSlot, StringVarKeyPhysicalMaxLength, metadata);
-        return new LibraDexStringScalar8Index(catalog, group, name, exact, exactReversed, folded, sortKey, foldedReversed, foldedCulture, sortKeyCulture, effectiveStringComparisonPolicy);
+        return new LibraDexStringScalar8Index(
+            catalog,
+            group,
+            name,
+            exact,
+            exactReversed,
+            folded,
+            sortKeyBindings,
+            foldedReversed,
+            normalized,
+            normalizedReversed,
+            foldedCulture,
+            LibraDexTextNormalization.FormC,
+            effectiveStringComparisonPolicy,
+            identityLookupMode);
+    }
+
+    /// <summary>
+    /// Adds and backfills one culture-aware sort-key subindex beneath an existing logical string index.<br/>
+    /// Exact culture name plus <see cref="CompareOptions"/> form semantic identity; adding an already persisted profile is an idempotent no-op that simply reopens the current logical facade.<br/>
+    /// The physical companion is fully populated before replacement owner metadata is published, so interrupted work cannot expose a partially ready subindex.<br/>
+    /// </summary>
+    /// <param name="profile">The culture and comparison-options profile to add.<br/></param>
+    /// <param name="stringComparisonPolicy">Optional runtime comparison policy for the returned reopened facade.<br/></param>
+    /// <param name="identityLookupMode">The session-local identity-inversion lifecycle policy for the returned reopened facade.<br/></param>
+    /// <returns>A reopened logical string facade that includes the requested profile.<br/></returns>
+    /// <exception cref="InvalidDataException">Thrown when the existing catalog entry is not a string/scalar logical index with complete metadata.<br/></exception>
+    public LibraDexStringScalar8Index AddSortKeyProfile(
+        LibraDexStringSortKeyProfile profile,
+        LibraDexStringComparisonPolicy? stringComparisonPolicy = null,
+        IdentityLookupMode identityLookupMode = IdentityLookupMode.Explicit)
+    {
+        catalog.ValidateIdentityType(typeof(ulong), CatalogIndexIdentityFamily.Scalar, nameof(AddSortKeyProfile));
+        if (!owner.TryGetInfo(group, name, out CatalogIndexInfo info))
+            throw new InvalidDataException($"String index '{group}/{name}' was not found in the catalog.");
+
+        ValidateStringInfo(info);
+        CultureInfo culture = ResolveSortKeyCulture(profile.CultureName);
+        ValidateSortKeyCompareOptions(culture, profile.CompareOptions);
+        string cultureName = culture.Equals(CultureInfo.InvariantCulture) ? string.Empty : culture.Name;
+        IReadOnlyList<LibraDexStringSortKeyProjectionInfo> existingProfiles = ResolveOpenSortKeyProfiles(info);
+        for (var i = 0; i < existingProfiles.Count; i++)
+        {
+            if (string.Equals(existingProfiles[i].CultureName, cultureName, StringComparison.Ordinal) &&
+                existingProfiles[i].CompareOptions == profile.CompareOptions)
+            {
+                return Open(stringComparisonPolicy, identityLookupMode);
+            }
+        }
+
+        if (!catalog.TryGetCatalogIndexMetadata(info.SlotIndex, out CatalogIndexMetadata metadata))
+            throw new InvalidDataException($"String index '{group}/{name}' does not have complete catalog metadata.");
+
+        int ordinal = existingProfiles.Count;
+        string physicalName = CreateSortKeyPhysicalName(name, ordinal);
+        CatalogIndexInfo[] active = owner.List();
+        for (var i = 0; i < active.Length; i++)
+        {
+            if (string.IsNullOrEmpty(active[i].Group) &&
+                string.Equals(active[i].Name, physicalName, StringComparison.Ordinal))
+            {
+                catalog.DropUnpublishedProjection(active[i].SlotIndex);
+                break;
+            }
+        }
+
+        int slot = owner.ResolveCreateSlot(slotIndex: null);
+        VarKeyScalar8Index? physical = null;
+        var created = false;
+        var published = false;
+        try
+        {
+            physical = catalog.CreateVarKeyScalar8Index(physicalName, slot, StringVarKeyPhysicalMaxLength);
+            created = true;
+            using (LibraDexStringScalar8Index exact = Open(stringComparisonPolicy, IdentityLookupMode.Explicit))
+            {
+                foreach (LibraDexRuntimeTuple tuple in owner[group].IterateTuples(exact))
+                {
+                    string? value = tuple.Key switch
+                    {
+                        null => null,
+                        string text => text,
+                        _ => throw new InvalidDataException($"String index '{group}/{name}' returned a non-string exact key while adding a sort-key profile.")
+                    };
+                    byte[] key = value is null
+                        ? new byte[] { 0x00 }
+                        : culture.CompareInfo.GetSortKey(value, profile.CompareOptions).KeyData;
+                    if (tuple.Identity is not ulong identity)
+                        throw new InvalidDataException($"String index '{group}/{name}' returned a non-UInt64 identity while adding a sort-key profile.");
+                    _ = physical.Insert(key, identity);
+                }
+            }
+
+            SortVersion version = culture.CompareInfo.Version;
+            List<LibraDexStringSortKeyProjectionMetadata> profiles = new(existingProfiles.Count + 1);
+            for (var i = 0; i < existingProfiles.Count; i++)
+            {
+                LibraDexStringSortKeyProjectionInfo existing = existingProfiles[i];
+                profiles.Add(new LibraDexStringSortKeyProjectionMetadata(
+                    existing.SlotIndex,
+                    existing.CultureName,
+                    existing.CompareOptions,
+                    existing.SortVersionFullVersion,
+                    existing.SortVersionId));
+            }
+            profiles.Add(new LibraDexStringSortKeyProjectionMetadata(
+                slot,
+                cultureName,
+                profile.CompareOptions,
+                version.FullVersion,
+                version.SortId));
+
+            IReadOnlyList<LibraDexIndexProjectionSpec> projections = metadata.Projections;
+            if (!projections.Any(static projection => projection.Kind == LibraDexIndexProjectionKind.SortKey))
+            {
+                List<LibraDexIndexProjectionSpec> expanded = new(projections.Count + 1);
+                expanded.AddRange(projections);
+                expanded.Add(new LibraDexIndexProjectionSpec(
+                    LibraDexIndexProjectionKind.SortKey,
+                    LibraDexIndexByteDirection.Forward,
+                    metadata.SortOrder));
+                projections = expanded;
+            }
+
+            catalog.UpdateCatalogIndexMetadata(info.SlotIndex, metadata with
+            {
+                StringKeys = metadata.StringKeys | StringKeys.SortKey,
+                Projections = projections,
+                SortKeyProjectionSlotIndex = profiles[0].SlotIndex,
+                SortKeyCulture = profiles[0].CultureName,
+                SortKeyProfiles = profiles
+            });
+            published = true;
+        }
+        catch
+        {
+            if (created && !published)
+                catalog.DropUnpublishedProjection(slot);
+            throw;
+        }
+        finally
+        {
+            physical?.Dispose();
+        }
+
+        return Open(stringComparisonPolicy, identityLookupMode);
     }
 
     /// <summary>
@@ -2913,8 +3473,11 @@ public sealed class CatalogNamedStringKeyBuilder
     /// The logical index metadata supplies the projection slots, cultures, and variable-key length, so callers do not need to remember projection slot numbers after catalog creation.<br/>
     /// </summary>
     /// <param name="stringComparisonPolicy">Optional runtime index-level string comparison policy for the reopened facade.</param>
+    /// <param name="identityLookupMode">The session-local identity-inversion lifecycle policy.<br/><see cref="IdentityLookupMode.BuildOnOpen"/> blocks until the opened index's inversion is complete.<br/></param>
     /// <returns>A string index facade over the reopened exact and maintained projection indexes.</returns>
-    public LibraDexStringScalar8Index Open(LibraDexStringComparisonPolicy? stringComparisonPolicy = null)
+    public LibraDexStringScalar8Index Open(
+        LibraDexStringComparisonPolicy? stringComparisonPolicy = null,
+        IdentityLookupMode identityLookupMode = IdentityLookupMode.Explicit)
     {
         catalog.ValidateIdentityType(typeof(ulong), CatalogIndexIdentityFamily.Scalar, nameof(Open));
         if (!owner.TryGetInfo(group, name, out CatalogIndexInfo info))
@@ -2930,11 +3493,27 @@ public sealed class CatalogNamedStringKeyBuilder
         VarKeyScalar8Index? folded = info.FoldedProjectionSlotIndex >= 0
             ? catalog.OpenVarKeyScalar8Index(info.FoldedProjectionSlotIndex, info.VarKeyMaxKeyLength)
             : null;
-        VarKeyScalar8Index? sortKey = info.SortKeyProjectionSlotIndex >= 0
-            ? catalog.OpenVarKeyScalar8Index(info.SortKeyProjectionSlotIndex, info.VarKeyMaxKeyLength)
-            : null;
+        IReadOnlyList<LibraDexStringSortKeyProjectionInfo> sortKeyProfiles = ResolveOpenSortKeyProfiles(info);
+        List<LibraDexStringSortKeyProjectionBinding> sortKeyBindings = new(sortKeyProfiles.Count);
+        for (int i = 0; i < sortKeyProfiles.Count; i++)
+        {
+            LibraDexStringSortKeyProjectionInfo profile = sortKeyProfiles[i];
+            sortKeyBindings.Add(new LibraDexStringSortKeyProjectionBinding(
+                catalog.OpenVarKeyScalar8Index(profile.SlotIndex, info.VarKeyMaxKeyLength),
+                CreateSortKeyPhysicalName(name, i),
+                profile.CultureName,
+                profile.CompareOptions,
+                profile.SortVersionFullVersion,
+                profile.SortVersionId));
+        }
         VarKeyScalar8Index? foldedReversed = info.FoldedReversedProjectionSlotIndex >= 0
             ? catalog.OpenVarKeyScalar8Index(info.FoldedReversedProjectionSlotIndex, info.VarKeyMaxKeyLength)
+            : null;
+        VarKeyScalar8Index? normalized = info.NormalizedProjectionSlotIndex >= 0
+            ? catalog.OpenVarKeyScalar8Index(info.NormalizedProjectionSlotIndex, info.VarKeyMaxKeyLength)
+            : null;
+        VarKeyScalar8Index? normalizedReversed = info.NormalizedReversedProjectionSlotIndex >= 0
+            ? catalog.OpenVarKeyScalar8Index(info.NormalizedReversedProjectionSlotIndex, info.VarKeyMaxKeyLength)
             : null;
         return new LibraDexStringScalar8Index(
             catalog,
@@ -2943,11 +3522,14 @@ public sealed class CatalogNamedStringKeyBuilder
             exact,
             exactReversed,
             folded,
-            sortKey,
+            sortKeyBindings,
             foldedReversed,
+            normalized,
+            normalizedReversed,
             info.FoldedCulture,
-            info.SortKeyCulture,
-            ResolveOpenStringComparisonPolicy(info, stringComparisonPolicy));
+            info.FoldedNormalization,
+            ResolveOpenStringComparisonPolicy(info, stringComparisonPolicy),
+            identityLookupMode);
     }
 
     /// <summary>
@@ -2962,6 +3544,8 @@ public sealed class CatalogNamedStringKeyBuilder
     /// <param name="foldedCulture">Optional culture name for folded-text projection values; null or empty means invariant culture.</param>
     /// <param name="sortKeyCulture">Optional culture name for sort-key projection values; null or empty means invariant culture.</param>
     /// <param name="stringComparisonPolicy">Optional runtime index-level string comparison policy for managed residual comparison and prepared membership fallback.</param>
+    /// <param name="identityLookupMode">The session-local identity-inversion lifecycle policy.<br/><see cref="IdentityLookupMode.BuildOnOpen"/> blocks until the returned index's inversion is complete.<br/></param>
+    /// <param name="sortKeyProfiles">Optional explicit culture and comparison-options profiles used only when creation is required; null preserves the legacy single <paramref name="sortKeyCulture"/> behavior.<br/></param>
     /// <returns>A string index facade over the exact and maintained projection indexes.</returns>
     /// <exception cref="ArgumentOutOfRangeException">Thrown when creation is required and <paramref name="stringKeys"/> is not a valid public string-key profile.<br/></exception>
     public LibraDexStringScalar8Index CreateOrOpen(
@@ -2970,11 +3554,13 @@ public sealed class CatalogNamedStringKeyBuilder
         LibraDexIndexSortOrder sortOrder = LibraDexIndexSortOrder.Ascending,
         string? foldedCulture = null,
         string? sortKeyCulture = null,
-        LibraDexStringComparisonPolicy? stringComparisonPolicy = null)
+        LibraDexStringComparisonPolicy? stringComparisonPolicy = null,
+        IdentityLookupMode identityLookupMode = IdentityLookupMode.Explicit,
+        IReadOnlyList<LibraDexStringSortKeyProfile>? sortKeyProfiles = null)
     {
         return owner.TryGetInfo(group, name, out _)
-            ? Open(stringComparisonPolicy)
-            : Create(stringKeys, directions, sortOrder, foldedCulture, sortKeyCulture, stringComparisonPolicy);
+            ? Open(stringComparisonPolicy, identityLookupMode)
+            : Create(stringKeys, directions, sortOrder, foldedCulture, sortKeyCulture, stringComparisonPolicy, identityLookupMode, sortKeyProfiles);
     }
 
     private CatalogIndexMetadata CreateStringMetadata(
@@ -2983,10 +3569,12 @@ public sealed class CatalogNamedStringKeyBuilder
         int foldedSlot,
         int sortKeySlot,
         int foldedReversedSlot,
+        int normalizedSlot,
+        int normalizedReversedSlot,
         LibraDexProjectionDirectionSet directions,
         LibraDexIndexSortOrder sortOrder,
         string? foldedCulture,
-        string? sortKeyCulture,
+        IReadOnlyList<LibraDexStringSortKeyProjectionMetadata> sortKeyProfiles,
         LibraDexStringComparisonPolicy? stringComparisonPolicy)
     {
         List<LibraDexIndexProjectionSpec> projections = CreateProjectionKinds(stringKeys)
@@ -2999,6 +3587,10 @@ public sealed class CatalogNamedStringKeyBuilder
         if (exactReversedSlot >= 0)
         {
             projections.Add(new LibraDexIndexProjectionSpec(LibraDexIndexProjectionKind.Exact, LibraDexIndexByteDirection.Reversed, sortOrder));
+        }
+        if (normalizedReversedSlot >= 0)
+        {
+            projections.Add(new LibraDexIndexProjectionSpec(LibraDexIndexProjectionKind.NormalizedText, LibraDexIndexByteDirection.Reversed, sortOrder));
         }
 
         return new CatalogIndexMetadata(
@@ -3024,12 +3616,16 @@ public sealed class CatalogNamedStringKeyBuilder
             sortKeySlot,
             foldedReversedSlot,
             foldedCulture ?? string.Empty,
-            sortKeyCulture ?? string.Empty,
+            sortKeyProfiles.Count == 0 ? string.Empty : sortKeyProfiles[0].CultureName,
             stringComparisonPolicy?.Kind ?? LibraDexStringComparisonPolicyKind.Invariant,
             stringComparisonPolicy?.CompareOptions ?? CompareOptions.None,
             stringComparisonPolicy?.CultureName ?? string.Empty,
             stringComparisonPolicy?.CustomComparerTypeName ?? string.Empty,
-            true);
+            true,
+            FoldedNormalization: LibraDexTextNormalization.FormC,
+            NormalizedProjectionSlotIndex: normalizedSlot,
+            NormalizedReversedProjectionSlotIndex: normalizedReversedSlot,
+            SortKeyProfiles: sortKeyProfiles);
     }
 
     private static IReadOnlyList<LibraDexIndexProjectionKind> CreateProjectionKinds(StringKeys stringKeys)
@@ -3047,25 +3643,31 @@ public sealed class CatalogNamedStringKeyBuilder
             kinds.Add(LibraDexIndexProjectionKind.SortKey);
         }
 
+        if (HasNormalizedText(stringKeys))
+        {
+            kinds.Add(LibraDexIndexProjectionKind.NormalizedText);
+        }
+
         return kinds;
     }
 
     private static void ValidateStringKeys(StringKeys stringKeys)
     {
-        if (stringKeys != StringKeys.Exact &&
-            stringKeys != StringKeys.ExactAndFolded &&
-            stringKeys != StringKeys.ExactAndSortKey &&
-            stringKeys != StringKeys.ExactFoldedAndSortKey)
+        const StringKeys supported = StringKeys.Exact | StringKeys.Folded | StringKeys.SortKey | StringKeys.Normalized;
+        if ((stringKeys & StringKeys.Exact) == 0 || (stringKeys & ~supported) != 0)
         {
             throw new ArgumentOutOfRangeException(nameof(stringKeys), stringKeys, "The string-key profile is not supported by the string facade.");
         }
     }
 
     private static bool HasFoldedText(StringKeys stringKeys)
-        => stringKeys == StringKeys.ExactAndFolded || stringKeys == StringKeys.ExactFoldedAndSortKey;
+        => (stringKeys & StringKeys.Folded) != 0;
 
     private static bool HasSortKey(StringKeys stringKeys)
-        => stringKeys == StringKeys.ExactAndSortKey || stringKeys == StringKeys.ExactFoldedAndSortKey;
+        => (stringKeys & StringKeys.SortKey) != 0;
+
+    private static bool HasNormalizedText(StringKeys stringKeys)
+        => (stringKeys & StringKeys.Normalized) != 0;
 
     private static void ValidateStringInfo(CatalogIndexInfo info)
     {
@@ -3086,6 +3688,130 @@ public sealed class CatalogNamedStringKeyBuilder
                 info.StringComparisonCulture,
                 info.StringComparisonCompareOptions,
                 info.StringComparisonCustomComparerTypeName);
+    }
+
+    /// <summary>
+    /// Resolves the compatibility single-culture arguments and the new explicit profile collection into one ordered semantic list.<br/>
+    /// Explicit profiles imply `StringKeys.SortKey`; duplicate culture/options pairs and ambiguous simultaneous legacy culture input are rejected before any catalog slots are allocated.<br/>
+    /// </summary>
+    /// <param name="stringKeys">The requested string projection flags.<br/></param>
+    /// <param name="legacyCulture">The legacy single sort-key culture argument.<br/></param>
+    /// <param name="profiles">The optional explicit multi-profile collection.<br/></param>
+    /// <returns>The validated profile list in caller-declared preference order.<br/></returns>
+    private static IReadOnlyList<LibraDexStringSortKeyProfile> ResolveSortKeyProfiles(
+        StringKeys stringKeys,
+        string? legacyCulture,
+        IReadOnlyList<LibraDexStringSortKeyProfile>? profiles)
+    {
+        if (profiles is null)
+        {
+            if (!HasSortKey(stringKeys))
+            {
+                return Array.Empty<LibraDexStringSortKeyProfile>();
+            }
+
+            CultureInfo culture = ResolveSortKeyCulture(legacyCulture);
+            string cultureName = culture.Equals(CultureInfo.InvariantCulture) ? string.Empty : culture.Name;
+            return new[] { new LibraDexStringSortKeyProfile(cultureName, CompareOptions.IgnoreCase) };
+        }
+
+        if (!string.IsNullOrEmpty(legacyCulture))
+        {
+            throw new ArgumentException("Use either sortKeyCulture or sortKeyProfiles, not both.", nameof(profiles));
+        }
+        if (profiles.Count == 0)
+        {
+            if (HasSortKey(stringKeys))
+            {
+                throw new ArgumentException("An explicit empty sortKeyProfiles collection conflicts with StringKeys.SortKey.", nameof(profiles));
+            }
+
+            return Array.Empty<LibraDexStringSortKeyProfile>();
+        }
+
+        LibraDexStringSortKeyProfile[] result = new LibraDexStringSortKeyProfile[profiles.Count];
+        HashSet<(string Culture, CompareOptions Options)> unique = new();
+        for (int i = 0; i < result.Length; i++)
+        {
+            LibraDexStringSortKeyProfile profile = profiles[i];
+            CultureInfo culture = ResolveSortKeyCulture(profile.CultureName);
+            ValidateSortKeyCompareOptions(culture, profile.CompareOptions);
+            string cultureName = culture.Equals(CultureInfo.InvariantCulture) ? string.Empty : culture.Name;
+            if (!unique.Add((cultureName, profile.CompareOptions)))
+            {
+                throw new ArgumentException(
+                    $"Sort-key profile '{cultureName}' with options '{profile.CompareOptions}' is duplicated.",
+                    nameof(profiles));
+            }
+
+            result[i] = new LibraDexStringSortKeyProfile(cultureName, profile.CompareOptions);
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Resolves persisted profile metadata for reopen, including catalogs created before profile lists were introduced.<br/>
+    /// Legacy metadata synthesizes its historical single ignore-case profile so existing files remain source- and storage-compatible.<br/>
+    /// </summary>
+    /// <param name="info">The disconnected logical index metadata.<br/></param>
+    /// <returns>The persisted or synthesized profile collection.<br/></returns>
+    private static IReadOnlyList<LibraDexStringSortKeyProjectionInfo> ResolveOpenSortKeyProfiles(CatalogIndexInfo info)
+    {
+        if (info.SortKeyProfiles is { Count: > 0 } profiles)
+        {
+            return profiles;
+        }
+        if (info.SortKeyProjectionSlotIndex < 0)
+        {
+            return Array.Empty<LibraDexStringSortKeyProjectionInfo>();
+        }
+
+        return new[]
+        {
+            new LibraDexStringSortKeyProjectionInfo(
+                info.SortKeyProjectionSlotIndex,
+                info.SortKeyCulture,
+                CompareOptions.IgnoreCase,
+                0,
+                Guid.Empty)
+        };
+    }
+
+    /// <summary>
+    /// Resolves one optional profile culture using the same invariant-default convention as condition materialization.<br/>
+    /// Culture lookup occurs before physical allocation so invalid names cannot leave partially created projection slots.<br/>
+    /// </summary>
+    /// <param name="cultureName">The optional culture name.<br/></param>
+    /// <returns>The cached named culture or invariant culture.<br/></returns>
+    private static CultureInfo ResolveSortKeyCulture(string? cultureName)
+    {
+        return string.IsNullOrEmpty(cultureName)
+            ? CultureInfo.InvariantCulture
+            : CultureInfo.GetCultureInfo(cultureName);
+    }
+
+    /// <summary>
+    /// Validates that the active runtime can generate sort keys for one culture/options profile.<br/>
+    /// CompareInfo performs the authoritative option validation; this bounded empty-string probe runs before any catalog slots are allocated.<br/>
+    /// </summary>
+    /// <param name="culture">The resolved profile culture.<br/></param>
+    /// <param name="compareOptions">The requested comparison options.<br/></param>
+    private static void ValidateSortKeyCompareOptions(CultureInfo culture, CompareOptions compareOptions)
+    {
+        _ = culture.CompareInfo.GetSortKey(string.Empty, compareOptions);
+    }
+
+    /// <summary>
+    /// Creates the deterministic owned physical name for one profile ordinal.<br/>
+    /// Ordinal zero preserves the historical `#sortkey` companion name; later profiles use an ordinal suffix while semantic identity remains persisted in metadata.<br/>
+    /// </summary>
+    /// <param name="sourceName">The logical string index name.<br/></param>
+    /// <param name="ordinal">The zero-based persisted profile ordinal.<br/></param>
+    /// <returns>The deterministic owned physical companion name.<br/></returns>
+    private static string CreateSortKeyPhysicalName(string sourceName, int ordinal)
+    {
+        return ordinal == 0 ? $"{sourceName}#sortkey" : $"{sourceName}#sortkey-{ordinal}";
     }
 
     private static string GetStableTypeName(Type type)
@@ -3135,10 +3861,14 @@ public sealed class CatalogNamedTypedIndexBuilder<TKey, TIdentity>
     /// Creates the grouped index in the next available catalog directory slot.<br/>
     /// Named grouped indexes intentionally avoid exposing slot selection as normal developer ceremony.<br/>
     /// </summary>
-    /// <param name="keys">The index-wide duplicate-key contract.</param>
-    /// <param name="options">Optional per-index options.</param>
-    /// <returns>A typed index handle owned by the catalog lifetime.</returns>
-    public LibraDexIndex<TKey, TIdentity> Create(IndexKeys keys = IndexKeys.NonUnique, IndexOptions? options = null)
+    /// <param name="keys">The index-wide duplicate-key contract.<br/></param>
+    /// <param name="options">Optional per-index options.<br/></param>
+    /// <param name="identityLookupMode">The session-local identity-inversion lifecycle policy.<br/><see cref="IdentityLookupMode.BuildOnOpen"/> blocks until the created index's inversion is complete.<br/></param>
+    /// <returns>A typed index handle owned by the catalog lifetime.<br/></returns>
+    public LibraDexIndex<TKey, TIdentity> Create(
+        IndexKeys keys = IndexKeys.NonUnique,
+        IndexOptions? options = null,
+        IdentityLookupMode identityLookupMode = IdentityLookupMode.Explicit)
     {
         if (owner.TryGetInfo(Group, name, out _))
         {
@@ -3159,38 +3889,52 @@ public sealed class CatalogNamedTypedIndexBuilder<TKey, TIdentity>
             Group,
             logicalShape,
             exactReversedProjectionSlotIndex,
-            exactReversedProjection);
+            exactReversedProjection,
+            identityLookupMode);
     }
 
     /// <summary>
     /// Opens an existing grouped index by index-set and index name.<br/>
     /// The lookup is metadata-driven and does not require the caller to know the fixed directory slot after the catalog has been created.<br/>
     /// </summary>
-    /// <param name="keys">The fallback duplicate-key contract for older scaffold entries without rich metadata.</param>
-    /// <param name="options">Optional per-index options.</param>
-    /// <returns>A typed index handle owned by the catalog lifetime.</returns>
-    public LibraDexIndex<TKey, TIdentity> Open(IndexKeys keys = IndexKeys.NonUnique, IndexOptions? options = null)
+    /// <param name="keys">The fallback duplicate-key contract for older scaffold entries without rich metadata.<br/></param>
+    /// <param name="options">Optional per-index options.<br/></param>
+    /// <param name="identityLookupMode">The session-local identity-inversion lifecycle policy.<br/><see cref="IdentityLookupMode.BuildOnOpen"/> blocks until the opened index's inversion is complete.<br/></param>
+    /// <returns>A typed index handle owned by the catalog lifetime.<br/></returns>
+    public LibraDexIndex<TKey, TIdentity> Open(
+        IndexKeys keys = IndexKeys.NonUnique,
+        IndexOptions? options = null,
+        IdentityLookupMode identityLookupMode = IdentityLookupMode.Explicit)
     {
         if (!owner.TryGetInfo(Group, name, out CatalogIndexInfo info))
         {
             throw new InvalidDataException("The requested grouped LibraDex index does not exist.");
         }
 
-        return catalog.OpenGenericIndex<TKey, TIdentity>(info.SlotIndex, CatalogIndexFactoryOptions.Resolve(keys, options), keyWidth, identityWidth);
+        return catalog.OpenGenericIndex<TKey, TIdentity>(
+            info.SlotIndex,
+            CatalogIndexFactoryOptions.Resolve(keys, options),
+            keyWidth,
+            identityWidth,
+            identityLookupMode);
     }
 
     /// <summary>
     /// Opens an existing grouped index or creates it when it does not exist.<br/>
     /// This is the low-friction setup path for applications that prefer stable index-set/index names over manual slot assignment.<br/>
     /// </summary>
-    /// <param name="keys">The index-wide duplicate-key contract for a new index, or fallback contract for an older entry without rich metadata.</param>
-    /// <param name="options">Optional per-index options.</param>
-    /// <returns>A typed index handle owned by the catalog lifetime.</returns>
-    public LibraDexIndex<TKey, TIdentity> CreateOrOpen(IndexKeys keys = IndexKeys.NonUnique, IndexOptions? options = null)
+    /// <param name="keys">The index-wide duplicate-key contract for a new index, or fallback contract for an older entry without rich metadata.<br/></param>
+    /// <param name="options">Optional per-index options.<br/></param>
+    /// <param name="identityLookupMode">The session-local identity-inversion lifecycle policy.<br/><see cref="IdentityLookupMode.BuildOnOpen"/> blocks until the returned index's inversion is complete.<br/></param>
+    /// <returns>A typed index handle owned by the catalog lifetime.<br/></returns>
+    public LibraDexIndex<TKey, TIdentity> CreateOrOpen(
+        IndexKeys keys = IndexKeys.NonUnique,
+        IndexOptions? options = null,
+        IdentityLookupMode identityLookupMode = IdentityLookupMode.Explicit)
     {
         return owner.TryGetInfo(Group, name, out _)
-            ? Open(keys, options)
-            : Create(keys, options);
+            ? Open(keys, options, identityLookupMode)
+            : Create(keys, options, identityLookupMode);
     }
 
 
@@ -3305,6 +4049,10 @@ public sealed class CatalogNamedTypedIndexBuilder<TKey, TIdentity>
 /// <param name="StringComparisonCompareOptions">The persisted managed string comparison options for residual comparison and prepared membership.</param>
 /// <param name="StringComparisonCulture">The persisted managed string comparison culture name, or empty for invariant/not applicable.</param>
 /// <param name="StringComparisonCustomComparerTypeName">The persisted custom comparer type-name sentinel, or empty when not custom/not recorded.</param>
+/// <param name="FoldedNormalization">The persisted canonical-normalization contract used before folding text.</param>
+/// <param name="NormalizedProjectionSlotIndex">The owned case-preserving normalized-text projection slot, or -1 when not maintained.</param>
+/// <param name="NormalizedReversedProjectionSlotIndex">The owned reversed case-preserving normalized-text projection slot, or -1 when not maintained.</param>
+/// <param name="SortKeyProfiles">The persisted culture-aware sort-key profiles and their owned physical slots, or null for metadata created before profile lists were introduced.</param>
 public readonly record struct CatalogIndexInfo(
     int SlotIndex,
     string Name,
@@ -3341,7 +4089,11 @@ public readonly record struct CatalogIndexInfo(
     LibraDexStringComparisonPolicyKind StringComparisonPolicyKind,
     CompareOptions StringComparisonCompareOptions,
     string StringComparisonCulture,
-    string StringComparisonCustomComparerTypeName)
+    string StringComparisonCustomComparerTypeName,
+    LibraDexTextNormalization FoldedNormalization = LibraDexTextNormalization.None,
+    int NormalizedProjectionSlotIndex = -1,
+    int NormalizedReversedProjectionSlotIndex = -1,
+    IReadOnlyList<LibraDexStringSortKeyProjectionInfo>? SortKeyProfiles = null)
 {
     /// <summary>
     /// Gets whether <see cref="ItemCount"/> is an authoritative live count for this catalog entry.<br/>
@@ -3353,15 +4105,14 @@ public readonly record struct CatalogIndexInfo(
 
     /// <summary>
     /// Attempts to reconstruct the logical shape descriptor recorded for this catalog entry.<br/>
-    /// Entries created before shape metadata was persisted, or entries whose CLR type names cannot be resolved in the current process, return <see langword="false"/>.<br/>
+    /// Basic typed entries with durable CLR/family metadata synthesize their implicit forward exact projection; entries without those contracts, or whose CLR type names cannot be resolved in the current process, return <see langword="false"/>.<br/>
     /// </summary>
     /// <param name="shape">The reconstructed logical shape when available.</param>
     /// <returns><see langword="true"/> when a logical shape descriptor could be reconstructed; otherwise <see langword="false"/>.</returns>
     public bool TryCreateShape([NotNullWhen(true)] out LibraDexIndexShapeSpec? shape)
     {
         shape = null;
-        if (Projections.Count == 0 ||
-            string.IsNullOrWhiteSpace(KeyTypeName) ||
+        if (string.IsNullOrWhiteSpace(KeyTypeName) ||
             string.IsNullOrWhiteSpace(IdentityTypeName) ||
             KeyFamily == CatalogIndexKeyFamily.Unknown ||
             IdentityFamily == CatalogIndexIdentityFamily.Unknown)
@@ -3376,6 +4127,15 @@ public readonly record struct CatalogIndexInfo(
             return false;
         }
 
+        IReadOnlyList<LibraDexIndexProjectionSpec> projections = Projections.Count == 0
+            ? new[]
+            {
+                new LibraDexIndexProjectionSpec(
+                    LibraDexIndexProjectionKind.Exact,
+                    LibraDexIndexByteDirection.Forward,
+                    SortOrder)
+            }
+            : Projections;
         shape = new LibraDexIndexShapeSpec(
             Group,
             Name,
@@ -3390,7 +4150,7 @@ public readonly record struct CatalogIndexInfo(
             DateTimeKeyEncoding,
             Directions,
             SortOrder,
-            Projections,
+            projections,
             CompositeParts,
             IdentityKeyMultiplicity);
         return true;
@@ -3483,7 +4243,34 @@ public readonly record struct CatalogIndexInfo(
             metadata.StringComparisonPolicyKind,
             metadata.StringComparisonCompareOptions,
             metadata.StringComparisonCulture,
-            metadata.StringComparisonCustomComparerTypeName);
+            metadata.StringComparisonCustomComparerTypeName,
+            metadata.FoldedNormalization,
+            metadata.NormalizedProjectionSlotIndex,
+            metadata.NormalizedReversedProjectionSlotIndex,
+            CreateSortKeyProfileInfo(metadata.SortKeyProfiles));
+    }
+
+    private static IReadOnlyList<LibraDexStringSortKeyProjectionInfo> CreateSortKeyProfileInfo(
+        IReadOnlyList<LibraDexStringSortKeyProjectionMetadata>? profiles)
+    {
+        if (profiles is null || profiles.Count == 0)
+        {
+            return Array.Empty<LibraDexStringSortKeyProjectionInfo>();
+        }
+
+        LibraDexStringSortKeyProjectionInfo[] result = new LibraDexStringSortKeyProjectionInfo[profiles.Count];
+        for (int i = 0; i < result.Length; i++)
+        {
+            LibraDexStringSortKeyProjectionMetadata profile = profiles[i];
+            result[i] = new LibraDexStringSortKeyProjectionInfo(
+                profile.SlotIndex,
+                profile.CultureName,
+                profile.CompareOptions,
+                profile.SortVersionFullVersion,
+                profile.SortVersionId);
+        }
+
+        return result;
     }
 }
 
@@ -3891,3 +4678,101 @@ public sealed class CatalogUnsupportedIndexFactory
         throw new NotSupportedException(message);
     }
 }
+
+/// <summary>
+/// Provides lifecycle verbs for one named bounded variable-length blob-key/scalar-identity index.<br/>
+/// The explicit maximum payload size keeps storage bounded while allowing ordinary CLR byte arrays of different lengths to share one logical index.<br/>
+/// </summary>
+/// <typeparam name="TIdentity">The scalar identity type encoded into the physical 8-byte identity lane.<br/></typeparam>
+public sealed class CatalogNamedVariableBlobKeyBuilder<TIdentity>
+{
+    private readonly Catalog catalog;
+    private readonly CatalogIndexFactories owner;
+    private readonly string group;
+    private readonly string name;
+    private readonly int maxKeyBytes;
+
+    internal CatalogNamedVariableBlobKeyBuilder(
+        Catalog catalog,
+        CatalogIndexFactories owner,
+        string group,
+        string name,
+        int maxKeyBytes)
+    {
+        this.catalog = catalog ?? throw new ArgumentNullException(nameof(catalog));
+        this.owner = owner ?? throw new ArgumentNullException(nameof(owner));
+        ArgumentException.ThrowIfNullOrWhiteSpace(group);
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        if (maxKeyBytes < 1)
+            throw new ArgumentOutOfRangeException(nameof(maxKeyBytes), maxKeyBytes, "Variable blob indexes require a positive maximum payload byte count.");
+
+        _ = checked(maxKeyBytes + 1);
+        this.group = group;
+        this.name = name;
+        this.maxKeyBytes = maxKeyBytes;
+    }
+
+    /// <summary>
+    /// Creates the bounded variable-blob index and persists its logical payload cap.<br/>
+    /// </summary>
+    /// <param name="keys">The duplicate-key contract for this index.<br/></param>
+    /// <param name="options">Optional per-index creation options.<br/></param>
+    /// <returns>The newly created variable-blob index facade.</returns>
+    public LibraDexVariableBlobScalar8Index<TIdentity> Create(
+        IndexKeys keys = IndexKeys.NonUnique,
+        IndexOptions? options = null)
+    {
+        if (owner.TryGetInfo(group, name, out _))
+            throw new InvalidOperationException("The requested grouped LibraDex variable-blob index already exists.");
+
+        return catalog.CreateVariableBlobScalar8Index<TIdentity>(
+            group,
+            name,
+            owner.ResolveCreateSlot(null),
+            maxKeyBytes,
+            CatalogIndexFactoryOptions.Resolve(keys, options));
+    }
+
+    /// <summary>
+    /// Opens the persisted bounded variable-blob index and validates its identity type and logical payload cap.<br/>
+    /// </summary>
+    /// <returns>The reopened variable-blob index facade.</returns>
+    public LibraDexVariableBlobScalar8Index<TIdentity> Open()
+    {
+        if (!owner.TryGetInfo(group, name, out CatalogIndexInfo info))
+            throw new InvalidDataException($"Variable blob index '{group}/{name}' was not found in the catalog.");
+
+        return catalog.OpenVariableBlobScalar8Index<TIdentity>(info, maxKeyBytes);
+    }
+
+    /// <summary>
+    /// Opens the bounded variable-blob index when present, or creates it with the supplied contract when missing.<br/>
+    /// </summary>
+    /// <param name="keys">The duplicate-key contract used only when creation is required.<br/></param>
+    /// <param name="options">Optional creation options used only when creation is required.<br/></param>
+    /// <returns>The created or reopened variable-blob index facade.</returns>
+    public LibraDexVariableBlobScalar8Index<TIdentity> CreateOrOpen(
+        IndexKeys keys = IndexKeys.NonUnique,
+        IndexOptions? options = null)
+    {
+        return owner.TryGetInfo(group, name, out _)
+            ? Open()
+            : Create(keys, options);
+    }
+}
+
+/// <summary>
+/// Describes one persisted culture-aware sort-key projection owned by a logical string index.<br/>
+/// The sort-version fields identify the globalization table that produced the stored bytes so reopen can reject incompatible runtime collation rather than mixing incomparable keys.<br/>
+/// </summary>
+/// <param name="SlotIndex">The fixed catalog slot containing the owned physical projection.<br/></param>
+/// <param name="CultureName">The culture name, or an empty string for invariant culture.<br/></param>
+/// <param name="CompareOptions">The exact comparison options used to create sort keys.<br/></param>
+/// <param name="SortVersionFullVersion">The persisted .NET sort-table version, or zero for a legacy projection without a recorded signature.<br/></param>
+/// <param name="SortVersionId">The persisted .NET sort identifier, or an empty GUID for a legacy projection without a recorded signature.<br/></param>
+public readonly record struct LibraDexStringSortKeyProjectionInfo(
+    int SlotIndex,
+    string CultureName,
+    CompareOptions CompareOptions,
+    int SortVersionFullVersion,
+    Guid SortVersionId);

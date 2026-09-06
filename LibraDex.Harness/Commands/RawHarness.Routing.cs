@@ -47,7 +47,7 @@ internal static partial class RawHarness
 
             Scalar8Scalar8RouteReadPolicy readPolicy = useArenaCache
                 ? Scalar8Scalar8RouteReadPolicy.PreferArenaCache
-                : Scalar8Scalar8RouteReadPolicy.Uncached;
+                : Scalar8Scalar8RouteReadPolicy.PreferPromotedViews;
             Scalar8Scalar8RouteTarget target = session.WalkScalar8Scalar8RouteTarget(setup.RootRouterOffset, key, maxRouterHops: 8, readPolicy);
             checksum ^= target.Offset + target.RouterDepth + (int)target.Kind;
         }
@@ -204,7 +204,7 @@ internal static partial class RawHarness
                 : throw new KeyNotFoundException(indexName);
             LibraDexIdentityMutationResult deleteNullResult = catalog["routes"]["deleteValue"].Delete(LibraDexCondition
                 .ForGroup("routes")
-                .Index("deleteValue").AsInt64.EqualTo(ScalarNull.Null)
+                .Index("deleteValue").AsInt64.IsNull()
                 .EndCondition);
             IReadOnlyList<long> deleteAfterNullIds = LibraDexCondition
                 .ForGroup("routes")
@@ -274,7 +274,7 @@ internal static partial class RawHarness
                 .EndCondition, null);
             LibraDexIdentityMutationResult setKeyFromNullResult = catalog["routes"]["setKeyValue"].SetKey(LibraDexCondition
                 .ForGroup("routes")
-                .Index("setKeyValue").AsInt64.EqualTo(ScalarNull.Null)
+                .Index("setKeyValue").AsInt64.IsNull()
                 .EndCondition, 70L);
             IReadOnlyList<long> setKeyNullIds = LibraDexCondition
                 .ForGroup("routes")
@@ -321,14 +321,18 @@ internal static partial class RawHarness
                 .Index("code").AsString.All()
                 .EndCondition
                 .ToList<ulong>(stringRouteResolver, deduplication: IdentityDeduplication.Preserve);
+            LibraDexIdentityMutationResult deleteStringEmptyResult = catalog["routes"]["code"].Delete(LibraDexCondition
+                .ForGroup("routes")
+                .Index("code").AsString.IsEmpty()
+                .EndCondition);
             if (!stringNullIds.SequenceEqual(new[] { 901UL }) ||
                 !stringEmptyIds.SequenceEqual(new[] { 902UL }) ||
                 !stringNullOrEmptyIds.SequenceEqual(new[] { 901UL, 902UL }) ||
                 !stringAllIds.SequenceEqual(new[] { 901UL, 902UL, 903UL }) ||
-                !((IIndex)stringRouteIndex).Delete(string.Empty, 902UL) ||
+                deleteStringEmptyResult.ChangedCount != 1 ||
                 ((IIndex)stringRouteIndex).Delete(string.Empty, 902UL))
             {
-                throw new InvalidDataException("String NullKey route reads, all-scan ordering, or exact deletes did not match expected route semantics.");
+                throw new InvalidDataException("String NullKey route reads, all-scan ordering, or condition deletes did not match expected route semantics.");
             }
 
             LibraDexIndex<byte[], long> binaryRouteIndex = catalog.Indexes["routes"]["fingerprint"].Blob.Scalar<long>(LibraDexScalarWidth.Bytes32).Create();
@@ -862,28 +866,31 @@ internal static partial class RawHarness
     /// <param name="identities">The generated encoded identities.</param>
     /// <param name="leftCount">The number of low-third-prefix tuples.</param>
     /// <param name="rightCount">The number of high-third-prefix tuples.</param>
+    /// <param name="includeIntermediateStem">Whether to move the split to byte depth three behind a shared `0x22` byte at depth two so exact-stem intermediate routing is exercised.<br/></param>
     private static void CreateDeeperTransformSplitVectors(
         Scalar8Scalar8Profile profile,
         out ulong[] keys,
         out ulong[] identities,
         out int leftCount,
-        out int rightCount)
+        out int rightCount,
+        bool includeIntermediateStem = false)
     {
         leftCount = profile.MaxItemCount / 2;
         rightCount = profile.MaxItemCount - leftCount;
         keys = new ulong[profile.MaxItemCount];
         identities = new ulong[profile.MaxItemCount];
-        const ulong thirdByteRightBase = 0x0000_8000_0000_0000UL;
+        ulong leftBase = includeIntermediateStem ? 0x0000_2200_0000_0000UL : 0;
+        ulong rightBase = includeIntermediateStem ? 0x0000_2280_0000_0000UL : 0x0000_8000_0000_0000UL;
         for (int i = 0; i < leftCount; i++)
         {
-            keys[i] = (ulong)i;
+            keys[i] = leftBase + (ulong)i;
             identities[i] = keys[i];
         }
 
         for (int i = 0; i < rightCount; i++)
         {
             int target = leftCount + i;
-            keys[target] = thirdByteRightBase + (ulong)i;
+            keys[target] = rightBase + (ulong)i;
             identities[target] = keys[target];
         }
     }
@@ -1204,6 +1211,1046 @@ internal static partial class RawHarness
         SameArena,
         AlternatingArenas,
         MixedDirectAndArena
+    }
+
+
+    /// <summary>
+    /// Validates that a full max-growth `VS8` shelf chooses its structural split by encoded-byte capacity rather than tuple count alone.<br/>
+    /// The fixture fills one 128 KiB shelf exactly: ninety tiny duplicate keys precede two fifty-row groups of near-maximum keys, then one maximum-length incoming key makes the row-balanced boundary overflow while the next prefix boundary remains valid.<br/>
+    /// The command publishes that prebuilt shelf, performs the production routed insert, reopens the file, and verifies every identity in persisted key/identity order so a failed split cannot masquerade as a successful insert.<br/>
+    /// </summary>
+    /// <param name="args">The harness command-line arguments.<br/></param>
+    /// <returns>Zero when capacity-aware selection, publication, reopen, traversal, and identity preservation validate.<br/></returns>
+    private static int RunVarKeyScalar8VariablePayloadSplitSanity(string[] args)
+    {
+        string path = GetOption(args, "--path", Path.Combine(@"T:\LibraDex", "vs8-variable-payload-split-sanity.lbdx"));
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.Delete(path);
+
+        VarKeyScalar8Profile profile = VarKeyScalar8Profile.Default128KiB;
+        int slotCapacityBytes = VarKeyScalar8Layout.CalculateSlotCapacityBytes(profile.ShelfExtentSize);
+        int recordCapacityBytes = profile.ShelfExtentSize - VarKeyScalar8Layout.HeaderSize - slotCapacityBytes;
+        const int tinyCount = 90;
+        const int middleCount = 50;
+        const int upperCount = 50;
+        const int longerCountPerLargeGroup = 30;
+        const int shorterCountPerLargeGroup = 20;
+
+        int tinyRecordBytes = tinyCount * VarKeyScalar8Layout.GetNewRecordLength(2);
+        int middleRecordBytes =
+            longerCountPerLargeGroup * VarKeyScalar8Layout.GetNewRecordLength(1013) +
+            shorterCountPerLargeGroup * VarKeyScalar8Layout.GetNewRecordLength(1012);
+        int upperRecordBytes = middleRecordBytes;
+        int incomingRecordBytes = VarKeyScalar8Layout.GetNewRecordLength(1024);
+        if (tinyRecordBytes + middleRecordBytes + upperRecordBytes != recordCapacityBytes ||
+            middleRecordBytes + upperRecordBytes + incomingRecordBytes <= recordCapacityBytes ||
+            tinyRecordBytes + middleRecordBytes > recordCapacityBytes ||
+            upperRecordBytes + incomingRecordBytes > recordCapacityBytes)
+        {
+            throw new InvalidDataException(
+                $"The VS8 variable-payload fixture no longer expresses the intended capacity skew. " +
+                $"Capacity={recordCapacityBytes}; Tiny={tinyRecordBytes}; Middle={middleRecordBytes}; Upper={upperRecordBytes}; Incoming={incomingRecordBytes}.");
+        }
+
+        List<(byte[] Key, ulong Identity)> tuples = new(tinyCount + middleCount + upperCount + 1);
+        byte[] shelfBytes = VarKeyScalar8.CreateEmpty(profile);
+        if (!VarKeyScalar8MutableShelf.TryCreate(
+            shelfBytes,
+            profile,
+            ownsBytes: false,
+            rentSidecars: false,
+            out VarKeyScalar8MutableShelf shelf))
+        {
+            throw new InvalidDataException("The VS8 variable-payload fixture could not create its max-growth mutable shelf.");
+        }
+
+        ulong nextIdentity = 1;
+        byte[] tinyKey = [0x43, 0x61];
+        for (int i = 0; i < tinyCount; i++)
+        {
+            InsertVarKeyScalar8VariablePayloadFixtureTuple(shelf, tuples, tinyKey, nextIdentity++);
+        }
+
+        for (int i = 0; i < middleCount; i++)
+        {
+            int keyLength = i < longerCountPerLargeGroup ? 1013 : 1012;
+            byte[] key = CreateVarKeyScalar8VariablePayloadFixtureKey(0x6D, i, keyLength, 0x20);
+            InsertVarKeyScalar8VariablePayloadFixtureTuple(shelf, tuples, key, nextIdentity++);
+        }
+
+        for (int i = 0; i < upperCount; i++)
+        {
+            int keyLength = i < longerCountPerLargeGroup ? 1013 : 1012;
+            byte[] key = CreateVarKeyScalar8VariablePayloadFixtureKey(0x7A, i, keyLength, 0x20);
+            InsertVarKeyScalar8VariablePayloadFixtureTuple(shelf, tuples, key, nextIdentity++);
+        }
+
+        if (shelf.ItemCount != tinyCount + middleCount + upperCount ||
+            VarKeyScalar8Layout.ReadRecordArenaEnd(shelfBytes) != profile.ShelfExtentSize)
+        {
+            throw new InvalidDataException(
+                $"The VS8 variable-payload fixture did not fill the max-growth shelf exactly. Items={shelf.ItemCount}; RecordEnd={VarKeyScalar8Layout.ReadRecordArenaEnd(shelfBytes)}; Extent={profile.ShelfExtentSize}.");
+        }
+
+        byte[] incomingKey = CreateVarKeyScalar8VariablePayloadFixtureKey(0x7A, int.MaxValue, 1024, 0xFF);
+        ulong incomingIdentity = nextIdentity;
+        tuples.Add((incomingKey, incomingIdentity));
+
+        DataKernelOptions options = CreateDesignPerfOptions();
+        long rootOffset;
+        using (LibraDexFileSession session = LibraDexFileSession.Initialize(path, options, CreateDesignPerfMetadata(821), DataKernelTelemetryOptions.EnabledOptions))
+        {
+            (RouterSnapshot root, _) = session.CreateRootRouterIndex(CreateHarnessSlot(0, "vs8bytes", 0));
+            rootOffset = root.Offset;
+            _ = session.CreateVarKeyScalar8ShelfAndLinkRootRoute(rootOffset, 0x43, profile, shelfBytes);
+            bool requestedSerializedReplay = false;
+            using (LibraDexFileSessionDurabilityBatch batch = session.BeginDurabilityBatch())
+            {
+                try
+                {
+                    _ = session.InsertWalkedRoutedVarKeyScalar8(
+                        rootOffset,
+                        maxKeyLength: profile.MaxKeyLength,
+                        incomingKey,
+                        incomingIdentity,
+                        allowDuplicateKeys: true,
+                        maxRouterHops: LibraDexFileSession.DefaultVarKeyScalar8MaxRouterHops,
+                        requestedRouteCount: 16);
+                }
+                catch (LibraDexWriteContextVarKeyScalar8TopologyFallbackException)
+                {
+                    requestedSerializedReplay = true;
+                    _ = batch.Abort();
+                }
+            }
+            if (!requestedSerializedReplay)
+            {
+                throw new InvalidDataException("The VS8 noncontiguous-owner durability batch did not request serialized topology replay.");
+            }
+
+            VarKeyScalar8RoutedInsertResult result = session.InsertWalkedRoutedVarKeyScalar8(
+                rootOffset,
+                maxKeyLength: profile.MaxKeyLength,
+                incomingKey,
+                incomingIdentity,
+                allowDuplicateKeys: true,
+                maxRouterHops: LibraDexFileSession.DefaultVarKeyScalar8MaxRouterHops);
+            if (result.InsertResult != VarKeyScalar8InsertResult.Inserted ||
+                result.Kind != VarKeyScalar8RoutedInsertKind.WalkedShelfTransformSplit)
+            {
+                throw new InvalidDataException($"The VS8 variable-payload routed insert returned {result.Kind}/{result.InsertResult}; expected a published transform split.");
+            }
+        }
+
+        tuples.Sort(static (left, right) =>
+        {
+            int keyComparison = left.Key.AsSpan().SequenceCompareTo(right.Key);
+            return keyComparison != 0 ? keyComparison : left.Identity.CompareTo(right.Identity);
+        });
+        using (LibraDexFileSession reopened = LibraDexFileSession.Open(path, options, DataKernelTelemetryOptions.EnabledOptions))
+        {
+            ulong[] actualIdentities = new ulong[tuples.Count];
+            int copied = reopened.ReadVarKeyScalar8IdentityRange(
+                rootOffset,
+                profile.MaxKeyLength,
+                tuples[0].Key,
+                tuples[^1].Key,
+                actualIdentities);
+            if (copied != tuples.Count)
+            {
+                throw new InvalidDataException($"The reopened VS8 variable-payload range returned {copied} identities; expected {tuples.Count}.");
+            }
+
+            for (int i = 0; i < copied; i++)
+            {
+                if (actualIdentities[i] != tuples[i].Identity)
+                {
+                    throw new InvalidDataException($"The reopened VS8 variable-payload identity at ordinal {i} was {actualIdentities[i]}; expected {tuples[i].Identity}.");
+                }
+            }
+        }
+
+        Console.WriteLine(
+            $"vs8-variable-payload-split-sanity ok path={path} items={tuples.Count} " +
+            $"recordCapacity={recordCapacityBytes} rejectedRowBoundaryBytes={middleRecordBytes + upperRecordBytes + incomingRecordBytes} " +
+            $"selectedLeftBytes={tinyRecordBytes + middleRecordBytes} selectedRightBytes={upperRecordBytes + incomingRecordBytes}");
+        return 0;
+    }
+
+
+    /// <summary>
+    /// Inserts one tuple into the synthetic `VS8` capacity-skew shelf and retains the same key/identity pair for reopen-order validation.<br/>
+    /// The fixture uses the production mutable shelf implementation so its exact record and slot accounting remains coupled to the current persisted layout.<br/>
+    /// </summary>
+    /// <param name="shelf">The mutable max-growth fixture shelf.<br/></param>
+    /// <param name="tuples">The expected tuple collection used after reopen.<br/></param>
+    /// <param name="key">The raw key bytes to insert.<br/></param>
+    /// <param name="identity">The encoded scalar identity to insert.<br/></param>
+    private static void InsertVarKeyScalar8VariablePayloadFixtureTuple(
+        VarKeyScalar8MutableShelf shelf,
+        List<(byte[] Key, ulong Identity)> tuples,
+        byte[] key,
+        ulong identity)
+    {
+        VarKeyScalar8InsertResult result = shelf.InsertWithMutationHint(
+            key,
+            identity,
+            allowDuplicateKeys: true,
+            hintStartDepth: 0,
+            maxHintBytes: 0,
+            out _);
+        if (result != VarKeyScalar8InsertResult.Inserted)
+        {
+            throw new InvalidDataException($"The VS8 variable-payload fixture insert returned {result} after {tuples.Count} tuples.");
+        }
+
+        tuples.Add((key, identity));
+    }
+
+
+    /// <summary>
+    /// Creates one long path-like raw key for the synthetic `VS8` capacity-skew split fixture.<br/>
+    /// The root and group bytes control the structural boundary, the fill byte controls ordering density, and the trailing ordinal keeps every long key distinct without allocating text.<br/>
+    /// </summary>
+    /// <param name="groupPrefix">The second raw-key byte that identifies the structural group.<br/></param>
+    /// <param name="ordinal">The deterministic trailing ordinal.<br/></param>
+    /// <param name="keyLength">The exact raw key length.<br/></param>
+    /// <param name="fillByte">The byte used between the structural prefix and trailing ordinal.<br/></param>
+    /// <returns>The constructed raw key bytes.<br/></returns>
+    private static byte[] CreateVarKeyScalar8VariablePayloadFixtureKey(
+        byte groupPrefix,
+        int ordinal,
+        int keyLength,
+        byte fillByte)
+    {
+        if (keyLength < 6 || keyLength > VarKeyScalar8Profile.Default128KiB.MaxKeyLength)
+        {
+            throw new ArgumentOutOfRangeException(nameof(keyLength));
+        }
+
+        byte[] key = new byte[keyLength];
+        key[0] = 0x43;
+        key[1] = groupPrefix;
+        key.AsSpan(2).Fill(fillByte);
+        BinaryPrimitives.WriteInt32BigEndian(key.AsSpan(key.Length - sizeof(int)), ordinal);
+        return key;
+    }
+
+    /// <summary>
+    /// Validates the bounded recursive `VS8` replacement used when the first divergent prefix produces one capacity-fitting minority shelf and one still-overfull dense branch.<br/>
+    /// The fixture fills one max-growth shelf with a small early prefix and two large later subgroups sharing the same first divergent byte, then inserts into the later subgroup so no two-shelf boundary exists at that first divergence.<br/>
+    /// Production insertion must publish a recursive subtree, preserve canonical tuple order, survive reopen, and avoid rebuilding unrelated root-prefix ranges.<br/>
+    /// </summary>
+    /// <param name="args">The harness command-line arguments; <c>--path</c> optionally selects the temporary LibraDex file.<br/></param>
+    /// <returns>Zero when skewed-prefix insertion, recursive publication, persisted traversal, and identity parity validate.<br/></returns>
+    private static int RunVarKeyScalar8SkewedPrefixSplitSanity(string[] args)
+    {
+        string path = GetOption(args, "--path", Path.Combine(@"T:\LibraDex", "vs8-skewed-prefix-split-sanity.lbdx"));
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.Delete(path);
+
+        VarKeyScalar8Profile profile = VarKeyScalar8Profile.Default128KiB;
+        int slotCapacityBytes = VarKeyScalar8Layout.CalculateSlotCapacityBytes(profile.ShelfExtentSize);
+        int recordCapacityBytes = profile.ShelfExtentSize - VarKeyScalar8Layout.HeaderSize - slotCapacityBytes;
+        const int minorityCount = 90;
+        const int denseLowCount = 50;
+        const int denseHighCount = 50;
+        const int longerCountPerDenseGroup = 30;
+        const int shorterCountPerDenseGroup = 20;
+        int minorityRecordBytes = minorityCount * VarKeyScalar8Layout.GetNewRecordLength(2);
+        int denseLowRecordBytes =
+            longerCountPerDenseGroup * VarKeyScalar8Layout.GetNewRecordLength(1013) +
+            shorterCountPerDenseGroup * VarKeyScalar8Layout.GetNewRecordLength(1012);
+        int denseHighRecordBytes = denseLowRecordBytes;
+        int incomingRecordBytes = VarKeyScalar8Layout.GetNewRecordLength(1024);
+        if (minorityRecordBytes + denseLowRecordBytes + denseHighRecordBytes != recordCapacityBytes ||
+            denseLowRecordBytes + denseHighRecordBytes + incomingRecordBytes <= recordCapacityBytes ||
+            denseLowRecordBytes > recordCapacityBytes ||
+            denseHighRecordBytes + incomingRecordBytes > recordCapacityBytes)
+        {
+            throw new InvalidDataException(
+                $"The VS8 skewed-prefix fixture no longer expresses the intended recursive capacity shape. " +
+                $"Capacity={recordCapacityBytes}; Minority={minorityRecordBytes}; DenseLow={denseLowRecordBytes}; DenseHigh={denseHighRecordBytes}; Incoming={incomingRecordBytes}.");
+        }
+
+        List<(byte[] Key, ulong Identity)> tuples = new(minorityCount + denseLowCount + denseHighCount + 1);
+        byte[] shelfBytes = VarKeyScalar8.CreateEmpty(profile);
+        if (!VarKeyScalar8MutableShelf.TryCreate(
+            shelfBytes,
+            profile,
+            ownsBytes: false,
+            rentSidecars: false,
+            out VarKeyScalar8MutableShelf shelf))
+        {
+            throw new InvalidDataException("The VS8 skewed-prefix fixture could not create its max-growth mutable shelf.");
+        }
+
+        ulong nextIdentity = 1;
+        byte[] minorityKey = [0x43, 0x61];
+        for (int i = 0; i < minorityCount; i++)
+        {
+            InsertVarKeyScalar8VariablePayloadFixtureTuple(shelf, tuples, minorityKey, nextIdentity++);
+        }
+        for (int i = 0; i < denseLowCount; i++)
+        {
+            int keyLength = i < longerCountPerDenseGroup ? 1013 : 1012;
+            byte[] key = CreateVarKeyScalar8VariablePayloadFixtureKey(0x7A, i, keyLength, 0x20);
+            InsertVarKeyScalar8VariablePayloadFixtureTuple(shelf, tuples, key, nextIdentity++);
+        }
+        for (int i = 0; i < denseHighCount; i++)
+        {
+            int keyLength = i < longerCountPerDenseGroup ? 1013 : 1012;
+            byte[] key = CreateVarKeyScalar8VariablePayloadFixtureKey(0x7A, i, keyLength, 0xE0);
+            InsertVarKeyScalar8VariablePayloadFixtureTuple(shelf, tuples, key, nextIdentity++);
+        }
+        if (shelf.ItemCount != minorityCount + denseLowCount + denseHighCount ||
+            VarKeyScalar8Layout.ReadRecordArenaEnd(shelfBytes) != profile.ShelfExtentSize)
+        {
+            throw new InvalidDataException(
+                $"The VS8 skewed-prefix fixture did not fill the max-growth shelf exactly. Items={shelf.ItemCount}; RecordEnd={VarKeyScalar8Layout.ReadRecordArenaEnd(shelfBytes)}; Extent={profile.ShelfExtentSize}.");
+        }
+
+        byte[] incomingKey = CreateVarKeyScalar8VariablePayloadFixtureKey(0x7A, int.MaxValue, 1024, 0xFF);
+        ulong incomingIdentity = nextIdentity;
+        tuples.Add((incomingKey, incomingIdentity));
+        DataKernelOptions options = CreateDesignPerfOptions();
+        long rootOffset;
+        using (LibraDexFileSession session = LibraDexFileSession.Initialize(path, options, CreateDesignPerfMetadata(822), DataKernelTelemetryOptions.EnabledOptions))
+        {
+            (RouterSnapshot root, _) = session.CreateRootRouterIndex(CreateHarnessSlot(0, "vs8skew", 0));
+            rootOffset = root.Offset;
+            _ = session.CreateVarKeyScalar8ShelfAndLinkRootRoute(rootOffset, 0x43, profile, shelfBytes);
+            VarKeyScalar8RoutedInsertResult result = session.InsertWalkedRoutedVarKeyScalar8(
+                rootOffset,
+                maxKeyLength: profile.MaxKeyLength,
+                incomingKey,
+                incomingIdentity,
+                allowDuplicateKeys: true,
+                maxRouterHops: LibraDexFileSession.DefaultVarKeyScalar8MaxRouterHops,
+                requestedRouteCount: 16);
+            if (result.InsertResult != VarKeyScalar8InsertResult.Inserted ||
+                result.Kind != VarKeyScalar8RoutedInsertKind.WalkedShelfTransformSplit)
+            {
+                throw new InvalidDataException($"The VS8 skewed-prefix routed insert returned {result.Kind}/{result.InsertResult}; expected a published recursive transform split.");
+            }
+        }
+
+        tuples.Sort(static (left, right) =>
+        {
+            int keyComparison = left.Key.AsSpan().SequenceCompareTo(right.Key);
+            return keyComparison != 0 ? keyComparison : left.Identity.CompareTo(right.Identity);
+        });
+        using (LibraDexFileSession reopened = LibraDexFileSession.Open(path, options, DataKernelTelemetryOptions.EnabledOptions))
+        {
+            ulong[] actualIdentities = new ulong[tuples.Count];
+            int copied = reopened.ReadVarKeyScalar8IdentityRange(
+                rootOffset,
+                profile.MaxKeyLength,
+                tuples[0].Key,
+                tuples[^1].Key,
+                actualIdentities);
+            if (copied != tuples.Count)
+            {
+                throw new InvalidDataException($"The reopened VS8 skewed-prefix range returned {copied} identities; expected {tuples.Count}.");
+            }
+            for (int i = 0; i < copied; i++)
+            {
+                if (actualIdentities[i] != tuples[i].Identity)
+                {
+                    throw new InvalidDataException($"The reopened VS8 skewed-prefix identity at ordinal {i} was {actualIdentities[i]}; expected {tuples[i].Identity}.");
+                }
+            }
+        }
+
+        Console.WriteLine(
+            $"vs8-skewed-prefix-split-sanity ok path={path} items={tuples.Count} " +
+            $"capacity={recordCapacityBytes} rejectedDenseBranchBytes={denseLowRecordBytes + denseHighRecordBytes + incomingRecordBytes} " +
+            $"recursiveLeaves={denseLowCount}/{denseHighCount + 1}");
+        return 0;
+    }
+
+    /// <summary>
+    /// Creates one long raw key for the converged-route `VS8` split fixture.<br/>
+    /// Two distinct root bytes intentionally converge through one depth-one router and one full shelf; later bytes provide enough internal structure for a bounded recursive replacement.<br/>
+    /// </summary>
+    /// <param name="rootPrefix">The root byte whose routes converge on the shared child router.<br/></param>
+    /// <param name="groupPrefix">The byte-two structural group used inside the dense root range.<br/></param>
+    /// <param name="ordinal">The deterministic trailing ordinal.<br/></param>
+    /// <param name="keyLength">The exact raw key length.<br/></param>
+    /// <param name="fillByte">The byte used between the structural prefix and trailing ordinal.<br/></param>
+    /// <returns>The constructed raw key bytes.<br/></returns>
+    private static byte[] CreateVarKeyScalar8ConvergedPrefixFixtureKey(
+        byte rootPrefix,
+        byte groupPrefix,
+        int ordinal,
+        int keyLength,
+        byte fillByte)
+    {
+        if (keyLength < 7 || keyLength > VarKeyScalar8Profile.Default128KiB.MaxKeyLength)
+        {
+            throw new ArgumentOutOfRangeException(nameof(keyLength));
+        }
+
+        byte[] key = new byte[keyLength];
+        key[0] = rootPrefix;
+        key[1] = 0x10;
+        key[2] = groupPrefix;
+        key.AsSpan(3).Fill(fillByte);
+        BinaryPrimitives.WriteInt32BigEndian(key.AsSpan(key.Length - sizeof(int)), ordinal);
+        return key;
+    }
+
+    /// <summary>
+    /// Validates a bounded recursive `VS8` replacement when several earlier prefix routes intentionally converge before the full shelf's immediate parent.<br/>
+    /// The fixture links two root prefixes to separate depth-one routers, links one exact route in each parent to the same full shelf containing both root prefixes, and then forces an insertion whose first global divergence precedes the nominal child depth.<br/>
+    /// Production insertion must rebuild only the affected root-prefix partition with monotonic routing, preserve canonical traversal without duplicate identities, and survive reopen without changing the persisted router or shelf formats.<br/>
+    /// </summary>
+    /// <param name="args">The harness command-line arguments; <c>--path</c> optionally selects the temporary LibraDex file.<br/></param>
+    /// <returns>Zero when converged-prefix insertion, recursive publication, live traversal, and reopened identity parity validate.<br/></returns>
+    private static int RunVarKeyScalar8ConvergedPrefixSplitSanity(string[] args)
+    {
+        string path = GetOption(args, "--path", Path.Combine(@"T:\LibraDex", "vs8-converged-prefix-split-sanity.lbdx"));
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.Delete(path);
+
+        VarKeyScalar8Profile profile = VarKeyScalar8Profile.Default128KiB;
+        int slotCapacityBytes = VarKeyScalar8Layout.CalculateSlotCapacityBytes(profile.ShelfExtentSize);
+        int recordCapacityBytes = profile.ShelfExtentSize - VarKeyScalar8Layout.HeaderSize - slotCapacityBytes;
+        const int minorityCount = 90;
+        const int denseLowCount = 50;
+        const int denseHighCount = 50;
+        const int longerCountPerDenseGroup = 30;
+        const int shorterCountPerDenseGroup = 20;
+        int minorityRecordBytes = minorityCount * VarKeyScalar8Layout.GetNewRecordLength(2);
+        int denseLowRecordBytes =
+            longerCountPerDenseGroup * VarKeyScalar8Layout.GetNewRecordLength(1013) +
+            shorterCountPerDenseGroup * VarKeyScalar8Layout.GetNewRecordLength(1012);
+        int denseHighRecordBytes = denseLowRecordBytes;
+        int incomingRecordBytes = VarKeyScalar8Layout.GetNewRecordLength(1024);
+        if (minorityRecordBytes + denseLowRecordBytes + denseHighRecordBytes != recordCapacityBytes ||
+            denseLowRecordBytes + denseHighRecordBytes + incomingRecordBytes <= recordCapacityBytes)
+        {
+            throw new InvalidDataException(
+                $"The VS8 converged-prefix fixture no longer expresses the intended full-shelf recursive shape. " +
+                $"Capacity={recordCapacityBytes}; Minority={minorityRecordBytes}; DenseLow={denseLowRecordBytes}; DenseHigh={denseHighRecordBytes}; Incoming={incomingRecordBytes}.");
+        }
+
+        List<(byte[] Key, ulong Identity)> tuples = new(minorityCount + denseLowCount + denseHighCount + 1);
+        byte[] shelfBytes = VarKeyScalar8.CreateEmpty(profile);
+        if (!VarKeyScalar8MutableShelf.TryCreate(
+            shelfBytes,
+            profile,
+            ownsBytes: false,
+            rentSidecars: false,
+            out VarKeyScalar8MutableShelf shelf))
+        {
+            throw new InvalidDataException("The VS8 converged-prefix fixture could not create its max-growth mutable shelf.");
+        }
+
+        ulong nextIdentity = 1;
+        byte[] minorityKey = [0x43, 0x10];
+        for (int i = 0; i < minorityCount; i++)
+        {
+            InsertVarKeyScalar8VariablePayloadFixtureTuple(shelf, tuples, minorityKey, nextIdentity++);
+        }
+        for (int i = 0; i < denseLowCount; i++)
+        {
+            int keyLength = i < longerCountPerDenseGroup ? 1013 : 1012;
+            byte[] key = CreateVarKeyScalar8ConvergedPrefixFixtureKey(0x44, 0x7A, i, keyLength, 0x20);
+            InsertVarKeyScalar8VariablePayloadFixtureTuple(shelf, tuples, key, nextIdentity++);
+        }
+        for (int i = 0; i < denseHighCount; i++)
+        {
+            int keyLength = i < longerCountPerDenseGroup ? 1013 : 1012;
+            byte[] key = CreateVarKeyScalar8ConvergedPrefixFixtureKey(0x44, 0x7A, i, keyLength, 0xE0);
+            InsertVarKeyScalar8VariablePayloadFixtureTuple(shelf, tuples, key, nextIdentity++);
+        }
+        if (shelf.ItemCount != minorityCount + denseLowCount + denseHighCount ||
+            VarKeyScalar8Layout.ReadRecordArenaEnd(shelfBytes) != profile.ShelfExtentSize)
+        {
+            throw new InvalidDataException(
+                $"The VS8 converged-prefix fixture did not fill the max-growth shelf exactly. Items={shelf.ItemCount}; RecordEnd={VarKeyScalar8Layout.ReadRecordArenaEnd(shelfBytes)}; Extent={profile.ShelfExtentSize}.");
+        }
+
+        byte[] incomingKey = CreateVarKeyScalar8ConvergedPrefixFixtureKey(0x44, 0x7A, int.MaxValue, 1024, 0xFF);
+        ulong incomingIdentity = nextIdentity;
+        tuples.Add((incomingKey, incomingIdentity));
+        DataKernelOptions options = CreateDesignPerfOptions();
+        long rootOffset;
+        using (LibraDexFileSession session = LibraDexFileSession.Initialize(path, options, CreateDesignPerfMetadata(823), DataKernelTelemetryOptions.EnabledOptions))
+        {
+            (RouterSnapshot root, _) = session.CreateRootRouterIndex(CreateHarnessSlot(0, "vs8conv", 0));
+            rootOffset = root.Offset;
+            (RouterSnapshot leftChild, _) = session.CreateExpandedOneByteRouter(keyDepth: 1, allocationClassId: root.AllocationClassId);
+            (RouterSnapshot rightChild, _) = session.CreateExpandedOneByteRouter(keyDepth: 1, allocationClassId: root.AllocationClassId);
+            (long shelfOffset, _) = session.CreateVarKeyScalar8Shelf(profile, shelfBytes);
+            if (!session.TryUpdateRouterRouteTargetIfCurrent(leftChild.Offset, 0x10, 0, shelfOffset, out _) ||
+                !session.TryUpdateRouterRouteTargetIfCurrent(rightChild.Offset, 0x10, 0, shelfOffset, out _) ||
+                !session.TryUpdateRouterRouteTargetIfCurrent(rootOffset, 0x43, 0, leftChild.Offset, out _) ||
+                !session.TryUpdateRouterRouteTargetIfCurrent(rootOffset, 0x44, 0, rightChild.Offset, out _))
+            {
+                throw new InvalidDataException("The VS8 converged-prefix fixture could not publish its shared root/child route topology.");
+            }
+
+            VarKeyScalar8RoutedInsertResult result = session.InsertWalkedRoutedVarKeyScalar8(
+                rootOffset,
+                maxKeyLength: profile.MaxKeyLength,
+                incomingKey,
+                incomingIdentity,
+                allowDuplicateKeys: true,
+                maxRouterHops: LibraDexFileSession.DefaultVarKeyScalar8MaxRouterHops,
+                requestedRouteCount: 16);
+            if (result.InsertResult != VarKeyScalar8InsertResult.Inserted ||
+                result.Kind != VarKeyScalar8RoutedInsertKind.WalkedShelfTransformSplit)
+            {
+                throw new InvalidDataException($"The VS8 converged-prefix routed insert returned {result.Kind}/{result.InsertResult}; expected a published recursive transform split.");
+            }
+        }
+
+        tuples.Sort(static (left, right) =>
+        {
+            int keyComparison = left.Key.AsSpan().SequenceCompareTo(right.Key);
+            return keyComparison != 0 ? keyComparison : left.Identity.CompareTo(right.Identity);
+        });
+        using (LibraDexFileSession reopened = LibraDexFileSession.Open(path, options, DataKernelTelemetryOptions.EnabledOptions))
+        {
+            ulong[] actualIdentities = new ulong[checked(tuples.Count * 2)];
+            int copied = reopened.ReadVarKeyScalar8IdentityRange(
+                rootOffset,
+                profile.MaxKeyLength,
+                tuples[0].Key,
+                tuples[^1].Key,
+                actualIdentities);
+            if (copied != tuples.Count)
+            {
+                throw new InvalidDataException($"The reopened VS8 converged-prefix range returned {copied} identities; expected {tuples.Count}.");
+            }
+            for (int i = 0; i < copied; i++)
+            {
+                if (actualIdentities[i] != tuples[i].Identity)
+                {
+                    throw new InvalidDataException($"The reopened VS8 converged-prefix identity at ordinal {i} was {actualIdentities[i]}; expected {tuples[i].Identity}.");
+                }
+            }
+        }
+
+        Console.WriteLine(
+            $"vs8-converged-prefix-split-sanity ok path={path} items={tuples.Count} " +
+            $"firstDifferentDepth=0 nominalChildDepth=2 recovery=root-owner-set-rebuild");
+        return 0;
+    }
+
+    /// <summary>
+    /// Validates that a copied `VS8` shelf growth redirects every reachable router owner of the old shared shelf.<br/>
+    /// The fixture deliberately aliases two root prefixes to one full 8 KiB shelf, inserts through only one prefix to force 32 KiB growth, and then proves exact ascending and descending tuple cardinality both live and after reopen.<br/>
+    /// A publisher that rewrites only the walked route leaves the old shelf reachable through the sibling prefix and this fixture reports copied identities as duplicates.<br/>
+    /// </summary>
+    /// <param name="args">The harness command-line arguments; <c>--path</c> optionally selects the disposable LibraDex file.<br/></param>
+    /// <returns>Zero when owner-set growth publication and directional traversal parity validate.<br/></returns>
+    private static int RunVarKeyScalar8SharedShelfGrowthSanity(string[] args)
+    {
+        string path = GetOption(args, "--path", Path.Combine(@"T:\LibraDex", "vs8-shared-shelf-growth-sanity.lbdx"));
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.Delete(path);
+
+        VarKeyScalar8Profile profile = VarKeyScalar8Profile.Default8KiB;
+        byte[] shelfBytes = VarKeyScalar8.CreateEmpty(profile);
+        if (!VarKeyScalar8MutableShelf.TryCreate(
+            shelfBytes,
+            profile,
+            ownsBytes: false,
+            rentSidecars: false,
+            out VarKeyScalar8MutableShelf shelf))
+        {
+            throw new InvalidDataException("The VS8 shared-growth fixture could not create its mutable shelf.");
+        }
+
+        List<(byte[] Key, ulong Identity)> tuples = new();
+        byte[]? incomingKey = null;
+        ulong incomingIdentity = 0;
+        for (int ordinal = 0; ordinal < 1_000_000; ordinal++)
+        {
+            byte[] key = new byte[6];
+            key[0] = (ordinal & 1) == 0 ? (byte)0x43 : (byte)0x44;
+            key[1] = 0x10;
+            BinaryPrimitives.WriteInt32BigEndian(key.AsSpan(2), ordinal);
+            ulong identity = checked((ulong)ordinal + 1);
+            VarKeyScalar8InsertResult result = shelf.InsertWithMutationHint(
+                key,
+                identity,
+                allowDuplicateKeys: true,
+                hintStartDepth: 0,
+                maxHintBytes: 0,
+                out _);
+            if (result == VarKeyScalar8InsertResult.Full)
+            {
+                incomingKey = key;
+                incomingIdentity = identity;
+                break;
+            }
+            if (result != VarKeyScalar8InsertResult.Inserted)
+            {
+                throw new InvalidDataException($"The VS8 shared-growth fixture insert returned {result} at ordinal {ordinal:N0}.");
+            }
+
+            tuples.Add((key, identity));
+        }
+        if (incomingKey is null || tuples.Count == 0)
+        {
+            throw new InvalidDataException("The VS8 shared-growth fixture did not reach its first shelf-growth boundary.");
+        }
+
+        DataKernelOptions options = CreateDesignPerfOptions();
+        long rootOffset;
+        long oldShelfOffset;
+        long grownShelfOffset;
+        using (LibraDexFileSession session = LibraDexFileSession.Initialize(path, options, CreateDesignPerfMetadata(824), DataKernelTelemetryOptions.EnabledOptions))
+        {
+            (RouterSnapshot root, _) = session.CreateRootRouterIndex(CreateHarnessSlot(0, "vs8grow", 0));
+            rootOffset = root.Offset;
+            (oldShelfOffset, _) = session.CreateVarKeyScalar8Shelf(profile, shelfBytes);
+            if (!session.TryUpdateRouterRouteTargetIfCurrent(rootOffset, 0x43, 0, oldShelfOffset, out _) ||
+                !session.TryUpdateRouterRouteTargetIfCurrent(rootOffset, 0x44, 0, oldShelfOffset, out _))
+            {
+                throw new InvalidDataException("The VS8 shared-growth fixture could not publish its two-owner shelf topology.");
+            }
+
+            VarKeyScalar8RoutedInsertResult result = session.InsertWalkedRoutedVarKeyScalar8(
+                rootOffset,
+                maxKeyLength: profile.MaxKeyLength,
+                incomingKey,
+                incomingIdentity,
+                allowDuplicateKeys: true,
+                maxRouterHops: LibraDexFileSession.DefaultVarKeyScalar8MaxRouterHops,
+                requestedRouteCount: 16);
+            if (result.InsertResult != VarKeyScalar8InsertResult.Inserted ||
+                result.Kind != VarKeyScalar8RoutedInsertKind.WalkedGrow ||
+                result.PrimaryOffset != oldShelfOffset)
+            {
+                throw new InvalidDataException($"The VS8 shared-growth routed insert returned {result.Kind}/{result.InsertResult} from {result.PrimaryOffset:N0}; expected WalkedGrow/Inserted from {oldShelfOffset:N0}.");
+            }
+
+            grownShelfOffset = result.NewShelfOffset;
+            tuples.Add((incomingKey, incomingIdentity));
+            tuples.Sort(static (left, right) =>
+            {
+                int keyComparison = left.Key.AsSpan().SequenceCompareTo(right.Key);
+                return keyComparison != 0 ? keyComparison : left.Identity.CompareTo(right.Identity);
+            });
+
+            VarKeyScalar8RoutePathTarget leftOwner = session.WalkVarKeyScalar8RoutePathTarget(
+                rootOffset,
+                tuples.First(static tuple => tuple.Key[0] == 0x43).Key,
+                LibraDexFileSession.DefaultVarKeyScalar8MaxRouterHops);
+            VarKeyScalar8RoutePathTarget rightOwner = session.WalkVarKeyScalar8RoutePathTarget(
+                rootOffset,
+                tuples.First(static tuple => tuple.Key[0] == 0x44).Key,
+                LibraDexFileSession.DefaultVarKeyScalar8MaxRouterHops);
+            if (leftOwner.Target.Offset != grownShelfOffset || rightOwner.Target.Offset != grownShelfOffset)
+            {
+                throw new InvalidDataException($"The VS8 shared-growth owner set did not converge on the replacement shelf. Left={leftOwner.Target.Offset:N0}; Right={rightOwner.Target.Offset:N0}; Expected={grownShelfOffset:N0}.");
+            }
+
+            ValidateVarKeyScalar8SharedShelfGrowthOrder(session, rootOffset, profile.MaxKeyLength, tuples);
+        }
+
+        using (LibraDexFileSession reopened = LibraDexFileSession.Open(path, options, DataKernelTelemetryOptions.EnabledOptions))
+        {
+            ValidateVarKeyScalar8SharedShelfGrowthOrder(reopened, rootOffset, profile.MaxKeyLength, tuples);
+        }
+
+        File.Delete(path);
+        Console.WriteLine(
+            $"vs8-shared-shelf-growth-sanity ok items={tuples.Count:N0} oldShelf={oldShelfOffset:N0} " +
+            $"grownShelf={grownShelfOffset:N0} owners=2 live/reopen ascending/descending parity");
+        return 0;
+    }
+
+    /// <summary>
+    /// Proves exact directional tuple order and cardinality for the shared-shelf growth fixture without materializing reader output.<br/>
+    /// Ascending and descending cursors are checked against the same sorted expected tuples so copied shelves, missing routes, and reversed duplicate runs fail at their first divergent ordinal.<br/>
+    /// </summary>
+    /// <param name="session">The live or reopened LibraDex session to validate.<br/></param>
+    /// <param name="rootOffset">The routed `VS8` root offset.<br/></param>
+    /// <param name="maxKeyLength">The maximum encoded key length accepted by the index.<br/></param>
+    /// <param name="expected">The complete expected tuples sorted by key and identity ascending.<br/></param>
+    private static void ValidateVarKeyScalar8SharedShelfGrowthOrder(
+        LibraDexFileSession session,
+        long rootOffset,
+        int maxKeyLength,
+        IReadOnlyList<(byte[] Key, ulong Identity)> expected)
+    {
+        using (VarKeyScalar8RangeReader ascending = new(
+            session,
+            rootOffset,
+            maxKeyLength,
+            expected[0].Key,
+            expected[^1].Key,
+            direction: QueryDirection.Ascending))
+        {
+            int ordinal = 0;
+            while (ascending.MoveNext())
+            {
+                if ((uint)ordinal >= (uint)expected.Count ||
+                    !ascending.CurrentKey.SequenceEqual(expected[ordinal].Key) ||
+                    ascending.CurrentEncodedIdentity != expected[ordinal].Identity)
+                {
+                    throw new InvalidDataException($"The ascending VS8 shared-growth tuple diverged at ordinal {ordinal:N0}.");
+                }
+
+                ordinal++;
+            }
+            if (ordinal != expected.Count)
+            {
+                throw new InvalidDataException($"The ascending VS8 shared-growth traversal returned {ordinal:N0} tuples; expected {expected.Count:N0}.");
+            }
+        }
+
+        using VarKeyScalar8RangeReader descending = new(
+            session,
+            rootOffset,
+            maxKeyLength,
+            expected[0].Key,
+            expected[^1].Key,
+            direction: QueryDirection.Descending);
+        int descendingOrdinal = expected.Count - 1;
+        while (descending.MovePrevious())
+        {
+            if (descendingOrdinal < 0 ||
+                !descending.CurrentKey.SequenceEqual(expected[descendingOrdinal].Key) ||
+                descending.CurrentEncodedIdentity != expected[descendingOrdinal].Identity)
+            {
+                throw new InvalidDataException($"The descending VS8 shared-growth tuple diverged at ordinal {descendingOrdinal:N0}.");
+            }
+
+            descendingOrdinal--;
+        }
+        if (descendingOrdinal != -1)
+        {
+            throw new InvalidDataException($"The descending VS8 shared-growth traversal stopped with expected ordinal {descendingOrdinal:N0} still unread.");
+        }
+    }
+
+    /// <summary>
+    /// Validates that a `VS8` full-shelf split preserves keys owned through a compressed parent's nearest-route fallback.<br/>
+    /// The fixture deliberately stores a route whose declared final-byte range begins above one key group, while both groups still resolve to the same shelf through normal compressed-router semantics.<br/>
+    /// A production insert then splits that full shelf at the compressed parent's final key depth; live and reopened reads must retain every tuple, including the lower group outside the route's explicit interval.<br/>
+    /// </summary>
+    /// <param name="args">Harness arguments; `--path` optionally selects the disposable LibraDex file.<br/></param>
+    /// <returns>Zero when pre-split ownership, split publication, and live/reopened tuple parity all validate.<br/></returns>
+    private static int RunVarKeyScalar8CompressedParentFallbackSplitSanity(string[] args)
+    {
+        string path = GetOption(args, "--path", Path.Combine(@"T:\LibraDex", "vs8-compressed-parent-fallback-split-sanity.lbdx"));
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.Delete(path);
+
+        VarKeyScalar8Profile profile = VarKeyScalar8Profile.Default128KiB;
+        byte[] prefixStem = [0x61, 0x72, 0x65, 0x5C, 0x35];
+        List<(byte[] Key, ulong Identity)> expected = new();
+        byte[] shelfBytes = VarKeyScalar8.CreateEmpty(profile);
+        if (!VarKeyScalar8MutableShelf.TryCreate(
+            shelfBytes,
+            profile,
+            ownsBytes: false,
+            rentSidecars: false,
+            out VarKeyScalar8MutableShelf shelf))
+        {
+            throw new InvalidDataException("The VS8 compressed-parent fallback fixture could not create its max-growth mutable shelf.");
+        }
+
+        byte[]? incomingKey = null;
+        ulong incomingIdentity = 0;
+        for (int ordinal = 0; ordinal < ushort.MaxValue; ordinal++)
+        {
+            byte groupByte = (ordinal & 1) == 0 ? (byte)0x4D : (byte)0x7A;
+            byte[] key = CreateVarKeyScalar8CompressedParentFallbackKey(prefixStem, groupByte, ordinal);
+            ulong identity = checked((ulong)ordinal + 1UL);
+            VarKeyScalar8InsertResult insert = shelf.InsertWithMutationHint(
+                key,
+                identity,
+                allowDuplicateKeys: true,
+                hintStartDepth: 0,
+                maxHintBytes: 0,
+                out _);
+            if (insert == VarKeyScalar8InsertResult.Full)
+            {
+                incomingKey = key;
+                incomingIdentity = identity;
+                break;
+            }
+
+            if (insert != VarKeyScalar8InsertResult.Inserted)
+            {
+                throw new InvalidDataException($"The VS8 compressed-parent fallback fixture insert {ordinal:N0} returned {insert}.");
+            }
+
+            expected.Add((key, identity));
+        }
+
+        if (incomingKey is null || expected.Count == 0)
+        {
+            throw new InvalidDataException("The VS8 compressed-parent fallback fixture did not fill its max-growth shelf.");
+        }
+
+        DataKernelOptions options = CreateDesignPerfOptions();
+        long rootOffset;
+        long shelfOffset;
+        using (LibraDexFileSession session = LibraDexFileSession.Initialize(path, options, CreateDesignPerfMetadata(824), DataKernelTelemetryOptions.EnabledOptions))
+        {
+            (RouterSnapshot root, _) = session.CreateRootRouterIndex(CreateHarnessSlot(0, "vs8cpfb", 0));
+            rootOffset = root.Offset;
+            (shelfOffset, _) = session.CreateVarKeyScalar8Shelf(profile, shelfBytes);
+            RouterMultiByteRouteSnapshot[] routes =
+            [
+                new RouterMultiByteRouteSnapshot(prefixStem, 0x7A, byte.MaxValue, shelfOffset)
+            ];
+            (RouterSnapshot compressedParent, _) = session.CreateCompressedMultiByteRouter(
+                prefixByteCount: checked((byte)(prefixStem.Length + 1)),
+                keyDepth: 1,
+                maxRouteCount: 16,
+                allocationClassId: root.AllocationClassId,
+                routes);
+            _ = session.UpdateRouterRoute(rootOffset, 0x43, 0x43, 0x43, compressedParent.Offset);
+
+            byte[] lowerOwnedKey = expected.First(static tuple => tuple.Key[6] == 0x4D).Key;
+            byte[] upperOwnedKey = expected.First(static tuple => tuple.Key[6] == 0x7A).Key;
+            VarKeyScalar8RoutePathTarget lowerOwner = session.WalkVarKeyScalar8RoutePathTarget(rootOffset, lowerOwnedKey, LibraDexFileSession.DefaultVarKeyScalar8MaxRouterHops);
+            VarKeyScalar8RoutePathTarget upperOwner = session.WalkVarKeyScalar8RoutePathTarget(rootOffset, upperOwnedKey, LibraDexFileSession.DefaultVarKeyScalar8MaxRouterHops);
+            if (lowerOwner.Target.Offset != shelfOffset || upperOwner.Target.Offset != shelfOffset)
+            {
+                throw new InvalidDataException(
+                    $"The VS8 compressed-parent fixture did not establish nearest-route ownership before the split. Lower={lowerOwner.Target.Offset:N0}; Upper={upperOwner.Target.Offset:N0}; Shelf={shelfOffset:N0}.");
+            }
+
+            VarKeyScalar8RoutedInsertResult result = session.InsertWalkedRoutedVarKeyScalar8(
+                rootOffset,
+                maxKeyLength: profile.MaxKeyLength,
+                incomingKey,
+                incomingIdentity,
+                allowDuplicateKeys: true,
+                maxRouterHops: LibraDexFileSession.DefaultVarKeyScalar8MaxRouterHops,
+                requestedRouteCount: 16);
+            if (result.InsertResult != VarKeyScalar8InsertResult.Inserted ||
+                result.Kind != VarKeyScalar8RoutedInsertKind.WalkedShelfTransformSplit)
+            {
+                throw new InvalidDataException($"The VS8 compressed-parent fallback insert returned {result.Kind}/{result.InsertResult}; expected WalkedShelfTransformSplit/Inserted.");
+            }
+
+            expected.Add((incomingKey, incomingIdentity));
+            expected.Sort(static (left, right) =>
+            {
+                int keyComparison = left.Key.AsSpan().SequenceCompareTo(right.Key);
+                return keyComparison != 0 ? keyComparison : left.Identity.CompareTo(right.Identity);
+            });
+            ValidateVarKeyScalar8CompressedParentFallbackOrder(session, rootOffset, profile.MaxKeyLength, expected, "live");
+        }
+
+        using (LibraDexFileSession reopened = LibraDexFileSession.Open(path, options, DataKernelTelemetryOptions.EnabledOptions))
+        {
+            ValidateVarKeyScalar8CompressedParentFallbackOrder(reopened, rootOffset, profile.MaxKeyLength, expected, "reopened");
+        }
+
+        File.Delete(path);
+        Console.WriteLine($"vs8-compressed-parent-fallback-split-sanity ok items={expected.Count:N0} lowerFinalByte=0x4D declaredRange=0x7A-0xFF live/reopen parity");
+        return 0;
+    }
+
+    /// <summary>
+    /// Creates one fixed-length key for the compressed-parent nearest-route split fixture.<br/>
+    /// Byte zero is consumed by the direct root, the supplied five-byte stem is consumed by the compressed parent, byte six selects the lower or declared-range group, and the trailing ordinal makes every tuple unique.<br/>
+    /// </summary>
+    /// <param name="prefixStem">The exact compressed-parent stem copied into key bytes one through five.<br/></param>
+    /// <param name="groupByte">The compressed route's final key byte.<br/></param>
+    /// <param name="ordinal">The deterministic tuple ordinal encoded at the end of the key.<br/></param>
+    /// <returns>A 64-byte raw key suitable for the `VS8` fixture.<br/></returns>
+    private static byte[] CreateVarKeyScalar8CompressedParentFallbackKey(ReadOnlySpan<byte> prefixStem, byte groupByte, int ordinal)
+    {
+        byte[] key = new byte[64];
+        key[0] = 0x43;
+        prefixStem.CopyTo(key.AsSpan(1));
+        key[1 + prefixStem.Length] = groupByte;
+        key.AsSpan(2 + prefixStem.Length).Fill(0x35);
+        BinaryPrimitives.WriteInt32BigEndian(key.AsSpan(key.Length - sizeof(int)), ordinal);
+        return key;
+    }
+
+    /// <summary>
+    /// Verifies complete ascending tuple parity for the compressed-parent nearest-route split fixture.<br/>
+    /// Exact key and identity comparisons ensure that a physically preserved but unreachable lower route fails at its first missing ordinal rather than being hidden by an aggregate count.<br/>
+    /// </summary>
+    /// <param name="session">The live or reopened session used for traversal.<br/></param>
+    /// <param name="rootOffset">The routed `VS8` root offset.<br/></param>
+    /// <param name="maxKeyLength">The maximum raw key length accepted by the fixture index.<br/></param>
+    /// <param name="expected">The complete expected tuples in ascending key/identity order.<br/></param>
+    /// <param name="phase">The validation phase included in failures.<br/></param>
+    private static void ValidateVarKeyScalar8CompressedParentFallbackOrder(
+        LibraDexFileSession session,
+        long rootOffset,
+        int maxKeyLength,
+        IReadOnlyList<(byte[] Key, ulong Identity)> expected,
+        string phase)
+    {
+        using VarKeyScalar8RangeReader reader = new(
+            session,
+            rootOffset,
+            maxKeyLength,
+            expected[0].Key,
+            expected[^1].Key,
+            direction: QueryDirection.Ascending);
+        int ordinal = 0;
+        while (reader.MoveNext())
+        {
+            if ((uint)ordinal >= (uint)expected.Count ||
+                !reader.CurrentKey.SequenceEqual(expected[ordinal].Key) ||
+                reader.CurrentEncodedIdentity != expected[ordinal].Identity)
+            {
+                throw new InvalidDataException($"The {phase} VS8 compressed-parent fallback tuple diverged at ordinal {ordinal:N0}.");
+            }
+
+            ordinal++;
+        }
+
+        if (ordinal != expected.Count)
+        {
+            throw new InvalidDataException($"The {phase} VS8 compressed-parent fallback traversal returned {ordinal:N0} tuples; expected {expected.Count:N0}.");
+        }
+    }
+
+    /// <summary>
+    /// Validates recovery and future-safe publication when one full `VS8` shelf is owned by noncontiguous slots in the same expanded parent router.<br/>
+    /// The fixture places a populated max-growth shelf behind parent byte values <c>0x10</c> and <c>0x12</c> while leaving <c>0x11</c> unset, then inserts through <c>0x10</c> to force the exact parent-range condition that previously threw before grouped Wherzit backfill could finish.<br/>
+    /// Production insertion must replace the complete affected root-owner set instead of splitting only the walked contiguous run, and canonical tuple order must remain exact both live and after reopen.<br/>
+    /// </summary>
+    /// <param name="args">The harness command-line arguments; <c>--path</c> optionally selects the disposable LibraDex file.<br/></param>
+    /// <returns>Zero when the noncontiguous owner set is rebuilt once and every distinct tuple remains reachable in exact order across reopen.<br/></returns>
+    private static int RunVarKeyScalar8NoncontiguousOwnerSplitSanity(string[] args)
+    {
+        string path = GetOption(args, "--path", Path.Combine(@"T:\LibraDex", "vs8-noncontiguous-owner-split-sanity.lbdx"));
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.Delete(path);
+
+        VarKeyScalar8Profile profile = VarKeyScalar8Profile.Default128KiB;
+        int slotCapacityBytes = VarKeyScalar8Layout.CalculateSlotCapacityBytes(profile.ShelfExtentSize);
+        int recordCapacityBytes = profile.ShelfExtentSize - VarKeyScalar8Layout.HeaderSize - slotCapacityBytes;
+        const int aliasCount = 90;
+        const int denseLowCount = 50;
+        const int denseHighCount = 50;
+        const int longerCountPerDenseGroup = 30;
+        const int shorterCountPerDenseGroup = 20;
+        int aliasRecordBytes = aliasCount * VarKeyScalar8Layout.GetNewRecordLength(2);
+        int denseLowRecordBytes =
+            longerCountPerDenseGroup * VarKeyScalar8Layout.GetNewRecordLength(1013) +
+            shorterCountPerDenseGroup * VarKeyScalar8Layout.GetNewRecordLength(1012);
+        int denseHighRecordBytes = denseLowRecordBytes;
+        int incomingRecordBytes = VarKeyScalar8Layout.GetNewRecordLength(1024);
+        if (aliasRecordBytes + denseLowRecordBytes + denseHighRecordBytes != recordCapacityBytes ||
+            denseLowRecordBytes + denseHighRecordBytes + incomingRecordBytes <= recordCapacityBytes)
+        {
+            throw new InvalidDataException(
+                $"The VS8 noncontiguous-owner fixture no longer fills the max-growth shelf as intended. " +
+                $"Capacity={recordCapacityBytes}; Alias={aliasRecordBytes}; DenseLow={denseLowRecordBytes}; DenseHigh={denseHighRecordBytes}; Incoming={incomingRecordBytes}.");
+        }
+
+        List<(byte[] Key, ulong Identity)> tuples = new(aliasCount + denseLowCount + denseHighCount + 1);
+        byte[] shelfBytes = VarKeyScalar8.CreateEmpty(profile);
+        if (!VarKeyScalar8MutableShelf.TryCreate(
+            shelfBytes,
+            profile,
+            ownsBytes: false,
+            rentSidecars: false,
+            out VarKeyScalar8MutableShelf shelf))
+        {
+            throw new InvalidDataException("The VS8 noncontiguous-owner fixture could not create its max-growth mutable shelf.");
+        }
+
+        ulong nextIdentity = 1;
+        byte[] aliasKey = [0x44, 0x12];
+        for (int i = 0; i < aliasCount; i++)
+        {
+            InsertVarKeyScalar8VariablePayloadFixtureTuple(shelf, tuples, aliasKey, nextIdentity++);
+        }
+        for (int i = 0; i < denseLowCount; i++)
+        {
+            int keyLength = i < longerCountPerDenseGroup ? 1013 : 1012;
+            byte[] key = CreateVarKeyScalar8ConvergedPrefixFixtureKey(0x44, 0x7A, i, keyLength, 0x20);
+            InsertVarKeyScalar8VariablePayloadFixtureTuple(shelf, tuples, key, nextIdentity++);
+        }
+        for (int i = 0; i < denseHighCount; i++)
+        {
+            int keyLength = i < longerCountPerDenseGroup ? 1013 : 1012;
+            byte[] key = CreateVarKeyScalar8ConvergedPrefixFixtureKey(0x44, 0x7A, i, keyLength, 0xE0);
+            InsertVarKeyScalar8VariablePayloadFixtureTuple(shelf, tuples, key, nextIdentity++);
+        }
+        if (shelf.ItemCount != aliasCount + denseLowCount + denseHighCount ||
+            VarKeyScalar8Layout.ReadRecordArenaEnd(shelfBytes) != profile.ShelfExtentSize)
+        {
+            throw new InvalidDataException(
+                $"The VS8 noncontiguous-owner fixture did not fill the max-growth shelf exactly. Items={shelf.ItemCount}; RecordEnd={VarKeyScalar8Layout.ReadRecordArenaEnd(shelfBytes)}; Extent={profile.ShelfExtentSize}.");
+        }
+
+        byte[] incomingKey = CreateVarKeyScalar8ConvergedPrefixFixtureKey(0x44, 0x7A, int.MaxValue, 1024, 0xFF);
+        ulong incomingIdentity = nextIdentity;
+        tuples.Add((incomingKey, incomingIdentity));
+        DataKernelOptions options = CreateDesignPerfOptions();
+        long rootOffset;
+        using (LibraDexFileSession session = LibraDexFileSession.Initialize(path, options, CreateDesignPerfMetadata(829), DataKernelTelemetryOptions.EnabledOptions))
+        {
+            (RouterSnapshot root, _) = session.CreateRootRouterIndex(CreateHarnessSlot(0, "vs8alias", 0));
+            rootOffset = root.Offset;
+            (RouterSnapshot child, _) = session.CreateExpandedOneByteRouter(keyDepth: 1, allocationClassId: root.AllocationClassId);
+            (long shelfOffset, _) = session.CreateVarKeyScalar8Shelf(profile, shelfBytes);
+            if (!session.TryUpdateRouterRouteTargetIfCurrent(child.Offset, 0x10, 0, shelfOffset, out _) ||
+                !session.TryUpdateRouterRouteTargetIfCurrent(child.Offset, 0x12, 0, shelfOffset, out _) ||
+                !session.TryUpdateRouterRouteTargetIfCurrent(rootOffset, 0x44, 0, child.Offset, out _))
+            {
+                throw new InvalidDataException("The VS8 noncontiguous-owner fixture could not publish its disjoint parent aliases.");
+            }
+
+            VarKeyScalar8RoutedInsertResult result = session.InsertWalkedRoutedVarKeyScalar8(
+                rootOffset,
+                maxKeyLength: profile.MaxKeyLength,
+                incomingKey,
+                incomingIdentity,
+                allowDuplicateKeys: true,
+                maxRouterHops: LibraDexFileSession.DefaultVarKeyScalar8MaxRouterHops,
+                requestedRouteCount: 16);
+            if (result.InsertResult != VarKeyScalar8InsertResult.Inserted ||
+                result.Kind != VarKeyScalar8RoutedInsertKind.WalkedShelfTransformSplit)
+            {
+                throw new InvalidDataException($"The VS8 noncontiguous-owner insert returned {result.Kind}/{result.InsertResult}; expected a published owner-set rebuild.");
+            }
+        }
+
+        tuples.Sort(static (left, right) =>
+        {
+            int keyComparison = left.Key.AsSpan().SequenceCompareTo(right.Key);
+            return keyComparison != 0 ? keyComparison : left.Identity.CompareTo(right.Identity);
+        });
+        using (LibraDexFileSession reopened = LibraDexFileSession.Open(path, options, DataKernelTelemetryOptions.EnabledOptions))
+        {
+            ulong[] actualIdentities = new ulong[checked(tuples.Count * 2)];
+            int copied = reopened.ReadVarKeyScalar8IdentityRange(
+                rootOffset,
+                profile.MaxKeyLength,
+                tuples[0].Key,
+                tuples[^1].Key,
+                actualIdentities);
+            if (copied != tuples.Count)
+            {
+                throw new InvalidDataException($"The reopened VS8 noncontiguous-owner range returned {copied} identities; expected {tuples.Count}.");
+            }
+            for (int i = 0; i < copied; i++)
+            {
+                if (actualIdentities[i] != tuples[i].Identity)
+                {
+                    throw new InvalidDataException($"The reopened VS8 noncontiguous-owner identity at ordinal {i} was {actualIdentities[i]}; expected {tuples[i].Identity}.");
+                }
+            }
+        }
+
+        File.Delete(path);
+        Console.WriteLine($"vs8-noncontiguous-owner-split-sanity ok items={tuples.Count:N0} ownerSlots=0x10/0x12 batchFallback=serialized recovery=root-owner-set-rebuild live/reopen parity");
+        return 0;
     }
 
 }

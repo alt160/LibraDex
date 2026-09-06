@@ -75,6 +75,22 @@ internal static class Scalar8VarIdentityLayout
         BinaryPrimitives.WriteUInt32LittleEndian(target.Slice(FlagsOffset, sizeof(uint)), value);
     }
 
+    /// <summary>
+    /// Reads exact orphaned variable-identity record bytes persisted in this SV8 shelf.<br/>
+    /// </summary>
+    /// <param name="source">The shelf header or complete shelf byte image.<br/></param>
+    /// <returns>The exact non-negative orphaned payload byte count.<br/></returns>
+    public static int ReadReclaimablePayloadBytes(ReadOnlySpan<byte> source)
+        => ReclaimablePayloadFlags.Read(ReadFlags(source));
+
+    /// <summary>
+    /// Persists exact orphaned variable-identity record bytes without changing shelf extent or chain pointers.<br/>
+    /// </summary>
+    /// <param name="target">The writable shelf header or complete shelf byte image.<br/></param>
+    /// <param name="byteCount">The exact non-negative orphaned payload byte count.<br/></param>
+    public static void WriteReclaimablePayloadBytes(Span<byte> target, int byteCount)
+        => WriteFlags(target, ReclaimablePayloadFlags.Write(ReadFlags(target), byteCount));
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static int ReadItemCount(ReadOnlySpan<byte> source)
     {

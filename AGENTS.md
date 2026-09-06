@@ -6,6 +6,20 @@ The style guide is intentionally focused on the user's personal code style: high
 
 Project-specific design decisions still belong in `LIBRADEX_DESIGN_CHECKLIST.md` or targeted restart/checkpoint artifacts. Do not treat the style guide as a substitute for current design instructions.
 
+## Current Condition-Builder Continuation
+
+For condition-builder, natural-language-query worklist, result-shape, direct lookup, inversion, duplicate/singleton, projection/coercion, or maintenance-assessment work, start with [`docs/condition-builder/condition-builder-continuation-restart.md`](docs/condition-builder/condition-builder-continuation-restart.md).
+
+That file is the canonical current handoff. In particular:
+
+- distinguish the 219-row intuitiveness worklist from the older 671-row syntax corpus;
+- preserve the broad dirty worktree unless the user explicitly asks for Git cleanup;
+- keep `EndCondition` terminal;
+- do not reintroduce `.All()`, `.WithValue(...)`, or public `.As<T>` projection;
+- keep return shape in the condition and delivery shape in `Get`, iterators, and readers;
+- keep mutation owned by an explicit target index;
+- treat `Maintenance.Assess(...)` as an explicit blocking topology walk with exact logical-index attribution and projection rollup.
+
 When choosing implementation scope, prefer controlled blast radius over minimal blast radius. First identify the best design path from correctness, performance, durability, and LibraDex DX. Keep changes as narrow as that correct design allows, but do not let narrowness outrank correctness, performance, or the core LibraDex design model. If the better path requires a heavier hand or architectural change, state that explicitly and explain the tradeoff before proceeding.
 
 When the user replies with a short continuation phrase such as "ok. continue" or another 2-6 word response with the same meaning, end the response with the next likely action so the user can quickly decide whether another continuation response is appropriate.

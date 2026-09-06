@@ -18,13 +18,15 @@ public enum AggType
 }
 
 /// <summary>
-/// Selects a maintained string subindex for grouping.<br/>
+/// Selects a string projection for grouping.<br/>
+/// A matching maintained subindex is used when available; explicitly selecting a missing projection accepts scan-time conversion over exact stored values.<br/>
 /// Ordinary <c>GroupBy(indexName)</c> uses the index's exact stored bytes and does not require this enum.<br/>
 /// </summary>
 public enum SubIndexType
 {
     Folded = 0,
-    SortKey = 1
+    SortKey = 1,
+    Normalized = 2
 }
 
 /// <summary>
@@ -85,13 +87,46 @@ public sealed class LibraDexCondition<TResult>
 
     internal LibraDexCondition<TResult> WithSequence(LibraDexConditionResultSequence sequence)
         => new(Group, Filter, Result.WithSequence(sequence));
+
+    internal LibraDexCondition<TResult> FreezeForBookmark(
+        out bool hadDeferredSelectors,
+        out bool hadDeferredValues)
+    {
+        if (Filter is null)
+        {
+            hadDeferredSelectors = false;
+            hadDeferredValues = false;
+            return this;
+        }
+
+        LibraDexConditionEndCondition frozenFilter = Filter.FreezeForBookmark(
+            out hadDeferredSelectors,
+            out hadDeferredValues);
+        return new LibraDexCondition<TResult>(Group, frozenFilter, Result.WithFilter(frozenFilter));
+    }
+
+    /// <summary>
+    /// Wraps the current logical result descriptor with one caller-owned projection while retaining its filter and identity group.<br/>
+    /// The delegate remains deferred until result iteration so condition construction and planning never invoke caller code.<br/>
+    /// </summary>
+    /// <typeparam name="TTransformed">The projected logical result type.<br/></typeparam>
+    /// <param name="transform">The projection applied to each produced source result.<br/></param>
+    /// <returns>A condition with the same selection and a transformed result descriptor.<br/></returns>
+    internal LibraDexCondition<TTransformed> Transform<TTransformed>(Func<TResult, TTransformed> transform)
+    {
+        ArgumentNullException.ThrowIfNull(transform);
+        return new LibraDexCondition<TTransformed>(
+            Group,
+            Filter,
+            new LibraDexTransformedResultDescriptor<TResult, TTransformed>(Result, transform));
+    }
 }
 
 /// <summary>
-/// Selects the index whose stored key bytes define aggregate groups.<br/>
-/// Exact grouping is the default; <see cref="AsString(SubIndexType)"/> explicitly selects a maintained string projection.<br/>
+/// Selects the index whose stored key bytes define representative or aggregate groups.<br/>
+/// Exact grouping is the default; <see cref="AsString(SubIndexType)"/> explicitly selects a string projection and accepts scan conversion when its maintained subindex is absent.<br/>
 /// </summary>
-public sealed class LibraDexConditionGroupBy
+public sealed partial class LibraDexConditionGroupBy
 {
     private readonly string group;
     private readonly LibraDexConditionEndCondition? filter;
@@ -113,14 +148,15 @@ public sealed class LibraDexConditionGroupBy
     }
 
     /// <summary>
-    /// Selects a maintained string subindex whose stored bytes define group equality and order.<br/>
+    /// Selects a string projection whose bytes define group equality and order.<br/>
+    /// A maintained subindex is used directly when present; otherwise the explicit selection authorizes scan-time conversion over exact values.<br/>
     /// Folded grouping returns folded logical keys; sort-key grouping returns binary sort keys because culture sort keys are not reversible strings.<br/>
     /// </summary>
-    /// <param name="subIndex">The maintained Folded or SortKey projection to group through.<br/></param>
-    /// <returns>A grouped continuation over the selected maintained string projection.<br/></returns>
+    /// <param name="subIndex">The Folded or SortKey projection to group through.<br/></param>
+    /// <returns>A grouped continuation over the selected string projection.<br/></returns>
     public LibraDexConditionGroupBy AsString(SubIndexType subIndex)
     {
-        if (subIndex is not (SubIndexType.Folded or SubIndexType.SortKey))
+        if (subIndex is not (SubIndexType.Folded or SubIndexType.SortKey or SubIndexType.Normalized))
             throw new ArgumentOutOfRangeException(nameof(subIndex), subIndex, "Unknown string grouping subindex.");
 
         return new LibraDexConditionGroupBy(group, filter, groupingIndexName, subIndex);
@@ -493,6 +529,20 @@ public sealed class LibraDexConditionResultEnd<TResult>
     /// <returns>A terminal limited-result stage.<br/></returns>
     public LibraDexConditionLimitedResultEnd<TResult> Bottom(int count)
         => new(EndCondition.WithSequence(LibraDexConditionResultSequence.Natural.Bottom(count)));
+
+    /// <summary>
+    /// Transforms each typed logical result without changing condition selection, result ordering, or identity ownership.<br/>
+    /// The transform runs only when a getter, iterator, or reader produces a result; building the condition performs no IO and does not invoke caller code.<br/>
+    /// Mutation APIs continue to use the source result's selected identities and ignore only the transformed return materialization.<br/>
+    /// </summary>
+    /// <typeparam name="TTransformed">The caller-defined result type produced from each current logical result.<br/></typeparam>
+    /// <param name="transform">The caller function applied once to each produced result.<br/></param>
+    /// <returns>A typed result stage that can retain source ordering, apply a result window, or terminate through <see cref="EndCondition"/>.<br/></returns>
+    public LibraDexConditionResultEnd<TTransformed> Transform<TTransformed>(Func<TResult, TTransformed> transform)
+    {
+        ArgumentNullException.ThrowIfNull(transform);
+        return new LibraDexConditionResultEnd<TTransformed>(EndCondition.Transform(transform));
+    }
 }
 
 /// <summary>
@@ -557,7 +607,7 @@ public static class LibraDexConditionResultExtensions
     /// </summary>
     /// <param name="condition">The current predicate continuation.<br/></param>
     /// <param name="indexName">The index whose exact stored key bytes define groups.<br/></param>
-    /// <returns>A grouped aggregate continuation.<br/></returns>
+    /// <returns>A grouped continuation that can select <c>First</c>, <c>Last</c>, or an aggregate.<br/></returns>
     public static LibraDexConditionGroupBy GroupBy(this LibraDexConditionContinueOrEnd condition, string indexName)
     {
         ArgumentNullException.ThrowIfNull(condition);
@@ -787,9 +837,17 @@ internal interface ILibraDexConditionResultDescriptor<TResult>
 
     IEnumerable<TResult> Iterate(CatalogIdentityGroupIndexes indexes);
 
+    IEnumerable<LibraDexBookmarkResult<TResult>> IterateBookmark(
+        CatalogIdentityGroupIndexes indexes,
+        LibraDexBookmarkAnchor? anchor);
+
     IEnumerable<object> IterateSelectedIdentities(CatalogIdentityGroupIndexes indexes);
 
     ILibraDexConditionResultDescriptor<TResult> WithSequence(LibraDexConditionResultSequence sequence);
+
+    ILibraDexConditionResultDescriptor<TResult> WithFilter(LibraDexConditionEndCondition? filter);
+
+    IReadOnlyList<LibraDexBookmarkIndexReference> BookmarkIndexes { get; }
 }
 
 internal sealed class LibraDexAggregateResultDescriptor<TResult> : ILibraDexConditionResultDescriptor<TResult>
@@ -821,10 +879,44 @@ internal sealed class LibraDexAggregateResultDescriptor<TResult> : ILibraDexCond
 
     public LibraDexConditionResultSequence Sequence => sequence;
 
+    public IReadOnlyList<LibraDexBookmarkIndexReference> BookmarkIndexes
+    {
+        get
+        {
+            List<LibraDexBookmarkIndexReference> indexes = new(returnedIndexNames.Length + 3)
+            {
+                new(spec.GroupingIndexName, null, LibraDexBookmarkIndexRole.Group | LibraDexBookmarkIndexRole.NaturalOrder),
+                new(spec.AggregateIndexName, null, LibraDexBookmarkIndexRole.Aggregate)
+            };
+            for (int i = 0; i < returnedIndexNames.Length; i++)
+                indexes.Add(new LibraDexBookmarkIndexReference(returnedIndexNames[i], null, LibraDexBookmarkIndexRole.Return));
+
+            if (sequence.OrderIndexName is not null)
+                indexes.Add(new LibraDexBookmarkIndexReference(sequence.OrderIndexName, null, LibraDexBookmarkIndexRole.Order));
+            else if (sequence.Direction.HasValue)
+                indexes.Add(new LibraDexBookmarkIndexReference(spec.AggregateIndexName, null, LibraDexBookmarkIndexRole.Order));
+
+            return indexes;
+        }
+    }
+
     public IEnumerable<TResult> Iterate(CatalogIdentityGroupIndexes indexes)
     {
         foreach (LibraDexAggregateProjectionRow row in LibraDexAggregateExecutor.Execute(indexes, spec, returnedIndexNames, sequence))
             yield return projector(row);
+    }
+
+    public IEnumerable<LibraDexBookmarkResult<TResult>> IterateBookmark(
+        CatalogIdentityGroupIndexes indexes,
+        LibraDexBookmarkAnchor? anchor)
+    {
+        foreach (LibraDexAggregateProjectionRow row in LibraDexAggregateExecutor.Execute(indexes, spec, returnedIndexNames, sequence))
+        {
+            object? orderValue = sequence.Direction.HasValue ? row.AggregateValue.Value : row.GroupValue.Value;
+            yield return new LibraDexBookmarkResult<TResult>(
+                projector(row),
+                new LibraDexBookmarkAnchor(orderValue, row.Identity.Value));
+        }
     }
 
     public IEnumerable<object> IterateSelectedIdentities(CatalogIdentityGroupIndexes indexes)
@@ -835,6 +927,9 @@ internal sealed class LibraDexAggregateResultDescriptor<TResult> : ILibraDexCond
 
     public ILibraDexConditionResultDescriptor<TResult> WithSequence(LibraDexConditionResultSequence value)
         => new LibraDexAggregateResultDescriptor<TResult>(spec, returnedIndexNames, projector, returnShape, value);
+
+    public ILibraDexConditionResultDescriptor<TResult> WithFilter(LibraDexConditionEndCondition? filter)
+        => new LibraDexAggregateResultDescriptor<TResult>(spec with { Filter = filter }, returnedIndexNames, projector, returnShape, sequence);
 
     private static string DescribeSequence(LibraDexConditionResultSequence value)
     {
@@ -871,10 +966,33 @@ internal sealed class LibraDexCountAggregateResultDescriptor : ILibraDexConditio
 
     public LibraDexConditionResultSequence Sequence => sequence;
 
+    public IReadOnlyList<LibraDexBookmarkIndexReference> BookmarkIndexes
+        => new[]
+        {
+            new LibraDexBookmarkIndexReference(
+                spec.GroupingIndexName,
+                null,
+                LibraDexBookmarkIndexRole.Group |
+                (sequence.Direction.HasValue ? LibraDexBookmarkIndexRole.Order : LibraDexBookmarkIndexRole.NaturalOrder))
+        };
+
     public IEnumerable<LibraDexAggregateRow> Iterate(CatalogIdentityGroupIndexes indexes)
     {
         foreach (LibraDexCountAggregateGroup group in Execute(indexes))
             yield return new LibraDexAggregateRow(group.GroupValue, group.Count);
+    }
+
+    public IEnumerable<LibraDexBookmarkResult<LibraDexAggregateRow>> IterateBookmark(
+        CatalogIdentityGroupIndexes indexes,
+        LibraDexBookmarkAnchor? anchor)
+    {
+        foreach (LibraDexCountAggregateGroup group in Execute(indexes))
+        {
+            object? orderValue = sequence.Direction.HasValue ? group.Count : group.GroupValue;
+            yield return new LibraDexBookmarkResult<LibraDexAggregateRow>(
+                new LibraDexAggregateRow(group.GroupValue, group.Count),
+                new LibraDexBookmarkAnchor(orderValue, group.GroupValue));
+        }
     }
 
     public IEnumerable<object> IterateSelectedIdentities(CatalogIdentityGroupIndexes indexes)
@@ -888,6 +1006,9 @@ internal sealed class LibraDexCountAggregateResultDescriptor : ILibraDexConditio
 
     public ILibraDexConditionResultDescriptor<LibraDexAggregateRow> WithSequence(LibraDexConditionResultSequence value)
         => new LibraDexCountAggregateResultDescriptor(spec, value);
+
+    public ILibraDexConditionResultDescriptor<LibraDexAggregateRow> WithFilter(LibraDexConditionEndCondition? filter)
+        => new LibraDexCountAggregateResultDescriptor(spec with { Filter = filter }, sequence);
 
     private IReadOnlyList<LibraDexCountAggregateGroup> Execute(CatalogIdentityGroupIndexes indexes)
     {
@@ -996,11 +1117,35 @@ internal sealed class LibraDexIndexKeyResultDescriptor<TKey> : ILibraDexConditio
 
     public LibraDexConditionResultSequence Sequence => sequence;
 
+    public IReadOnlyList<LibraDexBookmarkIndexReference> BookmarkIndexes
+        => new[]
+        {
+            new LibraDexBookmarkIndexReference(
+                indexName,
+                null,
+                LibraDexBookmarkIndexRole.Return |
+                (sequence.Direction.HasValue ? LibraDexBookmarkIndexRole.Order : LibraDexBookmarkIndexRole.NaturalOrder))
+        };
+
     public IEnumerable<TKey> Iterate(CatalogIdentityGroupIndexes indexes)
     {
         IIndex index = indexes.Index(indexName);
         foreach (LibraDexObjectTuple tuple in IterateTuples(indexes, index))
             yield return new LibraDexResultValue(tuple.Key, index, IsIdentity: false).As<TKey>();
+    }
+
+    public IEnumerable<LibraDexBookmarkResult<TKey>> IterateBookmark(
+        CatalogIdentityGroupIndexes indexes,
+        LibraDexBookmarkAnchor? anchor)
+    {
+        IIndex index = indexes.Index(indexName);
+        LibraDexBookmarkAnchor? seekAnchor = sequence.Count.HasValue || sequence.IsBottom ? null : anchor;
+        foreach (LibraDexObjectTuple tuple in IterateTuples(indexes, index, seekAnchor))
+        {
+            yield return new LibraDexBookmarkResult<TKey>(
+                new LibraDexResultValue(tuple.Key, index, IsIdentity: false).As<TKey>(),
+                new LibraDexBookmarkAnchor(tuple.Key, tuple.Identity));
+        }
     }
 
     public IEnumerable<object> IterateSelectedIdentities(CatalogIdentityGroupIndexes indexes)
@@ -1013,7 +1158,13 @@ internal sealed class LibraDexIndexKeyResultDescriptor<TKey> : ILibraDexConditio
     public ILibraDexConditionResultDescriptor<TKey> WithSequence(LibraDexConditionResultSequence value)
         => new LibraDexIndexKeyResultDescriptor<TKey>(group, filter, indexName, value);
 
-    private IEnumerable<LibraDexObjectTuple> IterateTuples(CatalogIdentityGroupIndexes indexes, IIndex index)
+    public ILibraDexConditionResultDescriptor<TKey> WithFilter(LibraDexConditionEndCondition? value)
+        => new LibraDexIndexKeyResultDescriptor<TKey>(group, value, indexName, sequence);
+
+    private IEnumerable<LibraDexObjectTuple> IterateTuples(
+        CatalogIdentityGroupIndexes indexes,
+        IIndex index,
+        LibraDexBookmarkAnchor? anchor = null)
     {
         if (!string.Equals(index.Group, group, StringComparison.Ordinal))
             throw new InvalidOperationException($"Index '{index.Name}' belongs to identity group '{index.Group}', not '{group}'.");
@@ -1026,8 +1177,14 @@ internal sealed class LibraDexIndexKeyResultDescriptor<TKey> : ILibraDexConditio
             ? resultDirection == QueryDirection.Ascending ? QueryDirection.Descending : QueryDirection.Ascending
             : resultDirection;
         int? primitiveTake = selected is null ? sequence.Count : null;
+        LibraDexCriteriaKind criteriaKind = anchor.HasValue
+            ? scanDirection == QueryDirection.Ascending
+                ? LibraDexCriteriaKind.AtOrAfter
+                : LibraDexCriteriaKind.AtOrBefore
+            : LibraDexCriteriaKind.All;
+        object?[] values = anchor.HasValue ? new[] { anchor.Value.OrderValue } : Array.Empty<object?>();
         IEnumerable<LibraDexObjectTuple> tuples = streamer.IterateTuplePrimitive(
-            new LibraDexIdentityPrimitiveRequest(LibraDexCriteriaKind.All, Array.Empty<object?>(), primitiveTake, scanDirection));
+            new LibraDexIdentityPrimitiveRequest(criteriaKind, values, primitiveTake, scanDirection));
 
         if (sequence.IsBottom)
         {
@@ -1108,10 +1265,15 @@ internal sealed class LibraDexProjectedResultDescriptor<TResult> : ILibraDexCond
     {
         get
         {
-            string orderIndexName = sequence.OrderIndexName ?? naturalOrderIndexName ?? filter?.Leaves[0].IndexName ?? "<none>";
+            bool conditionNaturalIdentityOrder = sequence.OrderIndexName is null && naturalOrderIndexName is null && filter is not null;
+            string orderIndexName = conditionNaturalIdentityOrder
+                ? "<condition-plan>"
+                : sequence.OrderIndexName ?? naturalOrderIndexName ?? "<none>";
             bool blocking = filter is not null || sequence.IsBottom;
             string materialization = sequence.IsBottom
                 ? "The selected bottom window is buffered while the order index is traversed in the opposite direction."
+                : conditionNaturalIdentityOrder
+                    ? "The condition plan supplies distinct identities directly; descending output buffers that stream for reversal."
                 : filter is null
                     ? "The order index is traversed directly without result sorting."
                     : "The condition executor applies selected-identity membership while the named order index is traversed without result sorting.";
@@ -1124,11 +1286,46 @@ internal sealed class LibraDexProjectedResultDescriptor<TResult> : ILibraDexCond
 
     public LibraDexConditionResultSequence Sequence => sequence;
 
+    public IReadOnlyList<LibraDexBookmarkIndexReference> BookmarkIndexes
+    {
+        get
+        {
+            List<LibraDexBookmarkIndexReference> indexes = new(returnedIndexNames.Length + 1);
+            for (int i = 0; i < returnedIndexNames.Length; i++)
+                indexes.Add(new LibraDexBookmarkIndexReference(returnedIndexNames[i], null, LibraDexBookmarkIndexRole.Return));
+
+            string? orderIndexName = sequence.OrderIndexName ?? naturalOrderIndexName;
+            if (orderIndexName is not null)
+            {
+                LibraDexBookmarkIndexRole role = sequence.OrderIndexName is null
+                    ? LibraDexBookmarkIndexRole.NaturalOrder
+                    : LibraDexBookmarkIndexRole.Order;
+                indexes.Add(new LibraDexBookmarkIndexReference(orderIndexName, null, role));
+            }
+
+            return indexes;
+        }
+    }
+
     public IEnumerable<TResult> Iterate(CatalogIdentityGroupIndexes indexes)
     {
         LibraDexAggregateReturnLookup[] lookups = CreateLookups(indexes);
         foreach (LibraDexProjectedResultRow row in IterateRows(indexes, lookups))
             yield return projector(row);
+    }
+
+    public IEnumerable<LibraDexBookmarkResult<TResult>> IterateBookmark(
+        CatalogIdentityGroupIndexes indexes,
+        LibraDexBookmarkAnchor? anchor)
+    {
+        LibraDexAggregateReturnLookup[] lookups = CreateLookups(indexes);
+        LibraDexBookmarkAnchor? seekAnchor = sequence.Count.HasValue || sequence.IsBottom ? null : anchor;
+        foreach (LibraDexProjectedResultRow row in IterateRows(indexes, lookups, seekAnchor))
+        {
+            yield return new LibraDexBookmarkResult<TResult>(
+                projector(row),
+                new LibraDexBookmarkAnchor(row.OrderValue, row.Identity.Value));
+        }
     }
 
     public IEnumerable<object> IterateSelectedIdentities(CatalogIdentityGroupIndexes indexes)
@@ -1140,17 +1337,25 @@ internal sealed class LibraDexProjectedResultDescriptor<TResult> : ILibraDexCond
     public ILibraDexConditionResultDescriptor<TResult> WithSequence(LibraDexConditionResultSequence value)
         => new LibraDexProjectedResultDescriptor<TResult>(group, filter, returnedIndexNames, naturalOrderIndexName, projector, returnShape, value);
 
+    public ILibraDexConditionResultDescriptor<TResult> WithFilter(LibraDexConditionEndCondition? value)
+        => new LibraDexProjectedResultDescriptor<TResult>(group, value, returnedIndexNames, naturalOrderIndexName, projector, returnShape, sequence);
+
     private IEnumerable<LibraDexProjectedResultRow> IterateRows(
         CatalogIdentityGroupIndexes indexes,
-        LibraDexAggregateReturnLookup[] lookups)
+        LibraDexAggregateReturnLookup[] lookups,
+        LibraDexBookmarkAnchor? anchor = null)
     {
         string? orderIndexName = sequence.OrderIndexName ?? naturalOrderIndexName;
+        if (orderIndexName is null && filter is not null)
+        {
+            foreach (LibraDexProjectedResultRow row in IterateConditionNaturalRows(indexes, lookups))
+                yield return row;
+            yield break;
+        }
+
         if (orderIndexName is null)
         {
-            if (filter is null || filter.Leaves.Count == 0)
-                throw new InvalidOperationException("An identity-only result without a filter requires a named ordering index.");
-
-            orderIndexName = filter.Leaves[0].IndexName;
+            throw new InvalidOperationException("An identity-only result without a filter requires a named ordering index.");
         }
 
         IIndex orderIndex = indexes.Index(orderIndexName);
@@ -1161,7 +1366,7 @@ internal sealed class LibraDexProjectedResultDescriptor<TResult> : ILibraDexCond
         QueryDirection scanDirection = sequence.IsBottom
             ? resultDirection == QueryDirection.Ascending ? QueryDirection.Descending : QueryDirection.Ascending
             : resultDirection;
-        IEnumerable<LibraDexRuntimeTuple> tuples = IterateOrderTuples(indexes, orderIndex, scanDirection);
+        IEnumerable<LibraDexRuntimeTuple> tuples = IterateOrderTuples(indexes, orderIndex, scanDirection, anchor);
         Dictionary<LibraDexRuntimeValueKey, object?> seen = new();
 
         if (sequence.IsBottom)
@@ -1172,7 +1377,7 @@ internal sealed class LibraDexProjectedResultDescriptor<TResult> : ILibraDexCond
                 if (!TryAddScalarOrderTuple(seen, tuple, orderIndex))
                     continue;
 
-                bottom.Add(CreateRow(tuple.Identity, orderIndex, lookups));
+                bottom.Add(CreateRow(tuple.Key, tuple.Identity, orderIndex, lookups));
                 if (bottom.Count == sequence.Count.Value)
                     break;
             }
@@ -1188,9 +1393,75 @@ internal sealed class LibraDexProjectedResultDescriptor<TResult> : ILibraDexCond
             if (!TryAddScalarOrderTuple(seen, tuple, orderIndex))
                 continue;
 
-            yield return CreateRow(tuple.Identity, orderIndex, lookups);
+            yield return CreateRow(tuple.Key, tuple.Identity, orderIndex, lookups);
             returned++;
             if (sequence.Count.HasValue && returned == sequence.Count.Value)
+                yield break;
+        }
+    }
+
+    private IEnumerable<LibraDexProjectedResultRow> IterateConditionNaturalRows(
+        CatalogIdentityGroupIndexes indexes,
+        LibraDexAggregateReturnLookup[] lookups)
+    {
+        if (filter is null || filter.Leaves.Count == 0)
+            throw new InvalidOperationException("An identity-only result requires at least one filter criterion.");
+
+        IIndex identitySource = indexes.Index(filter.Leaves[0].IndexName);
+        if (!string.Equals(identitySource.Group, group, StringComparison.Ordinal))
+            throw new InvalidOperationException($"Index '{identitySource.Name}' belongs to identity group '{identitySource.Group}', not '{group}'.");
+
+        IEnumerable<object> identities = filter.Iterate(
+            name => indexes.Index(name),
+            IdentityResultOrdering.PlanNatural,
+            IdentityDeduplication.Distinct);
+
+        if (sequence.Direction == QueryDirection.Descending)
+        {
+            List<LibraDexProjectedResultRow> reversed = new();
+            foreach (object identity in identities)
+                reversed.Add(CreateRow(identity, identity, identitySource, lookups));
+
+            if (sequence.IsBottom)
+            {
+                int start = Math.Min(sequence.Count!.Value, reversed.Count) - 1;
+                for (int i = start; i >= 0; i--)
+                    yield return reversed[i];
+                yield break;
+            }
+
+            int stop = sequence.Count.HasValue
+                ? Math.Max(-1, reversed.Count - sequence.Count.Value - 1)
+                : -1;
+            for (int i = reversed.Count - 1; i > stop; i--)
+                yield return reversed[i];
+            yield break;
+        }
+
+        if (sequence.IsBottom)
+        {
+            int count = sequence.Count!.Value;
+            LibraDexProjectedResultRow[] tail = new LibraDexProjectedResultRow[count];
+            int seen = 0;
+            foreach (object identity in identities)
+            {
+                tail[seen % count] = CreateRow(identity, identity, identitySource, lookups);
+                seen++;
+            }
+
+            int returned = Math.Min(seen, count);
+            int first = seen <= count ? 0 : seen % count;
+            for (int i = 0; i < returned; i++)
+                yield return tail[(first + i) % count];
+            yield break;
+        }
+
+        int emitted = 0;
+        foreach (object identity in identities)
+        {
+            yield return CreateRow(identity, identity, identitySource, lookups);
+            emitted++;
+            if (sequence.Count.HasValue && emitted == sequence.Count.Value)
                 yield break;
         }
     }
@@ -1198,11 +1469,15 @@ internal sealed class LibraDexProjectedResultDescriptor<TResult> : ILibraDexCond
     private IEnumerable<LibraDexRuntimeTuple> IterateOrderTuples(
         CatalogIdentityGroupIndexes indexes,
         IIndex orderIndex,
-        QueryDirection direction)
+        QueryDirection direction,
+        LibraDexBookmarkAnchor? anchor)
     {
         if (filter is not null)
         {
-            foreach (LibraDexRuntimeTuple tuple in indexes.IterateTuples(orderIndex, filter, direction))
+            IEnumerable<LibraDexRuntimeTuple> tuples = anchor.HasValue
+                ? indexes.IterateTuplesFrom(orderIndex, filter, anchor.Value.OrderValue, direction)
+                : indexes.IterateTuples(orderIndex, filter, direction);
+            foreach (LibraDexRuntimeTuple tuple in tuples)
                 yield return tuple;
             yield break;
         }
@@ -1210,14 +1485,21 @@ internal sealed class LibraDexProjectedResultDescriptor<TResult> : ILibraDexCond
         if (orderIndex is not IIdentityPrimitiveTupleStreamer streamer)
             throw new NotSupportedException($"Index '{orderIndex.Name}' does not expose tuple streaming for result ordering.");
 
+        LibraDexCriteriaKind criteriaKind = anchor.HasValue
+            ? direction == QueryDirection.Ascending
+                ? LibraDexCriteriaKind.AtOrAfter
+                : LibraDexCriteriaKind.AtOrBefore
+            : LibraDexCriteriaKind.All;
+        object?[] values = anchor.HasValue ? new[] { anchor.Value.OrderValue } : Array.Empty<object?>();
         foreach (LibraDexObjectTuple tuple in streamer.IterateTuplePrimitive(
-            new LibraDexIdentityPrimitiveRequest(LibraDexCriteriaKind.All, Array.Empty<object?>(), TakeLimit: null, direction)))
+            new LibraDexIdentityPrimitiveRequest(criteriaKind, values, TakeLimit: null, direction)))
         {
             yield return new LibraDexRuntimeTuple(tuple.Key, tuple.Identity);
         }
     }
 
     private LibraDexProjectedResultRow CreateRow(
+        object? orderValue,
         object identity,
         IIndex identitySource,
         LibraDexAggregateReturnLookup[] lookups)
@@ -1229,6 +1511,7 @@ internal sealed class LibraDexProjectedResultDescriptor<TResult> : ILibraDexCond
             keys[i] = lookups[i].Get(identity);
 
         return new LibraDexProjectedResultRow(
+            orderValue,
             new LibraDexResultValue(identity, identitySource, IsIdentity: true),
             keys);
     }
@@ -1496,6 +1779,7 @@ internal static class LibraDexAggregateExecutor
                 null => stringIndex.IterateExactEncodedGroupingTuplePrimitive(),
                 SubIndexType.Folded => stringIndex.IterateFoldedEncodedGroupingTuplePrimitive(),
                 SubIndexType.SortKey => stringIndex.IterateSortKeyTuplePrimitive(),
+                SubIndexType.Normalized => stringIndex.IterateNormalizedEncodedGroupingTuplePrimitive(),
                 _ => throw new ArgumentOutOfRangeException(nameof(stringSubIndex), stringSubIndex, "Unknown string grouping subindex.")
             };
 
@@ -1608,6 +1892,7 @@ internal readonly record struct LibraDexAggregateProjectionRow(
     LibraDexResultValue[] Keys);
 
 internal readonly record struct LibraDexProjectedResultRow(
+    object? OrderValue,
     LibraDexResultValue Identity,
     LibraDexResultValue[] Keys);
 
@@ -1698,6 +1983,18 @@ internal static class LibraDexResultValueConverter
             $"Index '{source.Name}' returned {value.GetType().FullName}, which cannot materialize as {typeof(T).FullName}.");
     }
 
+    internal static byte[]? EncodeRawBytes(object? value, IIndex source, bool isIdentity)
+    {
+        if (value is null)
+        {
+            if (!isIdentity && source.KeyFamily == CatalogIndexKeyFamily.String)
+                return LibraDexStringScalar8Index.EncodeGroupingKey(null);
+            return null;
+        }
+
+        return EncodeBytes(value, source, isIdentity);
+    }
+
     private static byte[] EncodeBytes(object? value, IIndex source, bool isIdentity)
     {
         if (value is null)
@@ -1742,6 +2039,9 @@ internal static class LibraDexResultValueConverter
 
     private static bool TryEncode8(object value, DateTimeKeyEncoding dateEncoding, out ulong encoded)
     {
+        if (value.GetType().IsEnum)
+            value = System.Convert.ChangeType(value, Enum.GetUnderlyingType(value.GetType()), CultureInfo.InvariantCulture);
+
         encoded = value switch
         {
             bool typed => LibraDexGenericScalarCodec<bool>.Encode8(typed, dateEncoding),
@@ -1754,6 +2054,8 @@ internal static class LibraDexResultValueConverter
             uint typed => LibraDexGenericScalarCodec<uint>.Encode8(typed, dateEncoding),
             long typed => LibraDexGenericScalarCodec<long>.Encode8(typed, dateEncoding),
             ulong typed => LibraDexGenericScalarCodec<ulong>.Encode8(typed, dateEncoding),
+            float typed => LibraDexGenericScalarCodec<float>.Encode8(typed, dateEncoding),
+            double typed => LibraDexGenericScalarCodec<double>.Encode8(typed, dateEncoding),
             DateTime typed => LibraDexGenericScalarCodec<DateTime>.Encode8(typed, dateEncoding),
             DateTimeOffset typed => LibraDexGenericScalarCodec<DateTimeOffset>.Encode8(typed, dateEncoding),
             DateOnly typed => LibraDexGenericScalarCodec<DateOnly>.Encode8(typed, dateEncoding),
@@ -1762,7 +2064,7 @@ internal static class LibraDexResultValueConverter
             _ => 0
         };
 
-        return value is bool or byte or sbyte or short or ushort or char or int or uint or long or ulong or DateTime or DateTimeOffset or DateOnly or TimeOnly or TimeSpan;
+        return value is bool or byte or sbyte or short or ushort or char or int or uint or long or ulong or float or double or DateTime or DateTimeOffset or DateOnly or TimeOnly or TimeSpan;
     }
 
     private static bool TryEncode16(object value, out ulong high, out ulong low)
@@ -1780,8 +2082,240 @@ internal static class LibraDexResultValueConverter
             case UInt128 typed:
                 LibraDexGenericScalarCodec<UInt128>.Encode16(typed, out high, out low);
                 return true;
+            case decimal typed:
+                LibraDexGenericScalarCodec<decimal>.Encode16(typed, out high, out low);
+                return true;
             default:
                 return false;
         }
     }
+}
+
+/// <summary>
+/// Carries the ordinary condition result-shaping surface through named and typed composite-index continuations.<br/>
+/// Composite part selection remains responsible only for matching; this shared stage lets the completed match select identities, identity/key tuples, or key-only tuples before the single terminal <c>EndCondition</c>.<br/>
+/// </summary>
+public abstract class LibraDexCompositeResultContinuation
+{
+    private readonly LibraDexConditionContinueOrEnd condition;
+
+    internal LibraDexCompositeResultContinuation(LibraDexConditionContinueOrEnd condition)
+    {
+        ArgumentNullException.ThrowIfNull(condition);
+        this.condition = condition;
+    }
+
+    internal LibraDexConditionContinueOrEnd ResultSource => condition;
+
+    /// <summary>
+    /// Selects matching composite identities in their binary form.<br/>
+    /// Returned arrays are caller-owned and remain stable after the getter, iterator, or reader advances.<br/>
+    /// </summary>
+    /// <returns>A result-shaping stage returning raw identity bytes.<br/></returns>
+    public LibraDexConditionResultEnd<byte[]> Return()
+        => LibraDexConditionResultExtensions.Return(condition);
+
+    /// <summary>
+    /// Selects matching composite identities converted to <typeparamref name="TIdentity"/>.<br/>
+    /// </summary>
+    /// <typeparam name="TIdentity">The requested identity result type.<br/></typeparam>
+    /// <returns>A result-shaping stage returning typed identities.<br/></returns>
+    public LibraDexConditionResultEnd<TIdentity> Return<TIdentity>()
+        => LibraDexConditionResultExtensions.Return<TIdentity>(condition);
+
+    /// <summary>
+    /// Selects each matching composite identity followed by one named indexed key.<br/>
+    /// </summary>
+    /// <typeparam name="TIdentity">The requested identity type.<br/></typeparam>
+    /// <typeparam name="TKey1">The requested key type.<br/></typeparam>
+    /// <param name="index1">The index supplying the returned key.<br/></param>
+    /// <returns>A result-shaping stage returning identity/key tuples.<br/></returns>
+    public LibraDexConditionResultEnd<(TIdentity Identity, TKey1 Key1)> Return<TIdentity, TKey1>(string index1)
+        => LibraDexConditionResultExtensions.Return<TIdentity, TKey1>(condition, index1);
+
+    /// <summary>
+    /// Selects each matching composite identity followed by two named indexed keys.<br/>
+    /// Generic and index-name order maps positionally to the returned tuple.<br/>
+    /// </summary>
+    /// <typeparam name="TIdentity">The requested identity type.<br/></typeparam>
+    /// <typeparam name="TKey1">The requested first key type.<br/></typeparam>
+    /// <typeparam name="TKey2">The requested second key type.<br/></typeparam>
+    /// <param name="index1">The index supplying the first returned key.<br/></param>
+    /// <param name="index2">The index supplying the second returned key.<br/></param>
+    /// <returns>A result-shaping stage returning identity/key/key tuples.<br/></returns>
+    public LibraDexConditionResultEnd<(TIdentity Identity, TKey1 Key1, TKey2 Key2)> Return<TIdentity, TKey1, TKey2>(string index1, string index2)
+        => LibraDexConditionResultExtensions.Return<TIdentity, TKey1, TKey2>(condition, index1, index2);
+
+    /// <summary>
+    /// Selects each matching composite identity followed by three named indexed keys.<br/>
+    /// Generic and index-name order maps positionally to the returned tuple.<br/>
+    /// </summary>
+    /// <typeparam name="TIdentity">The requested identity type.<br/></typeparam>
+    /// <typeparam name="TKey1">The requested first key type.<br/></typeparam>
+    /// <typeparam name="TKey2">The requested second key type.<br/></typeparam>
+    /// <typeparam name="TKey3">The requested third key type.<br/></typeparam>
+    /// <param name="index1">The index supplying the first returned key.<br/></param>
+    /// <param name="index2">The index supplying the second returned key.<br/></param>
+    /// <param name="index3">The index supplying the third returned key.<br/></param>
+    /// <returns>A result-shaping stage returning one identity and three keys.<br/></returns>
+    public LibraDexConditionResultEnd<(TIdentity Identity, TKey1 Key1, TKey2 Key2, TKey3 Key3)> Return<TIdentity, TKey1, TKey2, TKey3>(string index1, string index2, string index3)
+        => LibraDexConditionResultExtensions.Return<TIdentity, TKey1, TKey2, TKey3>(condition, index1, index2, index3);
+
+    /// <summary>
+    /// Selects each matching composite identity followed by four named indexed keys.<br/>
+    /// Generic and index-name order maps positionally to the returned tuple.<br/>
+    /// </summary>
+    /// <typeparam name="TIdentity">The requested identity type.<br/></typeparam>
+    /// <typeparam name="TKey1">The requested first key type.<br/></typeparam>
+    /// <typeparam name="TKey2">The requested second key type.<br/></typeparam>
+    /// <typeparam name="TKey3">The requested third key type.<br/></typeparam>
+    /// <typeparam name="TKey4">The requested fourth key type.<br/></typeparam>
+    /// <param name="index1">The index supplying the first returned key.<br/></param>
+    /// <param name="index2">The index supplying the second returned key.<br/></param>
+    /// <param name="index3">The index supplying the third returned key.<br/></param>
+    /// <param name="index4">The index supplying the fourth returned key.<br/></param>
+    /// <returns>A result-shaping stage returning one identity and four keys.<br/></returns>
+    public LibraDexConditionResultEnd<(TIdentity Identity, TKey1 Key1, TKey2 Key2, TKey3 Key3, TKey4 Key4)> Return<TIdentity, TKey1, TKey2, TKey3, TKey4>(string index1, string index2, string index3, string index4)
+        => LibraDexConditionResultExtensions.Return<TIdentity, TKey1, TKey2, TKey3, TKey4>(condition, index1, index2, index3, index4);
+
+    /// <summary>
+    /// Selects one named indexed key from each matching composite identity and excludes identity from the result.<br/>
+    /// </summary>
+    /// <typeparam name="TKey1">The requested key type.<br/></typeparam>
+    /// <param name="index1">The index supplying the returned key.<br/></param>
+    /// <returns>A result-shaping stage returning scalar keys.<br/></returns>
+    public LibraDexConditionResultEnd<TKey1> ReturnKeys<TKey1>(string index1)
+        => LibraDexConditionResultExtensions.ReturnKeys<TKey1>(condition, index1);
+
+    /// <summary>
+    /// Selects two named indexed keys from each matching composite identity and excludes identity from the result.<br/>
+    /// Generic and index-name order maps positionally to the returned tuple.<br/>
+    /// </summary>
+    /// <typeparam name="TKey1">The requested first key type.<br/></typeparam>
+    /// <typeparam name="TKey2">The requested second key type.<br/></typeparam>
+    /// <param name="index1">The index supplying the first returned key.<br/></param>
+    /// <param name="index2">The index supplying the second returned key.<br/></param>
+    /// <returns>A result-shaping stage returning two-key tuples.<br/></returns>
+    public LibraDexConditionResultEnd<(TKey1 Key1, TKey2 Key2)> ReturnKeys<TKey1, TKey2>(string index1, string index2)
+        => LibraDexConditionResultExtensions.ReturnKeys<TKey1, TKey2>(condition, index1, index2);
+
+    /// <summary>
+    /// Selects three named indexed keys from each matching composite identity and excludes identity from the result.<br/>
+    /// Generic and index-name order maps positionally to the returned tuple.<br/>
+    /// </summary>
+    /// <typeparam name="TKey1">The requested first key type.<br/></typeparam>
+    /// <typeparam name="TKey2">The requested second key type.<br/></typeparam>
+    /// <typeparam name="TKey3">The requested third key type.<br/></typeparam>
+    /// <param name="index1">The index supplying the first returned key.<br/></param>
+    /// <param name="index2">The index supplying the second returned key.<br/></param>
+    /// <param name="index3">The index supplying the third returned key.<br/></param>
+    /// <returns>A result-shaping stage returning three-key tuples.<br/></returns>
+    public LibraDexConditionResultEnd<(TKey1 Key1, TKey2 Key2, TKey3 Key3)> ReturnKeys<TKey1, TKey2, TKey3>(string index1, string index2, string index3)
+        => LibraDexConditionResultExtensions.ReturnKeys<TKey1, TKey2, TKey3>(condition, index1, index2, index3);
+
+    /// <summary>
+    /// Selects four named indexed keys from each matching composite identity and excludes identity from the result.<br/>
+    /// Generic and index-name order maps positionally to the returned tuple.<br/>
+    /// </summary>
+    /// <typeparam name="TKey1">The requested first key type.<br/></typeparam>
+    /// <typeparam name="TKey2">The requested second key type.<br/></typeparam>
+    /// <typeparam name="TKey3">The requested third key type.<br/></typeparam>
+    /// <typeparam name="TKey4">The requested fourth key type.<br/></typeparam>
+    /// <param name="index1">The index supplying the first returned key.<br/></param>
+    /// <param name="index2">The index supplying the second returned key.<br/></param>
+    /// <param name="index3">The index supplying the third returned key.<br/></param>
+    /// <param name="index4">The index supplying the fourth returned key.<br/></param>
+    /// <returns>A result-shaping stage returning four-key tuples.<br/></returns>
+    public LibraDexConditionResultEnd<(TKey1 Key1, TKey2 Key2, TKey3 Key3, TKey4 Key4)> ReturnKeys<TKey1, TKey2, TKey3, TKey4>(string index1, string index2, string index3, string index4)
+        => LibraDexConditionResultExtensions.ReturnKeys<TKey1, TKey2, TKey3, TKey4>(condition, index1, index2, index3, index4);
+}
+
+/// <summary>
+/// Decorates one logical result descriptor with a deferred caller-defined projection.<br/>
+/// Selection, identity ownership, bookmarks, filters, and sequence changes remain delegated to the source descriptor.<br/>
+/// </summary>
+/// <typeparam name="TSource">The source descriptor's logical result type.<br/></typeparam>
+/// <typeparam name="TResult">The caller-projected logical result type.<br/></typeparam>
+internal sealed class LibraDexTransformedResultDescriptor<TSource, TResult> : ILibraDexConditionResultDescriptor<TResult>
+{
+    private readonly ILibraDexConditionResultDescriptor<TSource> source;
+    private readonly Func<TSource, TResult> transform;
+
+    /// <summary>
+    /// Initializes a transformed descriptor over one immutable source descriptor.<br/>
+    /// </summary>
+    /// <param name="source">The descriptor that owns selection and source materialization.<br/></param>
+    /// <param name="transform">The caller projection invoked once per produced source result.<br/></param>
+    internal LibraDexTransformedResultDescriptor(
+        ILibraDexConditionResultDescriptor<TSource> source,
+        Func<TSource, TResult> transform)
+    {
+        this.source = source ?? throw new ArgumentNullException(nameof(source));
+        this.transform = transform ?? throw new ArgumentNullException(nameof(transform));
+    }
+
+    public LibraDexConditionResultPlan Plan
+    {
+        get
+        {
+            LibraDexConditionResultPlan plan = source.Plan;
+            return new LibraDexConditionResultPlan(
+                $"{plan.Shape}.Transform({typeof(TResult).Name})",
+                plan.IsBlocking,
+                $"{plan.Materialization} A caller transform is applied once as each logical result is produced.");
+        }
+    }
+
+    public LibraDexConditionResultSequence Sequence => source.Sequence;
+
+    public IReadOnlyList<LibraDexBookmarkIndexReference> BookmarkIndexes => source.BookmarkIndexes;
+
+    /// <summary>
+    /// Streams projected logical results from the source descriptor.<br/>
+    /// </summary>
+    /// <param name="indexes">The opened identity-group indexes used by the source descriptor.<br/></param>
+    /// <returns>A deferred projected result sequence.<br/></returns>
+    public IEnumerable<TResult> Iterate(CatalogIdentityGroupIndexes indexes)
+    {
+        foreach (TSource value in source.Iterate(indexes))
+            yield return transform(value);
+    }
+
+    /// <summary>
+    /// Streams projected bookmark results while preserving each source anchor unchanged.<br/>
+    /// </summary>
+    /// <param name="indexes">The opened identity-group indexes used by the source descriptor.<br/></param>
+    /// <param name="anchor">The optional source bookmark anchor.<br/></param>
+    /// <returns>A deferred sequence of projected values paired with source anchors.<br/></returns>
+    public IEnumerable<LibraDexBookmarkResult<TResult>> IterateBookmark(
+        CatalogIdentityGroupIndexes indexes,
+        LibraDexBookmarkAnchor? anchor)
+    {
+        foreach (LibraDexBookmarkResult<TSource> value in source.IterateBookmark(indexes, anchor))
+            yield return new LibraDexBookmarkResult<TResult>(transform(value.Value), value.Anchor);
+    }
+
+    /// <summary>
+    /// Streams the source descriptor's selected identities without invoking the return projection.<br/>
+    /// </summary>
+    /// <param name="indexes">The opened identity-group indexes used by the source descriptor.<br/></param>
+    /// <returns>The selected source identities used by condition-scoped mutation.<br/></returns>
+    public IEnumerable<object> IterateSelectedIdentities(CatalogIdentityGroupIndexes indexes)
+        => source.IterateSelectedIdentities(indexes);
+
+    /// <summary>
+    /// Applies a result sequence to the source descriptor and retains this projection.<br/>
+    /// </summary>
+    /// <param name="sequence">The requested ordering or result window.<br/></param>
+    /// <returns>An equivalent transformed descriptor over the resequenced source.<br/></returns>
+    public ILibraDexConditionResultDescriptor<TResult> WithSequence(LibraDexConditionResultSequence sequence)
+        => new LibraDexTransformedResultDescriptor<TSource, TResult>(source.WithSequence(sequence), transform);
+
+    /// <summary>
+    /// Applies a replacement filter to the source descriptor and retains this projection.<br/>
+    /// </summary>
+    /// <param name="filter">The replacement completed filter, or null for an unfiltered result.<br/></param>
+    /// <returns>An equivalent transformed descriptor over the refiltered source.<br/></returns>
+    public ILibraDexConditionResultDescriptor<TResult> WithFilter(LibraDexConditionEndCondition? filter)
+        => new LibraDexTransformedResultDescriptor<TSource, TResult>(source.WithFilter(filter), transform);
 }

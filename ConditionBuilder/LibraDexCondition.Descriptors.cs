@@ -517,7 +517,34 @@ public enum LibraDexConditionOperatorKind
     /// <summary>
     /// Matches string keys that do not satisfy the supplied wildcard pattern descriptor.<br/>
     /// </summary>
-    NotMatchesPattern = 80
+    NotMatchesPattern = 80,
+
+    /// <summary>
+    /// Matches identities that are associated with every distinct key supplied by one execution-time enumerable.<br/>
+    /// The enumerable is materialized only when the condition executes, then LibraDex intersects exact-key routes without hydrating caller objects.<br/>
+    /// </summary>
+    KeysExistAll = 81,
+
+    /// <summary>
+    /// Matches the selected logical index's maintained null or non-null route without requiring the caller to select a CLR value family.<br/>
+    /// Materialization resolves scalar-null versus string/binary null-key storage from the opened index contract.<br/>
+    /// </summary>
+    NullState = 82,
+
+    /// <summary>
+    /// Matches non-null string keys that do not start with the supplied text.<br/>
+    /// </summary>
+    NotStartsWith = 83,
+
+    /// <summary>
+    /// Matches non-null string keys that do not end with the supplied text.<br/>
+    /// </summary>
+    NotEndsWith = 84,
+
+    /// <summary>
+    /// Matches non-null string keys that do not contain the supplied text.<br/>
+    /// </summary>
+    NotContains = 85
 }
 
 /// <summary>
@@ -528,43 +555,53 @@ public sealed class LibraDexConditionOperand
 {
     private readonly object? staticValue;
     private readonly Func<object?>? valueFactory;
+    private readonly ILibraDexParameter? parameter;
 
-    private LibraDexConditionOperand(object? staticValue, Func<object?>? valueFactory, string? name)
+    private LibraDexConditionOperand(object? staticValue, Func<object?>? valueFactory, ILibraDexParameter? parameter)
     {
         this.staticValue = staticValue;
         this.valueFactory = valueFactory;
-        Name = name;
+        this.parameter = parameter;
     }
 
-    /// <summary>
-    /// Gets the optional operand name used by replacement-capable adapters.<br/>
-    /// The adopted builder records names as descriptor metadata only; it does not expose the deleted old condition-builder replacement API.<br/>
-    /// </summary>
-    public string? Name { get; }
+    internal bool IsDeferred => valueFactory is not null || parameter is not null;
 
-    internal bool IsDeferred => valueFactory is not null;
+    internal bool HasExplicitParameter
+        => parameter is not null ||
+           (valueFactory is null && staticValue is ILibraDexParameterSnapshotValue nested && nested.HasParameters);
 
     /// <summary>
     /// Creates a static adopted condition operand.<br/>
     /// The value is captured as supplied and validated later against the resolved LibraDex index key contract.<br/>
     /// </summary>
     /// <param name="value">The value to capture.</param>
-    /// <param name="name">Optional adapter-level operand name.</param>
     /// <returns>A condition operand descriptor.</returns>
-    public static LibraDexConditionOperand Value(object? value, string? name = null)
-        => new LibraDexConditionOperand(value, valueFactory: null, name);
+    public static LibraDexConditionOperand Value(object? value)
+        => new LibraDexConditionOperand(value, valueFactory: null, parameter: null);
 
     /// <summary>
     /// Creates a deferred adopted condition operand.<br/>
     /// The supplied factory is invoked only during materialization so reusable descriptors can bind to current request values without rebuilding the condition chain.<br/>
     /// </summary>
     /// <param name="valueFactory">The value factory to evaluate during materialization.</param>
-    /// <param name="name">Optional adapter-level operand name.</param>
     /// <returns>A condition operand descriptor.</returns>
-    public static LibraDexConditionOperand Deferred(Func<object?> valueFactory, string? name = null)
+    public static LibraDexConditionOperand Deferred(Func<object?> valueFactory)
     {
         ArgumentNullException.ThrowIfNull(valueFactory);
-        return new LibraDexConditionOperand(staticValue: null, valueFactory, name);
+        return new LibraDexConditionOperand(staticValue: null, valueFactory, parameter: null);
+    }
+
+    /// <summary>
+    /// Creates an operand backed directly by a reusable typed parameter.<br/>
+    /// The parameter is read through the execution-local snapshot without allocating a caller-side lambda or an internal closure.<br/>
+    /// </summary>
+    /// <typeparam name="T">The parameter value type.</typeparam>
+    /// <param name="parameter">The parameter to read when the condition executes.</param>
+    /// <returns>A condition operand descriptor.</returns>
+    internal static LibraDexConditionOperand Parameter<T>(LibraDexParameter<T> parameter)
+    {
+        ArgumentNullException.ThrowIfNull(parameter);
+        return new LibraDexConditionOperand(staticValue: null, valueFactory: null, parameter);
     }
 
     /// <summary>
@@ -573,7 +610,25 @@ public sealed class LibraDexConditionOperand
     /// </summary>
     /// <returns>The current operand value.</returns>
     public object? GetValue()
-        => valueFactory is null ? staticValue : valueFactory();
+        => parameter is null ? (valueFactory is null ? staticValue : valueFactory()) : parameter.ReadValue();
+
+    internal object? GetValue(LibraDexParameterSnapshot snapshot)
+    {
+        object? value = parameter is null ? (valueFactory is null ? staticValue : valueFactory()) : snapshot.Read(parameter);
+        return value is ILibraDexParameterSnapshotValue nested ? nested.Snapshot(snapshot) : value;
+    }
+
+    internal void CaptureParameter(LibraDexParameterSnapshot snapshot)
+    {
+        if (parameter is not null)
+        {
+            _ = snapshot.Read(parameter);
+            return;
+        }
+
+        if (valueFactory is null && staticValue is ILibraDexParameterSnapshotValue nested)
+            nested.CaptureParameters(snapshot);
+    }
 }
 
 /// <summary>
@@ -584,33 +639,37 @@ public sealed class LibraDexConditionIndexSelector
 {
     private readonly string? staticIndexName;
     private readonly Func<string>? indexNameFactory;
+    private readonly ILibraDexParameter? parameter;
 
-    private LibraDexConditionIndexSelector(string? staticIndexName, Func<string>? indexNameFactory, string? name)
+    private LibraDexConditionIndexSelector(string? staticIndexName, Func<string>? indexNameFactory, ILibraDexParameter? parameter, string? name)
     {
         this.staticIndexName = staticIndexName;
         this.indexNameFactory = indexNameFactory;
+        this.parameter = parameter;
         Name = name;
     }
 
     /// <summary>
-    /// Gets the optional selector name used by replacement-capable reusable conditions.<br/>
-    /// The name is descriptor metadata only and does not change physical index resolution.<br/>
+    /// Gets the optional diagnostic selector name retained in bookmark provenance.<br/>
+    /// The name does not participate in physical index resolution.<br/>
     /// </summary>
     public string? Name { get; }
 
-    internal bool IsDeferred => indexNameFactory is not null;
+    internal bool IsDeferred => indexNameFactory is not null || parameter is not null;
+
+    internal bool HasExplicitParameter => parameter is not null;
 
     /// <summary>
     /// Creates a static index selector.<br/>
     /// The supplied name is still resolved through the caller's index resolver when the condition materializes.<br/>
     /// </summary>
     /// <param name="indexName">The index name inside the condition's identity group.</param>
-    /// <param name="name">Optional replacement selector name.</param>
+    /// <param name="name">Optional diagnostic selector name retained in bookmark provenance.</param>
     /// <returns>An index selector descriptor.</returns>
     public static LibraDexConditionIndexSelector Static(string indexName, string? name = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(indexName);
-        return new LibraDexConditionIndexSelector(indexName, indexNameFactory: null, name);
+        return new LibraDexConditionIndexSelector(indexName, indexNameFactory: null, parameter: null, name);
     }
 
     /// <summary>
@@ -618,12 +677,38 @@ public sealed class LibraDexConditionIndexSelector
     /// The supplied factory is invoked each time the condition needs the current index name, including bridge inspection and materialization.<br/>
     /// </summary>
     /// <param name="indexNameFactory">Factory that returns the current index name inside the condition's identity group.</param>
-    /// <param name="name">Optional replacement selector name.</param>
+    /// <param name="name">Optional diagnostic selector name retained in bookmark provenance.</param>
     /// <returns>An index selector descriptor.</returns>
     public static LibraDexConditionIndexSelector Deferred(Func<string> indexNameFactory, string? name = null)
     {
         ArgumentNullException.ThrowIfNull(indexNameFactory);
-        return new LibraDexConditionIndexSelector(staticIndexName: null, indexNameFactory, name);
+        return new LibraDexConditionIndexSelector(staticIndexName: null, indexNameFactory, parameter: null, name);
+    }
+
+    /// <summary>
+    /// Creates an index selector backed by a reusable string parameter.<br/>
+    /// The parameter's current index name is snapshotted once when execution begins.<br/>
+    /// </summary>
+    /// <param name="parameter">The parameter containing the current index name.</param>
+    /// <returns>An index selector descriptor.</returns>
+    internal static LibraDexConditionIndexSelector Parameter(LibraDexParameter<string> parameter, string? name = null)
+    {
+        ArgumentNullException.ThrowIfNull(parameter);
+        return new LibraDexConditionIndexSelector(staticIndexName: null, indexNameFactory: null, parameter, name ?? parameter.Name);
+    }
+
+    /// <summary>
+    /// Creates an index selector backed by a reusable opened-index parameter.<br/>
+    /// LibraDex reads the handle once per execution and uses its current <see cref="IIndex.Name"/> while retaining ordinary group validation at resolution.<br/>
+    /// </summary>
+    /// <typeparam name="TIndex">The opened index handle type.</typeparam>
+    /// <param name="parameter">The parameter containing the current opened index.</param>
+    /// <returns>An index selector descriptor.</returns>
+    internal static LibraDexConditionIndexSelector Parameter<TIndex>(LibraDexParameter<TIndex> parameter, string? name = null)
+        where TIndex : IIndex
+    {
+        ArgumentNullException.ThrowIfNull(parameter);
+        return new LibraDexConditionIndexSelector(staticIndexName: null, indexNameFactory: null, parameter, name ?? parameter.Name);
     }
 
     /// <summary>
@@ -633,9 +718,43 @@ public sealed class LibraDexConditionIndexSelector
     /// <returns>The current index name.</returns>
     public string GetIndexName()
     {
-        string? indexName = indexNameFactory is null ? staticIndexName : indexNameFactory();
+        object? selected = parameter?.ReadValue();
+        string? indexName = selected switch
+        {
+            null => indexNameFactory is null ? staticIndexName : indexNameFactory(),
+            string name => name,
+            IIndex index => index.Name,
+            _ => throw new InvalidOperationException($"Index selector parameter '{Name ?? "<unnamed>"}' returned unsupported type '{selected.GetType().FullName}'.")
+        };
         ArgumentException.ThrowIfNullOrWhiteSpace(indexName);
         return indexName;
+    }
+
+    internal string GetIndexName(LibraDexParameterSnapshot snapshot, string? expectedGroup = null)
+    {
+        object? selected = parameter is null ? null : snapshot.Read(parameter);
+        if (selected is IIndex selectedIndex &&
+            !string.IsNullOrEmpty(expectedGroup) &&
+            !string.Equals(selectedIndex.Group, expectedGroup, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException($"Parameterized index '{selectedIndex.Name}' belongs to group '{selectedIndex.Group}', not condition group '{expectedGroup}'.");
+        }
+
+        string? indexName = selected switch
+        {
+            null => indexNameFactory is null ? staticIndexName : indexNameFactory(),
+            string name => name,
+            IIndex index => index.Name,
+            _ => throw new InvalidOperationException($"Index selector parameter '{Name ?? "<unnamed>"}' returned unsupported type '{selected.GetType().FullName}'.")
+        };
+        ArgumentException.ThrowIfNullOrWhiteSpace(indexName);
+        return indexName;
+    }
+
+    internal void CaptureParameter(LibraDexParameterSnapshot snapshot)
+    {
+        if (parameter is not null)
+            _ = snapshot.Read(parameter);
     }
 }
 
@@ -861,6 +980,7 @@ public sealed record LibraDexConditionBridgePlan(
 /// <param name="IgnoreCase">Whether the source condition asked for case-insensitive text behavior.</param>
 /// <param name="Culture">The source culture name associated with text comparison, when supplied.</param>
 /// <param name="StringComparisonPolicy">The optional method-level managed string comparison policy.</param>
+/// <param name="TextNormalization">The optional selector-level text normalization applied before comparison.</param>
 public sealed class LibraDexConditionLeafDescriptor
 {
     /// <summary>
@@ -874,6 +994,7 @@ public sealed class LibraDexConditionLeafDescriptor
     /// <param name="IgnoreCase">Whether the source condition asked for case-insensitive text behavior.</param>
     /// <param name="Culture">The source culture name associated with text comparison, when supplied.</param>
     /// <param name="StringComparisonPolicy">The optional method-level managed string comparison policy.</param>
+    /// <param name="TextNormalization">The optional selector-level text normalization applied before comparison.</param>
     public LibraDexConditionLeafDescriptor(
         string indexName,
         LibraDexConditionValueKind valueKind,
@@ -881,7 +1002,8 @@ public sealed class LibraDexConditionLeafDescriptor
         IReadOnlyList<LibraDexConditionOperand> operands,
         bool IgnoreCase,
         string? Culture,
-        LibraDexStringComparisonPolicy? StringComparisonPolicy = null)
+        LibraDexStringComparisonPolicy? StringComparisonPolicy = null,
+        LibraDexTextNormalization TextNormalization = LibraDexTextNormalization.None)
         : this(
             LibraDexConditionIndexSelector.Static(indexName),
             valueKind,
@@ -889,7 +1011,8 @@ public sealed class LibraDexConditionLeafDescriptor
             operands,
             IgnoreCase,
             Culture,
-            StringComparisonPolicy)
+            StringComparisonPolicy,
+            TextNormalization)
     {
     }
 
@@ -904,6 +1027,7 @@ public sealed class LibraDexConditionLeafDescriptor
     /// <param name="IgnoreCase">Whether the source condition asked for case-insensitive text behavior.</param>
     /// <param name="Culture">The source culture name associated with text comparison, when supplied.</param>
     /// <param name="StringComparisonPolicy">The optional method-level managed string comparison policy.</param>
+    /// <param name="TextNormalization">The optional selector-level text normalization applied before comparison.</param>
     public LibraDexConditionLeafDescriptor(
         LibraDexConditionIndexSelector indexSelector,
         LibraDexConditionValueKind valueKind,
@@ -911,7 +1035,44 @@ public sealed class LibraDexConditionLeafDescriptor
         IReadOnlyList<LibraDexConditionOperand> operands,
         bool IgnoreCase,
         string? Culture,
-        LibraDexStringComparisonPolicy? StringComparisonPolicy = null)
+        LibraDexStringComparisonPolicy? StringComparisonPolicy = null,
+        LibraDexTextNormalization TextNormalization = LibraDexTextNormalization.None)
+        : this(
+            indexSelector,
+            valueKind,
+            operatorKind,
+            operands,
+            IgnoreCase,
+            Culture,
+            StringComparisonPolicy,
+            numericTransform: null,
+            textNormalization: TextNormalization)
+    {
+    }
+
+    /// <summary>
+    /// Initializes a condition leaf with an optional planner-visible numeric transform.<br/>
+    /// The transform is retained across deferred selector and operand freezing so reusable conditions preserve their declared value semantics.<br/>
+    /// </summary>
+    /// <param name="indexSelector">The static, deferred, or parameter-backed index selector.<br/></param>
+    /// <param name="valueKind">The logical value family selected by the fluent grammar.<br/></param>
+    /// <param name="operatorKind">The comparison or state operator.<br/></param>
+    /// <param name="operands">The static, deferred, or parameter-backed operands.<br/></param>
+    /// <param name="IgnoreCase">Whether text comparison ignores case.<br/></param>
+    /// <param name="Culture">The optional text-comparison culture.<br/></param>
+    /// <param name="StringComparisonPolicy">The optional managed string-comparison policy.<br/></param>
+    /// <param name="numericTransform">The optional native numeric transform applied before comparison.<br/></param>
+    /// <param name="textNormalization">The optional selector-level normalization applied before comparison.<br/></param>
+    internal LibraDexConditionLeafDescriptor(
+        LibraDexConditionIndexSelector indexSelector,
+        LibraDexConditionValueKind valueKind,
+        LibraDexConditionOperatorKind operatorKind,
+        IReadOnlyList<LibraDexConditionOperand> operands,
+        bool IgnoreCase,
+        string? Culture,
+        LibraDexStringComparisonPolicy? StringComparisonPolicy,
+        LibraDexNumericTransformDescriptor? numericTransform,
+        LibraDexTextNormalization textNormalization = LibraDexTextNormalization.None)
     {
         ArgumentNullException.ThrowIfNull(indexSelector);
         ArgumentNullException.ThrowIfNull(operands);
@@ -922,6 +1083,8 @@ public sealed class LibraDexConditionLeafDescriptor
         this.IgnoreCase = IgnoreCase;
         this.Culture = Culture;
         this.StringComparisonPolicy = StringComparisonPolicy;
+        NumericTransform = numericTransform;
+        TextNormalization = textNormalization;
     }
 
     /// <summary>
@@ -966,12 +1129,42 @@ public sealed class LibraDexConditionLeafDescriptor
     /// </summary>
     public LibraDexStringComparisonPolicy? StringComparisonPolicy { get; }
 
+    /// <summary>
+    /// Gets the selector-level canonical text normalization applied before the condition operator.<br/>
+    /// This remains distinct from case or culture comparison policy so a maintained normalized projection and its exact-index fallback share one explicit semantic contract.<br/>
+    /// </summary>
+    public LibraDexTextNormalization TextNormalization { get; }
+
+    internal LibraDexNumericTransformDescriptor? NumericTransform { get; }
+
     internal LibraDexConditionLeafDescriptor WithIndexSelector(LibraDexConditionIndexSelector indexSelector)
-        => new LibraDexConditionLeafDescriptor(indexSelector, ValueKind, Operator, Operands, IgnoreCase, Culture, StringComparisonPolicy);
+        => new LibraDexConditionLeafDescriptor(indexSelector, ValueKind, Operator, Operands, IgnoreCase, Culture, StringComparisonPolicy, NumericTransform, TextNormalization);
 
     internal LibraDexConditionLeafDescriptor WithOperands(IReadOnlyList<LibraDexConditionOperand> operands)
-        => new LibraDexConditionLeafDescriptor(IndexSelector, ValueKind, Operator, operands, IgnoreCase, Culture, StringComparisonPolicy);
+        => new LibraDexConditionLeafDescriptor(IndexSelector, ValueKind, Operator, operands, IgnoreCase, Culture, StringComparisonPolicy, NumericTransform, TextNormalization);
 }
+
+/// <summary>
+/// Identifies the native numeric operation applied to an indexed real value before comparison.<br/>
+/// </summary>
+internal enum LibraDexNumericTransformKind
+{
+    Round = 0,
+    Floor = 1,
+    Ceiling = 2,
+    Truncate = 3
+}
+
+/// <summary>
+/// Captures one native numeric transform and the rounding arguments needed to reproduce it during execution.<br/>
+/// </summary>
+/// <param name="Kind">The native transform operation.<br/></param>
+/// <param name="Digits">The decimal digits retained by Round; other transforms store zero.<br/></param>
+/// <param name="MidpointRounding">The midpoint policy used by Round.<br/></param>
+internal readonly record struct LibraDexNumericTransformDescriptor(
+    LibraDexNumericTransformKind Kind,
+    int Digits,
+    MidpointRounding MidpointRounding);
 
 /// <summary>
 /// Represents a completed Abraxas-adopted LibraDex condition.<br/>

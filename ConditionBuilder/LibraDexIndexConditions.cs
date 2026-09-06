@@ -156,30 +156,28 @@ public sealed class LibraDexIndexWhere<TKey, TIdentity>
     /// </summary>
     /// <param name="value">The key value to match.</param>
     /// <returns>A reusable index-rooted condition expression.</returns>
-    public LibraDexIndexCondition<TKey, TIdentity> EqualTo(TKey value, string? name = null)
-        => Create(LibraDexConditionOperatorKind.EqualTo, LibraDexConditionOperand.Value(value, name));
+    public LibraDexIndexCondition<TKey, TIdentity> EqualTo(TKey value)
+        => Create(LibraDexConditionOperatorKind.EqualTo, LibraDexConditionOperand.Value(value));
 
     /// <summary>
     /// Captures equality against an explicit null or empty key state for opened string or binary indexes.<br/>
     /// `NullKey.Null` records a null operand, `NullKey.Empty` records the key type's empty value, and `NullKey.NullOrEmpty` composes the null and empty predicates without requiring a caller-side set allocation.<br/>
     /// </summary>
     /// <param name="keyState">The key-state sentinel to match.</param>
-    /// <param name="name">Optional operand name for later replacement.</param>
     /// <returns>A reusable index-rooted condition expression.</returns>
-    public LibraDexIndexCondition<TKey, TIdentity> EqualTo(NullKey keyState, string? name = null)
-        => CreateKeyStateCondition(LibraDexConditionOperatorKind.EqualTo, keyState, name);
+    public LibraDexIndexCondition<TKey, TIdentity> EqualTo(NullKey keyState)
+        => CreateKeyStateCondition(LibraDexConditionOperatorKind.EqualTo, keyState);
 
     /// <summary>
     /// Captures equality against the stored null-key sentinel from <see cref="DBNull.Value"/> for opened string or binary indexes.<br/>
     /// This overload routes to <see cref="NullKey.Null"/> instead of treating `DBNull` as a key value.<br/>
     /// </summary>
     /// <param name="value">The database null sentinel; normally <see cref="DBNull.Value"/>.</param>
-    /// <param name="name">Optional operand name for later replacement.</param>
     /// <returns>A reusable index-rooted condition expression.</returns>
-    public LibraDexIndexCondition<TKey, TIdentity> EqualTo(DBNull value, string? name = null)
+    public LibraDexIndexCondition<TKey, TIdentity> EqualTo(DBNull value)
     {
         ArgumentNullException.ThrowIfNull(value);
-        return EqualTo(NullKey.Null, name);
+        return EqualTo(NullKey.Null);
     }
 
     /// <summary>
@@ -187,12 +185,11 @@ public sealed class LibraDexIndexWhere<TKey, TIdentity>
     /// The value factory is evaluated when the expression is materialized, allowing the same condition object to be reused across changing request values.<br/>
     /// </summary>
     /// <param name="value">Factory that returns the key value to match.</param>
-    /// <param name="name">Optional operand name for later replacement.</param>
     /// <returns>A reusable index-rooted condition expression.</returns>
-    public LibraDexIndexCondition<TKey, TIdentity> EqualTo(Func<TKey> value, string? name = null)
+    public LibraDexIndexCondition<TKey, TIdentity> EqualTo(Func<TKey> value)
     {
         ArgumentNullException.ThrowIfNull(value);
-        return Create(LibraDexConditionOperatorKind.EqualTo, LibraDexConditionOperand.Deferred(() => value(), name));
+        return Create(LibraDexConditionOperatorKind.EqualTo, LibraDexConditionOperand.Deferred(() => value()));
     }
 
     /// <summary>
@@ -212,30 +209,28 @@ public sealed class LibraDexIndexWhere<TKey, TIdentity>
     /// </summary>
     /// <param name="value">The key value to exclude.</param>
     /// <returns>A reusable index-rooted condition expression.</returns>
-    public LibraDexIndexCondition<TKey, TIdentity> NotEqualTo(TKey value, string? name = null)
-        => Create(LibraDexConditionOperatorKind.NotEqualTo, LibraDexConditionOperand.Value(value, name));
+    public LibraDexIndexCondition<TKey, TIdentity> NotEqualTo(TKey value)
+        => Create(LibraDexConditionOperatorKind.NotEqualTo, LibraDexConditionOperand.Value(value));
 
     /// <summary>
     /// Captures inequality against an explicit null or empty key state for opened string or binary indexes.<br/>
     /// `NullKey.NullOrEmpty` composes non-null and non-empty predicates so both sentinels are excluded without requiring a caller-side set allocation.<br/>
     /// </summary>
     /// <param name="keyState">The key-state sentinel to exclude.</param>
-    /// <param name="name">Optional operand name for later replacement.</param>
     /// <returns>A reusable index-rooted condition expression.</returns>
-    public LibraDexIndexCondition<TKey, TIdentity> NotEqualTo(NullKey keyState, string? name = null)
-        => CreateKeyStateCondition(LibraDexConditionOperatorKind.NotEqualTo, keyState, name);
+    public LibraDexIndexCondition<TKey, TIdentity> NotEqualTo(NullKey keyState)
+        => CreateKeyStateCondition(LibraDexConditionOperatorKind.NotEqualTo, keyState);
 
     /// <summary>
     /// Captures inequality against the stored null-key sentinel from <see cref="DBNull.Value"/> for opened string or binary indexes.<br/>
     /// This overload routes to <see cref="NullKey.Null"/> instead of treating `DBNull` as a key value.<br/>
     /// </summary>
     /// <param name="value">The database null sentinel; normally <see cref="DBNull.Value"/>.</param>
-    /// <param name="name">Optional operand name for later replacement.</param>
     /// <returns>A reusable index-rooted condition expression.</returns>
-    public LibraDexIndexCondition<TKey, TIdentity> NotEqualTo(DBNull value, string? name = null)
+    public LibraDexIndexCondition<TKey, TIdentity> NotEqualTo(DBNull value)
     {
         ArgumentNullException.ThrowIfNull(value);
-        return NotEqualTo(NullKey.Null, name);
+        return NotEqualTo(NullKey.Null);
     }
 
     /// <summary>
@@ -261,19 +256,18 @@ public sealed class LibraDexIndexWhere<TKey, TIdentity>
     /// </summary>
     /// <param name="value">The exclusive lower boundary.</param>
     /// <returns>A reusable index-rooted condition expression.</returns>
-    public LibraDexIndexCondition<TKey, TIdentity> GreaterThan(TKey value, string? name = null)
-        => Create(LibraDexConditionOperatorKind.GreaterThan, LibraDexConditionOperand.Value(value, name));
+    public LibraDexIndexCondition<TKey, TIdentity> GreaterThan(TKey value)
+        => Create(LibraDexConditionOperatorKind.GreaterThan, LibraDexConditionOperand.Value(value));
 
     /// <summary>
     /// Captures a deferred greater-than comparison over the opened index key type.<br/>
     /// </summary>
     /// <param name="value">Factory that returns the exclusive lower boundary.</param>
-    /// <param name="name">Optional operand name for later replacement.</param>
     /// <returns>A reusable index-rooted condition expression.</returns>
-    public LibraDexIndexCondition<TKey, TIdentity> GreaterThan(Func<TKey> value, string? name = null)
+    public LibraDexIndexCondition<TKey, TIdentity> GreaterThan(Func<TKey> value)
     {
         ArgumentNullException.ThrowIfNull(value);
-        return Create(LibraDexConditionOperatorKind.GreaterThan, LibraDexConditionOperand.Deferred(() => value(), name));
+        return Create(LibraDexConditionOperatorKind.GreaterThan, LibraDexConditionOperand.Deferred(() => value()));
     }
 
     /// <summary>
@@ -281,19 +275,18 @@ public sealed class LibraDexIndexWhere<TKey, TIdentity>
     /// </summary>
     /// <param name="value">The inclusive lower boundary.</param>
     /// <returns>A reusable index-rooted condition expression.</returns>
-    public LibraDexIndexCondition<TKey, TIdentity> GreaterOrEqual(TKey value, string? name = null)
-        => Create(LibraDexConditionOperatorKind.GreaterOrEqual, LibraDexConditionOperand.Value(value, name));
+    public LibraDexIndexCondition<TKey, TIdentity> GreaterOrEqual(TKey value)
+        => Create(LibraDexConditionOperatorKind.GreaterOrEqual, LibraDexConditionOperand.Value(value));
 
     /// <summary>
     /// Captures a deferred greater-than-or-equal comparison over the opened index key type.<br/>
     /// </summary>
     /// <param name="value">Factory that returns the inclusive lower boundary.</param>
-    /// <param name="name">Optional operand name for later replacement.</param>
     /// <returns>A reusable index-rooted condition expression.</returns>
-    public LibraDexIndexCondition<TKey, TIdentity> GreaterOrEqual(Func<TKey> value, string? name = null)
+    public LibraDexIndexCondition<TKey, TIdentity> GreaterOrEqual(Func<TKey> value)
     {
         ArgumentNullException.ThrowIfNull(value);
-        return Create(LibraDexConditionOperatorKind.GreaterOrEqual, LibraDexConditionOperand.Deferred(() => value(), name));
+        return Create(LibraDexConditionOperatorKind.GreaterOrEqual, LibraDexConditionOperand.Deferred(() => value()));
     }
 
     /// <summary>
@@ -301,19 +294,18 @@ public sealed class LibraDexIndexWhere<TKey, TIdentity>
     /// </summary>
     /// <param name="value">The exclusive upper boundary.</param>
     /// <returns>A reusable index-rooted condition expression.</returns>
-    public LibraDexIndexCondition<TKey, TIdentity> LessThan(TKey value, string? name = null)
-        => Create(LibraDexConditionOperatorKind.LessThan, LibraDexConditionOperand.Value(value, name));
+    public LibraDexIndexCondition<TKey, TIdentity> LessThan(TKey value)
+        => Create(LibraDexConditionOperatorKind.LessThan, LibraDexConditionOperand.Value(value));
 
     /// <summary>
     /// Captures a deferred less-than comparison over the opened index key type.<br/>
     /// </summary>
     /// <param name="value">Factory that returns the exclusive upper boundary.</param>
-    /// <param name="name">Optional operand name for later replacement.</param>
     /// <returns>A reusable index-rooted condition expression.</returns>
-    public LibraDexIndexCondition<TKey, TIdentity> LessThan(Func<TKey> value, string? name = null)
+    public LibraDexIndexCondition<TKey, TIdentity> LessThan(Func<TKey> value)
     {
         ArgumentNullException.ThrowIfNull(value);
-        return Create(LibraDexConditionOperatorKind.LessThan, LibraDexConditionOperand.Deferred(() => value(), name));
+        return Create(LibraDexConditionOperatorKind.LessThan, LibraDexConditionOperand.Deferred(() => value()));
     }
 
     /// <summary>
@@ -321,19 +313,18 @@ public sealed class LibraDexIndexWhere<TKey, TIdentity>
     /// </summary>
     /// <param name="value">The inclusive upper boundary.</param>
     /// <returns>A reusable index-rooted condition expression.</returns>
-    public LibraDexIndexCondition<TKey, TIdentity> LessOrEqual(TKey value, string? name = null)
-        => Create(LibraDexConditionOperatorKind.LessOrEqual, LibraDexConditionOperand.Value(value, name));
+    public LibraDexIndexCondition<TKey, TIdentity> LessOrEqual(TKey value)
+        => Create(LibraDexConditionOperatorKind.LessOrEqual, LibraDexConditionOperand.Value(value));
 
     /// <summary>
     /// Captures a deferred less-than-or-equal comparison over the opened index key type.<br/>
     /// </summary>
     /// <param name="value">Factory that returns the inclusive upper boundary.</param>
-    /// <param name="name">Optional operand name for later replacement.</param>
     /// <returns>A reusable index-rooted condition expression.</returns>
-    public LibraDexIndexCondition<TKey, TIdentity> LessOrEqual(Func<TKey> value, string? name = null)
+    public LibraDexIndexCondition<TKey, TIdentity> LessOrEqual(Func<TKey> value)
     {
         ArgumentNullException.ThrowIfNull(value);
-        return Create(LibraDexConditionOperatorKind.LessOrEqual, LibraDexConditionOperand.Deferred(() => value(), name));
+        return Create(LibraDexConditionOperatorKind.LessOrEqual, LibraDexConditionOperand.Deferred(() => value()));
     }
 
     /// <summary>
@@ -342,12 +333,12 @@ public sealed class LibraDexIndexWhere<TKey, TIdentity>
     /// <param name="lower">The inclusive lower boundary.</param>
     /// <param name="upper">The inclusive upper boundary.</param>
     /// <returns>A reusable index-rooted condition expression.</returns>
-    public LibraDexIndexCondition<TKey, TIdentity> Between(TKey lower, TKey upper, string? lowerName = null, string? upperName = null)
+    public LibraDexIndexCondition<TKey, TIdentity> Between(TKey lower, TKey upper)
     {
         return Create(
             LibraDexConditionOperatorKind.Between,
-            LibraDexConditionOperand.Value(lower, lowerName),
-            LibraDexConditionOperand.Value(upper, upperName));
+            LibraDexConditionOperand.Value(lower),
+            LibraDexConditionOperand.Value(upper));
     }
 
     /// <summary>
@@ -356,15 +347,13 @@ public sealed class LibraDexIndexWhere<TKey, TIdentity>
     /// </summary>
     /// <param name="lower">The inclusive lower boundary to exclude.</param>
     /// <param name="upper">The inclusive upper boundary to exclude.</param>
-    /// <param name="lowerName">Optional operand name for the lower boundary.</param>
-    /// <param name="upperName">Optional operand name for the upper boundary.</param>
     /// <returns>A reusable index-rooted condition expression.</returns>
-    public LibraDexIndexCondition<TKey, TIdentity> NotBetween(TKey lower, TKey upper, string? lowerName = null, string? upperName = null)
+    public LibraDexIndexCondition<TKey, TIdentity> NotBetween(TKey lower, TKey upper)
     {
         return Create(
             LibraDexConditionOperatorKind.NotBetween,
-            LibraDexConditionOperand.Value(lower, lowerName),
-            LibraDexConditionOperand.Value(upper, upperName));
+            LibraDexConditionOperand.Value(lower),
+            LibraDexConditionOperand.Value(upper));
     }
 
     /// <summary>
@@ -379,6 +368,73 @@ public sealed class LibraDexIndexWhere<TKey, TIdentity>
         object captured = values is ISet<TKey> or IReadOnlyCollection<TKey> ? values : values.ToArray();
         return Create(LibraDexConditionOperatorKind.InSet, LibraDexConditionOperand.Value(captured));
     }
+
+    /// <summary>
+    /// Captures opened-index equality from a reusable execution-time parameter.<br/>
+    /// </summary>
+    /// <param name="value">The parameter supplying the current key value.</param>
+    /// <returns>A reusable index-rooted condition expression.</returns>
+    public LibraDexIndexCondition<TKey, TIdentity> EqualTo(LibraDexParameter<TKey> value)
+        => Create(LibraDexConditionOperatorKind.EqualTo, LibraDexConditionOperand.Parameter(value));
+
+    /// <summary>
+    /// Captures opened-index inequality from a reusable execution-time parameter.<br/>
+    /// </summary>
+    /// <param name="value">The parameter supplying the current excluded key value.</param>
+    /// <returns>A reusable index-rooted condition expression.</returns>
+    public LibraDexIndexCondition<TKey, TIdentity> NotEqualTo(LibraDexParameter<TKey> value)
+        => Create(LibraDexConditionOperatorKind.NotEqualTo, LibraDexConditionOperand.Parameter(value));
+
+    /// <summary>
+    /// Captures an opened-index greater-than boundary from a reusable execution-time parameter.<br/>
+    /// </summary>
+    /// <param name="value">The parameter supplying the exclusive lower boundary.</param>
+    /// <returns>A reusable index-rooted condition expression.</returns>
+    public LibraDexIndexCondition<TKey, TIdentity> GreaterThan(LibraDexParameter<TKey> value)
+        => Create(LibraDexConditionOperatorKind.GreaterThan, LibraDexConditionOperand.Parameter(value));
+
+    /// <summary>
+    /// Captures an opened-index inclusive lower boundary from a reusable execution-time parameter.<br/>
+    /// </summary>
+    /// <param name="value">The parameter supplying the inclusive lower boundary.</param>
+    /// <returns>A reusable index-rooted condition expression.</returns>
+    public LibraDexIndexCondition<TKey, TIdentity> GreaterOrEqual(LibraDexParameter<TKey> value)
+        => Create(LibraDexConditionOperatorKind.GreaterOrEqual, LibraDexConditionOperand.Parameter(value));
+
+    /// <summary>
+    /// Captures an opened-index less-than boundary from a reusable execution-time parameter.<br/>
+    /// </summary>
+    /// <param name="value">The parameter supplying the exclusive upper boundary.</param>
+    /// <returns>A reusable index-rooted condition expression.</returns>
+    public LibraDexIndexCondition<TKey, TIdentity> LessThan(LibraDexParameter<TKey> value)
+        => Create(LibraDexConditionOperatorKind.LessThan, LibraDexConditionOperand.Parameter(value));
+
+    /// <summary>
+    /// Captures an opened-index inclusive upper boundary from a reusable execution-time parameter.<br/>
+    /// </summary>
+    /// <param name="value">The parameter supplying the inclusive upper boundary.</param>
+    /// <returns>A reusable index-rooted condition expression.</returns>
+    public LibraDexIndexCondition<TKey, TIdentity> LessOrEqual(LibraDexParameter<TKey> value)
+        => Create(LibraDexConditionOperatorKind.LessOrEqual, LibraDexConditionOperand.Parameter(value));
+
+    /// <summary>
+    /// Captures an opened-index inclusive range from two reusable execution-time parameters.<br/>
+    /// </summary>
+    /// <param name="lower">The parameter supplying the inclusive lower boundary.</param>
+    /// <param name="upper">The parameter supplying the inclusive upper boundary.</param>
+    /// <returns>A reusable index-rooted condition expression.</returns>
+    public LibraDexIndexCondition<TKey, TIdentity> Between(LibraDexParameter<TKey> lower, LibraDexParameter<TKey> upper)
+        => Create(LibraDexConditionOperatorKind.Between, LibraDexConditionOperand.Parameter(lower), LibraDexConditionOperand.Parameter(upper));
+
+    /// <summary>
+    /// Captures opened-index membership from a reusable execution-time collection parameter.<br/>
+    /// </summary>
+    /// <typeparam name="TValues">The enumerable value type retained by the caller.</typeparam>
+    /// <param name="values">The parameter supplying current membership keys.</param>
+    /// <returns>A reusable index-rooted condition expression.</returns>
+    public LibraDexIndexCondition<TKey, TIdentity> InSet<TValues>(LibraDexParameter<TValues> values)
+        where TValues : IEnumerable<TKey>
+        => Create(LibraDexConditionOperatorKind.InSet, LibraDexConditionOperand.Parameter(values));
 
     internal LibraDexIndexCondition<TKey, TIdentity> Create(LibraDexConditionOperatorKind operatorKind, params LibraDexConditionOperand[] operands)
     {
@@ -407,7 +463,7 @@ public sealed class LibraDexIndexWhere<TKey, TIdentity>
             : index.Group;
     }
 
-    private LibraDexIndexCondition<TKey, TIdentity> CreateKeyStateCondition(LibraDexConditionOperatorKind operatorKind, NullKey keyState, string? name)
+    private LibraDexIndexCondition<TKey, TIdentity> CreateKeyStateCondition(LibraDexConditionOperatorKind operatorKind, NullKey keyState)
     {
         Type keyType = typeof(TKey);
         if (keyType != typeof(string) && keyType != typeof(byte[]))
@@ -423,12 +479,12 @@ public sealed class LibraDexIndexWhere<TKey, TIdentity>
             : Array.Empty<byte>();
         return keyState switch
         {
-            NullKey.Null => Create(operatorKind, LibraDexConditionOperand.Value(null, name)),
-            NullKey.Empty => Create(operatorKind, LibraDexConditionOperand.Value(emptyValue, name)),
-            NullKey.NullOrEmpty when effectiveEquals => Create(LibraDexConditionOperatorKind.EqualTo, LibraDexConditionOperand.Value(null, name))
-                .ComposeSameIndex(new LibraDexIndexWhere<TKey, TIdentity>(index).Create(LibraDexConditionOperatorKind.EqualTo, LibraDexConditionOperand.Value(emptyValue, name)), useOr: true),
-            NullKey.NullOrEmpty => Create(LibraDexConditionOperatorKind.NotEqualTo, LibraDexConditionOperand.Value(null, name))
-                .ComposeSameIndex(new LibraDexIndexWhere<TKey, TIdentity>(index).Create(LibraDexConditionOperatorKind.NotEqualTo, LibraDexConditionOperand.Value(emptyValue, name)), useOr: false),
+            NullKey.Null => Create(operatorKind, LibraDexConditionOperand.Value(null)),
+            NullKey.Empty => Create(operatorKind, LibraDexConditionOperand.Value(emptyValue)),
+            NullKey.NullOrEmpty when effectiveEquals => Create(LibraDexConditionOperatorKind.EqualTo, LibraDexConditionOperand.Value(null))
+                .ComposeSameIndex(new LibraDexIndexWhere<TKey, TIdentity>(index).Create(LibraDexConditionOperatorKind.EqualTo, LibraDexConditionOperand.Value(emptyValue)), useOr: true),
+            NullKey.NullOrEmpty => Create(LibraDexConditionOperatorKind.NotEqualTo, LibraDexConditionOperand.Value(null))
+                .ComposeSameIndex(new LibraDexIndexWhere<TKey, TIdentity>(index).Create(LibraDexConditionOperatorKind.NotEqualTo, LibraDexConditionOperand.Value(emptyValue)), useOr: false),
             _ => throw new ArgumentOutOfRangeException(nameof(keyState), keyState, "Unknown null-key state.")
         };
     }
@@ -672,6 +728,33 @@ public sealed class LibraDexIndexConditionContinuation<TKey, TIdentity>
     public LibraDexIndexCondition<TKey, TIdentity> InSet(IEnumerable<TKey> values)
         => Compose(new LibraDexIndexWhere<TKey, TIdentity>(index, negateNext).InSet(values));
 
+    /// <summary>
+    /// Captures parameterized equality for the next same-index predicate.<br/>
+    /// </summary>
+    /// <param name="value">The parameter supplying the current key value.</param>
+    /// <returns>A composed same-index condition expression.</returns>
+    public LibraDexIndexCondition<TKey, TIdentity> EqualTo(LibraDexParameter<TKey> value)
+        => Compose(new LibraDexIndexWhere<TKey, TIdentity>(index, negateNext).EqualTo(value));
+
+    /// <summary>
+    /// Captures a parameterized inclusive range for the next same-index predicate.<br/>
+    /// </summary>
+    /// <param name="lower">The parameter supplying the inclusive lower boundary.</param>
+    /// <param name="upper">The parameter supplying the inclusive upper boundary.</param>
+    /// <returns>A composed same-index condition expression.</returns>
+    public LibraDexIndexCondition<TKey, TIdentity> Between(LibraDexParameter<TKey> lower, LibraDexParameter<TKey> upper)
+        => Compose(new LibraDexIndexWhere<TKey, TIdentity>(index, negateNext).Between(lower, upper));
+
+    /// <summary>
+    /// Captures parameterized membership for the next same-index predicate.<br/>
+    /// </summary>
+    /// <typeparam name="TValues">The enumerable value type retained by the caller.</typeparam>
+    /// <param name="values">The parameter supplying current membership keys.</param>
+    /// <returns>A composed same-index condition expression.</returns>
+    public LibraDexIndexCondition<TKey, TIdentity> InSet<TValues>(LibraDexParameter<TValues> values)
+        where TValues : IEnumerable<TKey>
+        => Compose(new LibraDexIndexWhere<TKey, TIdentity>(index, negateNext).InSet(values));
+
     private LibraDexIndexCondition<TKey, TIdentity> Compose(LibraDexIndexCondition<TKey, TIdentity> next)
         => previous.ComposeSameIndex(next, useOr);
 
@@ -732,7 +815,7 @@ public sealed class LibraDexMultiKeyValueTypeSelector
     /// Selects DateTime operators for the current ordered multi-key participant.<br/>
     /// The selected participant must be a DateTime-keyed index.<br/>
     /// </summary>
-    public LibraDexMultiKeyDateWhere<DateTime> AsDate => new(inner.AsDate, ValidateKeyType(typeof(DateTime)));
+    public LibraDexMultiKeyDateWhere<DateTime> AsDateTime => new(inner.AsDateTime, ValidateKeyType(typeof(DateTime)));
 
     /// <summary>
     /// Selects DateTimeOffset operators for the current ordered multi-key participant.<br/>
@@ -819,10 +902,28 @@ public sealed class LibraDexMultiKeyValueTypeSelector
     public LibraDexMultiKeyScalarWhere<UInt128> AsUInt128 => new(inner.AsUInt128, ValidateKeyType(typeof(UInt128)));
 
     /// <summary>
+    /// Selects Single operators for the current ordered multi-key participant.<br/>
+    /// The selected participant must be a Single-keyed index.<br/>
+    /// </summary>
+    public LibraDexMultiKeyScalarWhere<float> AsSingle => new(inner.AsSingle, ValidateKeyType(typeof(float)));
+
+    /// <summary>
+    /// Selects Double operators for the current ordered multi-key participant.<br/>
+    /// The selected participant must be a Double-keyed index.<br/>
+    /// </summary>
+    public LibraDexMultiKeyScalarWhere<double> AsDouble => new(inner.AsDouble, ValidateKeyType(typeof(double)));
+
+    /// <summary>
+    /// Selects Decimal operators for the current ordered multi-key participant.<br/>
+    /// The selected participant must be a Decimal-keyed index.<br/>
+    /// </summary>
+    public LibraDexMultiKeyScalarWhere<decimal> AsDecimal => new(inner.AsDecimal, ValidateKeyType(typeof(decimal)));
+
+    /// <summary>
     /// Selects BigInteger operators for the current ordered multi-key participant.<br/>
     /// The selected participant must be a BigInteger-keyed index.<br/>
     /// </summary>
-    public LibraDexMultiKeyScalarWhere<System.Numerics.BigInteger> AsBigInteger => new(inner.AsBigInteger, ValidateKeyType(typeof(System.Numerics.BigInteger)));
+    public LibraDexMultiKeyScalarWhere<System.Numerics.BigInteger> AsBigInt => new(inner.AsBigInt, ValidateKeyType(typeof(System.Numerics.BigInteger)));
 
     /// <summary>
     /// Selects Char operators for the current ordered multi-key participant.<br/>
@@ -955,6 +1056,7 @@ public sealed class LibraDexMultiKeyContinuation
 /// </summary>
 /// <typeparam name="TValue">The key value type selected by the caller.</typeparam>
 public sealed class LibraDexMultiKeyScalarWhere<TValue>
+    where TValue : struct
 {
     private readonly LibraDexConditionOperator<TValue> inner;
     private readonly IIndex[]? orderedIndexes;
@@ -1098,6 +1200,12 @@ public sealed class LibraDexMultiKeyStringWhere
     /// This remains a first-class condition shape even when the best execution path is scan-like rather than route-exact.<br/>
     /// </summary>
     public LibraDexMultiKeyContinuation Contains(string value, bool ignoreCase = false, string? culture = null) => LibraDexMultiKeyContinuation.From(inner.Contains(value, ignoreCase, culture), orderedIndexes);
+
+    /// <summary>
+    /// Captures a negated substring condition against the selected string index.<br/>
+    /// Null and missing routes remain excluded because the negation applies to the string predicate rather than to the entire condition result.<br/>
+    /// </summary>
+    public LibraDexMultiKeyContinuation NotContains(string value, bool ignoreCase = false, string? culture = null) => LibraDexMultiKeyContinuation.From(inner.NotContains(value, ignoreCase, culture), orderedIndexes);
 
     /// <summary>
     /// Captures a pattern condition against the selected string index.<br/>
@@ -1613,4 +1721,127 @@ public sealed class LibraDexOrderedMultiKeyBuilder
         IIndex index = indexes[ordinal];
         return new LibraDexMultiKeyValueTypeSelector(clause.Index(index.Name), index, indexes);
     }
+}
+
+/// <summary>
+/// Adds type-safe key-state convenience predicates to opened-index root and continuation grammar.<br/>
+/// String and binary indexes receive null and empty predicates, while value-type indexes receive only scalar null predicates so IntelliSense does not offer an impossible empty state.<br/>
+/// </summary>
+public static class LibraDexOpenedIndexKeyStateExtensions
+{
+    /// <summary>Matches an opened string index's explicit null route.<br/></summary>
+    public static LibraDexIndexCondition<string, TIdentity> IsNull<TIdentity>(this LibraDexIndexWhere<string, TIdentity> where)
+        => where.EqualTo(NullKey.Null);
+
+    /// <summary>Matches ordinary and empty values from an opened string index while excluding its null route.<br/></summary>
+    public static LibraDexIndexCondition<string, TIdentity> IsNotNull<TIdentity>(this LibraDexIndexWhere<string, TIdentity> where)
+        => where.NotEqualTo(NullKey.Null);
+
+    /// <summary>Matches an opened string index's explicit empty-string route.<br/></summary>
+    public static LibraDexIndexCondition<string, TIdentity> IsEmpty<TIdentity>(this LibraDexIndexWhere<string, TIdentity> where)
+        => where.EqualTo(NullKey.Empty);
+
+    /// <summary>Matches an opened string index except for its explicit empty-string route.<br/></summary>
+    public static LibraDexIndexCondition<string, TIdentity> IsNotEmpty<TIdentity>(this LibraDexIndexWhere<string, TIdentity> where)
+        => where.NotEqualTo(NullKey.Empty);
+
+    /// <summary>Matches the explicit null and empty routes of an opened string index.<br/></summary>
+    public static LibraDexIndexCondition<string, TIdentity> IsNullOrEmpty<TIdentity>(this LibraDexIndexWhere<string, TIdentity> where)
+        => where.EqualTo(NullKey.NullOrEmpty);
+
+    /// <summary>Matches ordinary opened string-index values while excluding explicit null and empty routes.<br/></summary>
+    public static LibraDexIndexCondition<string, TIdentity> IsNotNullOrEmpty<TIdentity>(this LibraDexIndexWhere<string, TIdentity> where)
+        => where.NotEqualTo(NullKey.NullOrEmpty);
+
+    /// <summary>Matches an opened binary index's explicit null route.<br/></summary>
+    public static LibraDexIndexCondition<byte[], TIdentity> IsNull<TIdentity>(this LibraDexIndexWhere<byte[], TIdentity> where)
+        => where.EqualTo(NullKey.Null);
+
+    /// <summary>Matches ordinary and empty values from an opened binary index while excluding its null route.<br/></summary>
+    public static LibraDexIndexCondition<byte[], TIdentity> IsNotNull<TIdentity>(this LibraDexIndexWhere<byte[], TIdentity> where)
+        => where.NotEqualTo(NullKey.Null);
+
+    /// <summary>Matches an opened binary index's explicit empty-byte route.<br/></summary>
+    public static LibraDexIndexCondition<byte[], TIdentity> IsEmpty<TIdentity>(this LibraDexIndexWhere<byte[], TIdentity> where)
+        => where.EqualTo(NullKey.Empty);
+
+    /// <summary>Matches an opened binary index except for its explicit empty-byte route.<br/></summary>
+    public static LibraDexIndexCondition<byte[], TIdentity> IsNotEmpty<TIdentity>(this LibraDexIndexWhere<byte[], TIdentity> where)
+        => where.NotEqualTo(NullKey.Empty);
+
+    /// <summary>Matches the explicit null and empty routes of an opened binary index.<br/></summary>
+    public static LibraDexIndexCondition<byte[], TIdentity> IsNullOrEmpty<TIdentity>(this LibraDexIndexWhere<byte[], TIdentity> where)
+        => where.EqualTo(NullKey.NullOrEmpty);
+
+    /// <summary>Matches ordinary opened binary-index values while excluding explicit null and empty routes.<br/></summary>
+    public static LibraDexIndexCondition<byte[], TIdentity> IsNotNullOrEmpty<TIdentity>(this LibraDexIndexWhere<byte[], TIdentity> where)
+        => where.NotEqualTo(NullKey.NullOrEmpty);
+
+    /// <summary>Matches an opened value-type index's explicit scalar-null route.<br/></summary>
+    public static LibraDexIndexCondition<TKey, TIdentity> IsNull<TKey, TIdentity>(this LibraDexIndexWhere<TKey, TIdentity> where)
+        where TKey : struct
+        => where.EqualTo(ScalarNull.Null);
+
+    /// <summary>Matches ordinary non-null routes of an opened value-type index.<br/></summary>
+    public static LibraDexIndexCondition<TKey, TIdentity> IsNotNull<TKey, TIdentity>(this LibraDexIndexWhere<TKey, TIdentity> where)
+        where TKey : struct
+        => where.EqualTo(ScalarNull.NonNull);
+
+    /// <summary>Matches an explicit null route in a same-index string continuation.<br/></summary>
+    public static LibraDexIndexCondition<string, TIdentity> IsNull<TIdentity>(this LibraDexIndexConditionContinuation<string, TIdentity> continuation)
+        => continuation.EqualTo(NullKey.Null);
+
+    /// <summary>Excludes the explicit null route in a same-index string continuation.<br/></summary>
+    public static LibraDexIndexCondition<string, TIdentity> IsNotNull<TIdentity>(this LibraDexIndexConditionContinuation<string, TIdentity> continuation)
+        => continuation.NotEqualTo(NullKey.Null);
+
+    /// <summary>Matches an explicit empty-string route in a same-index continuation.<br/></summary>
+    public static LibraDexIndexCondition<string, TIdentity> IsEmpty<TIdentity>(this LibraDexIndexConditionContinuation<string, TIdentity> continuation)
+        => continuation.EqualTo(NullKey.Empty);
+
+    /// <summary>Excludes the explicit empty-string route in a same-index continuation.<br/></summary>
+    public static LibraDexIndexCondition<string, TIdentity> IsNotEmpty<TIdentity>(this LibraDexIndexConditionContinuation<string, TIdentity> continuation)
+        => continuation.NotEqualTo(NullKey.Empty);
+
+    /// <summary>Matches explicit null or empty routes in a same-index string continuation.<br/></summary>
+    public static LibraDexIndexCondition<string, TIdentity> IsNullOrEmpty<TIdentity>(this LibraDexIndexConditionContinuation<string, TIdentity> continuation)
+        => continuation.EqualTo(NullKey.NullOrEmpty);
+
+    /// <summary>Excludes explicit null and empty routes in a same-index string continuation.<br/></summary>
+    public static LibraDexIndexCondition<string, TIdentity> IsNotNullOrEmpty<TIdentity>(this LibraDexIndexConditionContinuation<string, TIdentity> continuation)
+        => continuation.NotEqualTo(NullKey.NullOrEmpty);
+
+    /// <summary>Matches an explicit null route in a same-index binary continuation.<br/></summary>
+    public static LibraDexIndexCondition<byte[], TIdentity> IsNull<TIdentity>(this LibraDexIndexConditionContinuation<byte[], TIdentity> continuation)
+        => continuation.EqualTo(NullKey.Null);
+
+    /// <summary>Excludes the explicit null route in a same-index binary continuation.<br/></summary>
+    public static LibraDexIndexCondition<byte[], TIdentity> IsNotNull<TIdentity>(this LibraDexIndexConditionContinuation<byte[], TIdentity> continuation)
+        => continuation.NotEqualTo(NullKey.Null);
+
+    /// <summary>Matches an explicit empty-byte route in a same-index continuation.<br/></summary>
+    public static LibraDexIndexCondition<byte[], TIdentity> IsEmpty<TIdentity>(this LibraDexIndexConditionContinuation<byte[], TIdentity> continuation)
+        => continuation.EqualTo(NullKey.Empty);
+
+    /// <summary>Excludes the explicit empty-byte route in a same-index continuation.<br/></summary>
+    public static LibraDexIndexCondition<byte[], TIdentity> IsNotEmpty<TIdentity>(this LibraDexIndexConditionContinuation<byte[], TIdentity> continuation)
+        => continuation.NotEqualTo(NullKey.Empty);
+
+    /// <summary>Matches explicit null or empty routes in a same-index binary continuation.<br/></summary>
+    public static LibraDexIndexCondition<byte[], TIdentity> IsNullOrEmpty<TIdentity>(this LibraDexIndexConditionContinuation<byte[], TIdentity> continuation)
+        => continuation.EqualTo(NullKey.NullOrEmpty);
+
+    /// <summary>Excludes explicit null and empty routes in a same-index binary continuation.<br/></summary>
+    public static LibraDexIndexCondition<byte[], TIdentity> IsNotNullOrEmpty<TIdentity>(this LibraDexIndexConditionContinuation<byte[], TIdentity> continuation)
+        => continuation.NotEqualTo(NullKey.NullOrEmpty);
+
+    /// <summary>Matches the explicit scalar-null route in a same-index value-type continuation.<br/></summary>
+    public static LibraDexIndexCondition<TKey, TIdentity> IsNull<TKey, TIdentity>(this LibraDexIndexConditionContinuation<TKey, TIdentity> continuation)
+        where TKey : struct
+        => continuation.EqualTo(ScalarNull.Null);
+
+    /// <summary>Matches ordinary non-null routes in a same-index value-type continuation.<br/></summary>
+    public static LibraDexIndexCondition<TKey, TIdentity> IsNotNull<TKey, TIdentity>(this LibraDexIndexConditionContinuation<TKey, TIdentity> continuation)
+        where TKey : struct
+        => continuation.EqualTo(ScalarNull.NonNull);
 }

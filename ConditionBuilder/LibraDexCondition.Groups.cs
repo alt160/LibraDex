@@ -789,6 +789,8 @@ public sealed class LibraDexConditionGroupQuery<TKey, TIdentity>
 
     /// <summary>
     /// Materializes the first identity in each group.<br/>
+    /// This execution-side collection method is the configured-group counterpart of condition-native <c>GroupBy(...).First</c>.<br/>
+    /// Unlike the condition stage, it immediately executes and returns a dictionary rather than producing a reusable condition descriptor.<br/>
     /// </summary>
     /// <param name="ordering">The identity ordering used when materializing the condition candidate set.</param>
     /// <param name="deduplication">The duplicate identity policy used for the condition candidate set.</param>
@@ -802,6 +804,8 @@ public sealed class LibraDexConditionGroupQuery<TKey, TIdentity>
 
     /// <summary>
     /// Materializes the last identity in each group.<br/>
+    /// This execution-side collection method is the configured-group counterpart of condition-native <c>GroupBy(...).Last</c>.<br/>
+    /// Unlike the condition stage, it immediately executes and returns a dictionary rather than producing a reusable condition descriptor.<br/>
     /// </summary>
     /// <param name="ordering">The identity ordering used when materializing the condition candidate set.</param>
     /// <param name="deduplication">The duplicate identity policy used for the condition candidate set.</param>

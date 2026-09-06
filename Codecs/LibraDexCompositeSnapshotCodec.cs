@@ -399,6 +399,30 @@ internal static class LibraDexCompositeSnapshotCodec
         {
             writer.Write((ulong)value);
         }
+        else if (type == typeof(Int128))
+        {
+            Int128 typed = (Int128)value;
+            writer.Write((ulong)typed);
+            writer.Write((long)(typed >> 64));
+        }
+        else if (type == typeof(UInt128))
+        {
+            UInt128 typed = (UInt128)value;
+            writer.Write((ulong)typed);
+            writer.Write((ulong)(typed >> 64));
+        }
+        else if (type == typeof(float))
+        {
+            writer.Write((float)value);
+        }
+        else if (type == typeof(double))
+        {
+            writer.Write((double)value);
+        }
+        else if (type == typeof(decimal))
+        {
+            writer.Write((decimal)value);
+        }
         else if (type == typeof(bool))
         {
             writer.Write((bool)value);
@@ -511,6 +535,35 @@ internal static class LibraDexCompositeSnapshotCodec
         if (type == typeof(ulong))
         {
             return reader.ReadUInt64();
+        }
+
+        if (type == typeof(Int128))
+        {
+            ulong low = reader.ReadUInt64();
+            long high = reader.ReadInt64();
+            return ((Int128)high << 64) | low;
+        }
+
+        if (type == typeof(UInt128))
+        {
+            ulong low = reader.ReadUInt64();
+            ulong high = reader.ReadUInt64();
+            return ((UInt128)high << 64) | low;
+        }
+
+        if (type == typeof(float))
+        {
+            return reader.ReadSingle();
+        }
+
+        if (type == typeof(double))
+        {
+            return reader.ReadDouble();
+        }
+
+        if (type == typeof(decimal))
+        {
+            return reader.ReadDecimal();
         }
 
         if (type == typeof(bool))

@@ -177,12 +177,14 @@ internal sealed class Scalar8VarIdentityMutableShelfView
         int expectedSlotStreamLength = checked(count * Scalar8VarIdentityLayout.SlotSize);
         int expectedSlotCapacityBytes = Scalar8VarIdentityLayout.CalculateSlotCapacityBytes(profile.ShelfExtentSize);
         int recordArenaStart = Scalar8VarIdentityLayout.HeaderSize + slotCapacityBytes;
+        int reclaimablePayloadBytes = Scalar8VarIdentityLayout.ReadReclaimablePayloadBytes(bytes);
         if (count < 0 ||
             slotStreamLength != expectedSlotStreamLength ||
             slotStreamLength > slotCapacityBytes ||
             slotCapacityBytes != expectedSlotCapacityBytes ||
             recordArenaEnd < recordArenaStart ||
-            recordArenaEnd > profile.ShelfExtentSize)
+            recordArenaEnd > profile.ShelfExtentSize ||
+            reclaimablePayloadBytes > recordArenaEnd - recordArenaStart)
         {
             return false;
         }
@@ -193,6 +195,11 @@ internal sealed class Scalar8VarIdentityMutableShelfView
         ulong[] keys = pooledSidecars ? ArrayPool<ulong>.Shared.Rent(slotCapacity) : new ulong[slotCapacity];
         int[] indexes = pooledSidecars ? ArrayPool<int>.Shared.Rent(slotCapacity) : new int[slotCapacity];
         bool[] deleted = pooledSidecars ? ArrayPool<bool>.Shared.Rent(slotCapacity) : new bool[slotCapacity];
+        if (pooledSidecars)
+        {
+            Array.Clear(deleted, 0, slotCapacity);
+        }
+
         int cursor = Scalar8VarIdentityLayout.HeaderSize;
         for (int i = 0; i < count; i++)
         {
@@ -217,12 +224,8 @@ internal sealed class Scalar8VarIdentityMutableShelfView
             cursor += Scalar8VarIdentityLayout.SlotSize;
         }
 
-        if (pooledSidecars && count < slotCapacity)
-        {
-            Array.Clear(deleted, count, slotCapacity - count);
-        }
-
         shelf = new Scalar8VarIdentityMutableShelfView(bytes, profile, offsets, prefixes, keys, indexes, deleted, pooledBytes, pooledSidecars, count, slotStreamLength, slotCapacityBytes, recordArenaEnd);
+        shelf.deletedPayloadBytes = reclaimablePayloadBytes;
         return true;
     }
 
@@ -281,6 +284,18 @@ internal sealed class Scalar8VarIdentityMutableShelfView
         int recordLength = Scalar8VarIdentityLayout.GetNewRecordLength(identity.Length);
         int recordOffset = recordArenaEnd;
         int newRecordArenaEnd = recordOffset + recordLength;
+        if (newRecordArenaEnd > Profile.ShelfExtentSize && deletedPayloadBytes >= recordLength)
+        {
+            byte[]? compacted = BuildCompactedPayloadIfWorthwhile(recordLength, 0);
+            if (compacted is not null)
+            {
+                compacted.AsSpan(0, Profile.ShelfExtentSize).CopyTo(Bytes.AsSpan(0, Profile.ShelfExtentSize));
+                RebuildSidecarsAfterPayloadCompaction();
+                recordOffset = recordArenaEnd;
+                newRecordArenaEnd = recordOffset + recordLength;
+            }
+        }
+
         if (newRecordArenaEnd > Profile.ShelfExtentSize)
         {
             return Scalar8VarIdentityInsertResult.Full;
@@ -435,6 +450,7 @@ internal sealed class Scalar8VarIdentityMutableShelfView
 
         if (marked != 0)
         {
+            Scalar8VarIdentityLayout.WriteReclaimablePayloadBytes(Bytes, deletedPayloadBytes);
             MarkDirty();
             SlotBytesDirty = true;
         }
@@ -489,6 +505,7 @@ internal sealed class Scalar8VarIdentityMutableShelfView
 
     /// <summary>
     /// Removes deleted entries from the sorted sidecars while retaining record-arena bytes for a later full payload repack decision.<br/>
+    /// Survivor metadata is first copied into pooled scratch arrays because sorted slot order is a permutation of physical sidecar indexes; compacting directly into the source arrays can overwrite metadata that a later survivor still references.<br/>
     /// This keeps ordinary search and insertion algorithms over live entries only while `PayloadBytesDeleted` continues to report orphaned record bytes.<br/>
     /// </summary>
     /// <returns>The number of deleted entries removed from the active slot stream.</returns>
@@ -500,28 +517,43 @@ internal sealed class Scalar8VarIdentityMutableShelfView
         }
 
         int removed = deletedItemCount;
+        int originalItemCount = itemCount;
+        int[] compactedRecordOffsets = ArrayPool<int>.Shared.Rent(originalItemCount);
+        uint[] compactedKeyPrefixes = ArrayPool<uint>.Shared.Rent(originalItemCount);
+        ulong[] compactedKeys = ArrayPool<ulong>.Shared.Rent(originalItemCount);
         int writeIndex = 0;
-        for (int slotIndex = 0; slotIndex < itemCount; slotIndex++)
+        try
         {
-            int physicalIndex = sortedIndexes[slotIndex];
-            if (deletedSlots[physicalIndex])
+            for (int slotIndex = 0; slotIndex < originalItemCount; slotIndex++)
             {
-                deletedSlots[physicalIndex] = false;
-                continue;
+                int physicalIndex = sortedIndexes[slotIndex];
+                if (deletedSlots[physicalIndex])
+                {
+                    continue;
+                }
+
+                compactedRecordOffsets[writeIndex] = recordOffsets[physicalIndex];
+                compactedKeyPrefixes[writeIndex] = keyPrefixes[physicalIndex];
+                compactedKeys[writeIndex] = keys[physicalIndex];
+                writeIndex++;
             }
 
-            if (writeIndex != physicalIndex)
+            Array.Copy(compactedRecordOffsets, recordOffsets, writeIndex);
+            Array.Copy(compactedKeyPrefixes, keyPrefixes, writeIndex);
+            Array.Copy(compactedKeys, keys, writeIndex);
+            for (int slotIndex = 0; slotIndex < writeIndex; slotIndex++)
             {
-                recordOffsets[writeIndex] = recordOffsets[physicalIndex];
-                keyPrefixes[writeIndex] = keyPrefixes[physicalIndex];
-                keys[writeIndex] = keys[physicalIndex];
+                sortedIndexes[slotIndex] = slotIndex;
             }
-
-            sortedIndexes[writeIndex] = writeIndex;
-            writeIndex++;
+        }
+        finally
+        {
+            ArrayPool<int>.Shared.Return(compactedRecordOffsets, clearArray: false);
+            ArrayPool<uint>.Shared.Return(compactedKeyPrefixes, clearArray: false);
+            ArrayPool<ulong>.Shared.Return(compactedKeys, clearArray: false);
         }
 
-        Array.Clear(deletedSlots, writeIndex, itemCount - writeIndex);
+        Array.Clear(deletedSlots, 0, originalItemCount);
         itemCount = writeIndex;
         slotStreamLength = checked(itemCount * Scalar8VarIdentityLayout.SlotSize);
         deletedItemCount = 0;
@@ -531,6 +563,83 @@ internal sealed class Scalar8VarIdentityMutableShelfView
         EnsureSlotBytesCurrent();
         MarkDirty();
         return removed;
+    }
+
+    /// <summary>
+    /// Builds a compact replacement `SV8` shelf image when persisted orphaned identity bytes cross both supplied thresholds.<br/>
+    /// The replacement preserves sorted scalar keys, raw identities, and the duplicate-run next-shelf link while resetting reclaimable-payload metadata.<br/>
+    /// </summary>
+    /// <param name="minimumDeletedPayloadBytes">The minimum orphaned payload bytes required before repack is considered.<br/></param>
+    /// <param name="minimumDeletedPayloadPercent">The minimum orphaned percentage of used payload bytes required before repack is considered.<br/></param>
+    /// <returns>A compact full shelf image, or null when no repack is warranted.<br/></returns>
+    internal byte[]? BuildCompactedPayloadIfWorthwhile(int minimumDeletedPayloadBytes, int minimumDeletedPayloadPercent)
+    {
+        if (minimumDeletedPayloadBytes < 0)
+            throw new ArgumentOutOfRangeException(nameof(minimumDeletedPayloadBytes));
+        if (minimumDeletedPayloadPercent < 0 || minimumDeletedPayloadPercent > 100)
+            throw new ArgumentOutOfRangeException(nameof(minimumDeletedPayloadPercent));
+        if (deletedItemCount != 0)
+            _ = NormalizeDeletedSlotsForPublication();
+
+        int deletedBytes = deletedPayloadBytes;
+        int usedBytes = PayloadBytesUsed;
+        if (deletedBytes <= 0 ||
+            deletedBytes < minimumDeletedPayloadBytes ||
+            usedBytes <= 0 ||
+            checked((long)deletedBytes * 100L) < checked((long)usedBytes * minimumDeletedPayloadPercent))
+        {
+            return null;
+        }
+
+        byte[] compacted = new byte[Profile.ShelfExtentSize];
+        Scalar8VarIdentityLayout.Initialize(compacted, Profile);
+        Scalar8VarIdentityLayout.WriteNextShelfOffset(compacted, Scalar8VarIdentityLayout.ReadNextShelfOffset(Bytes));
+        int slotCursor = Scalar8VarIdentityLayout.HeaderSize;
+        int recordCursor = Scalar8VarIdentityLayout.HeaderSize + Scalar8VarIdentityLayout.ReadSlotCapacityBytes(compacted);
+        for (int i = 0; i < itemCount; i++)
+        {
+            ulong key = ReadKeyAt(i);
+            ReadOnlySpan<byte> identity = ReadIdentityAt(i);
+            Scalar8VarIdentityLayout.WriteRecord(compacted, recordCursor, key, identity);
+            Scalar8VarIdentityLayout.WriteSlotRecordOffset(compacted, slotCursor, recordCursor);
+            Scalar8VarIdentityLayout.WriteSlotKeyPrefix(compacted, slotCursor, Scalar8VarIdentityLayout.CreateKeyPrefix(key));
+            recordCursor += Scalar8VarIdentityLayout.GetNewRecordLength(identity.Length);
+            slotCursor += Scalar8VarIdentityLayout.SlotSize;
+        }
+
+        Scalar8VarIdentityLayout.WriteItemCount(compacted, itemCount);
+        Scalar8VarIdentityLayout.WriteSlotStreamLength(compacted, checked(itemCount * Scalar8VarIdentityLayout.SlotSize));
+        Scalar8VarIdentityLayout.WriteRecordArenaEnd(compacted, recordCursor);
+        Scalar8VarIdentityLayout.WriteReclaimablePayloadBytes(compacted, 0);
+        return compacted;
+    }
+
+    /// <summary>
+    /// Rebinds decoded `SV8` sidecars after a compact replacement image has been copied over the authoritative shelf bytes.<br/>
+    /// The compact image is already in sorted tuple order, so physical and sorted indexes become identical and no record payload is decoded more than once.<br/>
+    /// </summary>
+    private void RebuildSidecarsAfterPayloadCompaction()
+    {
+        itemCount = Scalar8VarIdentityLayout.ReadItemCount(Bytes);
+        slotStreamLength = Scalar8VarIdentityLayout.ReadSlotStreamLength(Bytes);
+        recordArenaEnd = Scalar8VarIdentityLayout.ReadRecordArenaEnd(Bytes);
+        deletedItemCount = 0;
+        deletedPayloadBytes = 0;
+        int slotOffset = Scalar8VarIdentityLayout.HeaderSize;
+        for (int i = 0; i < itemCount; i++)
+        {
+            int recordOffset = Scalar8VarIdentityLayout.ReadSlotRecordOffset(Bytes, slotOffset);
+            recordOffsets[i] = recordOffset;
+            keyPrefixes[i] = Scalar8VarIdentityLayout.ReadSlotKeyPrefix(Bytes, slotOffset);
+            keys[i] = Scalar8VarIdentityLayout.ReadKey(Bytes, recordOffset);
+            sortedIndexes[i] = i;
+            deletedSlots[i] = false;
+            slotOffset += Scalar8VarIdentityLayout.SlotSize;
+        }
+
+        Scalar8VarIdentityLayout.WriteReclaimablePayloadBytes(Bytes, 0);
+        SlotBytesDirty = false;
+        MarkDirty();
     }
 
     /// <summary>

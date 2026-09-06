@@ -50,24 +50,63 @@ public sealed class LibraDexConditionClause
     /// The factory is evaluated only when the condition is inspected or materialized, matching Abraxas' deferred proppath behavior while keeping LibraDex resolution index-name based.<br/>
     /// </summary>
     /// <param name="indexNameFactory">Factory that returns the index name inside the current identity group.</param>
-    /// <param name="name">Optional selector name for replacement on reusable condition expressions.</param>
+    /// <param name="name">Optional diagnostic selector name retained in bookmark provenance.</param>
     /// <returns>A value-type selector for the chosen index.</returns>
     public LibraDexConditionValueTypeSelector Where(Func<string> indexNameFactory, string? name = null)
         => new LibraDexConditionValueTypeSelector(builder, LibraDexConditionIndexSelector.Deferred(indexNameFactory, name), negateNext);
+
+    /// <summary>
+    /// Selects the next condition index from a reusable execution-time name parameter.<br/>
+    /// The parameter is read once for the complete execution, so guards and dependent leaves observe the same selected index.<br/>
+    /// </summary>
+    /// <param name="indexName">The parameter containing the current index name.</param>
+    /// <returns>A value-type selector for the chosen index.</returns>
+    public LibraDexConditionValueTypeSelector Where(LibraDexParameter<string> indexName)
+        => new LibraDexConditionValueTypeSelector(builder, LibraDexConditionIndexSelector.Parameter(indexName), negateNext);
+
+    /// <summary>
+    /// Selects the next condition index from a reusable execution-time opened-index parameter.<br/>
+    /// LibraDex snapshots the handle and resolves its name through the condition's ordinary group-checked execution path.<br/>
+    /// </summary>
+    /// <typeparam name="TIndex">The opened index handle type.</typeparam>
+    /// <param name="index">The parameter containing the current opened index.</param>
+    /// <returns>A value-type selector for the chosen index.</returns>
+    public LibraDexConditionValueTypeSelector Where<TIndex>(LibraDexParameter<TIndex> index)
+        where TIndex : IIndex
+        => new LibraDexConditionValueTypeSelector(builder, LibraDexConditionIndexSelector.Parameter(index), negateNext);
+
+    /// <summary>
+    /// Selects the next condition index from a reusable execution-time name parameter using the legacy selector name.<br/>
+    /// Prefer <see cref="Where(LibraDexParameter{string})"/> for new condition code.<br/>
+    /// </summary>
+    /// <param name="indexName">The parameter containing the current index name.</param>
+    /// <returns>A value-type selector for the chosen index.</returns>
+    public LibraDexConditionValueTypeSelector Index(LibraDexParameter<string> indexName)
+        => Where(indexName);
+
+    /// <summary>
+    /// Selects the next condition index from a reusable execution-time opened-index parameter using the legacy selector name.<br/>
+    /// </summary>
+    /// <typeparam name="TIndex">The opened index handle type.</typeparam>
+    /// <param name="index">The parameter containing the current opened index.</param>
+    /// <returns>A value-type selector for the chosen index.</returns>
+    public LibraDexConditionValueTypeSelector Index<TIndex>(LibraDexParameter<TIndex> index)
+        where TIndex : IIndex
+        => Where(index);
 
     /// <summary>
     /// Selects the LibraDex index for the next condition leaf using a deferred index-name factory and the legacy selector name.<br/>
     /// Prefer <see cref="Where(Func{string}, string?)"/> for new descriptor-level predicate code.<br/>
     /// </summary>
     /// <param name="indexNameFactory">Factory that returns the index name inside the current identity group.</param>
-    /// <param name="name">Optional selector name for replacement on reusable condition expressions.</param>
+    /// <param name="name">Optional diagnostic selector name retained in bookmark provenance.</param>
     /// <returns>A value-type selector for the chosen index.</returns>
     public LibraDexConditionValueTypeSelector Index(Func<string> indexNameFactory, string? name = null)
         => Where(indexNameFactory, name);
 
     /// <summary>
     /// Selects the LibraDex index for the next condition leaf using a prepared selector.<br/>
-    /// This overload is the low-level bridge used by typed public wrappers that need named or deferred selector replacement.<br/>
+    /// This overload is the low-level bridge used by typed public wrappers that need deferred selector resolution.<br/>
     /// </summary>
     /// <param name="indexSelector">The static or deferred index selector.</param>
     /// <returns>A value-type selector for the chosen index.</returns>
@@ -311,6 +350,145 @@ public sealed class LibraDexConditionClause
 }
 
 /// <summary>
+/// Continues an execution-time index-availability guard into the real clause protected by that guard.<br/>
+/// The deliberately narrow surface exposes only <see cref="And"/> so a guard cannot become a terminal condition or imply an OR universe by itself.<br/>
+/// </summary>
+public sealed class LibraDexConditionIndexAvailabilityGuard
+{
+    private readonly LibraDexConditionBuilder builder;
+    private readonly LibraDexConditionIndexSelector indexSelector;
+
+    internal LibraDexConditionIndexAvailabilityGuard(LibraDexConditionBuilder builder, LibraDexConditionIndexSelector indexSelector)
+    {
+        this.builder = builder;
+        this.indexSelector = indexSelector;
+    }
+
+    /// <summary>
+    /// Records this index-availability guard and selects the dependent condition clause.<br/>
+    /// The selected index name is resolved only when the completed condition executes, preserving dynamic and transient index behavior.<br/>
+    /// </summary>
+    public LibraDexConditionClause And
+    {
+        get
+        {
+            builder.GuardNextClause(indexSelector);
+            return new LibraDexConditionClause(builder);
+        }
+    }
+}
+
+/// <summary>
+/// Captures key-presence conditions whose values are supplied at execution time.<br/>
+/// `ExistsAny` is an exact-key membership union; `ExistsAll` intersects the distinct exact-key routes so each returned identity is associated with every supplied key.<br/>
+/// </summary>
+public sealed class LibraDexConditionKeyExistenceOperator
+{
+    private readonly LibraDexConditionBuilder builder;
+    private readonly LibraDexConditionIndexSelector indexSelector;
+
+    internal LibraDexConditionKeyExistenceOperator(LibraDexConditionBuilder builder, LibraDexConditionIndexSelector indexSelector)
+    {
+        this.builder = builder;
+        this.indexSelector = indexSelector;
+    }
+
+    /// <summary>
+    /// Matches identities associated with any key in the supplied collection.<br/>
+    /// Enumeration is deferred until the condition executes, so mutable request-scoped collections keep the same late-binding behavior as other LibraDex condition operands.<br/>
+    /// </summary>
+    /// <typeparam name="TKey">The CLR key type supplied to the selected index.</typeparam>
+    /// <param name="keys">The keys whose exact routes should be unioned.</param>
+    /// <returns>A continuation for composing or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd ExistsAny<TKey>(IEnumerable<TKey> keys)
+    {
+        ArgumentNullException.ThrowIfNull(keys);
+        return Add<TKey>(LibraDexConditionOperatorKind.InSet, () => keys);
+    }
+
+    /// <summary>
+    /// Matches identities associated with any key returned by the supplied execution-time factory.<br/>
+    /// The factory is invoked once per condition materialization and its collection is then consumed by the membership executor.<br/>
+    /// </summary>
+    /// <typeparam name="TKey">The CLR key type supplied to the selected index.</typeparam>
+    /// <param name="keys">Factory that supplies current keys.</param>
+    /// <returns>A continuation for composing or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd ExistsAny<TKey>(Func<IEnumerable<TKey>> keys)
+    {
+        ArgumentNullException.ThrowIfNull(keys);
+        return Add<TKey>(LibraDexConditionOperatorKind.InSet, keys);
+    }
+
+    /// <summary>
+    /// Matches identities associated with every distinct key in the supplied collection.<br/>
+    /// Enumeration and distinct-key normalization occur only when the condition executes; LibraDex then intersects exact-key criteria without source-object materialization.<br/>
+    /// </summary>
+    /// <typeparam name="TKey">The CLR key type supplied to the selected index.</typeparam>
+    /// <param name="keys">The keys whose exact routes must all contain each returned identity.</param>
+    /// <returns>A continuation for composing or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd ExistsAll<TKey>(IEnumerable<TKey> keys)
+    {
+        ArgumentNullException.ThrowIfNull(keys);
+        return Add<TKey>(LibraDexConditionOperatorKind.KeysExistAll, () => keys);
+    }
+
+    /// <summary>
+    /// Matches identities associated with every distinct key returned by the supplied execution-time factory.<br/>
+    /// The factory is invoked once per materialization so reusable conditions can consume current request state without rebuilding their fluent chain.<br/>
+    /// </summary>
+    /// <typeparam name="TKey">The CLR key type supplied to the selected index.</typeparam>
+    /// <param name="keys">Factory that supplies current keys.</param>
+    /// <returns>A continuation for composing or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd ExistsAll<TKey>(Func<IEnumerable<TKey>> keys)
+    {
+        ArgumentNullException.ThrowIfNull(keys);
+        return Add<TKey>(LibraDexConditionOperatorKind.KeysExistAll, keys);
+    }
+
+    /// <summary>
+    /// Matches identities associated with any key supplied by a reusable execution-time set parameter.<br/>
+    /// The parameter is snapshotted once with the rest of the condition and does not require a caller lambda.<br/>
+    /// </summary>
+    /// <typeparam name="TKey">The CLR key type supplied to the selected index.</typeparam>
+    /// <param name="keys">The parameter supplying current exact keys.</param>
+    /// <returns>A continuation for composing or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd ExistsAny<TKey>(LibraDexParameter<IEnumerable<TKey>> keys)
+        => AddParameter<TKey>(LibraDexConditionOperatorKind.InSet, keys);
+
+    /// <summary>
+    /// Matches identities associated with every distinct key supplied by a reusable execution-time set parameter.<br/>
+    /// </summary>
+    /// <typeparam name="TKey">The CLR key type supplied to the selected index.</typeparam>
+    /// <param name="keys">The parameter supplying current exact keys.</param>
+    /// <returns>A continuation for composing or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd ExistsAll<TKey>(LibraDexParameter<IEnumerable<TKey>> keys)
+        => AddParameter<TKey>(LibraDexConditionOperatorKind.KeysExistAll, keys);
+
+    private LibraDexConditionContinueOrEnd Add<TKey>(LibraDexConditionOperatorKind operatorKind, Func<IEnumerable<TKey>> keys)
+    {
+        return builder.AddLeaf(new LibraDexConditionLeafDescriptor(
+            indexSelector,
+            LibraDexConditionValueTypeSelector.ResolveValueKind(typeof(TKey)),
+            operatorKind,
+            [LibraDexConditionOperand.Deferred(() => keys())],
+            IgnoreCase: false,
+            Culture: null));
+    }
+
+    private LibraDexConditionContinueOrEnd AddParameter<TKey>(LibraDexConditionOperatorKind operatorKind, LibraDexParameter<IEnumerable<TKey>> keys)
+    {
+        ArgumentNullException.ThrowIfNull(keys);
+        return builder.AddLeaf(new LibraDexConditionLeafDescriptor(
+            indexSelector,
+            LibraDexConditionValueTypeSelector.ResolveValueKind(typeof(TKey)),
+            operatorKind,
+            [LibraDexConditionOperand.Parameter(keys)],
+            IgnoreCase: false,
+            Culture: null));
+    }
+}
+
+/// <summary>
 /// Represents one internal external key/identity entry after public typed identities have crossed the descriptor boundary.<br/>
 /// Public APIs keep identity type safety; this internal shape lets the condition executor compose mixed identity streams through its existing object channel.<br/>
 /// </summary>
@@ -536,12 +714,36 @@ public sealed class LibraDexConditionValueTypeSelector
     public LibraDexConditionValueTypeSelector Not => new(builder, indexSelector, !negate);
 
     /// <summary>
-    /// Selects operators from a known CLR key type supplied by a typed index handle.<br/>
-    /// This supports `.Where(indexInstance).EqualTo(value)` style call sites for generic scalar indexes while richer family-specific selectors such as `.AsString` remain available when string, binary, GUID, or date-only APIs are needed.<br/>
+    /// Guards the next AND-connected clause with an execution-time check that the selected index definition is currently resolvable.<br/>
+    /// The guard is structural rather than a returned Boolean: a missing transient index makes only the guarded branch empty and prevents the dependent clause from opening that index.<br/>
     /// </summary>
-    /// <typeparam name="TValue">The CLR key type carried by the selected index handle.</typeparam>
-    /// <returns>A typed condition operator for the selected key type.</returns>
-    public LibraDexConditionOperator<TValue> As<TValue>()
+    public LibraDexConditionIndexAvailabilityGuard Exists
+    {
+        get
+        {
+            if (negate)
+                throw new NotSupportedException("Index-availability guards cannot be negated; use Catalog.HasIndex when a direct Boolean answer is required.");
+
+            return new LibraDexConditionIndexAvailabilityGuard(builder, indexSelector);
+        }
+    }
+
+    /// <summary>
+    /// Selects execution-time key-presence operators for the current index.<br/>
+    /// These operators accept static or deferred key collections while keeping the condition responsible only for selection rules and result shape.<br/>
+    /// </summary>
+    public LibraDexConditionKeyExistenceOperator Keys
+    {
+        get
+        {
+            if (negate)
+                throw new NotSupportedException("Key-presence selectors cannot be prefixed with Not; use ordinary membership exclusion when complement semantics are intended.");
+
+            return new LibraDexConditionKeyExistenceOperator(builder, indexSelector);
+        }
+    }
+
+    internal LibraDexConditionOperator<TValue> AsKnown<TValue>()
         => new LibraDexConditionOperator<TValue>(builder, indexSelector, ResolveValueKind(typeof(TValue)), negate);
 
     /// <summary>
@@ -567,7 +769,7 @@ public sealed class LibraDexConditionValueTypeSelector
     /// <summary>
     /// Selects DateTime operators for the current index.<br/>
     /// </summary>
-    public LibraDexDateConditionOperator<DateTime> AsDate => new(builder, indexSelector, LibraDexConditionValueKind.DateTime, negate);
+    public LibraDexDateConditionOperator<DateTime> AsDateTime => new(builder, indexSelector, LibraDexConditionValueKind.DateTime, negate);
 
     /// <summary>
     /// Selects DateTimeOffset operators for the current index.<br/>
@@ -593,47 +795,47 @@ public sealed class LibraDexConditionValueTypeSelector
     /// <summary>
     /// Selects numeric operators for an Int32 key or projection.<br/>
     /// </summary>
-    public LibraDexNumericConditionOperator<int> AsInt32 => new(builder, indexSelector, negate);
+    public LibraDexEnumCompatibleNumericConditionOperator<int> AsInt32 => new(builder, indexSelector, negate);
 
     /// <summary>
     /// Selects numeric operators for a Byte key or projection.<br/>
     /// Byte conditions collapse to the same ordered scalar primitive route as wider numeric keys while preserving the developer-facing operand type in the descriptor.<br/>
     /// </summary>
-    public LibraDexNumericConditionOperator<byte> AsByte => new(builder, indexSelector, negate);
+    public LibraDexEnumCompatibleNumericConditionOperator<byte> AsByte => new(builder, indexSelector, negate);
 
     /// <summary>
     /// Selects numeric operators for an SByte key or projection.<br/>
     /// Signed byte conditions use the existing sortable signed-scalar encoding at execution time, so range and membership operators remain ordered without query-time conversion.<br/>
     /// </summary>
-    public LibraDexNumericConditionOperator<sbyte> AsSByte => new(builder, indexSelector, negate);
+    public LibraDexEnumCompatibleNumericConditionOperator<sbyte> AsSByte => new(builder, indexSelector, negate);
 
     /// <summary>
     /// Selects numeric operators for an Int16 key or projection.<br/>
     /// The selector keeps copied/generated condition code strongly typed while materialization still resolves against the opened LibraDex index key contract.<br/>
     /// </summary>
-    public LibraDexNumericConditionOperator<short> AsInt16 => new(builder, indexSelector, negate);
+    public LibraDexEnumCompatibleNumericConditionOperator<short> AsInt16 => new(builder, indexSelector, negate);
 
     /// <summary>
     /// Selects numeric operators for a UInt16 key or projection.<br/>
     /// UInt16 values route through the same exact, boundary, range, and membership bridge used by other scalar numeric keys.<br/>
     /// </summary>
-    public LibraDexNumericConditionOperator<ushort> AsUInt16 => new(builder, indexSelector, negate);
+    public LibraDexEnumCompatibleNumericConditionOperator<ushort> AsUInt16 => new(builder, indexSelector, negate);
 
     /// <summary>
     /// Selects numeric operators for an Int64 key or projection.<br/>
     /// </summary>
-    public LibraDexNumericConditionOperator<long> AsInt64 => new(builder, indexSelector, negate);
+    public LibraDexEnumCompatibleNumericConditionOperator<long> AsInt64 => new(builder, indexSelector, negate);
 
     /// <summary>
     /// Selects numeric operators for a UInt32 key or projection.<br/>
     /// This fills the common unsigned-width selector gap without adding a new primitive: materialization remains an ordered scalar condition leaf.<br/>
     /// </summary>
-    public LibraDexNumericConditionOperator<uint> AsUInt32 => new(builder, indexSelector, negate);
+    public LibraDexEnumCompatibleNumericConditionOperator<uint> AsUInt32 => new(builder, indexSelector, negate);
 
     /// <summary>
     /// Selects numeric operators for a UInt64 key or projection.<br/>
     /// </summary>
-    public LibraDexNumericConditionOperator<ulong> AsUInt64 => new(builder, indexSelector, negate);
+    public LibraDexEnumCompatibleNumericConditionOperator<ulong> AsUInt64 => new(builder, indexSelector, negate);
 
     /// <summary>
     /// Selects numeric operators for an Int128 key or projection.<br/>
@@ -648,10 +850,28 @@ public sealed class LibraDexConditionValueTypeSelector
     public LibraDexNumericConditionOperator<UInt128> AsUInt128 => new(builder, indexSelector, negate);
 
     /// <summary>
+    /// Selects exact numeric comparison operators for a Decimal key or projection.<br/>
+    /// Decimal values use LibraDex's canonical ordered scalar-16 representation, preserving full CLR Decimal precision and numeric ordering without caller-supplied scaling or conversion.<br/>
+    /// </summary>
+    public LibraDexConditionOperator<decimal> AsDecimal => new(builder, indexSelector, LibraDexConditionValueKind.Numeric, negate);
+
+    /// <summary>
+    /// Selects native Single-precision numeric and special-value operators for the current index.<br/>
+    /// LibraDex compares the canonical ordered 8-byte representation directly, so callers do not need sortable-key adapters or separate NaN/infinity classification indexes.<br/>
+    /// </summary>
+    public LibraDexSingleConditionOperator AsSingle => new(builder, indexSelector, negate);
+
+    /// <summary>
+    /// Selects native Double-precision numeric and special-value operators for the current index.<br/>
+    /// LibraDex compares the canonical ordered 8-byte representation directly, preserving numeric range order while exposing explicit non-finite predicates through IntelliSense.<br/>
+    /// </summary>
+    public LibraDexDoubleConditionOperator AsDouble => new(builder, indexSelector, negate);
+
+    /// <summary>
     /// Selects numeric operators for a BigInteger key or projection.<br/>
     /// BigInteger conditions use the same ordered primitive condition shape as fixed-width scalar keys, while the resolved index owns the sortable BigInt byte encoding and max-width validation.<br/>
     /// </summary>
-    public LibraDexNumericConditionOperator<BigInteger> AsBigInteger => new(builder, indexSelector, negate);
+    public LibraDexNumericConditionOperator<BigInteger> AsBigInt => new(builder, indexSelector, negate);
 
     /// <summary>
     /// Selects scalar operators for a Char key or projection.<br/>
@@ -668,9 +888,24 @@ public sealed class LibraDexConditionValueTypeSelector
     public LibraDexConditionContinueOrEnd Where(params LibraDexCompositePartCriterion[] keyParts)
         => CompositeWhereRoot.Where(keyParts);
 
+    /// <summary>
+    /// Selects identities explicitly maintained on the resolved logical index's null route.<br/>
+    /// The caller does not need to choose an <c>As...</c> value family because LibraDex resolves scalar-null versus string/binary null-key storage from the opened index.<br/>
+    /// An identity with no tuple in the selected index is not treated as null.<br/>
+    /// </summary>
+    public LibraDexConditionContinueOrEnd IsNull
+        => AddNullState(matchNull: true);
+
+    /// <summary>
+    /// Selects identities maintained on ordinary non-null routes of the resolved logical index.<br/>
+    /// Empty string and empty binary keys remain included because they are distinct maintained values, while false and numeric zero remain ordinary scalar values.<br/>
+    /// </summary>
+    public LibraDexConditionContinueOrEnd IsNotNull
+        => AddNullState(matchNull: false);
+
     internal LibraDexCompositeConditionWhere CompositeWhereRoot => new(builder, indexSelector);
 
-    private static LibraDexConditionValueKind ResolveValueKind(Type keyType)
+    internal static LibraDexConditionValueKind ResolveValueKind(Type keyType)
     {
         if (keyType == typeof(string))
         {
@@ -714,6 +949,20 @@ public sealed class LibraDexConditionValueTypeSelector
 
         return LibraDexConditionValueKind.Numeric;
     }
+
+    private LibraDexConditionContinueOrEnd AddNullState(bool matchNull)
+    {
+        if (negate)
+            matchNull = !matchNull;
+
+        return builder.AddLeaf(new LibraDexConditionLeafDescriptor(
+            indexSelector,
+            LibraDexConditionValueKind.Unspecified,
+            LibraDexConditionOperatorKind.NullState,
+            new[] { LibraDexConditionOperand.Value(matchNull) },
+            IgnoreCase: false,
+            Culture: null));
+    }
 }
 
 /// <summary>
@@ -721,7 +970,7 @@ public sealed class LibraDexConditionValueTypeSelector
 /// This is exposed directly as `.Where` from a composite index selector so callers do not have to restate that the selected index is composite before describing key-part intent.<br/>
 /// </summary>
 
-public sealed class LibraDexNumericConditionOperator<TValue> : LibraDexConditionOperator<TValue>
+public class LibraDexNumericConditionOperator<TValue> : LibraDexConditionOperator<TValue>
 {
     internal LibraDexNumericConditionOperator(LibraDexConditionBuilder builder, LibraDexConditionIndexSelector indexSelector, bool negate = false)
         : base(builder, indexSelector, LibraDexConditionValueKind.Numeric, negate)
@@ -960,6 +1209,28 @@ public sealed class LibraDexNumericConditionOperator<TValue> : LibraDexCondition
 }
 
 /// <summary>
+/// Captures numeric conditions whose selected scalar representation can also receive CLR enum operands.<br/>
+/// CLR enums are limited to SByte, Byte, Int16, UInt16, Int32, UInt32, Int64, and UInt64 backing types; only the corresponding LibraDex adapters return this stage.<br/>
+/// Ordinary scalar operands remain available through the inherited numeric condition surface.<br/>
+/// </summary>
+/// <typeparam name="TValue">The enum-compatible scalar type explicitly selected by the caller.<br/></typeparam>
+public sealed class LibraDexEnumCompatibleNumericConditionOperator<TValue> : LibraDexNumericConditionOperator<TValue>
+{
+    internal LibraDexEnumCompatibleNumericConditionOperator(
+        LibraDexConditionBuilder builder,
+        LibraDexConditionIndexSelector indexSelector,
+        bool negate = false)
+        : base(builder, indexSelector, negate)
+    {
+    }
+
+    /// <summary>
+    /// Negates the next predicate while preserving enum-compatible numeric overload discovery.<br/>
+    /// </summary>
+    public new LibraDexEnumCompatibleNumericConditionOperator<TValue> Not => new(Builder, IndexSelector, !IsNegated);
+}
+
+/// <summary>
 /// Captures typed comparison operators for one adopted condition leaf.<br/>
 /// The operator methods intentionally mirror Abraxas' low-friction grammar, but they only record descriptor intent until a LibraDex index resolver is supplied.<br/>
 /// </summary>
@@ -970,20 +1241,27 @@ public class LibraDexConditionOperator<TValue>
     private readonly LibraDexConditionIndexSelector indexSelector;
     private readonly LibraDexConditionValueKind valueKind;
     private readonly bool negate;
+    private readonly LibraDexNumericTransformDescriptor? numericTransform;
 
-    internal LibraDexConditionOperator(LibraDexConditionBuilder builder, LibraDexConditionIndexSelector indexSelector, LibraDexConditionValueKind valueKind, bool negate = false)
+    internal LibraDexConditionOperator(
+        LibraDexConditionBuilder builder,
+        LibraDexConditionIndexSelector indexSelector,
+        LibraDexConditionValueKind valueKind,
+        bool negate = false,
+        LibraDexNumericTransformDescriptor? numericTransform = null)
     {
         this.builder = builder;
         this.indexSelector = indexSelector;
         this.valueKind = valueKind;
         this.negate = negate;
+        this.numericTransform = numericTransform;
     }
 
     /// <summary>
     /// Negates the next predicate over the selected typed index.<br/>
     /// The negation maps to an existing inverse descriptor, such as `EqualTo` to `NotEqualTo`, rather than adding a separate execution tree node.<br/>
     /// </summary>
-    public LibraDexConditionOperator<TValue> Not => new(builder, indexSelector, valueKind, !negate);
+    public LibraDexConditionOperator<TValue> Not => new(builder, indexSelector, valueKind, !negate, numericTransform);
 
     private protected LibraDexConditionBuilder Builder => builder;
 
@@ -998,160 +1276,120 @@ public class LibraDexConditionOperator<TValue>
     /// Captures equality against a static value.<br/>
     /// </summary>
     /// <param name="value">The value to compare with the selected index key.</param>
-    /// <param name="name">Optional replacement name for reusable condition templates.</param>
     /// <returns>A continuation for adding more clauses or ending the condition.</returns>
-    public LibraDexConditionContinueOrEnd EqualTo(TValue value, string? name = null)
-        => Add(LibraDexConditionOperatorKind.EqualTo, LibraDexConditionOperand.Value(value, name));
+    public LibraDexConditionContinueOrEnd EqualTo(TValue value)
+        => Add(LibraDexConditionOperatorKind.EqualTo, LibraDexConditionOperand.Value(value));
 
     /// <summary>
     /// Captures equality against a deferred value factory.<br/>
     /// The factory is invoked only when the completed condition is materialized, matching Abraxas' parameter materialization behavior.<br/>
     /// </summary>
     /// <param name="value">The deferred value factory.</param>
-    /// <param name="name">Optional replacement name for reusable condition templates.</param>
     /// <returns>A continuation for adding more clauses or ending the condition.</returns>
-    public LibraDexConditionContinueOrEnd EqualTo(Func<TValue> value, string? name = null)
+    public LibraDexConditionContinueOrEnd EqualTo(Func<TValue> value)
     {
         ArgumentNullException.ThrowIfNull(value);
-        return Add(LibraDexConditionOperatorKind.EqualTo, LibraDexConditionOperand.Deferred(() => value(), name));
-    }
-
-    /// <summary>
-    /// Captures scalar null-state equality for key families that have no empty-key state.<br/>
-    /// `ScalarNull.Null` selects the compact root null route; `ScalarNull.NonNull` selects ordinary non-null scalar value routes.<br/>
-    /// </summary>
-    /// <param name="state">The scalar null-state predicate to capture.</param>
-    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
-    public LibraDexConditionContinueOrEnd EqualTo(ScalarNull state)
-    {
-        if (negate)
-        {
-            return Add(LibraDexConditionOperatorKind.ScalarNullState, LibraDexConditionOperand.Value(Opposite(state)));
-        }
-
-        return Add(LibraDexConditionOperatorKind.ScalarNullState, LibraDexConditionOperand.Value(state));
+        return Add(LibraDexConditionOperatorKind.EqualTo, LibraDexConditionOperand.Deferred(() => value()));
     }
 
     /// <summary>
     /// Captures inequality against a static value.<br/>
     /// </summary>
     /// <param name="value">The value to exclude.</param>
-    /// <param name="name">Optional replacement name for reusable condition templates.</param>
     /// <returns>A continuation for adding more clauses or ending the condition.</returns>
-    public LibraDexConditionContinueOrEnd NotEqualTo(TValue value, string? name = null)
-        => Add(LibraDexConditionOperatorKind.NotEqualTo, LibraDexConditionOperand.Value(value, name));
+    public LibraDexConditionContinueOrEnd NotEqualTo(TValue value)
+        => Add(LibraDexConditionOperatorKind.NotEqualTo, LibraDexConditionOperand.Value(value));
 
     /// <summary>
     /// Captures inequality against a deferred value factory.<br/>
     /// The factory is invoked only when the completed condition is materialized, preserving reusable condition templates.<br/>
     /// </summary>
     /// <param name="value">The deferred value factory.</param>
-    /// <param name="name">Optional replacement name for reusable condition templates.</param>
     /// <returns>A continuation for adding more clauses or ending the condition.</returns>
-    public LibraDexConditionContinueOrEnd NotEqualTo(Func<TValue> value, string? name = null)
+    public LibraDexConditionContinueOrEnd NotEqualTo(Func<TValue> value)
     {
         ArgumentNullException.ThrowIfNull(value);
-        return Add(LibraDexConditionOperatorKind.NotEqualTo, LibraDexConditionOperand.Deferred(() => value(), name));
-    }
-
-    /// <summary>
-    /// Captures scalar null-state inequality for key families that have no empty-key state.<br/>
-    /// Inequality maps to the opposite scalar null state so the descriptor remains a single executable key-state predicate.<br/>
-    /// </summary>
-    /// <param name="state">The scalar null-state predicate to exclude.</param>
-    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
-    public LibraDexConditionContinueOrEnd NotEqualTo(ScalarNull state)
-    {
-        ScalarNull opposite = Opposite(state);
-        return EqualTo(opposite);
+        return Add(LibraDexConditionOperatorKind.NotEqualTo, LibraDexConditionOperand.Deferred(() => value()));
     }
 
     /// <summary>
     /// Captures a greater-than comparison.<br/>
     /// </summary>
     /// <param name="value">The exclusive lower boundary value.</param>
-    /// <param name="name">Optional replacement name for reusable condition templates.</param>
     /// <returns>A continuation for adding more clauses or ending the condition.</returns>
-    public LibraDexConditionContinueOrEnd GreaterThan(TValue value, string? name = null)
-        => Add(LibraDexConditionOperatorKind.GreaterThan, LibraDexConditionOperand.Value(value, name));
+    public LibraDexConditionContinueOrEnd GreaterThan(TValue value)
+        => Add(LibraDexConditionOperatorKind.GreaterThan, LibraDexConditionOperand.Value(value));
 
     /// <summary>
     /// Captures a greater-than comparison against a deferred value factory.<br/>
     /// The factory is invoked only when the completed condition is materialized, preserving reusable condition templates.<br/>
     /// </summary>
     /// <param name="value">The deferred exclusive lower boundary factory.</param>
-    /// <param name="name">Optional replacement name for reusable condition templates.</param>
     /// <returns>A continuation for adding more clauses or ending the condition.</returns>
-    public LibraDexConditionContinueOrEnd GreaterThan(Func<TValue> value, string? name = null)
+    public LibraDexConditionContinueOrEnd GreaterThan(Func<TValue> value)
     {
         ArgumentNullException.ThrowIfNull(value);
-        return Add(LibraDexConditionOperatorKind.GreaterThan, LibraDexConditionOperand.Deferred(() => value(), name));
+        return Add(LibraDexConditionOperatorKind.GreaterThan, LibraDexConditionOperand.Deferred(() => value()));
     }
 
     /// <summary>
     /// Captures a greater-than-or-equal comparison.<br/>
     /// </summary>
     /// <param name="value">The inclusive lower boundary value.</param>
-    /// <param name="name">Optional replacement name for reusable condition templates.</param>
     /// <returns>A continuation for adding more clauses or ending the condition.</returns>
-    public LibraDexConditionContinueOrEnd GreaterOrEqual(TValue value, string? name = null)
-        => Add(LibraDexConditionOperatorKind.GreaterOrEqual, LibraDexConditionOperand.Value(value, name));
+    public LibraDexConditionContinueOrEnd GreaterOrEqual(TValue value)
+        => Add(LibraDexConditionOperatorKind.GreaterOrEqual, LibraDexConditionOperand.Value(value));
 
     /// <summary>
     /// Captures a greater-than-or-equal comparison against a deferred value factory.<br/>
     /// The factory is invoked only when the completed condition is materialized, preserving reusable condition templates.<br/>
     /// </summary>
     /// <param name="value">The deferred inclusive lower boundary factory.</param>
-    /// <param name="name">Optional replacement name for reusable condition templates.</param>
     /// <returns>A continuation for adding more clauses or ending the condition.</returns>
-    public LibraDexConditionContinueOrEnd GreaterOrEqual(Func<TValue> value, string? name = null)
+    public LibraDexConditionContinueOrEnd GreaterOrEqual(Func<TValue> value)
     {
         ArgumentNullException.ThrowIfNull(value);
-        return Add(LibraDexConditionOperatorKind.GreaterOrEqual, LibraDexConditionOperand.Deferred(() => value(), name));
+        return Add(LibraDexConditionOperatorKind.GreaterOrEqual, LibraDexConditionOperand.Deferred(() => value()));
     }
 
     /// <summary>
     /// Captures a less-than comparison.<br/>
     /// </summary>
     /// <param name="value">The exclusive upper boundary value.</param>
-    /// <param name="name">Optional replacement name for reusable condition templates.</param>
     /// <returns>A continuation for adding more clauses or ending the condition.</returns>
-    public LibraDexConditionContinueOrEnd LessThan(TValue value, string? name = null)
-        => Add(LibraDexConditionOperatorKind.LessThan, LibraDexConditionOperand.Value(value, name));
+    public LibraDexConditionContinueOrEnd LessThan(TValue value)
+        => Add(LibraDexConditionOperatorKind.LessThan, LibraDexConditionOperand.Value(value));
 
     /// <summary>
     /// Captures a less-than comparison against a deferred value factory.<br/>
     /// The factory is invoked only when the completed condition is materialized, preserving reusable condition templates.<br/>
     /// </summary>
     /// <param name="value">The deferred exclusive upper boundary factory.</param>
-    /// <param name="name">Optional replacement name for reusable condition templates.</param>
     /// <returns>A continuation for adding more clauses or ending the condition.</returns>
-    public LibraDexConditionContinueOrEnd LessThan(Func<TValue> value, string? name = null)
+    public LibraDexConditionContinueOrEnd LessThan(Func<TValue> value)
     {
         ArgumentNullException.ThrowIfNull(value);
-        return Add(LibraDexConditionOperatorKind.LessThan, LibraDexConditionOperand.Deferred(() => value(), name));
+        return Add(LibraDexConditionOperatorKind.LessThan, LibraDexConditionOperand.Deferred(() => value()));
     }
 
     /// <summary>
     /// Captures a less-than-or-equal comparison.<br/>
     /// </summary>
     /// <param name="value">The inclusive upper boundary value.</param>
-    /// <param name="name">Optional replacement name for reusable condition templates.</param>
     /// <returns>A continuation for adding more clauses or ending the condition.</returns>
-    public LibraDexConditionContinueOrEnd LessOrEqual(TValue value, string? name = null)
-        => Add(LibraDexConditionOperatorKind.LessOrEqual, LibraDexConditionOperand.Value(value, name));
+    public LibraDexConditionContinueOrEnd LessOrEqual(TValue value)
+        => Add(LibraDexConditionOperatorKind.LessOrEqual, LibraDexConditionOperand.Value(value));
 
     /// <summary>
     /// Captures a less-than-or-equal comparison against a deferred value factory.<br/>
     /// The factory is invoked only when the completed condition is materialized, preserving reusable condition templates.<br/>
     /// </summary>
     /// <param name="value">The deferred inclusive upper boundary factory.</param>
-    /// <param name="name">Optional replacement name for reusable condition templates.</param>
     /// <returns>A continuation for adding more clauses or ending the condition.</returns>
-    public LibraDexConditionContinueOrEnd LessOrEqual(Func<TValue> value, string? name = null)
+    public LibraDexConditionContinueOrEnd LessOrEqual(Func<TValue> value)
     {
         ArgumentNullException.ThrowIfNull(value);
-        return Add(LibraDexConditionOperatorKind.LessOrEqual, LibraDexConditionOperand.Deferred(() => value(), name));
+        return Add(LibraDexConditionOperatorKind.LessOrEqual, LibraDexConditionOperand.Deferred(() => value()));
     }
 
     /// <summary>
@@ -1159,15 +1397,13 @@ public class LibraDexConditionOperator<TValue>
     /// </summary>
     /// <param name="startValue">The inclusive lower boundary value.</param>
     /// <param name="endValue">The inclusive upper boundary value.</param>
-    /// <param name="startName">Optional replacement name for the lower boundary.</param>
-    /// <param name="endName">Optional replacement name for the upper boundary.</param>
     /// <returns>A continuation for adding more clauses or ending the condition.</returns>
-    public LibraDexConditionContinueOrEnd Between(TValue startValue, TValue endValue, string? startName = null, string? endName = null)
+    public LibraDexConditionContinueOrEnd Between(TValue startValue, TValue endValue)
     {
         return Add(
             LibraDexConditionOperatorKind.Between,
-            LibraDexConditionOperand.Value(startValue, startName),
-            LibraDexConditionOperand.Value(endValue, endName));
+            LibraDexConditionOperand.Value(startValue),
+            LibraDexConditionOperand.Value(endValue));
     }
 
     /// <summary>
@@ -1176,17 +1412,15 @@ public class LibraDexConditionOperator<TValue>
     /// </summary>
     /// <param name="startValue">The deferred inclusive lower boundary factory.</param>
     /// <param name="endValue">The deferred inclusive upper boundary factory.</param>
-    /// <param name="startName">Optional replacement name for the lower boundary.</param>
-    /// <param name="endName">Optional replacement name for the upper boundary.</param>
     /// <returns>A continuation for adding more clauses or ending the condition.</returns>
-    public LibraDexConditionContinueOrEnd Between(Func<TValue> startValue, Func<TValue> endValue, string? startName = null, string? endName = null)
+    public LibraDexConditionContinueOrEnd Between(Func<TValue> startValue, Func<TValue> endValue)
     {
         ArgumentNullException.ThrowIfNull(startValue);
         ArgumentNullException.ThrowIfNull(endValue);
         return Add(
             LibraDexConditionOperatorKind.Between,
-            LibraDexConditionOperand.Deferred(() => startValue(), startName),
-            LibraDexConditionOperand.Deferred(() => endValue(), endName));
+            LibraDexConditionOperand.Deferred(() => startValue()),
+            LibraDexConditionOperand.Deferred(() => endValue()));
     }
 
     /// <summary>
@@ -1195,16 +1429,14 @@ public class LibraDexConditionOperator<TValue>
     /// </summary>
     /// <param name="startValue">The deferred inclusive lower boundary factory.</param>
     /// <param name="endValue">The inclusive upper boundary value.</param>
-    /// <param name="startName">Optional replacement name for the lower boundary.</param>
-    /// <param name="endName">Optional replacement name for the upper boundary.</param>
     /// <returns>A continuation for adding more clauses or ending the condition.</returns>
-    public LibraDexConditionContinueOrEnd Between(Func<TValue> startValue, TValue endValue, string? startName = null, string? endName = null)
+    public LibraDexConditionContinueOrEnd Between(Func<TValue> startValue, TValue endValue)
     {
         ArgumentNullException.ThrowIfNull(startValue);
         return Add(
             LibraDexConditionOperatorKind.Between,
-            LibraDexConditionOperand.Deferred(() => startValue(), startName),
-            LibraDexConditionOperand.Value(endValue, endName));
+            LibraDexConditionOperand.Deferred(() => startValue()),
+            LibraDexConditionOperand.Value(endValue));
     }
 
     /// <summary>
@@ -1213,16 +1445,14 @@ public class LibraDexConditionOperator<TValue>
     /// </summary>
     /// <param name="startValue">The inclusive lower boundary value.</param>
     /// <param name="endValue">The deferred inclusive upper boundary factory.</param>
-    /// <param name="startName">Optional replacement name for the lower boundary.</param>
-    /// <param name="endName">Optional replacement name for the upper boundary.</param>
     /// <returns>A continuation for adding more clauses or ending the condition.</returns>
-    public LibraDexConditionContinueOrEnd Between(TValue startValue, Func<TValue> endValue, string? startName = null, string? endName = null)
+    public LibraDexConditionContinueOrEnd Between(TValue startValue, Func<TValue> endValue)
     {
         ArgumentNullException.ThrowIfNull(endValue);
         return Add(
             LibraDexConditionOperatorKind.Between,
-            LibraDexConditionOperand.Value(startValue, startName),
-            LibraDexConditionOperand.Deferred(() => endValue(), endName));
+            LibraDexConditionOperand.Value(startValue),
+            LibraDexConditionOperand.Deferred(() => endValue()));
     }
 
     /// <summary>
@@ -1230,15 +1460,13 @@ public class LibraDexConditionOperator<TValue>
     /// </summary>
     /// <param name="startValue">The inclusive lower boundary value of the excluded window.</param>
     /// <param name="endValue">The inclusive upper boundary value of the excluded window.</param>
-    /// <param name="startName">Optional replacement name for the lower boundary.</param>
-    /// <param name="endName">Optional replacement name for the upper boundary.</param>
     /// <returns>A continuation for adding more clauses or ending the condition.</returns>
-    public LibraDexConditionContinueOrEnd NotBetween(TValue startValue, TValue endValue, string? startName = null, string? endName = null)
+    public LibraDexConditionContinueOrEnd NotBetween(TValue startValue, TValue endValue)
     {
         return Add(
             LibraDexConditionOperatorKind.NotBetween,
-            LibraDexConditionOperand.Value(startValue, startName),
-            LibraDexConditionOperand.Value(endValue, endName));
+            LibraDexConditionOperand.Value(startValue),
+            LibraDexConditionOperand.Value(endValue));
     }
 
     /// <summary>
@@ -1247,17 +1475,15 @@ public class LibraDexConditionOperator<TValue>
     /// </summary>
     /// <param name="startValue">The deferred inclusive lower boundary factory of the excluded window.</param>
     /// <param name="endValue">The deferred inclusive upper boundary factory of the excluded window.</param>
-    /// <param name="startName">Optional replacement name for the lower boundary.</param>
-    /// <param name="endName">Optional replacement name for the upper boundary.</param>
     /// <returns>A continuation for adding more clauses or ending the condition.</returns>
-    public LibraDexConditionContinueOrEnd NotBetween(Func<TValue> startValue, Func<TValue> endValue, string? startName = null, string? endName = null)
+    public LibraDexConditionContinueOrEnd NotBetween(Func<TValue> startValue, Func<TValue> endValue)
     {
         ArgumentNullException.ThrowIfNull(startValue);
         ArgumentNullException.ThrowIfNull(endValue);
         return Add(
             LibraDexConditionOperatorKind.NotBetween,
-            LibraDexConditionOperand.Deferred(() => startValue(), startName),
-            LibraDexConditionOperand.Deferred(() => endValue(), endName));
+            LibraDexConditionOperand.Deferred(() => startValue()),
+            LibraDexConditionOperand.Deferred(() => endValue()));
     }
 
     /// <summary>
@@ -1266,16 +1492,14 @@ public class LibraDexConditionOperator<TValue>
     /// </summary>
     /// <param name="startValue">The deferred inclusive lower boundary factory of the excluded window.</param>
     /// <param name="endValue">The inclusive upper boundary value of the excluded window.</param>
-    /// <param name="startName">Optional replacement name for the lower boundary.</param>
-    /// <param name="endName">Optional replacement name for the upper boundary.</param>
     /// <returns>A continuation for adding more clauses or ending the condition.</returns>
-    public LibraDexConditionContinueOrEnd NotBetween(Func<TValue> startValue, TValue endValue, string? startName = null, string? endName = null)
+    public LibraDexConditionContinueOrEnd NotBetween(Func<TValue> startValue, TValue endValue)
     {
         ArgumentNullException.ThrowIfNull(startValue);
         return Add(
             LibraDexConditionOperatorKind.NotBetween,
-            LibraDexConditionOperand.Deferred(() => startValue(), startName),
-            LibraDexConditionOperand.Value(endValue, endName));
+            LibraDexConditionOperand.Deferred(() => startValue()),
+            LibraDexConditionOperand.Value(endValue));
     }
 
     /// <summary>
@@ -1284,16 +1508,14 @@ public class LibraDexConditionOperator<TValue>
     /// </summary>
     /// <param name="startValue">The inclusive lower boundary value of the excluded window.</param>
     /// <param name="endValue">The deferred inclusive upper boundary factory of the excluded window.</param>
-    /// <param name="startName">Optional replacement name for the lower boundary.</param>
-    /// <param name="endName">Optional replacement name for the upper boundary.</param>
     /// <returns>A continuation for adding more clauses or ending the condition.</returns>
-    public LibraDexConditionContinueOrEnd NotBetween(TValue startValue, Func<TValue> endValue, string? startName = null, string? endName = null)
+    public LibraDexConditionContinueOrEnd NotBetween(TValue startValue, Func<TValue> endValue)
     {
         ArgumentNullException.ThrowIfNull(endValue);
         return Add(
             LibraDexConditionOperatorKind.NotBetween,
-            LibraDexConditionOperand.Value(startValue, startName),
-            LibraDexConditionOperand.Deferred(() => endValue(), endName));
+            LibraDexConditionOperand.Value(startValue),
+            LibraDexConditionOperand.Deferred(() => endValue()));
     }
 
     /// <summary>
@@ -1301,12 +1523,11 @@ public class LibraDexConditionOperator<TValue>
     /// The set is captured as a descriptor operand so the execution bridge can later choose repeated lookup, prepared encoding, or visible scan behavior.<br/>
     /// </summary>
     /// <param name="values">The values to match.</param>
-    /// <param name="name">Optional replacement name for reusable condition templates.</param>
     /// <returns>A continuation for adding more clauses or ending the condition.</returns>
-    public LibraDexConditionContinueOrEnd InSet(IEnumerable<TValue> values, string? name = null)
+    public LibraDexConditionContinueOrEnd InSet(IEnumerable<TValue> values)
     {
         ArgumentNullException.ThrowIfNull(values);
-        return Add(LibraDexConditionOperatorKind.InSet, LibraDexConditionOperand.Value(CaptureMembershipInput(values), name));
+        return Add(LibraDexConditionOperatorKind.InSet, LibraDexConditionOperand.Deferred(() => CaptureMembershipInput(values)));
     }
 
     /// <summary>
@@ -1314,12 +1535,11 @@ public class LibraDexConditionOperator<TValue>
     /// The factory is invoked only when the completed condition is materialized so request-scoped sets can be reused without rebuilding the condition.<br/>
     /// </summary>
     /// <param name="values">The deferred value set factory.</param>
-    /// <param name="name">Optional replacement name for reusable condition templates.</param>
     /// <returns>A continuation for adding more clauses or ending the condition.</returns>
-    public LibraDexConditionContinueOrEnd InSet(Func<IEnumerable<TValue>> values, string? name = null)
+    public LibraDexConditionContinueOrEnd InSet(Func<IEnumerable<TValue>> values)
     {
         ArgumentNullException.ThrowIfNull(values);
-        return Add(LibraDexConditionOperatorKind.InSet, LibraDexConditionOperand.Deferred(() => CaptureMembershipInput(values()), name));
+        return Add(LibraDexConditionOperatorKind.InSet, LibraDexConditionOperand.Deferred(() => CaptureMembershipInput(values())));
     }
 
     /// <summary>
@@ -1362,12 +1582,11 @@ public class LibraDexConditionOperator<TValue>
     /// Captures membership exclusion in a supplied value set.<br/>
     /// </summary>
     /// <param name="values">The values to exclude.</param>
-    /// <param name="name">Optional replacement name for reusable condition templates.</param>
     /// <returns>A continuation for adding more clauses or ending the condition.</returns>
-    public LibraDexConditionContinueOrEnd NotInSet(IEnumerable<TValue> values, string? name = null)
+    public LibraDexConditionContinueOrEnd NotInSet(IEnumerable<TValue> values)
     {
         ArgumentNullException.ThrowIfNull(values);
-        return Add(LibraDexConditionOperatorKind.NotInSet, LibraDexConditionOperand.Value(CaptureMembershipInput(values), name));
+        return Add(LibraDexConditionOperatorKind.NotInSet, LibraDexConditionOperand.Deferred(() => CaptureMembershipInput(values)));
     }
 
     /// <summary>
@@ -1375,12 +1594,11 @@ public class LibraDexConditionOperator<TValue>
     /// The factory is invoked only when the completed condition is materialized so request-scoped sets can be reused without rebuilding the condition.<br/>
     /// </summary>
     /// <param name="values">The deferred values to exclude.</param>
-    /// <param name="name">Optional replacement name for reusable condition templates.</param>
     /// <returns>A continuation for adding more clauses or ending the condition.</returns>
-    public LibraDexConditionContinueOrEnd NotInSet(Func<IEnumerable<TValue>> values, string? name = null)
+    public LibraDexConditionContinueOrEnd NotInSet(Func<IEnumerable<TValue>> values)
     {
         ArgumentNullException.ThrowIfNull(values);
-        return Add(LibraDexConditionOperatorKind.NotInSet, LibraDexConditionOperand.Deferred(() => CaptureMembershipInput(values()), name));
+        return Add(LibraDexConditionOperatorKind.NotInSet, LibraDexConditionOperand.Deferred(() => CaptureMembershipInput(values())));
     }
 
     /// <summary>
@@ -1419,6 +1637,113 @@ public class LibraDexConditionOperator<TValue>
     public LibraDexConditionContinueOrEnd IsNotIn(Func<IEnumerable<TValue>> values)
         => NotInSet(values);
 
+    /// <summary>
+    /// Captures equality against a reusable execution-time parameter.<br/>
+    /// The parameter is snapshotted once for the complete condition execution, even when reused by other leaves.<br/>
+    /// </summary>
+    /// <param name="value">The parameter supplying the current comparison value.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd EqualTo(LibraDexParameter<TValue> value)
+        => Add(LibraDexConditionOperatorKind.EqualTo, LibraDexConditionOperand.Parameter(value));
+
+    /// <summary>
+    /// Captures inequality against a reusable execution-time parameter.<br/>
+    /// </summary>
+    /// <param name="value">The parameter supplying the current excluded value.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd NotEqualTo(LibraDexParameter<TValue> value)
+        => Add(LibraDexConditionOperatorKind.NotEqualTo, LibraDexConditionOperand.Parameter(value));
+
+    /// <summary>
+    /// Captures a greater-than boundary from a reusable execution-time parameter.<br/>
+    /// </summary>
+    /// <param name="value">The parameter supplying the current exclusive lower boundary.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd GreaterThan(LibraDexParameter<TValue> value)
+        => Add(LibraDexConditionOperatorKind.GreaterThan, LibraDexConditionOperand.Parameter(value));
+
+    /// <summary>
+    /// Captures an inclusive lower boundary from a reusable execution-time parameter.<br/>
+    /// </summary>
+    /// <param name="value">The parameter supplying the current inclusive lower boundary.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd GreaterOrEqual(LibraDexParameter<TValue> value)
+        => Add(LibraDexConditionOperatorKind.GreaterOrEqual, LibraDexConditionOperand.Parameter(value));
+
+    /// <summary>
+    /// Captures a less-than boundary from a reusable execution-time parameter.<br/>
+    /// </summary>
+    /// <param name="value">The parameter supplying the current exclusive upper boundary.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd LessThan(LibraDexParameter<TValue> value)
+        => Add(LibraDexConditionOperatorKind.LessThan, LibraDexConditionOperand.Parameter(value));
+
+    /// <summary>
+    /// Captures an inclusive upper boundary from a reusable execution-time parameter.<br/>
+    /// </summary>
+    /// <param name="value">The parameter supplying the current inclusive upper boundary.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd LessOrEqual(LibraDexParameter<TValue> value)
+        => Add(LibraDexConditionOperatorKind.LessOrEqual, LibraDexConditionOperand.Parameter(value));
+
+    /// <summary>
+    /// Captures an inclusive range whose boundaries are reusable execution-time parameters.<br/>
+    /// Both parameters are snapshotted before the condition tree is materialized.<br/>
+    /// </summary>
+    /// <param name="startValue">The parameter supplying the inclusive lower boundary.</param>
+    /// <param name="endValue">The parameter supplying the inclusive upper boundary.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd Between(LibraDexParameter<TValue> startValue, LibraDexParameter<TValue> endValue)
+        => Add(LibraDexConditionOperatorKind.Between, LibraDexConditionOperand.Parameter(startValue), LibraDexConditionOperand.Parameter(endValue));
+
+    /// <summary>
+    /// Captures an inclusive range with a parameterized lower boundary and a static upper boundary.<br/>
+    /// </summary>
+    /// <param name="startValue">The parameter supplying the inclusive lower boundary.</param>
+    /// <param name="endValue">The static inclusive upper boundary.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd Between(LibraDexParameter<TValue> startValue, TValue endValue)
+        => Add(LibraDexConditionOperatorKind.Between, LibraDexConditionOperand.Parameter(startValue), LibraDexConditionOperand.Value(endValue));
+
+    /// <summary>
+    /// Captures an inclusive range with a static lower boundary and a parameterized upper boundary.<br/>
+    /// </summary>
+    /// <param name="startValue">The static inclusive lower boundary.</param>
+    /// <param name="endValue">The parameter supplying the inclusive upper boundary.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd Between(TValue startValue, LibraDexParameter<TValue> endValue)
+        => Add(LibraDexConditionOperatorKind.Between, LibraDexConditionOperand.Value(startValue), LibraDexConditionOperand.Parameter(endValue));
+
+    /// <summary>
+    /// Captures an excluded range whose boundaries are reusable execution-time parameters.<br/>
+    /// </summary>
+    /// <param name="startValue">The parameter supplying the excluded lower boundary.</param>
+    /// <param name="endValue">The parameter supplying the excluded upper boundary.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd NotBetween(LibraDexParameter<TValue> startValue, LibraDexParameter<TValue> endValue)
+        => Add(LibraDexConditionOperatorKind.NotBetween, LibraDexConditionOperand.Parameter(startValue), LibraDexConditionOperand.Parameter(endValue));
+
+    /// <summary>
+    /// Captures membership from a reusable execution-time collection parameter.<br/>
+    /// The parameter is read once at execution; the current enumerable is then consumed by the membership bridge.<br/>
+    /// </summary>
+    /// <typeparam name="TValues">The enumerable value type retained by the caller.</typeparam>
+    /// <param name="values">The parameter supplying the current membership values.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd InSet<TValues>(LibraDexParameter<TValues> values)
+        where TValues : IEnumerable<TValue>
+        => Add(LibraDexConditionOperatorKind.InSet, LibraDexConditionOperand.Parameter(values));
+
+    /// <summary>
+    /// Captures membership exclusion from a reusable execution-time collection parameter.<br/>
+    /// </summary>
+    /// <typeparam name="TValues">The enumerable value type retained by the caller.</typeparam>
+    /// <param name="values">The parameter supplying the current excluded membership values.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd NotInSet<TValues>(LibraDexParameter<TValues> values)
+        where TValues : IEnumerable<TValue>
+        => Add(LibraDexConditionOperatorKind.NotInSet, LibraDexConditionOperand.Parameter(values));
+
     protected LibraDexConditionContinueOrEnd Add(
         LibraDexConditionOperatorKind operatorKind,
         params LibraDexConditionOperand[] operands)
@@ -1429,7 +1754,68 @@ public class LibraDexConditionOperator<TValue>
             EffectiveOperator(operatorKind),
             operands,
             IgnoreCase: false,
+            Culture: null,
+            StringComparisonPolicy: null,
+            numericTransform));
+    }
+
+    /// <summary>
+    /// Captures a membership operand supplied by a type-adapter extension and materializes its stable scalar snapshot only when the condition is used.<br/>
+    /// This keeps adapter-specific conversion out of the index and execution layers while preserving the condition builder's deferred-value contract.<br/>
+    /// </summary>
+    /// <param name="operatorKind">The membership or membership-exclusion operator to record.<br/></param>
+    /// <param name="values">The factory that creates one execution-local scalar collection.<br/></param>
+    /// <returns>A continuation for adding more clauses or ending the condition.<br/></returns>
+    internal LibraDexConditionContinueOrEnd AddMaterializedMembership(
+        LibraDexConditionOperatorKind operatorKind,
+        Func<object?> values)
+    {
+        ArgumentNullException.ThrowIfNull(values);
+        return Add(operatorKind, LibraDexConditionOperand.Deferred(values));
+    }
+
+    /// <summary>
+    /// Captures scalar null-state intent after the public constrained extension has established that the selected CLR key is a value type.<br/>
+    /// Negation and inequality are collapsed to the opposite state before recording so execution receives one direct null-route primitive.<br/>
+    /// </summary>
+    /// <param name="state">The scalar null state supplied by the caller.<br/></param>
+    /// <param name="exclude">Whether the supplied state is being excluded instead of selected.<br/></param>
+    /// <returns>A continuation for adding more clauses or ending the condition.<br/></returns>
+    internal LibraDexConditionContinueOrEnd AddScalarNullState(ScalarNull state, bool exclude)
+    {
+        if (state is not ScalarNull.Null and not ScalarNull.NonNull)
+            throw new ArgumentOutOfRangeException(nameof(state), state, "Unknown scalar null state.");
+
+        if (exclude ^ negate)
+            state = Opposite(state);
+
+        return builder.AddLeaf(new LibraDexConditionLeafDescriptor(
+            indexSelector,
+            valueKind,
+            LibraDexConditionOperatorKind.ScalarNullState,
+            new[] { LibraDexConditionOperand.Value(state) },
+            IgnoreCase: false,
             Culture: null));
+    }
+
+    /// <summary>
+    /// Captures a string or binary null/empty route from a type-specific public extension.<br/>
+    /// The descriptor retains the selected value family so materialization can route directly to the maintained null and empty tables.<br/>
+    /// </summary>
+    /// <param name="state">The null, empty, or combined key state to select.<br/></param>
+    /// <param name="exclude">Whether the supplied key state is being excluded instead of selected.<br/></param>
+    /// <returns>A continuation for adding more clauses or ending the condition.<br/></returns>
+    internal LibraDexConditionContinueOrEnd AddNullKeyState(NullKey state, bool exclude)
+    {
+        if (valueKind is not LibraDexConditionValueKind.String and not LibraDexConditionValueKind.Binary)
+            throw new NotSupportedException("NullKey conditions are supported only for string and binary key families.");
+        if (state is not NullKey.Null and not NullKey.Empty and not NullKey.NullOrEmpty)
+            throw new ArgumentOutOfRangeException(nameof(state), state, "Unknown null-key state.");
+
+        LibraDexConditionOperatorKind operatorKind = exclude
+            ? LibraDexConditionOperatorKind.NotEqualTo
+            : LibraDexConditionOperatorKind.EqualTo;
+        return Add(operatorKind, LibraDexConditionOperand.Value(state));
     }
 
     protected LibraDexConditionOperatorKind EffectiveOperator(LibraDexConditionOperatorKind operatorKind)
@@ -1449,6 +1835,12 @@ public class LibraDexConditionOperator<TValue>
             LibraDexConditionOperatorKind.NotBetween => LibraDexConditionOperatorKind.Between,
             LibraDexConditionOperatorKind.InSet => LibraDexConditionOperatorKind.NotInSet,
             LibraDexConditionOperatorKind.NotInSet => LibraDexConditionOperatorKind.InSet,
+            LibraDexConditionOperatorKind.StartsWith => LibraDexConditionOperatorKind.NotStartsWith,
+            LibraDexConditionOperatorKind.NotStartsWith => LibraDexConditionOperatorKind.StartsWith,
+            LibraDexConditionOperatorKind.EndsWith => LibraDexConditionOperatorKind.NotEndsWith,
+            LibraDexConditionOperatorKind.NotEndsWith => LibraDexConditionOperatorKind.EndsWith,
+            LibraDexConditionOperatorKind.Contains => LibraDexConditionOperatorKind.NotContains,
+            LibraDexConditionOperatorKind.NotContains => LibraDexConditionOperatorKind.Contains,
             LibraDexConditionOperatorKind.MatchesPattern => LibraDexConditionOperatorKind.NotMatchesPattern,
             LibraDexConditionOperatorKind.NotMatchesPattern => LibraDexConditionOperatorKind.MatchesPattern,
             LibraDexConditionOperatorKind.MatchesWith => LibraDexConditionOperatorKind.NotMatchesWith,
@@ -1488,37 +1880,387 @@ public class LibraDexConditionOperator<TValue>
     private static object CaptureMembershipInput(IEnumerable<TValue> values)
     {
         ArgumentNullException.ThrowIfNull(values);
-        return values is ISet<TValue> or IReadOnlyCollection<TValue>
-            ? values
-            : values.ToArray();
+        return values.ToArray();
     }
+
+    /// <summary>
+    /// Produces an immutable numeric condition stage carrying one planner-visible native transform.<br/>
+    /// Chaining transforms is rejected until the grammar and optimizer define explicit composition semantics.<br/>
+    /// </summary>
+    /// <param name="transform">The transform applied to indexed values before the eventual comparison.<br/></param>
+    /// <returns>A numeric operator retaining the current selector and negation state.<br/></returns>
+    internal LibraDexConditionOperator<TValue> WithNumericTransform(LibraDexNumericTransformDescriptor transform)
+    {
+        if (valueKind != LibraDexConditionValueKind.Numeric)
+            throw new NotSupportedException($"Numeric transforms cannot be applied to condition value kind {valueKind}.");
+        if (numericTransform is not null)
+            throw new NotSupportedException("Only one numeric transform can be applied to a condition value before comparison.");
+
+        return new LibraDexConditionOperator<TValue>(builder, indexSelector, valueKind, negate, transform);
+    }
+
+}
+
+/// <summary>
+/// Adds null-state grammar only to condition operators whose CLR key family can represent that state.<br/>
+/// Value-type operators use the scalar null router, while string and binary operators use their distinct null and empty routers.<br/>
+/// </summary>
+public static class LibraDexConditionNullStateExtensions
+{
+    /// <summary>
+    /// Captures scalar null-state equality on an enum-compatible numeric stage before the general enum adapter can interpret <see cref="ScalarNull"/> as an ordinary numeric enum.<br/>
+    /// The selected state routes directly to the maintained scalar null or non-null primitive.<br/>
+    /// </summary>
+    /// <typeparam name="TValue">The selected enum-compatible numeric CLR key type.<br/></typeparam>
+    /// <param name="condition">The numeric condition operator receiving the scalar null-state predicate.<br/></param>
+    /// <param name="state">The scalar null state to select.<br/></param>
+    /// <returns>A continuation for adding more clauses or ending the condition.<br/></returns>
+    public static LibraDexConditionContinueOrEnd EqualTo<TValue>(this LibraDexEnumCompatibleNumericConditionOperator<TValue> condition, ScalarNull state)
+        where TValue : struct
+    {
+        ArgumentNullException.ThrowIfNull(condition);
+        return condition.AddScalarNullState(state, exclude: false);
+    }
+
+    /// <summary>
+    /// Captures scalar null-state inequality on an enum-compatible numeric stage before the general enum adapter can interpret <see cref="ScalarNull"/> as an ordinary numeric enum.<br/>
+    /// The excluded state is collapsed to its opposite direct route during condition construction.<br/>
+    /// </summary>
+    /// <typeparam name="TValue">The selected enum-compatible numeric CLR key type.<br/></typeparam>
+    /// <param name="condition">The numeric condition operator receiving the scalar null-state predicate.<br/></param>
+    /// <param name="state">The scalar null state to exclude.<br/></param>
+    /// <returns>A continuation for adding more clauses or ending the condition.<br/></returns>
+    public static LibraDexConditionContinueOrEnd NotEqualTo<TValue>(this LibraDexEnumCompatibleNumericConditionOperator<TValue> condition, ScalarNull state)
+        where TValue : struct
+    {
+        ArgumentNullException.ThrowIfNull(condition);
+        return condition.AddScalarNullState(state, exclude: true);
+    }
+
+    /// <summary>
+    /// Captures scalar null-state equality for a value-type key family.<br/>
+    /// `ScalarNull.Null` selects the compact null route and `ScalarNull.NonNull` selects ordinary scalar value routes.<br/>
+    /// </summary>
+    /// <typeparam name="TValue">The selected scalar, GUID, or temporal CLR key type.<br/></typeparam>
+    /// <param name="condition">The typed condition operator receiving the scalar null-state predicate.<br/></param>
+    /// <param name="state">The scalar null state to select.<br/></param>
+    /// <returns>A continuation for adding more clauses or ending the condition.<br/></returns>
+    public static LibraDexConditionContinueOrEnd EqualTo<TValue>(this LibraDexConditionOperator<TValue> condition, ScalarNull state)
+        where TValue : struct
+    {
+        ArgumentNullException.ThrowIfNull(condition);
+        return condition.AddScalarNullState(state, exclude: false);
+    }
+
+    /// <summary>
+    /// Captures scalar null-state inequality for a value-type key family.<br/>
+    /// Inequality is recorded as the opposite direct route so execution does not require a caller-side complement.<br/>
+    /// </summary>
+    /// <typeparam name="TValue">The selected scalar, GUID, or temporal CLR key type.<br/></typeparam>
+    /// <param name="condition">The typed condition operator receiving the scalar null-state predicate.<br/></param>
+    /// <param name="state">The scalar null state to exclude.<br/></param>
+    /// <returns>A continuation for adding more clauses or ending the condition.<br/></returns>
+    public static LibraDexConditionContinueOrEnd NotEqualTo<TValue>(this LibraDexConditionOperator<TValue> condition, ScalarNull state)
+        where TValue : struct
+    {
+        ArgumentNullException.ThrowIfNull(condition);
+        return condition.AddScalarNullState(state, exclude: true);
+    }
+
+    /// <summary>
+    /// Matches identities explicitly indexed on a value-type key's scalar null route.<br/>
+    /// An identity absent from the selected index is not treated as null.<br/>
+    /// </summary>
+    /// <typeparam name="TValue">The selected scalar, GUID, or temporal CLR key type.<br/></typeparam>
+    /// <param name="condition">The typed condition operator receiving the null-route predicate.<br/></param>
+    /// <returns>A continuation for adding more clauses or ending the condition.<br/></returns>
+    public static LibraDexConditionContinueOrEnd IsNull<TValue>(this LibraDexConditionOperator<TValue> condition)
+        where TValue : struct
+        => condition.EqualTo(ScalarNull.Null);
+
+    /// <summary>
+    /// Matches identities stored on ordinary non-null routes of a value-type key index.<br/>
+    /// This is the complement of the explicit scalar null route within the selected index's own identity universe.<br/>
+    /// </summary>
+    /// <typeparam name="TValue">The selected scalar, GUID, or temporal CLR key type.<br/></typeparam>
+    /// <param name="condition">The typed condition operator receiving the non-null predicate.<br/></param>
+    /// <returns>A continuation for adding more clauses or ending the condition.<br/></returns>
+    public static LibraDexConditionContinueOrEnd IsNotNull<TValue>(this LibraDexConditionOperator<TValue> condition)
+        where TValue : struct
+        => condition.EqualTo(ScalarNull.NonNull);
+
+    /// <summary>
+    /// Matches identities explicitly indexed on a generic string operator's null route.<br/>
+    /// Empty strings remain distinct and are not selected.<br/>
+    /// </summary>
+    /// <param name="condition">The generic string condition operator receiving the null-route predicate.<br/></param>
+    /// <returns>A continuation for adding more clauses or ending the condition.<br/></returns>
+    public static LibraDexConditionContinueOrEnd IsNull(this LibraDexConditionOperator<string> condition)
+        => condition.AddNullKeyState(NullKey.Null, exclude: false);
+
+    /// <summary>
+    /// Matches identities on a generic string operator except those explicitly indexed as null.<br/>
+    /// Empty strings remain included because they use a separate maintained route.<br/>
+    /// </summary>
+    /// <param name="condition">The generic string condition operator receiving the non-null predicate.<br/></param>
+    /// <returns>A continuation for adding more clauses or ending the condition.<br/></returns>
+    public static LibraDexConditionContinueOrEnd IsNotNull(this LibraDexConditionOperator<string> condition)
+        => condition.AddNullKeyState(NullKey.Null, exclude: true);
+
+    /// <summary>
+    /// Matches identities explicitly indexed on a generic string operator's empty-string route.<br/>
+    /// Null and whitespace-only strings remain distinct states.<br/>
+    /// </summary>
+    /// <param name="condition">The generic string condition operator receiving the empty-route predicate.<br/></param>
+    /// <returns>A continuation for adding more clauses or ending the condition.<br/></returns>
+    public static LibraDexConditionContinueOrEnd IsEmpty(this LibraDexConditionOperator<string> condition)
+        => condition.AddNullKeyState(NullKey.Empty, exclude: false);
+
+    /// <summary>
+    /// Matches identities on a generic string operator except those indexed as an empty string.<br/>
+    /// Explicit null keys remain included.<br/>
+    /// </summary>
+    /// <param name="condition">The generic string condition operator receiving the non-empty predicate.<br/></param>
+    /// <returns>A continuation for adding more clauses or ending the condition.<br/></returns>
+    public static LibraDexConditionContinueOrEnd IsNotEmpty(this LibraDexConditionOperator<string> condition)
+        => condition.AddNullKeyState(NullKey.Empty, exclude: true);
+
+    /// <summary>
+    /// Matches identities explicitly indexed on either a generic string operator's null or empty route.<br/>
+    /// Both maintained routes are selected without constructing a caller-side collection.<br/>
+    /// </summary>
+    /// <param name="condition">The generic string condition operator receiving the combined key-state predicate.<br/></param>
+    /// <returns>A continuation for adding more clauses or ending the condition.<br/></returns>
+    public static LibraDexConditionContinueOrEnd IsNullOrEmpty(this LibraDexConditionOperator<string> condition)
+        => condition.AddNullKeyState(NullKey.NullOrEmpty, exclude: false);
+
+    /// <summary>
+    /// Matches ordinary string values while excluding both explicit null and empty routes.<br/>
+    /// Whitespace-only values remain included because they are ordinary indexed strings.<br/>
+    /// </summary>
+    /// <param name="condition">The generic string condition operator receiving the ordinary-value predicate.<br/></param>
+    /// <returns>A continuation for adding more clauses or ending the condition.<br/></returns>
+    public static LibraDexConditionContinueOrEnd IsNotNullOrEmpty(this LibraDexConditionOperator<string> condition)
+        => condition.AddNullKeyState(NullKey.NullOrEmpty, exclude: true);
+
+    /// <summary>
+    /// Matches identities explicitly indexed on a generic binary operator's null route.<br/>
+    /// Empty byte keys remain distinct and are not selected.<br/>
+    /// </summary>
+    /// <param name="condition">The generic binary condition operator receiving the null-route predicate.<br/></param>
+    /// <returns>A continuation for adding more clauses or ending the condition.<br/></returns>
+    public static LibraDexConditionContinueOrEnd IsNull(this LibraDexConditionOperator<byte[]> condition)
+        => condition.AddNullKeyState(NullKey.Null, exclude: false);
+
+    /// <summary>
+    /// Matches identities on a generic binary operator except those explicitly indexed as null.<br/>
+    /// Empty byte keys remain included because they use a separate maintained route.<br/>
+    /// </summary>
+    /// <param name="condition">The generic binary condition operator receiving the non-null predicate.<br/></param>
+    /// <returns>A continuation for adding more clauses or ending the condition.<br/></returns>
+    public static LibraDexConditionContinueOrEnd IsNotNull(this LibraDexConditionOperator<byte[]> condition)
+        => condition.AddNullKeyState(NullKey.Null, exclude: true);
+
+    /// <summary>
+    /// Matches identities explicitly indexed on a generic binary operator's empty-byte route.<br/>
+    /// Explicit null keys remain distinct and are not selected.<br/>
+    /// </summary>
+    /// <param name="condition">The generic binary condition operator receiving the empty-route predicate.<br/></param>
+    /// <returns>A continuation for adding more clauses or ending the condition.<br/></returns>
+    public static LibraDexConditionContinueOrEnd IsEmpty(this LibraDexConditionOperator<byte[]> condition)
+        => condition.AddNullKeyState(NullKey.Empty, exclude: false);
+
+    /// <summary>
+    /// Matches identities on a generic binary operator except those indexed with an empty byte key.<br/>
+    /// Explicit null keys remain included.<br/>
+    /// </summary>
+    /// <param name="condition">The generic binary condition operator receiving the non-empty predicate.<br/></param>
+    /// <returns>A continuation for adding more clauses or ending the condition.<br/></returns>
+    public static LibraDexConditionContinueOrEnd IsNotEmpty(this LibraDexConditionOperator<byte[]> condition)
+        => condition.AddNullKeyState(NullKey.Empty, exclude: true);
+
+    /// <summary>
+    /// Matches identities explicitly indexed on either a generic binary operator's null or empty route.<br/>
+    /// Both maintained routes are selected without constructing a caller-side collection.<br/>
+    /// </summary>
+    /// <param name="condition">The generic binary condition operator receiving the combined key-state predicate.<br/></param>
+    /// <returns>A continuation for adding more clauses or ending the condition.<br/></returns>
+    public static LibraDexConditionContinueOrEnd IsNullOrEmpty(this LibraDexConditionOperator<byte[]> condition)
+        => condition.AddNullKeyState(NullKey.NullOrEmpty, exclude: false);
+
+    /// <summary>
+    /// Matches ordinary binary keys while excluding both explicit null and empty routes.<br/>
+    /// The complement is evaluated within the selected index's own identity universe.<br/>
+    /// </summary>
+    /// <param name="condition">The generic binary condition operator receiving the ordinary-value predicate.<br/></param>
+    /// <returns>A continuation for adding more clauses or ending the condition.<br/></returns>
+    public static LibraDexConditionContinueOrEnd IsNotNullOrEmpty(this LibraDexConditionOperator<byte[]> condition)
+        => condition.AddNullKeyState(NullKey.NullOrEmpty, exclude: true);
+}
+
+/// <summary>
+/// Captures native Single-precision conditions, including explicit IEEE-754 special-value classifications.<br/>
+/// Ordinary ordered predicates use the numeric domain from negative infinity through positive infinity; NaN is selected only by exact/set predicates or the named special-value methods.<br/>
+/// </summary>
+public sealed class LibraDexSingleConditionOperator : LibraDexConditionOperator<float>
+{
+    internal LibraDexSingleConditionOperator(
+        LibraDexConditionBuilder builder,
+        LibraDexConditionIndexSelector indexSelector,
+        bool negate = false)
+        : base(builder, indexSelector, LibraDexConditionValueKind.Numeric, negate)
+    {
+    }
+
+    /// <summary>
+    /// Negates the next Single-precision predicate while preserving the floating-point-specific IntelliSense stage.<br/>
+    /// Complements are evaluated over LibraDex's ordinary numeric domain unless the selected predicate explicitly names NaN.<br/>
+    /// </summary>
+    public new LibraDexSingleConditionOperator Not => new(Builder, IndexSelector, !IsNegated);
+
+    /// <summary>
+    /// Selects every indexed Single NaN payload through LibraDex's one canonical NaN key.<br/>
+    /// This is an exact indexed lookup and does not materialize the stored key into a CLR value for comparison.<br/>
+    /// </summary>
+    public LibraDexConditionContinueOrEnd IsNaN()
+        => EqualTo(float.NaN);
+
+    /// <summary>
+    /// Selects finite Single values, excluding both infinities and NaN.<br/>
+    /// The predicate is one ordered inclusive range from <see cref="float.MinValue"/> through <see cref="float.MaxValue"/>.<br/>
+    /// </summary>
+    public LibraDexConditionContinueOrEnd IsFinite()
+        => Between(float.MinValue, float.MaxValue);
+
+    /// <summary>
+    /// Selects both positive and negative Single infinity keys.<br/>
+    /// The predicate is a two-value indexed membership lookup and excludes finite values and NaN.<br/>
+    /// </summary>
+    public LibraDexConditionContinueOrEnd IsInfinity()
+        => InSet([float.NegativeInfinity, float.PositiveInfinity]);
+
+    /// <summary>
+    /// Selects the positive Single infinity key.<br/>
+    /// This is an exact indexed lookup.<br/>
+    /// </summary>
+    public LibraDexConditionContinueOrEnd IsPositiveInfinity()
+        => EqualTo(float.PositiveInfinity);
+
+    /// <summary>
+    /// Selects the negative Single infinity key.<br/>
+    /// This is an exact indexed lookup.<br/>
+    /// </summary>
+    public LibraDexConditionContinueOrEnd IsNegativeInfinity()
+        => EqualTo(float.NegativeInfinity);
+
+    /// <summary>
+    /// Selects Single NaN plus both infinity keys.<br/>
+    /// The predicate is a three-value indexed membership lookup and excludes every finite numeric key.<br/>
+    /// </summary>
+    public LibraDexConditionContinueOrEnd IsNonFinite()
+        => InSet([float.NaN, float.NegativeInfinity, float.PositiveInfinity]);
+}
+
+/// <summary>
+/// Captures native Double-precision conditions, including explicit IEEE-754 special-value classifications.<br/>
+/// Ordinary ordered predicates use the numeric domain from negative infinity through positive infinity; NaN is selected only by exact/set predicates or the named special-value methods.<br/>
+/// </summary>
+public sealed class LibraDexDoubleConditionOperator : LibraDexConditionOperator<double>
+{
+    internal LibraDexDoubleConditionOperator(
+        LibraDexConditionBuilder builder,
+        LibraDexConditionIndexSelector indexSelector,
+        bool negate = false)
+        : base(builder, indexSelector, LibraDexConditionValueKind.Numeric, negate)
+    {
+    }
+
+    /// <summary>
+    /// Negates the next Double-precision predicate while preserving the floating-point-specific IntelliSense stage.<br/>
+    /// Complements are evaluated over LibraDex's ordinary numeric domain unless the selected predicate explicitly names NaN.<br/>
+    /// </summary>
+    public new LibraDexDoubleConditionOperator Not => new(Builder, IndexSelector, !IsNegated);
+
+    /// <summary>
+    /// Selects every indexed Double NaN payload through LibraDex's one canonical NaN key.<br/>
+    /// This is an exact indexed lookup and does not materialize the stored key into a CLR value for comparison.<br/>
+    /// </summary>
+    public LibraDexConditionContinueOrEnd IsNaN()
+        => EqualTo(double.NaN);
+
+    /// <summary>
+    /// Selects finite Double values, excluding both infinities and NaN.<br/>
+    /// The predicate is one ordered inclusive range from <see cref="double.MinValue"/> through <see cref="double.MaxValue"/>.<br/>
+    /// </summary>
+    public LibraDexConditionContinueOrEnd IsFinite()
+        => Between(double.MinValue, double.MaxValue);
+
+    /// <summary>
+    /// Selects both positive and negative Double infinity keys.<br/>
+    /// The predicate is a two-value indexed membership lookup and excludes finite values and NaN.<br/>
+    /// </summary>
+    public LibraDexConditionContinueOrEnd IsInfinity()
+        => InSet([double.NegativeInfinity, double.PositiveInfinity]);
+
+    /// <summary>
+    /// Selects the positive Double infinity key.<br/>
+    /// This is an exact indexed lookup.<br/>
+    /// </summary>
+    public LibraDexConditionContinueOrEnd IsPositiveInfinity()
+        => EqualTo(double.PositiveInfinity);
+
+    /// <summary>
+    /// Selects the negative Double infinity key.<br/>
+    /// This is an exact indexed lookup.<br/>
+    /// </summary>
+    public LibraDexConditionContinueOrEnd IsNegativeInfinity()
+        => EqualTo(double.NegativeInfinity);
+
+    /// <summary>
+    /// Selects Double NaN plus both infinity keys.<br/>
+    /// The predicate is a three-value indexed membership lookup and excludes every finite numeric key.<br/>
+    /// </summary>
+    public LibraDexConditionContinueOrEnd IsNonFinite()
+        => InSet([double.NaN, double.NegativeInfinity, double.PositiveInfinity]);
 }
 
 /// <summary>
 /// Captures string-specific adopted condition operators for one selected LibraDex index.<br/>
-/// Text options are preserved as descriptor metadata so the bridge can require exact, folded-text, or sort-key projections instead of hiding query-time scans.<br/>
+/// Text options are preserved as descriptor metadata so materialization can select a compatible maintained projection or expose a compact exact-key fallback when no matching projection exists.<br/>
 /// </summary>
 public sealed class LibraDexStringConditionOperator : LibraDexConditionOperator<string>
 {
     private readonly LibraDexConditionBuilder builder;
     private readonly LibraDexConditionIndexSelector indexSelector;
+    private readonly LibraDexTextNormalization textNormalization;
 
-    internal LibraDexStringConditionOperator(LibraDexConditionBuilder builder, LibraDexConditionIndexSelector indexSelector, bool negate = false)
+    internal LibraDexStringConditionOperator(
+        LibraDexConditionBuilder builder,
+        LibraDexConditionIndexSelector indexSelector,
+        bool negate = false,
+        LibraDexTextNormalization textNormalization = LibraDexTextNormalization.None)
         : base(builder, indexSelector, LibraDexConditionValueKind.String, negate)
     {
         this.builder = builder;
         this.indexSelector = indexSelector;
+        this.textNormalization = textNormalization;
     }
 
     /// <summary>
     /// Negates the next string predicate over the selected index.<br/>
     /// This preserves string-specific operators while mapping supported predicates to their inverse descriptor, such as `EqualTo` to `NotEqualTo` and regex capture membership to negated capture membership.<br/>
     /// </summary>
-    public new LibraDexStringConditionOperator Not => new(builder, indexSelector, !IsNegated);
+    public new LibraDexStringConditionOperator Not => new(builder, indexSelector, !IsNegated, textNormalization);
+
+    /// <summary>
+    /// Applies Unicode canonical composition Form C before the next string condition operator.<br/>
+    /// A maintained normalized-text projection is the fast path; when it is absent, LibraDex visibly evaluates the same transformation over compact exact-index keys.<br/>
+    /// </summary>
+    public LibraDexStringConditionOperator Normalized => new(builder, indexSelector, IsNegated, LibraDexTextNormalization.FormC);
 
     /// <summary>
     /// Captures a string equality condition with optional case-insensitive projection intent.<br/>
-    /// When <paramref name="ignoreCase"/> is true, materialization requires a maintained sort-key projection instead of normalizing or scanning the exact string index at query time.<br/>
+    /// When <paramref name="ignoreCase"/> is true, materialization prefers a compatible folded-text projection and can fall back to a sort-key projection or visible compact exact-key comparison.<br/>
     /// </summary>
     /// <param name="value">The string value to match.</param>
     /// <param name="ignoreCase">Whether case-insensitive text behavior was requested.</param>
@@ -1568,7 +2310,7 @@ public sealed class LibraDexStringConditionOperator : LibraDexConditionOperator<
 
     /// <summary>
     /// Captures a string inequality condition with optional case-insensitive projection intent.<br/>
-    /// When <paramref name="ignoreCase"/> is true, materialization requires a maintained sort-key projection and maps the exclusion to ordered extents over that projection.<br/>
+    /// When <paramref name="ignoreCase"/> is true, materialization prefers a compatible folded-text projection and can fall back to a sort-key projection or visible compact exact-key comparison.<br/>
     /// </summary>
     /// <param name="value">The string value to exclude.</param>
     /// <param name="ignoreCase">Whether case-insensitive text behavior was requested.</param>
@@ -1956,6 +2698,17 @@ public sealed class LibraDexStringConditionOperator : LibraDexConditionOperator<
         => AddText(LibraDexConditionOperatorKind.Contains, value, ignoreCase, culture);
 
     /// <summary>
+    /// Captures a negated literal text-containment condition.<br/>
+    /// The operation retains native containment semantics and does not reinterpret regular-expression or wildcard characters in <paramref name="value"/>.<br/>
+    /// </summary>
+    /// <param name="value">The literal contained text value to exclude.<br/></param>
+    /// <param name="ignoreCase">Whether case-insensitive text behavior was requested.<br/></param>
+    /// <param name="culture">The culture name for case behavior, when supplied.<br/></param>
+    /// <returns>A continuation for adding more clauses or ending the condition.<br/></returns>
+    public LibraDexConditionContinueOrEnd NotContains(string value, bool ignoreCase = false, string? culture = null)
+        => Not.Contains(value, ignoreCase, culture);
+
+    /// <summary>
     /// Captures a pattern text condition.<br/>
     /// Pattern execution is descriptor-only in this slice; the resolver decides later whether a maintained projection, predicate, or unsupported case applies.<br/>
     /// </summary>
@@ -1968,14 +2721,28 @@ public sealed class LibraDexStringConditionOperator : LibraDexConditionOperator<
 
     /// <summary>
     /// Captures a wildcard-like text condition using the low-friction public spelling.<br/>
-    /// The pattern uses `*` for any text and `?` for one character; execution may narrow by the leading literal before applying the residual wildcard comparison.<br/>
+    /// The pattern uses `*` for any text and `?` for one character; `\*` and `\?` select literal wildcard characters while ordinary backslashes remain literal.<br/>
+    /// Exact, prefix, suffix, and contains shapes adopt their narrower native condition so maintained projections remain available; genuinely complex shapes use one compiled residual regex when its comparison policy is regex-compatible.<br/>
     /// </summary>
     /// <param name="pattern">The wildcard pattern descriptor.</param>
     /// <param name="ignoreCase">Whether wildcard comparison should ignore case.</param>
     /// <param name="culture">The culture name for wildcard comparison, when supplied.</param>
     /// <returns>A continuation for adding more clauses or ending the condition.</returns>
     public LibraDexConditionContinueOrEnd Like(string pattern, bool ignoreCase = false, string? culture = null)
-        => MatchesPattern(pattern, ignoreCase, culture);
+    {
+        LibraDexWildcardPattern wildcard = LibraDexWildcardPattern.Create(
+            pattern,
+            LibraDexStringComparisonPolicy.Default,
+            compileComplex: false);
+        return wildcard.Shape switch
+        {
+            LibraDexWildcardShape.Exact => EqualTo(wildcard.Literal, ignoreCase, culture),
+            LibraDexWildcardShape.StartsWith => StartsWith(wildcard.Literal, ignoreCase, culture),
+            LibraDexWildcardShape.EndsWith => EndsWith(wildcard.Literal, ignoreCase, culture),
+            LibraDexWildcardShape.Contains => Contains(wildcard.Literal, ignoreCase, culture),
+            _ => MatchesPattern(pattern, ignoreCase, culture)
+        };
+    }
 
     /// <summary>
     /// Captures a negated wildcard-like text condition using the low-friction public spelling.<br/>
@@ -2334,6 +3101,231 @@ public sealed class LibraDexStringConditionOperator : LibraDexConditionOperator<
     public LibraDexConditionContinueOrEnd NotMatchesInSet(Regex regex, IEnumerable<string> values, int groupNumber, bool ignoreCase = false, string? culture = null)
         => AddText(LibraDexConditionOperatorKind.NotMatchesInSet, CreateRegexCaptureSetOperands(regex, values, groupNumber), ignoreCase, culture);
 
+    /// <summary>
+    /// Captures parameterized string equality while retaining the selected comparison policy.<br/>
+    /// Null and empty parameter values are recognized by the materializer and routed through their dedicated key-state tables.<br/>
+    /// </summary>
+    /// <param name="value">The parameter supplying the current string value.</param>
+    /// <param name="ignoreCase">Whether case-insensitive comparison is requested.</param>
+    /// <param name="culture">The optional comparison culture name.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd EqualTo(LibraDexParameter<string> value, bool ignoreCase = false, string? culture = null)
+        => AddText(LibraDexConditionOperatorKind.EqualTo, new[] { LibraDexConditionOperand.Parameter(value) }, ignoreCase, culture);
+
+    /// <summary>
+    /// Captures parameterized string inequality while retaining the selected comparison policy.<br/>
+    /// </summary>
+    /// <param name="value">The parameter supplying the current excluded string value.</param>
+    /// <param name="ignoreCase">Whether case-insensitive comparison is requested.</param>
+    /// <param name="culture">The optional comparison culture name.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd NotEqualTo(LibraDexParameter<string> value, bool ignoreCase = false, string? culture = null)
+        => AddText(LibraDexConditionOperatorKind.NotEqualTo, new[] { LibraDexConditionOperand.Parameter(value) }, ignoreCase, culture);
+
+    /// <summary>
+    /// Captures a parameterized string prefix predicate.<br/>
+    /// </summary>
+    /// <param name="value">The parameter supplying the current prefix.</param>
+    /// <param name="ignoreCase">Whether case-insensitive comparison is requested.</param>
+    /// <param name="culture">The optional comparison culture name.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd StartsWith(LibraDexParameter<string> value, bool ignoreCase = false, string? culture = null)
+        => AddText(LibraDexConditionOperatorKind.StartsWith, new[] { LibraDexConditionOperand.Parameter(value) }, ignoreCase, culture);
+
+    /// <summary>
+    /// Captures a parameterized string suffix predicate.<br/>
+    /// </summary>
+    /// <param name="value">The parameter supplying the current suffix.</param>
+    /// <param name="ignoreCase">Whether case-insensitive comparison is requested.</param>
+    /// <param name="culture">The optional comparison culture name.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd EndsWith(LibraDexParameter<string> value, bool ignoreCase = false, string? culture = null)
+        => AddText(LibraDexConditionOperatorKind.EndsWith, new[] { LibraDexConditionOperand.Parameter(value) }, ignoreCase, culture);
+
+    /// <summary>
+    /// Captures a parameterized string containment predicate.<br/>
+    /// </summary>
+    /// <param name="value">The parameter supplying the current contained text.</param>
+    /// <param name="ignoreCase">Whether case-insensitive comparison is requested.</param>
+    /// <param name="culture">The optional comparison culture name.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd Contains(LibraDexParameter<string> value, bool ignoreCase = false, string? culture = null)
+        => AddText(LibraDexConditionOperatorKind.Contains, new[] { LibraDexConditionOperand.Parameter(value) }, ignoreCase, culture);
+
+    /// <summary>
+    /// Captures a parameterized negated literal text-containment predicate.<br/>
+    /// The parameter is materialized at execution time and remains literal rather than regular-expression or wildcard syntax.<br/>
+    /// </summary>
+    /// <param name="value">The parameter supplying the current contained text to exclude.<br/></param>
+    /// <param name="ignoreCase">Whether case-insensitive comparison is requested.<br/></param>
+    /// <param name="culture">The optional comparison culture name.<br/></param>
+    /// <returns>A continuation for adding more clauses or ending the condition.<br/></returns>
+    public LibraDexConditionContinueOrEnd NotContains(LibraDexParameter<string> value, bool ignoreCase = false, string? culture = null)
+        => Not.Contains(value, ignoreCase, culture);
+
+    /// <summary>
+    /// Captures a parameterized wildcard predicate using `*` and `?` tokens.<br/>
+    /// `\*` and `\?` select literal wildcard characters while ordinary backslashes remain literal; the runtime value is analyzed once when the condition materializes.<br/>
+    /// </summary>
+    /// <param name="pattern">The parameter supplying the current wildcard pattern.<br/></param>
+    /// <param name="ignoreCase">Whether case-insensitive comparison is requested.<br/></param>
+    /// <param name="culture">The optional comparison culture name.<br/></param>
+    /// <returns>A continuation for adding more clauses or ending the condition.<br/></returns>
+    public LibraDexConditionContinueOrEnd Like(LibraDexParameter<string> pattern, bool ignoreCase = false, string? culture = null)
+        => AddText(LibraDexConditionOperatorKind.MatchesPattern, new[] { LibraDexConditionOperand.Parameter(pattern) }, ignoreCase, culture);
+
+    /// <summary>
+    /// Captures a parameterized negated wildcard predicate using `*` and `?` tokens.<br/>
+    /// The parameter is materialized once per execution and follows the same contextual backslash escape contract as <see cref="Like(LibraDexParameter{string}, bool, string?)"/>.<br/>
+    /// </summary>
+    /// <param name="pattern">The parameter supplying the current wildcard pattern.<br/></param>
+    /// <param name="ignoreCase">Whether case-insensitive comparison is requested.<br/></param>
+    /// <param name="culture">The optional comparison culture name.<br/></param>
+    /// <returns>A continuation for adding more clauses or ending the condition.<br/></returns>
+    public LibraDexConditionContinueOrEnd NotLike(LibraDexParameter<string> pattern, bool ignoreCase = false, string? culture = null)
+        => Not.Like(pattern, ignoreCase, culture);
+
+    /// <summary>
+    /// Captures a parameterized LibraDex wildcard-pattern predicate.<br/>
+    /// </summary>
+    /// <param name="pattern">The parameter supplying the current pattern.</param>
+    /// <param name="ignoreCase">Whether case-insensitive comparison is requested.</param>
+    /// <param name="culture">The optional comparison culture name.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd Matches(LibraDexParameter<string> pattern, bool ignoreCase = false, string? culture = null)
+        => AddText(LibraDexConditionOperatorKind.MatchesPattern, new[] { LibraDexConditionOperand.Parameter(pattern) }, ignoreCase, culture);
+
+    /// <summary>
+    /// Captures a parameterized regular-expression predicate.<br/>
+    /// The parameter may be updated with a precompiled regular expression between executions without rebuilding the condition.<br/>
+    /// </summary>
+    /// <param name="regex">The parameter supplying the current regular expression.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd RegexMatches(LibraDexParameter<Regex> regex)
+        => AddText(LibraDexConditionOperatorKind.RegexMatches, new[] { LibraDexConditionOperand.Parameter(regex) }, ignoreCase: false, culture: null);
+
+    /// <summary>
+    /// Captures a parameterized string range while retaining the selected comparison policy.<br/>
+    /// </summary>
+    /// <param name="startValue">The parameter supplying the inclusive lower boundary.</param>
+    /// <param name="endValue">The parameter supplying the inclusive upper boundary.</param>
+    /// <param name="ignoreCase">Whether case-insensitive comparison is requested.</param>
+    /// <param name="culture">The optional comparison culture name.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd Between(LibraDexParameter<string> startValue, LibraDexParameter<string> endValue, bool ignoreCase = false, string? culture = null)
+        => AddText(LibraDexConditionOperatorKind.Between, new[] { LibraDexConditionOperand.Parameter(startValue), LibraDexConditionOperand.Parameter(endValue) }, ignoreCase, culture);
+
+    /// <summary>
+    /// Captures parameterized string membership while retaining the selected comparison policy.<br/>
+    /// </summary>
+    /// <typeparam name="TValues">The enumerable string collection type retained by the caller.</typeparam>
+    /// <param name="values">The parameter supplying the current membership values.</param>
+    /// <param name="ignoreCase">Whether case-insensitive comparison is requested.</param>
+    /// <param name="culture">The optional comparison culture name.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd InSet<TValues>(LibraDexParameter<TValues> values, bool ignoreCase = false, string? culture = null)
+        where TValues : IEnumerable<string>
+        => AddText(LibraDexConditionOperatorKind.InSet, new[] { LibraDexConditionOperand.Parameter(values) }, ignoreCase, culture);
+
+    /// <summary>
+    /// Captures Abraxas folded-text prefix semantics while preserving LibraDex projection-first materialization.<br/>
+    /// A compatible folded projection becomes an ordered range; otherwise the complete exact source-key index is scanned with culture-folded ordinal residual comparison.<br/>
+    /// </summary>
+    /// <param name="value">The developer-facing prefix.<br/></param>
+    /// <param name="culture">Optional folding culture; null or empty selects the invariant culture.<br/></param>
+    /// <returns>A continuation for composing or completing the condition.<br/></returns>
+    internal LibraDexConditionContinueOrEnd StartsWithFoldedOrdinal(string value, string? culture)
+        => AddText(
+            LibraDexConditionOperatorKind.StartsWith,
+            value,
+            ignoreCase: true,
+            culture: culture,
+            stringComparisonPolicy: LibraDexStringComparisonPolicy.ForFoldedOrdinal(culture));
+
+    /// <summary>
+    /// Captures Abraxas folded-text suffix semantics while preserving reversed-projection first refusal and exact-source-key fallback.<br/>
+    /// </summary>
+    /// <param name="value">The developer-facing suffix.<br/></param>
+    /// <param name="culture">Optional folding culture; null or empty selects the invariant culture.<br/></param>
+    /// <returns>A continuation for composing or completing the condition.<br/></returns>
+    internal LibraDexConditionContinueOrEnd EndsWithFoldedOrdinal(string value, string? culture)
+        => AddText(
+            LibraDexConditionOperatorKind.EndsWith,
+            value,
+            ignoreCase: true,
+            culture: culture,
+            stringComparisonPolicy: LibraDexStringComparisonPolicy.ForFoldedOrdinal(culture));
+
+    /// <summary>
+    /// Captures Abraxas folded-text containment semantics for projection-aware exact-key residual execution.<br/>
+    /// </summary>
+    /// <param name="value">The developer-facing contained text.<br/></param>
+    /// <param name="culture">Optional folding culture; null or empty selects the invariant culture.<br/></param>
+    /// <returns>A continuation for composing or completing the condition.<br/></returns>
+    internal LibraDexConditionContinueOrEnd ContainsFoldedOrdinal(string value, string? culture)
+        => AddText(
+            LibraDexConditionOperatorKind.Contains,
+            value,
+            ignoreCase: true,
+            culture: culture,
+            stringComparisonPolicy: LibraDexStringComparisonPolicy.ForFoldedOrdinal(culture));
+
+    /// <summary>
+    /// Captures the complement of Abraxas folded-text containment without admitting null source keys.<br/>
+    /// The owning Abraxas bridge composes its established non-null and empty-key semantics around this leaf.<br/>
+    /// </summary>
+    /// <param name="value">The developer-facing contained text to exclude.<br/></param>
+    /// <param name="culture">Optional folding culture; null or empty selects the invariant culture.<br/></param>
+    /// <returns>A continuation for composing or completing the condition.<br/></returns>
+    internal LibraDexConditionContinueOrEnd NotContainsFoldedOrdinal(string value, string? culture)
+        => AddText(
+            LibraDexConditionOperatorKind.NotContains,
+            value,
+            ignoreCase: true,
+            culture: culture,
+            stringComparisonPolicy: LibraDexStringComparisonPolicy.ForFoldedOrdinal(culture));
+
+    /// <summary>
+    /// Captures Abraxas folded-text wildcard semantics and reduces simple wildcard shapes before materialization.<br/>
+    /// Exact, prefix, suffix, and containment shapes retain projection eligibility; complex patterns scan exact source keys with one prepared folded-ordinal matcher.<br/>
+    /// </summary>
+    /// <param name="pattern">The developer-facing wildcard pattern.<br/></param>
+    /// <param name="culture">Optional folding culture; null or empty selects the invariant culture.<br/></param>
+    /// <returns>A continuation for composing or completing the condition.<br/></returns>
+    internal LibraDexConditionContinueOrEnd LikeFoldedOrdinal(string pattern, string? culture)
+    {
+        LibraDexStringComparisonPolicy policy = LibraDexStringComparisonPolicy.ForFoldedOrdinal(culture);
+        LibraDexWildcardPattern wildcard = LibraDexWildcardPattern.Create(pattern, policy, compileComplex: false);
+        return wildcard.Shape switch
+        {
+            LibraDexWildcardShape.Exact => AddText(LibraDexConditionOperatorKind.EqualTo, wildcard.Literal, ignoreCase: true, culture: culture, stringComparisonPolicy: policy),
+            LibraDexWildcardShape.StartsWith => AddText(LibraDexConditionOperatorKind.StartsWith, wildcard.Literal, ignoreCase: true, culture: culture, stringComparisonPolicy: policy),
+            LibraDexWildcardShape.EndsWith => AddText(LibraDexConditionOperatorKind.EndsWith, wildcard.Literal, ignoreCase: true, culture: culture, stringComparisonPolicy: policy),
+            LibraDexWildcardShape.Contains => AddText(LibraDexConditionOperatorKind.Contains, wildcard.Literal, ignoreCase: true, culture: culture, stringComparisonPolicy: policy),
+            _ => AddText(LibraDexConditionOperatorKind.MatchesPattern, pattern, ignoreCase: true, culture: culture, stringComparisonPolicy: policy)
+        };
+    }
+
+    /// <summary>
+    /// Captures the complement of Abraxas folded-text wildcard semantics while preserving the same simple-shape reductions as the positive form.<br/>
+    /// </summary>
+    /// <param name="pattern">The developer-facing wildcard pattern to exclude.<br/></param>
+    /// <param name="culture">Optional folding culture; null or empty selects the invariant culture.<br/></param>
+    /// <returns>A continuation for composing or completing the condition.<br/></returns>
+    internal LibraDexConditionContinueOrEnd NotLikeFoldedOrdinal(string pattern, string? culture)
+    {
+        LibraDexStringComparisonPolicy policy = LibraDexStringComparisonPolicy.ForFoldedOrdinal(culture);
+        LibraDexWildcardPattern wildcard = LibraDexWildcardPattern.Create(pattern, policy, compileComplex: false);
+        return wildcard.Shape switch
+        {
+            LibraDexWildcardShape.Exact => AddText(LibraDexConditionOperatorKind.NotEqualTo, wildcard.Literal, ignoreCase: true, culture: culture, stringComparisonPolicy: policy),
+            LibraDexWildcardShape.StartsWith => AddText(LibraDexConditionOperatorKind.NotStartsWith, wildcard.Literal, ignoreCase: true, culture: culture, stringComparisonPolicy: policy),
+            LibraDexWildcardShape.EndsWith => AddText(LibraDexConditionOperatorKind.NotEndsWith, wildcard.Literal, ignoreCase: true, culture: culture, stringComparisonPolicy: policy),
+            LibraDexWildcardShape.Contains => AddText(LibraDexConditionOperatorKind.NotContains, wildcard.Literal, ignoreCase: true, culture: culture, stringComparisonPolicy: policy),
+            _ => AddText(LibraDexConditionOperatorKind.NotMatchesPattern, pattern, ignoreCase: true, culture: culture, stringComparisonPolicy: policy)
+        };
+    }
+
     private LibraDexConditionContinueOrEnd AddText(
         LibraDexConditionOperatorKind operatorKind,
         string? value,
@@ -2368,7 +3360,8 @@ public sealed class LibraDexStringConditionOperator : LibraDexConditionOperator<
             operands,
             ignoreCase,
             culture,
-            stringComparisonPolicy));
+            stringComparisonPolicy,
+            textNormalization));
     }
 
     private static object CaptureStringMembershipInput(IEnumerable<string> values)
@@ -2414,6 +3407,54 @@ public sealed class LibraDexStringConditionOperator : LibraDexConditionOperator<
             ? new[] { LibraDexConditionOperand.Value(regex), LibraDexConditionOperand.Value(CaptureStringMembershipInput(values)), LibraDexConditionOperand.Value(groupNumber.Value) }
             : new[] { LibraDexConditionOperand.Value(regex), LibraDexConditionOperand.Value(CaptureStringMembershipInput(values)) };
     }
+
+    /// <summary>
+    /// Matches identities stored on the selected string index's explicit null-key route.<br/>
+    /// This is a low-friction alias for <c>EqualTo(NullKey.Null)</c>; it does not mean that the identity has no tuple in the index.<br/>
+    /// </summary>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd IsNull()
+        => EqualTo(NullKey.Null);
+
+    /// <summary>
+    /// Matches identities whose selected string key is not explicitly null.<br/>
+    /// Empty strings remain included because null and empty are distinct maintained key-state routes.<br/>
+    /// </summary>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd IsNotNull()
+        => NotEqualTo(NullKey.Null);
+
+    /// <summary>
+    /// Matches identities stored on the selected string index's explicit empty-string route.<br/>
+    /// Whitespace-only strings are ordinary values and do not match this predicate unless they were normalized to empty before indexing.<br/>
+    /// </summary>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd IsEmpty()
+        => EqualTo(NullKey.Empty);
+
+    /// <summary>
+    /// Matches identities whose selected string key is not the empty string.<br/>
+    /// Explicit null keys remain included; use <see cref="IsNotNullOrEmpty"/> when both key states must be excluded.<br/>
+    /// </summary>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd IsNotEmpty()
+        => NotEqualTo(NullKey.Empty);
+
+    /// <summary>
+    /// Matches identities stored on either the explicit null route or the explicit empty-string route.<br/>
+    /// Both compact routes are combined without requiring caller-side grouping or a temporary value collection.<br/>
+    /// </summary>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd IsNullOrEmpty()
+        => EqualTo(NullKey.NullOrEmpty);
+
+    /// <summary>
+    /// Matches identities whose selected string key is neither explicitly null nor empty.<br/>
+    /// The predicate complements both maintained key-state routes and therefore selects ordinary string values, including whitespace-only values.<br/>
+    /// </summary>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd IsNotNullOrEmpty()
+        => NotEqualTo(NullKey.NullOrEmpty);
 }
 
 /// <summary>
@@ -2865,6 +3906,84 @@ public sealed class LibraDexDateConditionOperator<TValue> : LibraDexConditionOpe
     public LibraDexConditionContinueOrEnd IsNight()
         => AddDateParts(LibraDexConditionOperatorKind.IsNight);
 
+    /// <summary>
+    /// Captures a structured-date year predicate from a reusable execution-time parameter.<br/>
+    /// The component is compared in LibraDex's encoded date domain without materializing indexed keys into CLR dates.<br/>
+    /// </summary>
+    /// <param name="year">The parameter supplying the current year.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd YearEqualTo(LibraDexParameter<int> year)
+        => AddDateParameters(LibraDexConditionOperatorKind.YearEqualTo, year);
+
+    /// <summary>
+    /// Captures a structured-date year range from reusable execution-time parameters.<br/>
+    /// </summary>
+    /// <param name="startYear">The parameter supplying the inclusive first year.</param>
+    /// <param name="endYear">The parameter supplying the inclusive last year.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd YearRange(LibraDexParameter<int> startYear, LibraDexParameter<int> endYear)
+        => AddDateParameters(LibraDexConditionOperatorKind.YearRange, startYear, endYear);
+
+    /// <summary>
+    /// Captures a structured-date month predicate from a reusable execution-time parameter.<br/>
+    /// </summary>
+    /// <param name="month">The parameter supplying the current month number.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd MonthEqualTo(LibraDexParameter<int> month)
+        => AddDateParameters(LibraDexConditionOperatorKind.MonthEqualTo, month);
+
+    /// <summary>
+    /// Captures a structured-date day predicate from a reusable execution-time parameter.<br/>
+    /// </summary>
+    /// <param name="day">The parameter supplying the current day number.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd DayEqualTo(LibraDexParameter<int> day)
+        => AddDateParameters(LibraDexConditionOperatorKind.DayEqualTo, day);
+
+    /// <summary>
+    /// Captures a structured-date year/month tuple from reusable execution-time parameters.<br/>
+    /// </summary>
+    /// <param name="year">The parameter supplying the current year.</param>
+    /// <param name="month">The parameter supplying the current month.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd YearMonth(LibraDexParameter<int> year, LibraDexParameter<int> month)
+        => AddDateParameters(LibraDexConditionOperatorKind.YearMonth, year, month);
+
+    /// <summary>
+    /// Captures a structured-date year/month/day tuple from reusable execution-time parameters.<br/>
+    /// </summary>
+    /// <param name="year">The parameter supplying the current year.</param>
+    /// <param name="month">The parameter supplying the current month.</param>
+    /// <param name="day">The parameter supplying the current day.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd YearMonthDay(LibraDexParameter<int> year, LibraDexParameter<int> month, LibraDexParameter<int> day)
+        => AddDateParameters(LibraDexConditionOperatorKind.YearMonthDay, year, month, day);
+
+    /// <summary>
+    /// Captures a trailing-day window from a reusable execution-time parameter.<br/>
+    /// </summary>
+    /// <param name="days">The parameter supplying the current positive day count.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd IsInLastDays(LibraDexParameter<int> days)
+        => AddDateParameters(LibraDexConditionOperatorKind.IsInLastDays, days);
+
+    private LibraDexConditionContinueOrEnd AddDateParameters(LibraDexConditionOperatorKind operatorKind, params LibraDexParameter<int>[] values)
+    {
+        LibraDexConditionOperand[] operands = new LibraDexConditionOperand[values.Length];
+        for (int i = 0; i < operands.Length; i++)
+        {
+            operands[i] = LibraDexConditionOperand.Parameter(values[i]);
+        }
+
+        return builder.AddLeaf(new LibraDexConditionLeafDescriptor(
+            indexSelector,
+            valueKind,
+            EffectiveOperator(operatorKind),
+            operands,
+            IgnoreCase: false,
+            Culture: null));
+    }
+
     private LibraDexConditionContinueOrEnd AddDatePart(LibraDexConditionOperatorKind operatorKind, int value)
         => AddDateParts(operatorKind, value);
 
@@ -3107,7 +4226,11 @@ public sealed class LibraDexBinaryConditionOperator : LibraDexConditionOperator<
     /// <param name="offset">The zero-based byte offset of the Int32 slice.</param>
     /// <returns>A typed binary slice operator.</returns>
     public LibraDexBinaryTypedSliceConditionOperator<int> SlicedAsInt32(int offset)
-        => new LibraDexBinaryTypedSliceConditionOperator<int>(builder, indexSelector, LibraDexBinarySliceValueKind.Int32, offset, sizeof(int));
+        => SlicedAsInt32(offset, Coercion.Numeric.DotNet);
+
+    /// <summary>Captures a binary slice as Int32 using the selected numeric representation.<br/></summary>
+    public LibraDexBinaryTypedSliceConditionOperator<int> SlicedAsInt32(int offset, Coercion.Numeric coercion)
+        => NumericSlice<int>(LibraDexBinarySliceValueKind.Int32, offset, sizeof(int), sizeof(ulong), coercion);
 
     /// <summary>
     /// Captures an Abraxas-compatible binary slice interpreted as an Int8.<br/>
@@ -3116,7 +4239,11 @@ public sealed class LibraDexBinaryConditionOperator : LibraDexConditionOperator<
     /// <param name="offset">The zero-based byte offset of the Int8 slice.</param>
     /// <returns>A typed binary slice operator.</returns>
     public LibraDexBinaryTypedSliceConditionOperator<sbyte> SlicedAsSByte(int offset)
-        => new LibraDexBinaryTypedSliceConditionOperator<sbyte>(builder, indexSelector, LibraDexBinarySliceValueKind.Int8, offset, sizeof(byte));
+        => SlicedAsSByte(offset, Coercion.Numeric.DotNet);
+
+    /// <summary>Captures a binary slice as SByte using the selected numeric representation.<br/></summary>
+    public LibraDexBinaryTypedSliceConditionOperator<sbyte> SlicedAsSByte(int offset, Coercion.Numeric coercion)
+        => NumericSlice<sbyte>(LibraDexBinarySliceValueKind.Int8, offset, sizeof(byte), sizeof(ulong), coercion);
 
     /// <summary>
     /// Captures an Abraxas-compatible binary slice interpreted as a UInt8.<br/>
@@ -3125,7 +4252,11 @@ public sealed class LibraDexBinaryConditionOperator : LibraDexConditionOperator<
     /// <param name="offset">The zero-based byte offset of the UInt8 slice.</param>
     /// <returns>A typed binary slice operator.</returns>
     public LibraDexBinaryTypedSliceConditionOperator<byte> SlicedAsByte(int offset)
-        => new LibraDexBinaryTypedSliceConditionOperator<byte>(builder, indexSelector, LibraDexBinarySliceValueKind.UInt8, offset, sizeof(byte));
+        => SlicedAsByte(offset, Coercion.Numeric.DotNet);
+
+    /// <summary>Captures a binary slice as Byte using the selected numeric representation.<br/></summary>
+    public LibraDexBinaryTypedSliceConditionOperator<byte> SlicedAsByte(int offset, Coercion.Numeric coercion)
+        => NumericSlice<byte>(LibraDexBinarySliceValueKind.UInt8, offset, sizeof(byte), sizeof(ulong), coercion);
 
     /// <summary>
     /// Captures an Abraxas-compatible binary slice interpreted as a little-endian Int16.<br/>
@@ -3134,7 +4265,11 @@ public sealed class LibraDexBinaryConditionOperator : LibraDexConditionOperator<
     /// <param name="offset">The zero-based byte offset of the Int16 slice.</param>
     /// <returns>A typed binary slice operator.</returns>
     public LibraDexBinaryTypedSliceConditionOperator<short> SlicedAsInt16(int offset)
-        => new LibraDexBinaryTypedSliceConditionOperator<short>(builder, indexSelector, LibraDexBinarySliceValueKind.Int16, offset, sizeof(short));
+        => SlicedAsInt16(offset, Coercion.Numeric.DotNet);
+
+    /// <summary>Captures a binary slice as Int16 using the selected numeric representation.<br/></summary>
+    public LibraDexBinaryTypedSliceConditionOperator<short> SlicedAsInt16(int offset, Coercion.Numeric coercion)
+        => NumericSlice<short>(LibraDexBinarySliceValueKind.Int16, offset, sizeof(short), sizeof(ulong), coercion);
 
     /// <summary>
     /// Captures an Abraxas-compatible binary slice interpreted as a little-endian UInt16.<br/>
@@ -3143,7 +4278,11 @@ public sealed class LibraDexBinaryConditionOperator : LibraDexConditionOperator<
     /// <param name="offset">The zero-based byte offset of the UInt16 slice.</param>
     /// <returns>A typed binary slice operator.</returns>
     public LibraDexBinaryTypedSliceConditionOperator<ushort> SlicedAsUInt16(int offset)
-        => new LibraDexBinaryTypedSliceConditionOperator<ushort>(builder, indexSelector, LibraDexBinarySliceValueKind.UInt16, offset, sizeof(ushort));
+        => SlicedAsUInt16(offset, Coercion.Numeric.DotNet);
+
+    /// <summary>Captures a binary slice as UInt16 using the selected numeric representation.<br/></summary>
+    public LibraDexBinaryTypedSliceConditionOperator<ushort> SlicedAsUInt16(int offset, Coercion.Numeric coercion)
+        => NumericSlice<ushort>(LibraDexBinarySliceValueKind.UInt16, offset, sizeof(ushort), sizeof(ulong), coercion);
 
     /// <summary>
     /// Captures an Abraxas-compatible binary slice interpreted as a little-endian UInt32.<br/>
@@ -3152,7 +4291,11 @@ public sealed class LibraDexBinaryConditionOperator : LibraDexConditionOperator<
     /// <param name="offset">The zero-based byte offset of the UInt32 slice.</param>
     /// <returns>A typed binary slice operator.</returns>
     public LibraDexBinaryTypedSliceConditionOperator<uint> SlicedAsUInt32(int offset)
-        => new LibraDexBinaryTypedSliceConditionOperator<uint>(builder, indexSelector, LibraDexBinarySliceValueKind.UInt32, offset, sizeof(uint));
+        => SlicedAsUInt32(offset, Coercion.Numeric.DotNet);
+
+    /// <summary>Captures a binary slice as UInt32 using the selected numeric representation.<br/></summary>
+    public LibraDexBinaryTypedSliceConditionOperator<uint> SlicedAsUInt32(int offset, Coercion.Numeric coercion)
+        => NumericSlice<uint>(LibraDexBinarySliceValueKind.UInt32, offset, sizeof(uint), sizeof(ulong), coercion);
 
     /// <summary>
     /// Captures an Abraxas-compatible binary slice interpreted as a little-endian Int64.<br/>
@@ -3161,7 +4304,11 @@ public sealed class LibraDexBinaryConditionOperator : LibraDexConditionOperator<
     /// <param name="offset">The zero-based byte offset of the Int64 slice.</param>
     /// <returns>A typed binary slice operator.</returns>
     public LibraDexBinaryTypedSliceConditionOperator<long> SlicedAsInt64(int offset)
-        => new LibraDexBinaryTypedSliceConditionOperator<long>(builder, indexSelector, LibraDexBinarySliceValueKind.Int64, offset, sizeof(long));
+        => SlicedAsInt64(offset, Coercion.Numeric.DotNet);
+
+    /// <summary>Captures a binary slice as Int64 using the selected numeric representation.<br/></summary>
+    public LibraDexBinaryTypedSliceConditionOperator<long> SlicedAsInt64(int offset, Coercion.Numeric coercion)
+        => NumericSlice<long>(LibraDexBinarySliceValueKind.Int64, offset, sizeof(long), sizeof(ulong), coercion);
 
     /// <summary>
     /// Captures an Abraxas-compatible binary slice interpreted as a little-endian UInt64.<br/>
@@ -3170,7 +4317,11 @@ public sealed class LibraDexBinaryConditionOperator : LibraDexConditionOperator<
     /// <param name="offset">The zero-based byte offset of the UInt64 slice.</param>
     /// <returns>A typed binary slice operator.</returns>
     public LibraDexBinaryTypedSliceConditionOperator<ulong> SlicedAsUInt64(int offset)
-        => new LibraDexBinaryTypedSliceConditionOperator<ulong>(builder, indexSelector, LibraDexBinarySliceValueKind.UInt64, offset, sizeof(ulong));
+        => SlicedAsUInt64(offset, Coercion.Numeric.DotNet);
+
+    /// <summary>Captures a binary slice as UInt64 using the selected numeric representation.<br/></summary>
+    public LibraDexBinaryTypedSliceConditionOperator<ulong> SlicedAsUInt64(int offset, Coercion.Numeric coercion)
+        => NumericSlice<ulong>(LibraDexBinarySliceValueKind.UInt64, offset, sizeof(ulong), sizeof(ulong), coercion);
 
     /// <summary>
     /// Captures an Abraxas-compatible binary slice interpreted as a little-endian Single.<br/>
@@ -3179,7 +4330,11 @@ public sealed class LibraDexBinaryConditionOperator : LibraDexConditionOperator<
     /// <param name="offset">The zero-based byte offset of the Single slice.</param>
     /// <returns>A typed binary slice operator.</returns>
     public LibraDexBinaryTypedSliceConditionOperator<float> SlicedAsSingle(int offset)
-        => new LibraDexBinaryTypedSliceConditionOperator<float>(builder, indexSelector, LibraDexBinarySliceValueKind.Single, offset, sizeof(float));
+        => SlicedAsSingle(offset, Coercion.Numeric.DotNet);
+
+    /// <summary>Captures a binary slice as Single using the selected numeric representation.<br/></summary>
+    public LibraDexBinaryTypedSliceConditionOperator<float> SlicedAsSingle(int offset, Coercion.Numeric coercion)
+        => NumericSlice<float>(LibraDexBinarySliceValueKind.Single, offset, sizeof(float), sizeof(ulong), coercion);
 
     /// <summary>
     /// Captures an Abraxas-compatible binary slice interpreted as a little-endian Double.<br/>
@@ -3188,7 +4343,11 @@ public sealed class LibraDexBinaryConditionOperator : LibraDexConditionOperator<
     /// <param name="offset">The zero-based byte offset of the Double slice.</param>
     /// <returns>A typed binary slice operator.</returns>
     public LibraDexBinaryTypedSliceConditionOperator<double> SlicedAsDouble(int offset)
-        => new LibraDexBinaryTypedSliceConditionOperator<double>(builder, indexSelector, LibraDexBinarySliceValueKind.Double, offset, sizeof(double));
+        => SlicedAsDouble(offset, Coercion.Numeric.DotNet);
+
+    /// <summary>Captures a binary slice as Double using the selected numeric representation.<br/></summary>
+    public LibraDexBinaryTypedSliceConditionOperator<double> SlicedAsDouble(int offset, Coercion.Numeric coercion)
+        => NumericSlice<double>(LibraDexBinarySliceValueKind.Double, offset, sizeof(double), sizeof(ulong), coercion);
 
     /// <summary>
     /// Captures an Abraxas-compatible binary slice interpreted as a Decimal.<br/>
@@ -3197,7 +4356,11 @@ public sealed class LibraDexBinaryConditionOperator : LibraDexConditionOperator<
     /// <param name="offset">The zero-based byte offset of the Decimal slice.</param>
     /// <returns>A typed binary slice operator.</returns>
     public LibraDexBinaryTypedSliceConditionOperator<decimal> SlicedAsDecimal(int offset)
-        => new LibraDexBinaryTypedSliceConditionOperator<decimal>(builder, indexSelector, LibraDexBinarySliceValueKind.Decimal, offset, 16);
+        => SlicedAsDecimal(offset, Coercion.Numeric.DotNet);
+
+    /// <summary>Captures a binary slice as Decimal using the selected numeric representation.<br/></summary>
+    public LibraDexBinaryTypedSliceConditionOperator<decimal> SlicedAsDecimal(int offset, Coercion.Numeric coercion)
+        => NumericSlice<decimal>(LibraDexBinarySliceValueKind.Decimal, offset, 16, 16, coercion);
 
     /// <summary>
     /// Captures an Abraxas-compatible binary slice interpreted as a little-endian Int128.<br/>
@@ -3206,7 +4369,32 @@ public sealed class LibraDexBinaryConditionOperator : LibraDexConditionOperator<
     /// <param name="offset">The zero-based byte offset of the Int128 slice.</param>
     /// <returns>A typed binary slice operator.</returns>
     public LibraDexBinaryTypedSliceConditionOperator<Int128> SlicedAsInt128(int offset)
-        => new LibraDexBinaryTypedSliceConditionOperator<Int128>(builder, indexSelector, LibraDexBinarySliceValueKind.Int128, offset, 16);
+        => SlicedAsInt128(offset, Coercion.Numeric.DotNet);
+
+    /// <summary>Captures a binary slice as Int128 using the selected numeric representation.<br/></summary>
+    public LibraDexBinaryTypedSliceConditionOperator<Int128> SlicedAsInt128(int offset, Coercion.Numeric coercion)
+        => NumericSlice<Int128>(LibraDexBinarySliceValueKind.Int128, offset, 16, 16, coercion);
+
+    /// <summary>
+    /// Captures a caller-sized little-endian .NET integral binary slice and projects it as Int128.<br/>
+    /// This overload makes widening from ordinary one-, two-, four-, or eight-byte signed values explicit without requiring a coercion argument.<br/>
+    /// </summary>
+    /// <param name="offset">The zero-based byte offset of the source integral value.<br/></param>
+    /// <param name="byteLength">The physical source width in bytes.<br/></param>
+    /// <returns>A typed binary-slice operator whose comparison values are Int128.<br/></returns>
+    public LibraDexBinaryTypedSliceConditionOperator<Int128> SlicedAsInt128(int offset, int byteLength)
+        => SlicedAsInt128(offset, byteLength, Coercion.Numeric.DotNet);
+
+    /// <summary>
+    /// Captures a caller-sized integral binary slice and projects it as Int128 using the selected numeric representation.<br/>
+    /// Shorter signed sources are widened with sign extension; narrowing or incompatible signedness is checked during execution rather than silently truncated.<br/>
+    /// </summary>
+    /// <param name="offset">The zero-based byte offset of the source integral value.<br/></param>
+    /// <param name="byteLength">The physical source width in bytes; supported widths are 1, 2, 4, 8, and 16 for .NET coercion and 8 or 16 for LibraDex coercion.<br/></param>
+    /// <param name="coercion">The numeric byte representation used by the source value.<br/></param>
+    /// <returns>A typed binary-slice operator whose comparison values are Int128.<br/></returns>
+    public LibraDexBinaryTypedSliceConditionOperator<Int128> SlicedAsInt128(int offset, int byteLength, Coercion.Numeric coercion)
+        => new(builder, indexSelector, LibraDexBinarySliceValueKind.Int128, offset, byteLength, coercion);
 
     /// <summary>
     /// Captures an Abraxas-compatible binary slice interpreted as a little-endian UInt128.<br/>
@@ -3215,17 +4403,40 @@ public sealed class LibraDexBinaryConditionOperator : LibraDexConditionOperator<
     /// <param name="offset">The zero-based byte offset of the UInt128 slice.</param>
     /// <returns>A typed binary slice operator.</returns>
     public LibraDexBinaryTypedSliceConditionOperator<UInt128> SlicedAsUInt128(int offset)
-        => new LibraDexBinaryTypedSliceConditionOperator<UInt128>(builder, indexSelector, LibraDexBinarySliceValueKind.UInt128, offset, 16);
+        => SlicedAsUInt128(offset, Coercion.Numeric.DotNet);
+
+    /// <summary>Captures a binary slice as UInt128 using the selected numeric representation.<br/></summary>
+    public LibraDexBinaryTypedSliceConditionOperator<UInt128> SlicedAsUInt128(int offset, Coercion.Numeric coercion)
+        => NumericSlice<UInt128>(LibraDexBinarySliceValueKind.UInt128, offset, 16, 16, coercion);
 
     /// <summary>
-    /// Captures an Abraxas-compatible binary slice interpreted as a little-endian BigInteger.<br/>
-    /// The returned operator records typed comparisons that execute over the selected key bytes without decoding the whole binary key.<br/>
+    /// Captures a caller-sized little-endian .NET integral binary slice and projects it as UInt128.<br/>
+    /// This overload makes widening from ordinary one-, two-, four-, or eight-byte unsigned values explicit without requiring a coercion argument.<br/>
     /// </summary>
-    /// <param name="offset">The zero-based byte offset of the BigInteger slice.</param>
-    /// <param name="byteLength">The byte length of the BigInteger slice.</param>
-    /// <returns>A typed binary slice operator.</returns>
-    public LibraDexBinaryTypedSliceConditionOperator<BigInteger> SlicedAsBigInteger(int offset, int byteLength)
-        => new LibraDexBinaryTypedSliceConditionOperator<BigInteger>(builder, indexSelector, LibraDexBinarySliceValueKind.BigInteger, offset, byteLength);
+    /// <param name="offset">The zero-based byte offset of the source integral value.<br/></param>
+    /// <param name="byteLength">The physical source width in bytes.<br/></param>
+    /// <returns>A typed binary-slice operator whose comparison values are UInt128.<br/></returns>
+    public LibraDexBinaryTypedSliceConditionOperator<UInt128> SlicedAsUInt128(int offset, int byteLength)
+        => SlicedAsUInt128(offset, byteLength, Coercion.Numeric.DotNet);
+
+    /// <summary>
+    /// Captures a caller-sized integral binary slice and projects it as UInt128 using the selected numeric representation.<br/>
+    /// Shorter unsigned sources are widened with zero extension; narrowing or incompatible signedness is checked during execution rather than silently truncated.<br/>
+    /// </summary>
+    /// <param name="offset">The zero-based byte offset of the source integral value.<br/></param>
+    /// <param name="byteLength">The physical source width in bytes; supported widths are 1, 2, 4, 8, and 16 for .NET coercion and 8 or 16 for LibraDex coercion.<br/></param>
+    /// <param name="coercion">The numeric byte representation used by the source value.<br/></param>
+    /// <returns>A typed binary-slice operator whose comparison values are UInt128.<br/></returns>
+    public LibraDexBinaryTypedSliceConditionOperator<UInt128> SlicedAsUInt128(int offset, int byteLength, Coercion.Numeric coercion)
+        => new(builder, indexSelector, LibraDexBinarySliceValueKind.UInt128, offset, byteLength, coercion);
+
+    /// <summary>Captures a binary slice as BigInteger using ordinary .NET layout.<br/></summary>
+    public LibraDexBinaryTypedSliceConditionOperator<BigInteger> SlicedAsBigInt(int offset, int byteLength)
+        => SlicedAsBigInt(offset, byteLength, Coercion.Numeric.DotNet);
+
+    /// <summary>Captures a binary slice as BigInteger using the selected numeric representation.<br/></summary>
+    public LibraDexBinaryTypedSliceConditionOperator<BigInteger> SlicedAsBigInt(int offset, int byteLength, Coercion.Numeric coercion)
+        => new(builder, indexSelector, LibraDexBinarySliceValueKind.BigInteger, offset, byteLength, coercion);
 
     /// <summary>
     /// Captures an Abraxas-compatible binary slice interpreted as a Guid.<br/>
@@ -3237,49 +4448,83 @@ public sealed class LibraDexBinaryConditionOperator : LibraDexConditionOperator<
         => new LibraDexBinaryTypedSliceConditionOperator<Guid>(builder, indexSelector, LibraDexBinarySliceValueKind.Guid, offset, 16);
 
     /// <summary>
-    /// Captures an Abraxas-compatible binary slice interpreted as little-endian DateTime ticks.<br/>
-    /// The returned operator records typed comparisons that execute over the selected key bytes without decoding the whole binary key.<br/>
+    /// Captures a binary slice interpreted as a <see cref="DateTime"/> using an explicit native LibraDex SDT or raw .NET tick representation.<br/>
+    /// The representation is required because an untyped byte segment cannot reveal its date encoding; comparisons normalize captured operands once and evaluate candidate bytes without constructing a candidate <see cref="DateTime"/>.<br/>
     /// </summary>
-    /// <param name="offset">The zero-based byte offset of the DateTime tick slice.</param>
+    /// <param name="offset">The zero-based byte offset of the DateTime slice.</param>
+    /// <param name="encoding">The exact binary representation stored at the selected offset.</param>
     /// <returns>A typed binary slice operator.</returns>
-    public LibraDexBinaryTypedSliceConditionOperator<DateTime> SlicedAsDateTime(int offset)
-        => new LibraDexBinaryTypedSliceConditionOperator<DateTime>(builder, indexSelector, LibraDexBinarySliceValueKind.DateTimeTicks, offset, sizeof(long));
+    public LibraDexBinaryTypedSliceConditionOperator<DateTime> SlicedAsDateTime(int offset, Coercion.DateTime encoding)
+        => encoding switch
+        {
+            Coercion.DateTime.LibraDexCalendarSdt => new(builder, indexSelector, LibraDexBinarySliceValueKind.StructuredDateTimeCalendar, offset, sizeof(ulong)),
+            Coercion.DateTime.LibraDexPrecisionSdt => new(builder, indexSelector, LibraDexBinarySliceValueKind.StructuredDateTimePrecision, offset, sizeof(ulong)),
+            Coercion.DateTime.DotNetTicks => new(builder, indexSelector, LibraDexBinarySliceValueKind.DateTimeTicks, offset, sizeof(long)),
+            _ => throw new ArgumentOutOfRangeException(nameof(encoding), encoding, "Unknown binary DateTime encoding.")
+        };
 
     /// <summary>
-    /// Captures an Abraxas-compatible binary slice interpreted as a DateOnly day number.<br/>
-    /// The returned operator records typed comparisons that execute over the selected key bytes without decoding the whole binary key.<br/>
+    /// Captures a binary slice interpreted as a <see cref="DateOnly"/> using an explicit native LibraDex SDT or raw .NET day-number representation.<br/>
+    /// Captured operands are normalized once so candidate rows are compared as packed scalars rather than materialized <see cref="DateOnly"/> values.<br/>
     /// </summary>
     /// <param name="offset">The zero-based byte offset of the DateOnly slice.</param>
+    /// <param name="encoding">The exact binary representation stored at the selected offset.</param>
     /// <returns>A typed binary slice operator.</returns>
-    public LibraDexBinaryTypedSliceConditionOperator<DateOnly> SlicedAsDateOnly(int offset)
-        => new LibraDexBinaryTypedSliceConditionOperator<DateOnly>(builder, indexSelector, LibraDexBinarySliceValueKind.DateOnly, offset, sizeof(int));
+    public LibraDexBinaryTypedSliceConditionOperator<DateOnly> SlicedAsDateOnly(int offset, Coercion.DateOnly encoding)
+        => encoding switch
+        {
+            Coercion.DateOnly.LibraDexCalendarSdt => new(builder, indexSelector, LibraDexBinarySliceValueKind.StructuredDateOnlyCalendar, offset, sizeof(ulong)),
+            Coercion.DateOnly.LibraDexPrecisionSdt => new(builder, indexSelector, LibraDexBinarySliceValueKind.StructuredDateOnlyPrecision, offset, sizeof(ulong)),
+            Coercion.DateOnly.DotNetDayNumber => new(builder, indexSelector, LibraDexBinarySliceValueKind.DateOnly, offset, sizeof(int)),
+            _ => throw new ArgumentOutOfRangeException(nameof(encoding), encoding, "Unknown binary DateOnly encoding.")
+        };
 
     /// <summary>
-    /// Captures an Abraxas-compatible binary slice interpreted as TimeOnly ticks.<br/>
-    /// The returned operator records typed comparisons that execute over the selected key bytes without decoding the whole binary key.<br/>
+    /// Captures a binary slice interpreted as a <see cref="TimeOnly"/> using an explicit native LibraDex SDT or raw .NET tick representation.<br/>
+    /// Captured operands are normalized once so candidate rows are compared as packed scalars rather than materialized <see cref="TimeOnly"/> values.<br/>
     /// </summary>
     /// <param name="offset">The zero-based byte offset of the TimeOnly slice.</param>
+    /// <param name="encoding">The exact binary representation stored at the selected offset.</param>
     /// <returns>A typed binary slice operator.</returns>
-    public LibraDexBinaryTypedSliceConditionOperator<TimeOnly> SlicedAsTimeOnly(int offset)
-        => new LibraDexBinaryTypedSliceConditionOperator<TimeOnly>(builder, indexSelector, LibraDexBinarySliceValueKind.TimeOnly, offset, sizeof(long));
+    public LibraDexBinaryTypedSliceConditionOperator<TimeOnly> SlicedAsTimeOnly(int offset, Coercion.TimeOnly encoding)
+        => encoding switch
+        {
+            Coercion.TimeOnly.LibraDexCalendarSdt => new(builder, indexSelector, LibraDexBinarySliceValueKind.StructuredTimeOnlyCalendar, offset, sizeof(ulong)),
+            Coercion.TimeOnly.LibraDexPrecisionSdt => new(builder, indexSelector, LibraDexBinarySliceValueKind.StructuredTimeOnlyPrecision, offset, sizeof(ulong)),
+            Coercion.TimeOnly.DotNetTicks => new(builder, indexSelector, LibraDexBinarySliceValueKind.TimeOnly, offset, sizeof(long)),
+            _ => throw new ArgumentOutOfRangeException(nameof(encoding), encoding, "Unknown binary TimeOnly encoding.")
+        };
 
     /// <summary>
-    /// Captures an Abraxas-compatible binary slice interpreted as TimeSpan ticks.<br/>
-    /// The returned operator records typed comparisons that execute over the selected key bytes without decoding the whole binary key.<br/>
+    /// Captures a binary slice interpreted as a <see cref="TimeSpan"/> using an explicit LibraDex ordered-scalar or raw .NET tick representation.<br/>
+    /// Captured operands are normalized once so candidate rows are compared numerically without constructing a candidate <see cref="TimeSpan"/>.<br/>
     /// </summary>
     /// <param name="offset">The zero-based byte offset of the TimeSpan slice.</param>
+    /// <param name="encoding">The exact binary representation stored at the selected offset.</param>
     /// <returns>A typed binary slice operator.</returns>
-    public LibraDexBinaryTypedSliceConditionOperator<TimeSpan> SlicedAsTimeSpan(int offset)
-        => new LibraDexBinaryTypedSliceConditionOperator<TimeSpan>(builder, indexSelector, LibraDexBinarySliceValueKind.TimeSpanTicks, offset, sizeof(long));
+    public LibraDexBinaryTypedSliceConditionOperator<TimeSpan> SlicedAsTimeSpan(int offset, Coercion.TimeSpan encoding)
+        => encoding switch
+        {
+            Coercion.TimeSpan.LibraDexOrderedTicks => new(builder, indexSelector, LibraDexBinarySliceValueKind.OrderedTimeSpanTicks, offset, sizeof(ulong)),
+            Coercion.TimeSpan.DotNetTicks => new(builder, indexSelector, LibraDexBinarySliceValueKind.TimeSpanTicks, offset, sizeof(long)),
+            _ => throw new ArgumentOutOfRangeException(nameof(encoding), encoding, "Unknown binary TimeSpan encoding.")
+        };
 
     /// <summary>
-    /// Captures an Abraxas-compatible binary slice interpreted as DateTimeOffset ticks plus offset ticks.<br/>
-    /// The returned operator accepts DateTimeOffset operands so `.SlicedAsDateTime(...)` and `.SlicedAsDateTimeOffset(...)` stay type-consistent and caller intent remains visible at the fluent call site.<br/>
+    /// Captures a binary slice interpreted as a <see cref="DateTimeOffset"/> using an explicit UTC LibraDex SDT or raw .NET ticks-plus-offset representation.<br/>
+    /// Comparisons use the represented UTC instant and do not construct a candidate <see cref="DateTimeOffset"/> for each row.<br/>
     /// </summary>
-    /// <param name="offset">The zero-based byte offset of the 16-byte DateTimeOffset pair.</param>
+    /// <param name="offset">The zero-based byte offset of the DateTimeOffset slice.</param>
+    /// <param name="encoding">The exact binary representation stored at the selected offset.</param>
     /// <returns>A typed binary slice operator over DateTimeOffset values.</returns>
-    public LibraDexBinaryTypedSliceConditionOperator<DateTimeOffset> SlicedAsDateTimeOffset(int offset)
-        => new LibraDexBinaryTypedSliceConditionOperator<DateTimeOffset>(builder, indexSelector, LibraDexBinarySliceValueKind.DateTimeOffsetPair, offset, 16);
+    public LibraDexBinaryTypedSliceConditionOperator<DateTimeOffset> SlicedAsDateTimeOffset(int offset, Coercion.DateTimeOffset encoding)
+        => encoding switch
+        {
+            Coercion.DateTimeOffset.LibraDexCalendarSdtUtc => new(builder, indexSelector, LibraDexBinarySliceValueKind.StructuredDateTimeOffsetCalendarUtc, offset, sizeof(ulong)),
+            Coercion.DateTimeOffset.LibraDexPrecisionSdtUtc => new(builder, indexSelector, LibraDexBinarySliceValueKind.StructuredDateTimeOffsetPrecisionUtc, offset, sizeof(ulong)),
+            Coercion.DateTimeOffset.DotNetTicksAndOffset => new(builder, indexSelector, LibraDexBinarySliceValueKind.DateTimeOffsetPair, offset, sizeof(long) * 2),
+            _ => throw new ArgumentOutOfRangeException(nameof(encoding), encoding, "Unknown binary DateTimeOffset encoding.")
+        };
 
     /// <summary>
     /// Captures an Abraxas-compatible binary slice interpreted as UTF-8 text.<br/>
@@ -3289,7 +4534,18 @@ public sealed class LibraDexBinaryConditionOperator : LibraDexConditionOperator<
     /// <param name="byteLength">The byte length of the UTF-8 slice.</param>
     /// <returns>A typed binary string slice operator.</returns>
     public LibraDexBinaryStringSliceConditionOperator SlicedAsUtf8String(int offset, int byteLength)
-        => new LibraDexBinaryStringSliceConditionOperator(builder, indexSelector, LibraDexBinarySliceValueKind.Utf8String, offset, byteLength);
+        => SlicedAsUtf8String(offset, byteLength, Coercion.Text.Strict);
+
+    /// <summary>
+    /// Captures a binary slice interpreted as UTF-8 text with an explicit malformed-input policy.<br/>
+    /// Valid text retains byte-native ordinal comparison; replacement decoding occurs only when requested and the candidate bytes are malformed.<br/>
+    /// </summary>
+    /// <param name="offset">The zero-based byte offset of the UTF-8 slice.</param>
+    /// <param name="byteLength">The byte length of the UTF-8 slice.</param>
+    /// <param name="coercion">The malformed-input policy used by the compiled predicate.</param>
+    /// <returns>A typed binary string slice operator.</returns>
+    public LibraDexBinaryStringSliceConditionOperator SlicedAsUtf8String(int offset, int byteLength, Coercion.Text coercion)
+        => new LibraDexBinaryStringSliceConditionOperator(builder, indexSelector, LibraDexBinarySliceValueKind.Utf8String, offset, byteLength, textCoercion: coercion);
 
     /// <summary>
     /// Captures an Abraxas-compatible binary slice interpreted as Latin1 text.<br/>
@@ -3299,7 +4555,18 @@ public sealed class LibraDexBinaryConditionOperator : LibraDexConditionOperator<
     /// <param name="byteLength">The byte length of the Latin1 slice.</param>
     /// <returns>A typed binary string slice operator.</returns>
     public LibraDexBinaryStringSliceConditionOperator SlicedAsLatin1String(int offset, int byteLength)
-        => new LibraDexBinaryStringSliceConditionOperator(builder, indexSelector, LibraDexBinarySliceValueKind.Latin1String, offset, byteLength);
+        => SlicedAsLatin1String(offset, byteLength, Coercion.Text.Strict);
+
+    /// <summary>
+    /// Captures a binary slice interpreted as Latin-1 text with an explicit malformed-input policy.<br/>
+    /// Every byte is valid Latin-1, so both policies are semantically identical and the value is retained for fluent-family consistency.<br/>
+    /// </summary>
+    /// <param name="offset">The zero-based byte offset of the Latin-1 slice.</param>
+    /// <param name="byteLength">The byte length of the Latin-1 slice.</param>
+    /// <param name="coercion">The text coercion policy retained by the condition descriptor.</param>
+    /// <returns>A typed binary string slice operator.</returns>
+    public LibraDexBinaryStringSliceConditionOperator SlicedAsLatin1String(int offset, int byteLength, Coercion.Text coercion)
+        => new LibraDexBinaryStringSliceConditionOperator(builder, indexSelector, LibraDexBinarySliceValueKind.Latin1String, offset, byteLength, textCoercion: coercion);
 
     /// <summary>
     /// Captures an Abraxas-compatible binary slice interpreted as UTF-16 text.<br/>
@@ -3309,7 +4576,18 @@ public sealed class LibraDexBinaryConditionOperator : LibraDexConditionOperator<
     /// <param name="byteLength">The byte length of the UTF-16 slice.</param>
     /// <returns>A typed binary string slice operator.</returns>
     public LibraDexBinaryStringSliceConditionOperator SlicedAsUtf16String(int offset, int byteLength)
-        => new LibraDexBinaryStringSliceConditionOperator(builder, indexSelector, LibraDexBinarySliceValueKind.Utf16String, offset, byteLength);
+        => SlicedAsUtf16String(offset, byteLength, Coercion.Text.Strict);
+
+    /// <summary>
+    /// Captures a binary slice interpreted as little-endian UTF-16 text with an explicit malformed-input policy.<br/>
+    /// Valid text retains aligned byte-native ordinal comparison; replacement decoding occurs only for malformed candidate bytes when requested.<br/>
+    /// </summary>
+    /// <param name="offset">The zero-based byte offset of the UTF-16 slice.</param>
+    /// <param name="byteLength">The byte length of the UTF-16 slice.</param>
+    /// <param name="coercion">The malformed-input policy used by the compiled predicate.</param>
+    /// <returns>A typed binary string slice operator.</returns>
+    public LibraDexBinaryStringSliceConditionOperator SlicedAsUtf16String(int offset, int byteLength, Coercion.Text coercion)
+        => new LibraDexBinaryStringSliceConditionOperator(builder, indexSelector, LibraDexBinarySliceValueKind.Utf16String, offset, byteLength, textCoercion: coercion);
 
     /// <summary>
     /// Captures an Abraxas-compatible binary slice interpreted as UTF-32 text.<br/>
@@ -3319,7 +4597,18 @@ public sealed class LibraDexBinaryConditionOperator : LibraDexConditionOperator<
     /// <param name="byteLength">The byte length of the UTF-32 slice.</param>
     /// <returns>A typed binary string slice operator.</returns>
     public LibraDexBinaryStringSliceConditionOperator SlicedAsUtf32String(int offset, int byteLength)
-        => new LibraDexBinaryStringSliceConditionOperator(builder, indexSelector, LibraDexBinarySliceValueKind.Utf32String, offset, byteLength);
+        => SlicedAsUtf32String(offset, byteLength, Coercion.Text.Strict);
+
+    /// <summary>
+    /// Captures a binary slice interpreted as little-endian UTF-32 text with an explicit malformed-input policy.<br/>
+    /// Valid text retains aligned byte-native ordinal comparison; replacement decoding occurs only for malformed candidate bytes when requested.<br/>
+    /// </summary>
+    /// <param name="offset">The zero-based byte offset of the UTF-32 slice.</param>
+    /// <param name="byteLength">The byte length of the UTF-32 slice.</param>
+    /// <param name="coercion">The malformed-input policy used by the compiled predicate.</param>
+    /// <returns>A typed binary string slice operator.</returns>
+    public LibraDexBinaryStringSliceConditionOperator SlicedAsUtf32String(int offset, int byteLength, Coercion.Text coercion)
+        => new LibraDexBinaryStringSliceConditionOperator(builder, indexSelector, LibraDexBinarySliceValueKind.Utf32String, offset, byteLength, textCoercion: coercion);
 
     /// <summary>
     /// Captures an Abraxas-compatible binary slice interpreted as ASCII text.<br/>
@@ -3329,7 +4618,18 @@ public sealed class LibraDexBinaryConditionOperator : LibraDexConditionOperator<
     /// <param name="byteLength">The byte length of the ASCII slice.</param>
     /// <returns>A typed binary string slice operator.</returns>
     public LibraDexBinaryStringSliceConditionOperator SlicedAsAsciiString(int offset, int byteLength)
-        => new LibraDexBinaryStringSliceConditionOperator(builder, indexSelector, LibraDexBinarySliceValueKind.AsciiString, offset, byteLength);
+        => SlicedAsAsciiString(offset, byteLength, Coercion.Text.Strict);
+
+    /// <summary>
+    /// Captures a binary slice interpreted as ASCII text with an explicit malformed-input policy.<br/>
+    /// Valid seven-bit text retains byte-native ordinal comparison; replacement decoding occurs only for bytes above <c>0x7F</c> when requested.<br/>
+    /// </summary>
+    /// <param name="offset">The zero-based byte offset of the ASCII slice.</param>
+    /// <param name="byteLength">The byte length of the ASCII slice.</param>
+    /// <param name="coercion">The malformed-input policy used by the compiled predicate.</param>
+    /// <returns>A typed binary string slice operator.</returns>
+    public LibraDexBinaryStringSliceConditionOperator SlicedAsAsciiString(int offset, int byteLength, Coercion.Text coercion)
+        => new LibraDexBinaryStringSliceConditionOperator(builder, indexSelector, LibraDexBinarySliceValueKind.AsciiString, offset, byteLength, textCoercion: coercion);
 
     /// <summary>
     /// Captures a binary slice interpreted with a caller-supplied text encoding.<br/>
@@ -3343,6 +4643,108 @@ public sealed class LibraDexBinaryConditionOperator : LibraDexConditionOperator<
     {
         ArgumentNullException.ThrowIfNull(encoding);
         return new LibraDexBinaryStringSliceConditionOperator(builder, indexSelector, LibraDexBinarySliceValueKind.CustomEncodingString, offset, byteLength, encoding);
+    }
+
+    /// <summary>
+    /// Captures a binary slice interpreted with a stable LibraDex text-encoding contract.<br/>
+    /// Code-page identity and malformed-input behavior remain explicit so higher layers can persist and recreate the condition without relying on a process-local <see cref="Encoding"/> instance.<br/>
+    /// </summary>
+    /// <param name="offset">The zero-based byte offset of the encoded text slice.<br/></param>
+    /// <param name="byteLength">The byte length of the encoded text slice.<br/></param>
+    /// <param name="encoding">The stable LibraDex encoding contract used to decode the slice.<br/></param>
+    /// <returns>A typed binary string slice operator.<br/></returns>
+    public LibraDexBinaryStringSliceConditionOperator SlicedAsEncodedString(
+        int offset,
+        int byteLength,
+        LibraDexTextEncoding encoding)
+    {
+        ArgumentNullException.ThrowIfNull(encoding);
+        return new LibraDexBinaryStringSliceConditionOperator(
+            builder,
+            indexSelector,
+            LibraDexBinarySliceValueKind.CustomEncodingString,
+            offset,
+            byteLength,
+            stableEncoding: encoding);
+    }
+
+    /// <summary>
+    /// Captures the binary bytes from <paramref name="offset"/> through the end of the key as UTF-8 text.<br/>
+    /// This mirrors <c>Span.Slice(offset)</c>; use <see cref="SlicedAsUtf8String(int, int)"/> when the text occupies a bounded field inside a larger binary key.<br/>
+    /// </summary>
+    /// <param name="offset">The zero-based byte offset where the UTF-8 text begins.</param>
+    /// <returns>A typed binary string slice operator over the remaining key bytes.</returns>
+    public LibraDexBinaryStringSliceConditionOperator SlicedAsUtf8String(int offset)
+        => new LibraDexBinaryStringSliceConditionOperator(builder, indexSelector, LibraDexBinarySliceValueKind.Utf8String, offset, LibraDexBinaryStringSliceConditionOperator.RemainingLength);
+
+    /// <summary>
+    /// Captures the binary bytes from <paramref name="offset"/> through the end of the key as Latin-1 text.<br/>
+    /// This mirrors <c>Span.Slice(offset)</c>; use <see cref="SlicedAsLatin1String(int, int)"/> when the text occupies a bounded field inside a larger binary key.<br/>
+    /// </summary>
+    /// <param name="offset">The zero-based byte offset where the Latin-1 text begins.</param>
+    /// <returns>A typed binary string slice operator over the remaining key bytes.</returns>
+    public LibraDexBinaryStringSliceConditionOperator SlicedAsLatin1String(int offset)
+        => new LibraDexBinaryStringSliceConditionOperator(builder, indexSelector, LibraDexBinarySliceValueKind.Latin1String, offset, LibraDexBinaryStringSliceConditionOperator.RemainingLength);
+
+    /// <summary>
+    /// Captures the binary bytes from <paramref name="offset"/> through the end of the key as UTF-16 text.<br/>
+    /// This mirrors <c>Span.Slice(offset)</c>; use <see cref="SlicedAsUtf16String(int, int)"/> when the text occupies a bounded field inside a larger binary key.<br/>
+    /// </summary>
+    /// <param name="offset">The zero-based byte offset where the UTF-16 text begins.</param>
+    /// <returns>A typed binary string slice operator over the remaining key bytes.</returns>
+    public LibraDexBinaryStringSliceConditionOperator SlicedAsUtf16String(int offset)
+        => new LibraDexBinaryStringSliceConditionOperator(builder, indexSelector, LibraDexBinarySliceValueKind.Utf16String, offset, LibraDexBinaryStringSliceConditionOperator.RemainingLength);
+
+    /// <summary>
+    /// Captures the binary bytes from <paramref name="offset"/> through the end of the key as UTF-32 text.<br/>
+    /// This mirrors <c>Span.Slice(offset)</c>; use <see cref="SlicedAsUtf32String(int, int)"/> when the text occupies a bounded field inside a larger binary key.<br/>
+    /// </summary>
+    /// <param name="offset">The zero-based byte offset where the UTF-32 text begins.</param>
+    /// <returns>A typed binary string slice operator over the remaining key bytes.</returns>
+    public LibraDexBinaryStringSliceConditionOperator SlicedAsUtf32String(int offset)
+        => new LibraDexBinaryStringSliceConditionOperator(builder, indexSelector, LibraDexBinarySliceValueKind.Utf32String, offset, LibraDexBinaryStringSliceConditionOperator.RemainingLength);
+
+    /// <summary>
+    /// Captures the binary bytes from <paramref name="offset"/> through the end of the key as ASCII text.<br/>
+    /// This mirrors <c>Span.Slice(offset)</c>; use <see cref="SlicedAsAsciiString(int, int)"/> when the text occupies a bounded field inside a larger binary key.<br/>
+    /// </summary>
+    /// <param name="offset">The zero-based byte offset where the ASCII text begins.</param>
+    /// <returns>A typed binary string slice operator over the remaining key bytes.</returns>
+    public LibraDexBinaryStringSliceConditionOperator SlicedAsAsciiString(int offset)
+        => new LibraDexBinaryStringSliceConditionOperator(builder, indexSelector, LibraDexBinarySliceValueKind.AsciiString, offset, LibraDexBinaryStringSliceConditionOperator.RemainingLength);
+
+    /// <summary>
+    /// Captures the binary bytes from <paramref name="offset"/> through the end of the key as text interpreted by a caller-supplied encoding.<br/>
+    /// This mirrors <c>Span.Slice(offset)</c>; use <see cref="SlicedAsEncodedString(int, int, Encoding)"/> when the text occupies a bounded field inside a larger binary key.<br/>
+    /// </summary>
+    /// <param name="offset">The zero-based byte offset where the encoded text begins.</param>
+    /// <param name="encoding">The caller-supplied text encoding used to decode the remaining bytes.</param>
+    /// <returns>A typed binary string slice operator over the remaining key bytes.</returns>
+    public LibraDexBinaryStringSliceConditionOperator SlicedAsEncodedString(int offset, Encoding encoding)
+    {
+        ArgumentNullException.ThrowIfNull(encoding);
+        return new LibraDexBinaryStringSliceConditionOperator(builder, indexSelector, LibraDexBinarySliceValueKind.CustomEncodingString, offset, LibraDexBinaryStringSliceConditionOperator.RemainingLength, encoding);
+    }
+
+    /// <summary>
+    /// Captures the binary bytes from <paramref name="offset"/> through the end of the key as text interpreted by a stable LibraDex encoding contract.<br/>
+    /// This mirrors <c>Span.Slice(offset)</c>; use <see cref="SlicedAsEncodedString(int, int, LibraDexTextEncoding)"/> when the text occupies a bounded field inside a larger binary key.<br/>
+    /// </summary>
+    /// <param name="offset">The zero-based byte offset where the encoded text begins.<br/></param>
+    /// <param name="encoding">The stable LibraDex encoding contract used to decode the remaining bytes.<br/></param>
+    /// <returns>A typed binary string slice operator over the remaining key bytes.<br/></returns>
+    public LibraDexBinaryStringSliceConditionOperator SlicedAsEncodedString(
+        int offset,
+        LibraDexTextEncoding encoding)
+    {
+        ArgumentNullException.ThrowIfNull(encoding);
+        return new LibraDexBinaryStringSliceConditionOperator(
+            builder,
+            indexSelector,
+            LibraDexBinarySliceValueKind.CustomEncodingString,
+            offset,
+            LibraDexBinaryStringSliceConditionOperator.RemainingLength,
+            stableEncoding: encoding);
     }
 
     /// <summary>
@@ -3385,6 +4787,76 @@ public sealed class LibraDexBinaryConditionOperator : LibraDexConditionOperator<
             IgnoreCase: false,
             Culture: null));
     }
+
+    /// <summary>
+    /// Matches identities stored on the selected binary index's explicit null-key route.<br/>
+    /// This is a low-friction alias for <c>EqualTo(NullKey.Null)</c>; it remains distinct from an empty byte sequence.<br/>
+    /// </summary>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd IsNull()
+        => EqualTo(NullKey.Null);
+
+    /// <summary>
+    /// Matches identities whose selected binary key is not explicitly null.<br/>
+    /// Empty byte sequences remain included because null and empty are distinct maintained key-state routes.<br/>
+    /// </summary>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd IsNotNull()
+        => NotEqualTo(NullKey.Null);
+
+    /// <summary>
+    /// Matches identities stored on the selected binary index's explicit empty-byte route.<br/>
+    /// This represents a zero-length byte sequence rather than a null key or an absent index tuple.<br/>
+    /// </summary>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd IsEmpty()
+        => EqualTo(NullKey.Empty);
+
+    /// <summary>
+    /// Matches identities whose selected binary key is not an empty byte sequence.<br/>
+    /// Explicit null keys remain included; use <see cref="IsNotNullOrEmpty"/> to exclude both key states.<br/>
+    /// </summary>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd IsNotEmpty()
+        => NotEqualTo(NullKey.Empty);
+
+    /// <summary>
+    /// Matches identities stored on either the explicit binary null route or the explicit empty-byte route.<br/>
+    /// Both compact routes are combined without caller-side grouping or a temporary value collection.<br/>
+    /// </summary>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd IsNullOrEmpty()
+        => EqualTo(NullKey.NullOrEmpty);
+
+    /// <summary>
+    /// Matches identities whose selected binary key is neither explicitly null nor an empty byte sequence.<br/>
+    /// The predicate complements both maintained key-state routes and selects ordinary non-empty binary keys.<br/>
+    /// </summary>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd IsNotNullOrEmpty()
+        => NotEqualTo(NullKey.NullOrEmpty);
+
+    private LibraDexBinaryTypedSliceConditionOperator<TValue> NumericSlice<TValue>(
+        LibraDexBinarySliceValueKind valueKind,
+        int offset,
+        int dotNetLength,
+        int libraDexLength,
+        Coercion.Numeric coercion)
+    {
+        int length = coercion switch
+        {
+            Coercion.Numeric.DotNet => dotNetLength,
+            Coercion.Numeric.LibraDex => libraDexLength,
+            _ => throw new ArgumentOutOfRangeException(nameof(coercion), coercion, "Unknown numeric coercion.")
+        };
+        return new LibraDexBinaryTypedSliceConditionOperator<TValue>(
+            builder,
+            indexSelector,
+            valueKind,
+            offset,
+            length,
+            coercion);
+    }
 }
 
 /// <summary>
@@ -3399,13 +4871,15 @@ public sealed class LibraDexBinaryTypedSliceConditionOperator<TValue>
     private readonly LibraDexBinarySliceValueKind valueKind;
     private readonly int offset;
     private readonly int length;
+    private readonly Coercion.Numeric numericCoercion;
 
     internal LibraDexBinaryTypedSliceConditionOperator(
         LibraDexConditionBuilder builder,
         LibraDexConditionIndexSelector indexSelector,
         LibraDexBinarySliceValueKind valueKind,
         int offset,
-        int length)
+        int length,
+        Coercion.Numeric numericCoercion = Coercion.Numeric.DotNet)
     {
         if (offset < 0)
         {
@@ -3422,6 +4896,7 @@ public sealed class LibraDexBinaryTypedSliceConditionOperator<TValue>
         this.valueKind = valueKind;
         this.offset = offset;
         this.length = length;
+        this.numericCoercion = numericCoercion;
     }
 
     /// <summary>
@@ -3547,6 +5022,8 @@ public sealed class LibraDexBinaryTypedSliceConditionOperator<TValue>
         {
             operands.Add(LibraDexConditionOperand.Value(upperValue!));
         }
+        if (IsNumeric(valueKind))
+            operands.Add(LibraDexConditionOperand.Value(numericCoercion));
 
         return builder.AddLeaf(new LibraDexConditionLeafDescriptor(
             indexSelector,
@@ -3556,6 +5033,22 @@ public sealed class LibraDexBinaryTypedSliceConditionOperator<TValue>
             IgnoreCase: false,
             Culture: null));
     }
+
+    private static bool IsNumeric(LibraDexBinarySliceValueKind kind)
+        => kind is LibraDexBinarySliceValueKind.Int8 or
+            LibraDexBinarySliceValueKind.UInt8 or
+            LibraDexBinarySliceValueKind.Int16 or
+            LibraDexBinarySliceValueKind.UInt16 or
+            LibraDexBinarySliceValueKind.Int32 or
+            LibraDexBinarySliceValueKind.UInt32 or
+            LibraDexBinarySliceValueKind.Int64 or
+            LibraDexBinarySliceValueKind.UInt64 or
+            LibraDexBinarySliceValueKind.Int128 or
+            LibraDexBinarySliceValueKind.UInt128 or
+            LibraDexBinarySliceValueKind.Single or
+            LibraDexBinarySliceValueKind.Double or
+            LibraDexBinarySliceValueKind.Decimal or
+            LibraDexBinarySliceValueKind.BigInteger;
 }
 
 /// <summary>
@@ -3564,12 +5057,16 @@ public sealed class LibraDexBinaryTypedSliceConditionOperator<TValue>
 /// </summary>
 public sealed class LibraDexBinaryStringSliceConditionOperator
 {
+    internal const int RemainingLength = -1;
+
     private readonly LibraDexConditionBuilder builder;
     private readonly LibraDexConditionIndexSelector indexSelector;
     private readonly LibraDexBinarySliceValueKind valueKind;
     private readonly int offset;
     private readonly int length;
     private readonly Encoding? encoding;
+    private readonly LibraDexTextEncoding? stableEncoding;
+    private readonly Coercion.Text textCoercion;
 
     internal LibraDexBinaryStringSliceConditionOperator(
         LibraDexConditionBuilder builder,
@@ -3577,14 +5074,16 @@ public sealed class LibraDexBinaryStringSliceConditionOperator
         LibraDexBinarySliceValueKind valueKind,
         int offset,
         int length,
-        Encoding? encoding = null)
+        Encoding? encoding = null,
+        Coercion.Text textCoercion = Coercion.Text.Strict,
+        LibraDexTextEncoding? stableEncoding = null)
     {
         if (offset < 0)
         {
             throw new ArgumentOutOfRangeException(nameof(offset), offset, "Binary string slice offset cannot be negative.");
         }
 
-        if (length <= 0)
+        if (length != RemainingLength && length <= 0)
         {
             throw new ArgumentOutOfRangeException(nameof(length), length, "Binary string slice length must be positive.");
         }
@@ -3595,6 +5094,8 @@ public sealed class LibraDexBinaryStringSliceConditionOperator
         this.offset = offset;
         this.length = length;
         this.encoding = encoding;
+        this.stableEncoding = stableEncoding;
+        this.textCoercion = textCoercion;
     }
 
     /// <summary>
@@ -3643,7 +5144,7 @@ public sealed class LibraDexBinaryStringSliceConditionOperator
                 LibraDexConditionOperand.Value(offset),
                 LibraDexConditionOperand.Value(length),
                 LibraDexConditionOperand.Value(value),
-                LibraDexConditionOperand.Value(encoding!)
+                LibraDexConditionOperand.Value((object?)stableEncoding ?? encoding!)
             };
         }
 
@@ -3652,7 +5153,8 @@ public sealed class LibraDexBinaryStringSliceConditionOperator
             LibraDexConditionOperand.Value(valueKind),
             LibraDexConditionOperand.Value(offset),
             LibraDexConditionOperand.Value(length),
-            LibraDexConditionOperand.Value(value)
+            LibraDexConditionOperand.Value(value),
+            LibraDexConditionOperand.Value(textCoercion)
         };
     }
 }
@@ -3687,6 +5189,15 @@ public sealed class LibraDexGuidConditionOperator : LibraDexConditionOperator<Gu
     /// <returns>A continuation for adding more clauses or ending the condition.</returns>
     public LibraDexConditionContinueOrEnd StartsWith(string value)
         => AddGuidPattern(LibraDexConditionOperatorKind.StartsWith, LibraDexGuidPatternPredicate.Create(value, LibraDexGuidPatternMode.StartsWith));
+
+    /// <summary>
+    /// Captures a deferred GUID text or segment starts-with condition.<br/>
+    /// The factory is evaluated once per condition materialization, after which the compiled predicate evaluates stored GUID bytes without per-key text conversion.<br/>
+    /// </summary>
+    /// <param name="value">A factory returning the current canonical GUID text or segment prefix.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd StartsWith(Func<string> value)
+        => AddDeferredGuidPattern(LibraDexConditionOperatorKind.StartsWith, value, LibraDexGuidPatternMode.StartsWith);
 
     /// <summary>
     /// Captures a GUID byte-domain starts-with condition.<br/>
@@ -3727,6 +5238,15 @@ public sealed class LibraDexGuidConditionOperator : LibraDexConditionOperator<Gu
         => AddGuidPattern(LibraDexConditionOperatorKind.EndsWith, LibraDexGuidPatternPredicate.Create(value, LibraDexGuidPatternMode.EndsWith));
 
     /// <summary>
+    /// Captures a deferred canonical GUID text ends-with condition.<br/>
+    /// The factory remains dormant while the reusable condition is built and is evaluated once when the condition is materialized.<br/>
+    /// </summary>
+    /// <param name="value">A factory returning the current canonical GUID text suffix.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd EndsWith(Func<string> value)
+        => AddDeferredGuidPattern(LibraDexConditionOperatorKind.EndsWith, value, LibraDexGuidPatternMode.EndsWith);
+
+    /// <summary>
     /// Captures a GUID byte-domain ends-with condition.<br/>
     /// The byte order is the stored GUID byte order produced by `Guid.TryWriteBytes`, and the descriptor stores a compiled nibble predicate rather than text.<br/>
     /// </summary>
@@ -3745,6 +5265,15 @@ public sealed class LibraDexGuidConditionOperator : LibraDexConditionOperator<Gu
     /// <returns>A continuation for adding more clauses or ending the condition.</returns>
     public LibraDexConditionContinueOrEnd Contains(string value)
         => AddGuidPattern(LibraDexConditionOperatorKind.Contains, LibraDexGuidPatternPredicate.Create(value, LibraDexGuidPatternMode.Contains));
+
+    /// <summary>
+    /// Captures a deferred canonical GUID text containment condition.<br/>
+    /// Containment searches every viable canonical nibble position and the factory is evaluated once per materialization.<br/>
+    /// </summary>
+    /// <param name="value">A factory returning the current canonical GUID text fragment.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd Contains(Func<string> value)
+        => AddDeferredGuidPattern(LibraDexConditionOperatorKind.Contains, value, LibraDexGuidPatternMode.Contains);
 
     /// <summary>
     /// Captures a GUID byte-domain contains condition.<br/>
@@ -3767,12 +5296,30 @@ public sealed class LibraDexGuidConditionOperator : LibraDexConditionOperator<Gu
         => AddGuidPattern(LibraDexConditionOperatorKind.MatchesPattern, LibraDexGuidPatternPredicate.Create(pattern, LibraDexGuidPatternMode.MatchesPattern));
 
     /// <summary>
+    /// Captures a deferred full canonical GUID pattern.<br/>
+    /// `x` is the only wildcard nibble; SQL, regular-expression, and glob wildcard characters are intentionally rejected.<br/>
+    /// </summary>
+    /// <param name="pattern">A factory returning the current 32-nibble canonical GUID pattern.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd MatchesPattern(Func<string> pattern)
+        => AddDeferredGuidPattern(LibraDexConditionOperatorKind.MatchesPattern, pattern, LibraDexGuidPatternMode.MatchesPattern);
+
+    /// <summary>
     /// Captures a GUID text pattern condition using the short public spelling.<br/>
     /// This is the preferred alias for <see cref="MatchesPattern(string)"/> and keeps wildcard GUID syntax concise at call sites.<br/>
     /// </summary>
     /// <param name="pattern">The GUID text pattern descriptor.</param>
     /// <returns>A continuation for adding more clauses or ending the condition.</returns>
     public LibraDexConditionContinueOrEnd Matches(string pattern)
+        => MatchesPattern(pattern);
+
+    /// <summary>
+    /// Captures a deferred full canonical GUID pattern using the short public spelling.<br/>
+    /// The value factory follows the same materialization-time and `x`-only wildcard contract as <see cref="MatchesPattern(Func{string})"/>.<br/>
+    /// </summary>
+    /// <param name="pattern">A factory returning the current 32-nibble canonical GUID pattern.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public LibraDexConditionContinueOrEnd Matches(Func<string> pattern)
         => MatchesPattern(pattern);
 
     /// <summary>
@@ -3796,15 +5343,48 @@ public sealed class LibraDexGuidConditionOperator : LibraDexConditionOperator<Gu
     public LibraDexConditionContinueOrEnd Matches(byte[] pattern)
         => MatchesPattern(pattern);
 
-    private LibraDexConditionContinueOrEnd AddGuidPattern(LibraDexConditionOperatorKind operatorKind, LibraDexGuidPatternPredicate predicate)
+    /// <summary>
+    /// Selects one named canonical GUID segment for typed or hexadecimal-text comparison.<br/>
+    /// Segment boundaries match the five familiar `8-4-4-4-12` hexadecimal groups and never expose .NET's mixed-endian GUID storage layout.<br/>
+    /// </summary>
+    /// <param name="segment">The canonical GUID segment to select.</param>
+    /// <returns>A value-family selector for the selected segment.</returns>
+    public LibraDexGuidSliceSelector Slice(GuidSegment segment)
+        => LibraDexGuidSliceSelector.Create(this, segment);
+
+    /// <summary>
+    /// Selects an arbitrary canonical GUID nibble slice for typed, binary, or hexadecimal-text comparison.<br/>
+    /// `startNibble` is zero-based over the 32 digits from `Guid.ToString("N")`; `nibbleCount` must keep the slice inside that canonical representation.<br/>
+    /// </summary>
+    /// <param name="startNibble">The zero-based canonical starting nibble.</param>
+    /// <param name="nibbleCount">The positive number of canonical nibbles to select.</param>
+    /// <returns>A value-family selector for the selected slice.</returns>
+    public LibraDexGuidSliceSelector Slice(int startNibble, int nibbleCount)
+        => new LibraDexGuidSliceSelector(this, startNibble, nibbleCount);
+
+    internal LibraDexConditionContinueOrEnd AddGuidPattern(LibraDexConditionOperatorKind operatorKind, LibraDexGuidPatternPredicate predicate)
+        => AddGuidPattern(operatorKind, LibraDexConditionOperand.Value(predicate));
+
+    internal LibraDexConditionContinueOrEnd AddGuidPattern(LibraDexConditionOperatorKind operatorKind, LibraDexConditionOperand operand)
     {
         return builder.AddLeaf(new LibraDexConditionLeafDescriptor(
             indexSelector,
             LibraDexConditionValueKind.Guid,
             EffectiveOperator(operatorKind),
-            new[] { LibraDexConditionOperand.Value(predicate) },
+            new[] { operand },
             IgnoreCase: false,
             Culture: null));
+    }
+
+    private LibraDexConditionContinueOrEnd AddDeferredGuidPattern(
+        LibraDexConditionOperatorKind operatorKind,
+        Func<string> value,
+        LibraDexGuidPatternMode mode)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        return AddGuidPattern(
+            operatorKind,
+            LibraDexConditionOperand.Deferred(() => LibraDexGuidPatternPredicate.Create(value(), mode)));
     }
 }
 
@@ -3868,7 +5448,7 @@ public sealed class LibraDexConditionContinueOrEnd
     /// <param name="index">The opened generic index instance to select for the next condition leaf.</param>
     /// <returns>A typed operator for the selected index key type.</returns>
     public LibraDexConditionOperator<TKey> AndAlso<TKey, TIdentity>(LibraDexIndex<TKey, TIdentity> index)
-        => AndAlso((IIndex)index).As<TKey>();
+        => AndAlso((IIndex)index).AsKnown<TKey>();
 
     /// <summary>
     /// Adds an identity-set intersection from a string index facade and selects string operators automatically.<br/>
@@ -3926,7 +5506,7 @@ public sealed class LibraDexConditionContinueOrEnd
     /// <param name="index">The opened generic index instance to select for the next condition leaf.</param>
     /// <returns>A typed operator for the selected index key type.</returns>
     public LibraDexConditionOperator<TKey> OrElse<TKey, TIdentity>(LibraDexIndex<TKey, TIdentity> index)
-        => OrElse((IIndex)index).As<TKey>();
+        => OrElse((IIndex)index).AsKnown<TKey>();
 
     /// <summary>
     /// Adds an identity-set union from a string index facade and selects string operators automatically.<br/>
@@ -3957,5 +5537,406 @@ public sealed class LibraDexConditionContinueOrEnd
         }
 
         return index;
+    }
+}
+
+/// <summary>
+/// Adds contiguous structured-date grammar to typed DateTime and DateOnly binary slices.<br/>
+/// Each method expands the requested calendar component into exact inclusive typed boundaries, preserving the existing byte-slice execution path without exposing date helpers on non-date slice types.<br/>
+/// </summary>
+public static class LibraDexBinaryDateSliceConditionExtensions
+{
+    /// <summary>
+    /// Matches DateTime tick slices whose calendar year equals <paramref name="year"/>.<br/>
+    /// The year is captured as one inclusive tick range and evaluated only against the selected eight-byte slice.<br/>
+    /// </summary>
+    /// <param name="slice">The DateTime binary-slice operator.</param>
+    /// <param name="year">The calendar year to match.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public static LibraDexConditionContinueOrEnd YearEqualTo(this LibraDexBinaryTypedSliceConditionOperator<DateTime> slice, int year)
+    {
+        ArgumentNullException.ThrowIfNull(slice);
+        return slice.Between(StartOfYear(year), EndOfYear(year));
+    }
+
+    /// <summary>
+    /// Matches DateTime tick slices whose calendar year equals <paramref name="year"/>.<br/>
+    /// This alias keeps typed binary date slices aligned with the structured date-condition grammar.<br/>
+    /// </summary>
+    /// <param name="slice">The DateTime binary-slice operator.</param>
+    /// <param name="year">The calendar year to match.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public static LibraDexConditionContinueOrEnd YearEqual(this LibraDexBinaryTypedSliceConditionOperator<DateTime> slice, int year)
+        => YearEqualTo(slice, year);
+
+    /// <summary>
+    /// Matches DateTime tick slices from <paramref name="startYear"/> through <paramref name="endYear"/>, inclusively.<br/>
+    /// The supplied years become one contiguous tick range without materializing the surrounding binary key.<br/>
+    /// </summary>
+    /// <param name="slice">The DateTime binary-slice operator.</param>
+    /// <param name="startYear">The inclusive first calendar year.</param>
+    /// <param name="endYear">The inclusive last calendar year.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public static LibraDexConditionContinueOrEnd YearRange(this LibraDexBinaryTypedSliceConditionOperator<DateTime> slice, int startYear, int endYear)
+    {
+        ArgumentNullException.ThrowIfNull(slice);
+        if (startYear > endYear)
+            throw new ArgumentOutOfRangeException(nameof(startYear), startYear, "The first year cannot be greater than the last year.");
+
+        return slice.Between(StartOfYear(startYear), EndOfYear(endYear));
+    }
+
+    /// <summary>
+    /// Matches DateTime tick slices on or after the first instant of <paramref name="year"/>.<br/>
+    /// </summary>
+    /// <param name="slice">The DateTime binary-slice operator.</param>
+    /// <param name="year">The inclusive lower calendar year.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public static LibraDexConditionContinueOrEnd OnOrAfterYear(this LibraDexBinaryTypedSliceConditionOperator<DateTime> slice, int year)
+    {
+        ArgumentNullException.ThrowIfNull(slice);
+        return slice.Between(StartOfYear(year), DateTime.MaxValue);
+    }
+
+    /// <summary>
+    /// Matches DateTime tick slices on or before the final instant of <paramref name="year"/>.<br/>
+    /// </summary>
+    /// <param name="slice">The DateTime binary-slice operator.</param>
+    /// <param name="year">The inclusive upper calendar year.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public static LibraDexConditionContinueOrEnd OnOrBeforeYear(this LibraDexBinaryTypedSliceConditionOperator<DateTime> slice, int year)
+    {
+        ArgumentNullException.ThrowIfNull(slice);
+        return slice.Between(DateTime.MinValue, EndOfYear(year));
+    }
+
+    /// <summary>
+    /// Matches DateTime tick slices inside one calendar month.<br/>
+    /// </summary>
+    /// <param name="slice">The DateTime binary-slice operator.</param>
+    /// <param name="year">The calendar year to match.</param>
+    /// <param name="month">The calendar month to match.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public static LibraDexConditionContinueOrEnd YearMonth(this LibraDexBinaryTypedSliceConditionOperator<DateTime> slice, int year, int month)
+    {
+        ArgumentNullException.ThrowIfNull(slice);
+        DateTime start = new(year, month, 1, 0, 0, 0, DateTimeKind.Utc);
+        return slice.Between(start, EndOfMonth(start));
+    }
+
+    /// <summary>
+    /// Matches DateTime tick slices inside one calendar day.<br/>
+    /// </summary>
+    /// <param name="slice">The DateTime binary-slice operator.</param>
+    /// <param name="year">The calendar year to match.</param>
+    /// <param name="month">The calendar month to match.</param>
+    /// <param name="day">The calendar day to match.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public static LibraDexConditionContinueOrEnd YearMonthDay(this LibraDexBinaryTypedSliceConditionOperator<DateTime> slice, int year, int month, int day)
+    {
+        ArgumentNullException.ThrowIfNull(slice);
+        DateTime start = new(year, month, day, 0, 0, 0, DateTimeKind.Utc);
+        return slice.Between(start, EndOfDay(start));
+    }
+
+    /// <summary>
+    /// Matches DateTime tick slices inside one calendar quarter.<br/>
+    /// </summary>
+    /// <param name="slice">The DateTime binary-slice operator.</param>
+    /// <param name="year">The calendar year containing the quarter.</param>
+    /// <param name="quarter">The one-based quarter number from 1 through 4.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public static LibraDexConditionContinueOrEnd YearQuarter(this LibraDexBinaryTypedSliceConditionOperator<DateTime> slice, int year, int quarter)
+    {
+        ArgumentNullException.ThrowIfNull(slice);
+        if (quarter is < 1 or > 4)
+            throw new ArgumentOutOfRangeException(nameof(quarter), quarter, "Quarter must be between 1 and 4.");
+
+        DateTime start = new(year, ((quarter - 1) * 3) + 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        DateTime end = quarter == 4 && year == 9999 ? DateTime.MaxValue : start.AddMonths(3).AddTicks(-1);
+        return slice.Between(start, end);
+    }
+
+    /// <summary>
+    /// Matches DateOnly slices whose calendar year equals <paramref name="year"/>.<br/>
+    /// The year is captured as one inclusive day-number range and evaluated only against the selected four-byte slice.<br/>
+    /// </summary>
+    /// <param name="slice">The DateOnly binary-slice operator.</param>
+    /// <param name="year">The calendar year to match.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public static LibraDexConditionContinueOrEnd YearEqualTo(this LibraDexBinaryTypedSliceConditionOperator<DateOnly> slice, int year)
+    {
+        ArgumentNullException.ThrowIfNull(slice);
+        return slice.Between(new DateOnly(year, 1, 1), new DateOnly(year, 12, 31));
+    }
+
+    /// <summary>
+    /// Matches DateOnly slices whose calendar year equals <paramref name="year"/>.<br/>
+    /// This alias keeps typed binary date slices aligned with the structured date-condition grammar.<br/>
+    /// </summary>
+    /// <param name="slice">The DateOnly binary-slice operator.</param>
+    /// <param name="year">The calendar year to match.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public static LibraDexConditionContinueOrEnd YearEqual(this LibraDexBinaryTypedSliceConditionOperator<DateOnly> slice, int year)
+        => YearEqualTo(slice, year);
+
+    /// <summary>
+    /// Matches DateOnly slices from <paramref name="startYear"/> through <paramref name="endYear"/>, inclusively.<br/>
+    /// </summary>
+    /// <param name="slice">The DateOnly binary-slice operator.</param>
+    /// <param name="startYear">The inclusive first calendar year.</param>
+    /// <param name="endYear">The inclusive last calendar year.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public static LibraDexConditionContinueOrEnd YearRange(this LibraDexBinaryTypedSliceConditionOperator<DateOnly> slice, int startYear, int endYear)
+    {
+        ArgumentNullException.ThrowIfNull(slice);
+        if (startYear > endYear)
+            throw new ArgumentOutOfRangeException(nameof(startYear), startYear, "The first year cannot be greater than the last year.");
+
+        return slice.Between(new DateOnly(startYear, 1, 1), new DateOnly(endYear, 12, 31));
+    }
+
+    /// <summary>
+    /// Matches DateOnly slices on or after the first day of <paramref name="year"/>.<br/>
+    /// </summary>
+    /// <param name="slice">The DateOnly binary-slice operator.</param>
+    /// <param name="year">The inclusive lower calendar year.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public static LibraDexConditionContinueOrEnd OnOrAfterYear(this LibraDexBinaryTypedSliceConditionOperator<DateOnly> slice, int year)
+    {
+        ArgumentNullException.ThrowIfNull(slice);
+        return slice.Between(new DateOnly(year, 1, 1), DateOnly.MaxValue);
+    }
+
+    /// <summary>
+    /// Matches DateOnly slices on or before the final day of <paramref name="year"/>.<br/>
+    /// </summary>
+    /// <param name="slice">The DateOnly binary-slice operator.</param>
+    /// <param name="year">The inclusive upper calendar year.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public static LibraDexConditionContinueOrEnd OnOrBeforeYear(this LibraDexBinaryTypedSliceConditionOperator<DateOnly> slice, int year)
+    {
+        ArgumentNullException.ThrowIfNull(slice);
+        return slice.Between(DateOnly.MinValue, new DateOnly(year, 12, 31));
+    }
+
+    /// <summary>
+    /// Matches DateOnly slices inside one calendar month.<br/>
+    /// </summary>
+    /// <param name="slice">The DateOnly binary-slice operator.</param>
+    /// <param name="year">The calendar year to match.</param>
+    /// <param name="month">The calendar month to match.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public static LibraDexConditionContinueOrEnd YearMonth(this LibraDexBinaryTypedSliceConditionOperator<DateOnly> slice, int year, int month)
+    {
+        ArgumentNullException.ThrowIfNull(slice);
+        return slice.Between(new DateOnly(year, month, 1), new DateOnly(year, month, DateTime.DaysInMonth(year, month)));
+    }
+
+    /// <summary>
+    /// Matches DateOnly slices on one exact calendar day.<br/>
+    /// </summary>
+    /// <param name="slice">The DateOnly binary-slice operator.</param>
+    /// <param name="year">The calendar year to match.</param>
+    /// <param name="month">The calendar month to match.</param>
+    /// <param name="day">The calendar day to match.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public static LibraDexConditionContinueOrEnd YearMonthDay(this LibraDexBinaryTypedSliceConditionOperator<DateOnly> slice, int year, int month, int day)
+    {
+        ArgumentNullException.ThrowIfNull(slice);
+        DateOnly value = new(year, month, day);
+        return slice.Between(value, value);
+    }
+
+    /// <summary>
+    /// Matches DateOnly slices inside one calendar quarter.<br/>
+    /// </summary>
+    /// <param name="slice">The DateOnly binary-slice operator.</param>
+    /// <param name="year">The calendar year containing the quarter.</param>
+    /// <param name="quarter">The one-based quarter number from 1 through 4.</param>
+    /// <returns>A continuation for adding more clauses or ending the condition.</returns>
+    public static LibraDexConditionContinueOrEnd YearQuarter(this LibraDexBinaryTypedSliceConditionOperator<DateOnly> slice, int year, int quarter)
+    {
+        ArgumentNullException.ThrowIfNull(slice);
+        if (quarter is < 1 or > 4)
+            throw new ArgumentOutOfRangeException(nameof(quarter), quarter, "Quarter must be between 1 and 4.");
+
+        int startMonth = ((quarter - 1) * 3) + 1;
+        int endMonth = startMonth + 2;
+        return slice.Between(new DateOnly(year, startMonth, 1), new DateOnly(year, endMonth, DateTime.DaysInMonth(year, endMonth)));
+    }
+
+    private static DateTime StartOfYear(int year) => new(year, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+
+    private static DateTime EndOfYear(int year) => year == 9999 ? DateTime.MaxValue : StartOfYear(year + 1).AddTicks(-1);
+
+    private static DateTime EndOfMonth(DateTime start) => start.Year == 9999 && start.Month == 12 ? DateTime.MaxValue : start.AddMonths(1).AddTicks(-1);
+
+    private static DateTime EndOfDay(DateTime start) => start == new DateTime(9999, 12, 31, 0, 0, 0, DateTimeKind.Utc) ? DateTime.MaxValue : start.AddDays(1).AddTicks(-1);
+}
+
+/// <summary>
+/// Adds planner-visible rounding transforms to native Decimal, Single, and Double condition stages.<br/>
+/// Each transform is recorded in the condition descriptor and applied to indexed keys before the selected comparison; it is not an eager caller-side calculation.<br/>
+/// </summary>
+public static class LibraDexNumericTransformExtensions
+{
+    /// <summary>
+    /// Rounds each selected Decimal key before applying the following comparison.<br/>
+    /// The digit range and midpoint behavior match <see cref="decimal.Round(decimal, int, MidpointRounding)"/>.<br/>
+    /// </summary>
+    /// <param name="condition">The Decimal condition stage to transform.<br/></param>
+    /// <param name="digits">The number of fractional decimal digits to retain, from 0 through 28.<br/></param>
+    /// <param name="mode">The midpoint rounding policy applied to halfway values.<br/></param>
+    /// <returns>A Decimal comparison stage over rounded key values.<br/></returns>
+    public static LibraDexConditionOperator<decimal> Round(
+        this LibraDexConditionOperator<decimal> condition,
+        int digits = 0,
+        MidpointRounding mode = MidpointRounding.ToEven)
+    {
+        ArgumentNullException.ThrowIfNull(condition);
+        if (digits is < 0 or > 28)
+            throw new ArgumentOutOfRangeException(nameof(digits), digits, "Decimal rounding digits must be between 0 and 28.");
+
+        return condition.WithNumericTransform(new LibraDexNumericTransformDescriptor(LibraDexNumericTransformKind.Round, digits, mode));
+    }
+
+    /// <summary>
+    /// Rounds each selected Single key before applying the following comparison.<br/>
+    /// The digit range and midpoint behavior match <see cref="MathF.Round(float, int, MidpointRounding)"/>.<br/>
+    /// </summary>
+    /// <param name="condition">The Single condition stage to transform.<br/></param>
+    /// <param name="digits">The number of fractional decimal digits to retain, from 0 through 6.<br/></param>
+    /// <param name="mode">The midpoint rounding policy applied to halfway values.<br/></param>
+    /// <returns>A Single comparison stage over rounded key values.<br/></returns>
+    public static LibraDexConditionOperator<float> Round(
+        this LibraDexConditionOperator<float> condition,
+        int digits = 0,
+        MidpointRounding mode = MidpointRounding.ToEven)
+    {
+        ArgumentNullException.ThrowIfNull(condition);
+        if (digits is < 0 or > 6)
+            throw new ArgumentOutOfRangeException(nameof(digits), digits, "Single rounding digits must be between 0 and 6.");
+
+        return condition.WithNumericTransform(new LibraDexNumericTransformDescriptor(LibraDexNumericTransformKind.Round, digits, mode));
+    }
+
+    /// <summary>
+    /// Rounds each selected Double key before applying the following comparison.<br/>
+    /// The digit range and midpoint behavior match <see cref="Math.Round(double, int, MidpointRounding)"/>.<br/>
+    /// </summary>
+    /// <param name="condition">The Double condition stage to transform.<br/></param>
+    /// <param name="digits">The number of fractional decimal digits to retain, from 0 through 15.<br/></param>
+    /// <param name="mode">The midpoint rounding policy applied to halfway values.<br/></param>
+    /// <returns>A Double comparison stage over rounded key values.<br/></returns>
+    public static LibraDexConditionOperator<double> Round(
+        this LibraDexConditionOperator<double> condition,
+        int digits = 0,
+        MidpointRounding mode = MidpointRounding.ToEven)
+    {
+        ArgumentNullException.ThrowIfNull(condition);
+        if (digits is < 0 or > 15)
+            throw new ArgumentOutOfRangeException(nameof(digits), digits, "Double rounding digits must be between 0 and 15.");
+
+        return condition.WithNumericTransform(new LibraDexNumericTransformDescriptor(LibraDexNumericTransformKind.Round, digits, mode));
+    }
+
+    /// <summary>
+    /// Applies mathematical floor to each selected Decimal key before the following comparison.<br/>
+    /// </summary>
+    /// <param name="condition">The Decimal condition stage to transform.<br/></param>
+    /// <returns>A Decimal comparison stage over floored key values.<br/></returns>
+    public static LibraDexConditionOperator<decimal> Floor(this LibraDexConditionOperator<decimal> condition)
+    {
+        ArgumentNullException.ThrowIfNull(condition);
+        return condition.WithNumericTransform(new LibraDexNumericTransformDescriptor(LibraDexNumericTransformKind.Floor, 0, MidpointRounding.ToEven));
+    }
+
+    /// <summary>
+    /// Applies mathematical floor to each selected Single key before the following comparison.<br/>
+    /// </summary>
+    /// <param name="condition">The Single condition stage to transform.<br/></param>
+    /// <returns>A Single comparison stage over floored key values.<br/></returns>
+    public static LibraDexConditionOperator<float> Floor(this LibraDexConditionOperator<float> condition)
+    {
+        ArgumentNullException.ThrowIfNull(condition);
+        return condition.WithNumericTransform(new LibraDexNumericTransformDescriptor(LibraDexNumericTransformKind.Floor, 0, MidpointRounding.ToEven));
+    }
+
+    /// <summary>
+    /// Applies mathematical floor to each selected Double key before the following comparison.<br/>
+    /// </summary>
+    /// <param name="condition">The Double condition stage to transform.<br/></param>
+    /// <returns>A Double comparison stage over floored key values.<br/></returns>
+    public static LibraDexConditionOperator<double> Floor(this LibraDexConditionOperator<double> condition)
+    {
+        ArgumentNullException.ThrowIfNull(condition);
+        return condition.WithNumericTransform(new LibraDexNumericTransformDescriptor(LibraDexNumericTransformKind.Floor, 0, MidpointRounding.ToEven));
+    }
+
+    /// <summary>
+    /// Applies mathematical ceiling to each selected Decimal key before the following comparison.<br/>
+    /// </summary>
+    /// <param name="condition">The Decimal condition stage to transform.<br/></param>
+    /// <returns>A Decimal comparison stage over ceiling-adjusted key values.<br/></returns>
+    public static LibraDexConditionOperator<decimal> Ceiling(this LibraDexConditionOperator<decimal> condition)
+    {
+        ArgumentNullException.ThrowIfNull(condition);
+        return condition.WithNumericTransform(new LibraDexNumericTransformDescriptor(LibraDexNumericTransformKind.Ceiling, 0, MidpointRounding.ToEven));
+    }
+
+    /// <summary>
+    /// Applies mathematical ceiling to each selected Single key before the following comparison.<br/>
+    /// </summary>
+    /// <param name="condition">The Single condition stage to transform.<br/></param>
+    /// <returns>A Single comparison stage over ceiling-adjusted key values.<br/></returns>
+    public static LibraDexConditionOperator<float> Ceiling(this LibraDexConditionOperator<float> condition)
+    {
+        ArgumentNullException.ThrowIfNull(condition);
+        return condition.WithNumericTransform(new LibraDexNumericTransformDescriptor(LibraDexNumericTransformKind.Ceiling, 0, MidpointRounding.ToEven));
+    }
+
+    /// <summary>
+    /// Applies mathematical ceiling to each selected Double key before the following comparison.<br/>
+    /// </summary>
+    /// <param name="condition">The Double condition stage to transform.<br/></param>
+    /// <returns>A Double comparison stage over ceiling-adjusted key values.<br/></returns>
+    public static LibraDexConditionOperator<double> Ceiling(this LibraDexConditionOperator<double> condition)
+    {
+        ArgumentNullException.ThrowIfNull(condition);
+        return condition.WithNumericTransform(new LibraDexNumericTransformDescriptor(LibraDexNumericTransformKind.Ceiling, 0, MidpointRounding.ToEven));
+    }
+
+    /// <summary>
+    /// Truncates each selected Decimal key toward zero before the following comparison.<br/>
+    /// </summary>
+    /// <param name="condition">The Decimal condition stage to transform.<br/></param>
+    /// <returns>A Decimal comparison stage over truncated key values.<br/></returns>
+    public static LibraDexConditionOperator<decimal> Truncate(this LibraDexConditionOperator<decimal> condition)
+    {
+        ArgumentNullException.ThrowIfNull(condition);
+        return condition.WithNumericTransform(new LibraDexNumericTransformDescriptor(LibraDexNumericTransformKind.Truncate, 0, MidpointRounding.ToEven));
+    }
+
+    /// <summary>
+    /// Truncates each selected Single key toward zero before the following comparison.<br/>
+    /// </summary>
+    /// <param name="condition">The Single condition stage to transform.<br/></param>
+    /// <returns>A Single comparison stage over truncated key values.<br/></returns>
+    public static LibraDexConditionOperator<float> Truncate(this LibraDexConditionOperator<float> condition)
+    {
+        ArgumentNullException.ThrowIfNull(condition);
+        return condition.WithNumericTransform(new LibraDexNumericTransformDescriptor(LibraDexNumericTransformKind.Truncate, 0, MidpointRounding.ToEven));
+    }
+
+    /// <summary>
+    /// Truncates each selected Double key toward zero before the following comparison.<br/>
+    /// </summary>
+    /// <param name="condition">The Double condition stage to transform.<br/></param>
+    /// <returns>A Double comparison stage over truncated key values.<br/></returns>
+    public static LibraDexConditionOperator<double> Truncate(this LibraDexConditionOperator<double> condition)
+    {
+        ArgumentNullException.ThrowIfNull(condition);
+        return condition.WithNumericTransform(new LibraDexNumericTransformDescriptor(LibraDexNumericTransformKind.Truncate, 0, MidpointRounding.ToEven));
     }
 }

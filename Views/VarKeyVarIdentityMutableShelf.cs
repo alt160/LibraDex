@@ -129,12 +129,14 @@ internal sealed class VarKeyVarIdentityMutableShelf
         int expectedSlotStreamLength = checked(count * VarKeyVarIdentityLayout.SlotSize);
         int expectedSlotCapacityBytes = VarKeyVarIdentityLayout.CalculateSlotCapacityBytes(profile.ShelfExtentSize);
         int recordArenaStart = VarKeyVarIdentityLayout.HeaderSize + slotCapacityBytes;
+        int reclaimablePayloadBytes = VarKeyVarIdentityLayout.ReadReclaimablePayloadBytes(bytes);
         if (count < 0 ||
             slotStreamLength != expectedSlotStreamLength ||
             slotStreamLength > slotCapacityBytes ||
             slotCapacityBytes != expectedSlotCapacityBytes ||
             recordArenaEnd < recordArenaStart ||
-            recordArenaEnd > profile.ShelfExtentSize)
+            recordArenaEnd > profile.ShelfExtentSize ||
+            reclaimablePayloadBytes > recordArenaEnd - recordArenaStart)
         {
             if (ownsBytes)
             {
@@ -186,6 +188,7 @@ internal sealed class VarKeyVarIdentityMutableShelf
             slotStreamLength,
             slotCapacityBytes,
             recordArenaEnd);
+        shelf.deletedPayloadBytes = reclaimablePayloadBytes;
         return true;
     }
 
@@ -271,6 +274,14 @@ internal sealed class VarKeyVarIdentityMutableShelf
         int recordLength = VarKeyVarIdentityLayout.GetNewRecordLength(key.Length, identity.Length);
         int recordOffset = recordArenaEnd;
         int newRecordArenaEnd = recordOffset + recordLength;
+        if (newRecordArenaEnd > Profile.ShelfExtentSize &&
+            deletedPayloadBytes >= recordLength &&
+            RepackPayloadIfWorthwhile(recordLength, 0))
+        {
+            recordOffset = recordArenaEnd;
+            newRecordArenaEnd = recordOffset + recordLength;
+        }
+
         if (newRecordArenaEnd > Profile.ShelfExtentSize)
         {
             return VarKeyVarIdentityInsertResult.Full;
@@ -343,6 +354,7 @@ internal sealed class VarKeyVarIdentityMutableShelf
 
         if (marked != 0)
         {
+            VarKeyVarIdentityLayout.WriteReclaimablePayloadBytes(Bytes, deletedPayloadBytes);
             IsDirty = true;
         }
 
@@ -456,6 +468,60 @@ internal sealed class VarKeyVarIdentityMutableShelf
         RewriteSlotBytes();
         IsDirty = true;
         return removed;
+    }
+
+    /// <summary>
+    /// Rebuilds the `VV` record arena into a compact live-record prefix when persisted orphaned bytes cross both supplied thresholds.<br/>
+    /// The rewrite preserves sorted raw key/identity tuples and the current shelf extent while resetting exact reclaimable-payload metadata to zero.<br/>
+    /// </summary>
+    /// <param name="minimumDeletedPayloadBytes">The minimum orphaned payload bytes required before repack is considered.<br/></param>
+    /// <param name="minimumDeletedPayloadPercent">The minimum orphaned percentage of used payload bytes required before repack is considered.<br/></param>
+    /// <returns><see langword="true"/> when the record arena was rebuilt.<br/></returns>
+    internal bool RepackPayloadIfWorthwhile(int minimumDeletedPayloadBytes, int minimumDeletedPayloadPercent)
+    {
+        if (minimumDeletedPayloadBytes < 0)
+            throw new ArgumentOutOfRangeException(nameof(minimumDeletedPayloadBytes));
+        if (minimumDeletedPayloadPercent < 0 || minimumDeletedPayloadPercent > 100)
+            throw new ArgumentOutOfRangeException(nameof(minimumDeletedPayloadPercent));
+        if (deletedItemCount != 0)
+            _ = NormalizeDeletedSlotsForPublication();
+
+        int deletedBytes = deletedPayloadBytes;
+        int usedBytes = PayloadBytesUsed;
+        if (deletedBytes <= 0 ||
+            deletedBytes < minimumDeletedPayloadBytes ||
+            usedBytes <= 0 ||
+            checked((long)deletedBytes * 100L) < checked((long)usedBytes * minimumDeletedPayloadPercent))
+        {
+            return false;
+        }
+
+        byte[] compacted = new byte[Profile.ShelfExtentSize];
+        VarKeyVarIdentityLayout.Initialize(compacted, Profile);
+        int slotCursor = VarKeyVarIdentityLayout.HeaderSize;
+        int recordCursor = VarKeyVarIdentityLayout.HeaderSize + VarKeyVarIdentityLayout.ReadSlotCapacityBytes(compacted);
+        for (int i = 0; i < itemCount; i++)
+        {
+            ReadOnlySpan<byte> key = ReadKeyAt(i);
+            ReadOnlySpan<byte> identity = ReadIdentityAt(i);
+            VarKeyVarIdentityLayout.WriteRecord(compacted, recordCursor, key, identity);
+            VarKeyVarIdentityLayout.WriteSlotRecordOffset(compacted, slotCursor, recordCursor);
+            VarKeyVarIdentityLayout.WriteSlotKeyPrefix(compacted, slotCursor, keyPrefixes[i]);
+            recordOffsets[i] = recordCursor;
+            recordCursor += VarKeyVarIdentityLayout.GetNewRecordLength(key.Length, identity.Length);
+            slotCursor += VarKeyVarIdentityLayout.SlotSize;
+        }
+
+        VarKeyVarIdentityLayout.WriteItemCount(compacted, itemCount);
+        VarKeyVarIdentityLayout.WriteSlotStreamLength(compacted, checked(itemCount * VarKeyVarIdentityLayout.SlotSize));
+        VarKeyVarIdentityLayout.WriteRecordArenaEnd(compacted, recordCursor);
+        compacted.CopyTo(Bytes, 0);
+        slotStreamLength = checked(itemCount * VarKeyVarIdentityLayout.SlotSize);
+        recordArenaEnd = recordCursor;
+        deletedPayloadBytes = 0;
+        VarKeyVarIdentityLayout.WriteReclaimablePayloadBytes(Bytes, 0);
+        IsDirty = true;
+        return true;
     }
 
     private void RewriteSlotBytes()

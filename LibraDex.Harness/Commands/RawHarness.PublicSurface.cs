@@ -3,6 +3,7 @@ using System.Buffers.Binary;
 using System.Diagnostics;
 using System.Globalization;
 using System.Numerics;
+using System.Reflection;
 using System.Text;
 using System.Text.RegularExpressions;
 using LibraDex;
@@ -3890,7 +3891,7 @@ internal static partial class RawHarness
         File.Delete(path);
 
         Scalar8Scalar8Profile profile = Scalar8Scalar8Profile.Default32KiB;
-        CreateDeeperTransformSplitVectors(profile, out ulong[] keys, out ulong[] identities, out int _, out int _);
+        CreateDeeperTransformSplitVectors(profile, out ulong[] keys, out ulong[] identities, out int _, out int _, includeIntermediateStem: true);
         DataKernelOptions options = new(
             AppendBufferSize: DefaultAppendBufferSize,
             ReservedPrefixBytes: 0,
@@ -3905,8 +3906,8 @@ internal static partial class RawHarness
             DevDate2UtcTicks: 2,
             DevNumber: 15);
 
-        const ulong thirdByteRightBase = 0x0000_8000_0000_0000UL;
-        ulong insertedKey = thirdByteRightBase + 10_000UL;
+        const ulong fourthByteRightBase = 0x0000_2280_0000_0000UL;
+        ulong insertedKey = fourthByteRightBase + 10_000UL;
         using LibraDexFileSession session = LibraDexFileSession.Initialize(path, options, metadata, DataKernelTelemetryOptions.EnabledOptions);
         IndexDirectorySlotSnapshot slotRequest = CreateHarnessSlot(0, "ss8wtx0", 0);
         (RouterSnapshot root, DataKernelCommitTelemetry rootCommit) = session.CreateRootRouterIndex(slotRequest);
@@ -3944,7 +3945,7 @@ internal static partial class RawHarness
             throw new InvalidDataException("Walked transform split should read root router, child classifier, child router, shelf classifier, and one full shelf.");
         }
 
-        ValidateScalar8Scalar8TransformCommit(result.Commit, profile);
+        ValidateScalar8Scalar8TransformCommit(result.Commit, profile, additionalRouterPages: 1);
         long rootTargetAfter = session.FindRouterTarget(root.Offset, 0x00);
         long childTargetAfter = session.FindRouterTarget(childRouterOffset, 0x00);
         if (rootTargetAfter != childRouterOffset || childTargetAfter != sourceShelfOffset)
@@ -3952,8 +3953,16 @@ internal static partial class RawHarness
             throw new InvalidDataException("Walked transform split dirtied a parent route unexpectedly.");
         }
 
+        long exactStemTarget = session.FindRouterTarget(sourceShelfOffset, 0x22);
+        if (exactStemTarget == 0 ||
+            session.FindRouterTarget(sourceShelfOffset, 0x21) != 0 ||
+            session.FindRouterTarget(sourceShelfOffset, 0x23) != 0)
+        {
+            throw new InvalidDataException("Walked transform split did not preserve an exact-only intermediate route stem.");
+        }
+
         Scalar8Scalar8RouteTarget routedTarget = session.WalkScalar8Scalar8RouteTarget(root.Offset, insertedKey, maxRouterHops: 8);
-        if (routedTarget.Kind != Scalar8Scalar8RouteTargetKind.Shelf || routedTarget.Offset != result.RightShelfOffset || routedTarget.RouterDepth != 2)
+        if (routedTarget.Kind != Scalar8Scalar8RouteTargetKind.Shelf || routedTarget.Offset != result.RightShelfOffset || routedTarget.RouterDepth != 3)
         {
             throw new InvalidDataException("Walked transform split did not route inserted key through the new next-depth router.");
         }
@@ -3961,10 +3970,10 @@ internal static partial class RawHarness
         _ = session.GetAndResetReadTelemetry();
         ValidateTwoLevelRoutedScalar8Scalar8ShelfShape(
             session,
-            childRouterOffset,
-            0x00,
+            sourceShelfOffset,
+            0x22,
             0x80,
-            result.PrimaryOffset,
+            exactStemTarget,
             result.RightShelfOffset,
             profile,
             profile.MaxItemCount / 2 + 1,
@@ -3989,7 +3998,7 @@ internal static partial class RawHarness
         File.Delete(path);
 
         Scalar16Scalar8Profile profile = Scalar16Scalar8Profile.Default32KiB;
-        CreateScalar16Scalar8DeeperTransformSplitVectors(profile, out ulong[] keyHighs, out ulong[] keyLows, out ulong[] identities, out int _, out int rightCount);
+        CreateScalar16Scalar8DeeperTransformSplitVectors(profile, out ulong[] keyHighs, out ulong[] keyLows, out ulong[] identities, out int _, out int rightCount, includeIntermediateStem: true);
         DataKernelOptions options = new(
             AppendBufferSize: DefaultAppendBufferSize,
             ReservedPrefixBytes: 0,
@@ -4004,8 +4013,8 @@ internal static partial class RawHarness
             DevDate2UtcTicks: 2,
             DevNumber: 16);
 
-        const ulong thirdByteRightBaseHigh = 0x0000_8000_0000_0000UL;
-        ulong insertedKeyHigh = thirdByteRightBaseHigh;
+        const ulong fourthByteRightBaseHigh = 0x0000_2280_0000_0000UL;
+        ulong insertedKeyHigh = fourthByteRightBaseHigh;
         const ulong insertedKeyLow = 10_000UL;
         ulong insertedIdentity = Scalar16Scalar8Layout.EncodeUnsignedScalar8(10_000UL);
         using LibraDexFileSession session = LibraDexFileSession.Initialize(path, options, metadata, DataKernelTelemetryOptions.EnabledOptions);
@@ -4047,7 +4056,7 @@ internal static partial class RawHarness
             throw new InvalidDataException("Walked SS16-8 transform split should read root router, child classifier, child router, shelf classifier, and one full shelf.");
         }
 
-        ValidateScalar16Scalar8TransformCommit(result.Commit, profile);
+        ValidateScalar16Scalar8TransformCommit(result.Commit, profile, additionalRouterPages: 1);
         long rootTargetAfter = session.FindRouterTarget(root.Offset, 0x00);
         long childTargetAfter = session.FindRouterTarget(childRouterOffset, 0x00);
         if (rootTargetAfter != childRouterOffset || childTargetAfter != sourceShelfOffset)
@@ -4055,8 +4064,16 @@ internal static partial class RawHarness
             throw new InvalidDataException("Walked SS16-8 transform split dirtied a parent route unexpectedly.");
         }
 
+        long exactStemTarget = session.FindRouterTarget(sourceShelfOffset, 0x22);
+        if (exactStemTarget == 0 ||
+            session.FindRouterTarget(sourceShelfOffset, 0x21) != 0 ||
+            session.FindRouterTarget(sourceShelfOffset, 0x23) != 0)
+        {
+            throw new InvalidDataException("Walked SS16-8 transform split did not preserve an exact-only intermediate route stem.");
+        }
+
         Scalar16Scalar8RouteTarget routedTarget = session.WalkScalar16Scalar8RouteTarget(root.Offset, insertedKeyHigh, insertedKeyLow, maxRouterHops: 8);
-        if (routedTarget.Kind != Scalar16Scalar8RouteTargetKind.Shelf || routedTarget.Offset != result.RightShelfOffset || routedTarget.RouterDepth != 2)
+        if (routedTarget.Kind != Scalar16Scalar8RouteTargetKind.Shelf || routedTarget.Offset != result.RightShelfOffset || routedTarget.RouterDepth != 3)
         {
             throw new InvalidDataException("Walked SS16-8 transform split did not route inserted key through the new next-depth router.");
         }
@@ -4064,10 +4081,10 @@ internal static partial class RawHarness
         _ = session.GetAndResetReadTelemetry();
         ValidateTwoLevelRoutedScalar16Scalar8ShelfShape(
             session,
-            childRouterOffset,
-            0x00,
+            sourceShelfOffset,
+            0x22,
             0x80,
-            result.PrimaryOffset,
+            exactStemTarget,
             result.RightShelfOffset,
             profile,
             rightCount + 1,
@@ -4093,7 +4110,7 @@ internal static partial class RawHarness
         File.Delete(path);
 
         Fixed32Scalar8Profile profile = Fixed32Scalar8Profile.Default40KiB;
-        CreateFixed32Scalar8DeeperTransformSplitVectors(profile, out ulong[] key0s, out ulong[] key1s, out ulong[] key2s, out ulong[] key3s, out ulong[] identities, out int _, out int rightCount);
+        CreateFixed32Scalar8DeeperTransformSplitVectors(profile, out ulong[] key0s, out ulong[] key1s, out ulong[] key2s, out ulong[] key3s, out ulong[] identities, out int _, out int rightCount, includeIntermediateStem: true);
         DataKernelOptions options = new(
             AppendBufferSize: DefaultAppendBufferSize,
             ReservedPrefixBytes: 0,
@@ -4108,7 +4125,7 @@ internal static partial class RawHarness
             DevDate2UtcTicks: 2,
             DevNumber: 18);
 
-        const ulong insertedKey0 = 0x0000_8000_0000_0000UL;
+        const ulong insertedKey0 = 0x0000_2280_0000_0000UL;
         const ulong insertedKey1 = 0;
         const ulong insertedKey2 = 0;
         const ulong insertedKey3 = 10_000UL;
@@ -4162,7 +4179,7 @@ internal static partial class RawHarness
             throw new InvalidDataException("Walked FS32-8 transform split should read root router, child classifier, child router, shelf classifier, and one full shelf.");
         }
 
-        ValidateFixed32Scalar8TransformCommit(commit, profile);
+        ValidateFixed32Scalar8TransformCommit(commit, profile, additionalRouterPages: 1);
         long rootTargetAfter = session.FindRouterTarget(root.Offset, 0x00);
         long childTargetAfter = session.FindRouterTarget(childRouterOffset, 0x00);
         if (rootTargetAfter != childRouterOffset || childTargetAfter != sourceShelfOffset)
@@ -4170,8 +4187,16 @@ internal static partial class RawHarness
             throw new InvalidDataException("Walked FS32-8 transform split dirtied a parent route unexpectedly.");
         }
 
+        long exactStemTarget = session.FindRouterTarget(sourceShelfOffset, 0x22);
+        if (exactStemTarget == 0 ||
+            session.FindRouterTarget(sourceShelfOffset, 0x21) != 0 ||
+            session.FindRouterTarget(sourceShelfOffset, 0x23) != 0)
+        {
+            throw new InvalidDataException("Walked FS32-8 transform split did not preserve an exact-only intermediate route stem.");
+        }
+
         Fixed32Scalar8RouteTarget routedTarget = session.WalkFixed32Scalar8RouteTarget(root.Offset, insertedKey0, insertedKey1, insertedKey2, insertedKey3, maxRouterHops: 8);
-        if (routedTarget.Kind != Fixed32Scalar8RouteTargetKind.Shelf || routedTarget.Offset != rightShelfOffset || routedTarget.RouterDepth != 2)
+        if (routedTarget.Kind != Fixed32Scalar8RouteTargetKind.Shelf || routedTarget.Offset != rightShelfOffset || routedTarget.RouterDepth != 3)
         {
             throw new InvalidDataException("Walked FS32-8 transform split did not route inserted key through the new next-depth router.");
         }
@@ -4179,10 +4204,10 @@ internal static partial class RawHarness
         _ = session.GetAndResetReadTelemetry();
         ValidateTwoLevelRoutedFixed32Scalar8ShelfShape(
             session,
-            childRouterOffset,
-            0x00,
+            sourceShelfOffset,
+            0x22,
             0x80,
-            transformedRouterOffset,
+            exactStemTarget,
             rightShelfOffset,
             profile,
             rightCount + 1,
@@ -4210,7 +4235,7 @@ internal static partial class RawHarness
         File.Delete(path);
 
         Scalar8Scalar16Profile profile = Scalar8Scalar16Profile.Default32KiB;
-        CreateScalar8Scalar16DeeperTransformSplitVectors(profile, out ulong[] keys, out ulong[] identityHighs, out ulong[] identityLows, out int _, out int rightCount);
+        CreateScalar8Scalar16DeeperTransformSplitVectors(profile, out ulong[] keys, out ulong[] identityHighs, out ulong[] identityLows, out int _, out int rightCount, includeIntermediateStem: true);
         DataKernelOptions options = new(
             AppendBufferSize: DefaultAppendBufferSize,
             ReservedPrefixBytes: 0,
@@ -4225,8 +4250,8 @@ internal static partial class RawHarness
             DevDate2UtcTicks: 2,
             DevNumber: 18);
 
-        const ulong thirdByteRightBase = 0x0000_8000_0000_0000UL;
-        ulong insertedKey = thirdByteRightBase + 10_000UL;
+        const ulong fourthByteRightBase = 0x0000_2280_0000_0000UL;
+        ulong insertedKey = fourthByteRightBase + 10_000UL;
         const ulong insertedIdentityHigh = 1;
         const ulong insertedIdentityLow = 10_000UL;
         using LibraDexFileSession session = LibraDexFileSession.Initialize(path, options, metadata, DataKernelTelemetryOptions.EnabledOptions);
@@ -4274,7 +4299,7 @@ internal static partial class RawHarness
             throw new InvalidDataException("Walked SS8-16 transform split should read root router, child classifier, child router, shelf classifier, and one full shelf.");
         }
 
-        ValidateScalar8Scalar16TransformCommit(commit, profile);
+        ValidateScalar8Scalar16TransformCommit(commit, profile, additionalRouterPages: 1);
         long rootTargetAfter = session.FindRouterTarget(root.Offset, 0x00);
         long childTargetAfter = session.FindRouterTarget(childRouterOffset, 0x00);
         if (rootTargetAfter != childRouterOffset || childTargetAfter != sourceShelfOffset)
@@ -4282,8 +4307,16 @@ internal static partial class RawHarness
             throw new InvalidDataException("Walked SS8-16 transform split dirtied a parent route unexpectedly.");
         }
 
+        long exactStemTarget = session.FindRouterTarget(sourceShelfOffset, 0x22);
+        if (exactStemTarget == 0 ||
+            session.FindRouterTarget(sourceShelfOffset, 0x21) != 0 ||
+            session.FindRouterTarget(sourceShelfOffset, 0x23) != 0)
+        {
+            throw new InvalidDataException("Walked SS8-16 transform split did not preserve an exact-only intermediate route stem.");
+        }
+
         Scalar8Scalar16RouteTarget routedTarget = session.WalkScalar8Scalar16RouteTarget(root.Offset, insertedKey, maxRouterHops: 8);
-        if (routedTarget.Kind != Scalar8Scalar16RouteTargetKind.Shelf || routedTarget.Offset != rightShelfOffset || routedTarget.RouterDepth != 2)
+        if (routedTarget.Kind != Scalar8Scalar16RouteTargetKind.Shelf || routedTarget.Offset != rightShelfOffset || routedTarget.RouterDepth != 3)
         {
             throw new InvalidDataException("Walked SS8-16 transform split did not route inserted key through the new next-depth router.");
         }
@@ -4291,10 +4324,10 @@ internal static partial class RawHarness
         _ = session.GetAndResetReadTelemetry();
         ValidateTwoLevelRoutedScalar8Scalar16ShelfShape(
             session,
-            childRouterOffset,
-            0x00,
+            sourceShelfOffset,
+            0x22,
             0x80,
-            transformedRouterOffset,
+            exactStemTarget,
             rightShelfOffset,
             profile,
             rightCount + 1,
@@ -4320,7 +4353,7 @@ internal static partial class RawHarness
         File.Delete(path);
 
         Scalar16Scalar16Profile profile = Scalar16Scalar16Profile.Default32KiB;
-        CreateScalar16Scalar16DeeperTransformSplitVectors(profile, out ulong[] keyHighs, out ulong[] keyLows, out ulong[] identityHighs, out ulong[] identityLows, out int _, out int rightCount);
+        CreateScalar16Scalar16DeeperTransformSplitVectors(profile, out ulong[] keyHighs, out ulong[] keyLows, out ulong[] identityHighs, out ulong[] identityLows, out int _, out int rightCount, includeIntermediateStem: true);
         DataKernelOptions options = new(
             AppendBufferSize: DefaultAppendBufferSize,
             ReservedPrefixBytes: 0,
@@ -4335,8 +4368,8 @@ internal static partial class RawHarness
             DevDate2UtcTicks: 2,
             DevNumber: 24);
 
-        const ulong thirdByteRightBaseHigh = 0x0000_8000_0000_0000UL;
-        ulong insertedKeyHigh = thirdByteRightBaseHigh;
+        const ulong fourthByteRightBaseHigh = 0x0000_2280_0000_0000UL;
+        ulong insertedKeyHigh = fourthByteRightBaseHigh;
         const ulong insertedKeyLow = 10_000UL;
         const ulong insertedIdentityHigh = 1;
         const ulong insertedIdentityLow = 10_000UL;
@@ -4387,7 +4420,7 @@ internal static partial class RawHarness
             throw new InvalidDataException("Walked SS16-16 transform split should read root router, child classifier, child router, shelf classifier, and one full shelf.");
         }
 
-        ValidateScalar16Scalar16TransformCommit(commit, profile);
+        ValidateScalar16Scalar16TransformCommit(commit, profile, additionalRouterPages: 1);
         long rootTargetAfter = session.FindRouterTarget(root.Offset, 0x00);
         long childTargetAfter = session.FindRouterTarget(childRouterOffset, 0x00);
         if (rootTargetAfter != childRouterOffset || childTargetAfter != sourceShelfOffset)
@@ -4395,8 +4428,16 @@ internal static partial class RawHarness
             throw new InvalidDataException("Walked SS16-16 transform split dirtied a parent route unexpectedly.");
         }
 
+        long exactStemTarget = session.FindRouterTarget(sourceShelfOffset, 0x22);
+        if (exactStemTarget == 0 ||
+            session.FindRouterTarget(sourceShelfOffset, 0x21) != 0 ||
+            session.FindRouterTarget(sourceShelfOffset, 0x23) != 0)
+        {
+            throw new InvalidDataException("Walked SS16-16 transform split did not preserve an exact-only intermediate route stem.");
+        }
+
         Scalar16Scalar16RouteTarget routedTarget = session.WalkScalar16Scalar16RouteTarget(root.Offset, insertedKeyHigh, insertedKeyLow, maxRouterHops: 8);
-        if (routedTarget.Kind != Scalar16Scalar16RouteTargetKind.Shelf || routedTarget.Offset != rightShelfOffset || routedTarget.RouterDepth != 2)
+        if (routedTarget.Kind != Scalar16Scalar16RouteTargetKind.Shelf || routedTarget.Offset != rightShelfOffset || routedTarget.RouterDepth != 3)
         {
             throw new InvalidDataException("Walked SS16-16 transform split did not route inserted key through the new next-depth router.");
         }
@@ -4404,10 +4445,10 @@ internal static partial class RawHarness
         _ = session.GetAndResetReadTelemetry();
         ValidateTwoLevelRoutedScalar16Scalar16ShelfShape(
             session,
-            childRouterOffset,
-            0x00,
+            sourceShelfOffset,
+            0x22,
             0x80,
-            transformedRouterOffset,
+            exactStemTarget,
             rightShelfOffset,
             profile,
             rightCount + 1,
@@ -4979,7 +5020,7 @@ internal static partial class RawHarness
 
     /// <summary>
     /// Validates the first arena-aware router read cache for transformed `SS8-8` shelf arenas.<br/>
-    /// The scenario compares the existing uncached classified walker with an arena-aware walker over the same two-level route graph.<br/>
+    /// The scenario compares the existing promoted classified walker with an arena-aware walker over the same two-level route graph.<br/>
     /// </summary>
     /// <param name="args">The harness command-line arguments.</param>
     /// <returns>Zero when the arena read-cache shape validates; otherwise one.</returns>
@@ -4992,7 +5033,7 @@ internal static partial class RawHarness
         Scalar8Scalar8Profile profile = Scalar8Scalar8Profile.Default32KiB;
         CreateTransformSplitVectors(profile, out ulong[] keys, out ulong[] identities, out int _, out int _);
         DataKernelOptions options = CreateDesignPerfOptions();
-        DataKernelReadTelemetry uncachedRead;
+        DataKernelReadTelemetry promotedRead;
         DataKernelReadTelemetry firstCachedRead;
         DataKernelReadTelemetry secondCachedRead;
         DataKernelReadTelemetry nonEntryCachedRead;
@@ -5016,16 +5057,16 @@ internal static partial class RawHarness
                 _) = session.SplitRoutedScalar8Scalar8ByShelfTransform(root.Offset, 0x00, 0x80, profile, insertedKey, insertedKey);
 
             _ = session.GetAndResetReadTelemetry();
-            Scalar8Scalar8RouteTarget uncachedTarget = session.WalkScalar8Scalar8RouteTarget(root.Offset, insertedKey, maxRouterHops: 8);
-            if (uncachedTarget.Kind != Scalar8Scalar8RouteTargetKind.Shelf || uncachedTarget.Offset != rightShelfOffset || uncachedTarget.RouterDepth != 1)
+            Scalar8Scalar8RouteTarget promotedTarget = session.WalkScalar8Scalar8RouteTarget(root.Offset, insertedKey, maxRouterHops: 8);
+            if (promotedTarget.Kind != Scalar8Scalar8RouteTargetKind.Shelf || promotedTarget.Offset != rightShelfOffset || promotedTarget.RouterDepth != 1)
             {
-                throw new InvalidDataException("Uncached walker did not resolve the expected two-level shelf target.");
+                throw new InvalidDataException("Promoted walker did not resolve the expected two-level shelf target.");
             }
 
-            uncachedRead = session.GetAndResetReadTelemetry();
-            if (uncachedRead.ReadCallCount != 4 || uncachedRead.BytesRead != RouterLayout.Size + profile.ShelfExtentSize + (sizeof(uint) * 2))
+            promotedRead = session.GetAndResetReadTelemetry();
+            if (promotedRead.ReadCallCount != 4 || promotedRead.BytesRead != (RouterLayout.Size * 2L) + (sizeof(uint) * 2L))
             {
-                throw new InvalidDataException($"Default walker should use router arena metadata to load the transformed child arena on first touch; actual reads={uncachedRead.ReadCallCount}, bytes={uncachedRead.BytesRead}.");
+                throw new InvalidDataException($"Promoted-view walker should load two direct router pages and classify the child and shelf on first touch; actual reads={promotedRead.ReadCallCount}, bytes={promotedRead.BytesRead}.");
             }
 
             session.ClearRouterArenaReadCacheForValidation();
@@ -5087,7 +5128,7 @@ internal static partial class RawHarness
         Console.WriteLine($"rightShelfOffset {rightShelfOffset}");
         Console.WriteLine($"nonEntryRouterOffset {nonEntryRouterOffset}");
         Console.WriteLine($"nonEntryShelfOffset {nonEntryShelfOffset}");
-        PrintRead("ss8-8 router arena read uncached", uncachedRead);
+        PrintRead("ss8-8 router arena read promoted", promotedRead);
         PrintRead("ss8-8 router arena read first cached", firstCachedRead);
         PrintRead("ss8-8 router arena read second cached", secondCachedRead);
         PrintRead("ss8-8 router arena non-entry cached", nonEntryCachedRead);
@@ -5123,13 +5164,13 @@ internal static partial class RawHarness
 
         RouterArenaReadCachePerfResult[] results =
         [
-            MeasureRouterArenaReadCacheScenario("cold one-off uncached", session, setup, 1, RouterArenaReadCachePerfPattern.SameArena, useArenaCache: false),
+            MeasureRouterArenaReadCacheScenario("cold one-off promoted", session, setup, 1, RouterArenaReadCachePerfPattern.SameArena, useArenaCache: false),
             MeasureRouterArenaReadCacheScenario("cold one-off cached", session, setup, 1, RouterArenaReadCachePerfPattern.SameArena, useArenaCache: true),
-            MeasureRouterArenaReadCacheScenario("repeated same-arena uncached", session, setup, iterations, RouterArenaReadCachePerfPattern.SameArena, useArenaCache: false),
+            MeasureRouterArenaReadCacheScenario("repeated same-arena promoted", session, setup, iterations, RouterArenaReadCachePerfPattern.SameArena, useArenaCache: false),
             MeasureRouterArenaReadCacheScenario("repeated same-arena cached", session, setup, iterations, RouterArenaReadCachePerfPattern.SameArena, useArenaCache: true),
-            MeasureRouterArenaReadCacheScenario("alternating arenas uncached", session, setup, iterations, RouterArenaReadCachePerfPattern.AlternatingArenas, useArenaCache: false),
+            MeasureRouterArenaReadCacheScenario("alternating arenas promoted", session, setup, iterations, RouterArenaReadCachePerfPattern.AlternatingArenas, useArenaCache: false),
             MeasureRouterArenaReadCacheScenario("alternating arenas cached", session, setup, iterations, RouterArenaReadCachePerfPattern.AlternatingArenas, useArenaCache: true),
-            MeasureRouterArenaReadCacheScenario("mixed direct+arena uncached", session, setup, iterations, RouterArenaReadCachePerfPattern.MixedDirectAndArena, useArenaCache: false),
+            MeasureRouterArenaReadCacheScenario("mixed direct+arena promoted", session, setup, iterations, RouterArenaReadCachePerfPattern.MixedDirectAndArena, useArenaCache: false),
             MeasureRouterArenaReadCacheScenario("mixed direct+arena cached", session, setup, iterations, RouterArenaReadCachePerfPattern.MixedDirectAndArena, useArenaCache: true)
         ];
 
@@ -5144,7 +5185,7 @@ internal static partial class RawHarness
 
     /// <summary>
     /// Validates the first locality-heavy batched route-walk operation with explicit route-read policy selection.<br/>
-    /// The scenario routes many keys through the same transformed router arena, comparing uncached and arena-aware read shapes while requiring identical targets.<br/>
+    /// The scenario routes many keys through the same transformed router arena, comparing raw-file, promoted-view, and arena-aware read shapes while requiring identical targets.<br/>
     /// </summary>
     /// <param name="args">The harness command-line arguments.</param>
     /// <returns>Zero when batched route policy validation succeeds; otherwise one.</returns>
@@ -5157,11 +5198,13 @@ internal static partial class RawHarness
         const int batchCount = 16;
         Scalar8Scalar8Profile profile = Scalar8Scalar8Profile.Default32KiB;
         DataKernelOptions options = CreateDesignPerfOptions();
-        DataKernelReadTelemetry uncachedRead;
-        DataKernelReadTelemetry cachedRead;
+        DataKernelReadTelemetry rawRead;
+        DataKernelReadTelemetry promotedRead;
+        DataKernelReadTelemetry arenaRead;
         long rightShelfOffset;
-        long uncachedChecksum;
-        long cachedChecksum;
+        long rawChecksum;
+        long promotedChecksum;
+        long arenaChecksum;
         using (LibraDexFileSession session = LibraDexFileSession.Initialize(path, options, CreateDesignPerfMetadata(45), DataKernelTelemetryOptions.EnabledOptions))
         {
             RouterArenaReadCachePerfSetup setup = CreateScalar8Scalar8RouterArenaReadCachePerfSetup(session, profile);
@@ -5173,52 +5216,62 @@ internal static partial class RawHarness
                 keys[i] = setup.FirstArenaKey + (ulong)i;
             }
 
-            Scalar8Scalar8RouteTarget[] uncachedTargets = new Scalar8Scalar8RouteTarget[batchCount];
-            Scalar8Scalar8RouteTarget[] cachedTargets = new Scalar8Scalar8RouteTarget[batchCount];
+            Scalar8Scalar8RouteTarget[] rawTargets = new Scalar8Scalar8RouteTarget[batchCount];
+            Scalar8Scalar8RouteTarget[] promotedTargets = new Scalar8Scalar8RouteTarget[batchCount];
+            Scalar8Scalar8RouteTarget[] arenaTargets = new Scalar8Scalar8RouteTarget[batchCount];
 
             _ = session.GetAndResetReadTelemetry();
             session.ClearRouterArenaReadCacheForValidation();
-            session.WalkScalar8Scalar8RouteTargets(setup.RootRouterOffset, keys, maxRouterHops: 8, Scalar8Scalar8RouteReadPolicy.Uncached, uncachedTargets);
-            uncachedRead = session.GetAndResetReadTelemetry();
+            session.WalkScalar8Scalar8RouteTargets(setup.RootRouterOffset, keys, maxRouterHops: 8, Scalar8Scalar8RouteReadPolicy.RawFile, rawTargets);
+            rawRead = session.GetAndResetReadTelemetry();
 
             session.ClearRouterArenaReadCacheForValidation();
-            session.WalkScalar8Scalar8RouteTargets(setup.RootRouterOffset, keys, maxRouterHops: 8, Scalar8Scalar8RouteReadPolicy.PreferArenaCache, cachedTargets);
-            cachedRead = session.GetAndResetReadTelemetry();
+            session.WalkScalar8Scalar8RouteTargets(setup.RootRouterOffset, keys, maxRouterHops: 8, Scalar8Scalar8RouteReadPolicy.PreferPromotedViews, promotedTargets);
+            promotedRead = session.GetAndResetReadTelemetry();
 
-            uncachedChecksum = CheckScalar8Scalar8RouteTargets(uncachedTargets, rightShelfOffset);
-            cachedChecksum = CheckScalar8Scalar8RouteTargets(cachedTargets, rightShelfOffset);
-            if (uncachedChecksum != cachedChecksum)
+            session.ClearRouterArenaReadCacheForValidation();
+            session.WalkScalar8Scalar8RouteTargets(setup.RootRouterOffset, keys, maxRouterHops: 8, Scalar8Scalar8RouteReadPolicy.PreferArenaCache, arenaTargets);
+            arenaRead = session.GetAndResetReadTelemetry();
+
+            rawChecksum = CheckScalar8Scalar8RouteTargets(rawTargets, rightShelfOffset);
+            promotedChecksum = CheckScalar8Scalar8RouteTargets(promotedTargets, rightShelfOffset);
+            arenaChecksum = CheckScalar8Scalar8RouteTargets(arenaTargets, rightShelfOffset);
+            if (rawChecksum != promotedChecksum || rawChecksum != arenaChecksum)
             {
-                throw new InvalidDataException("Batched route policies resolved different target checksums.");
+                throw new InvalidDataException("Raw-file, promoted-view, and arena-aware batched route policies resolved different target checksums.");
             }
 
-            long expectedUncachedReads = 2L + (batchCount * 2L);
-            long expectedUncachedBytes = (RouterLayout.Size * 2L) + (batchCount * (sizeof(uint) * 2L));
-            long expectedCachedReads = 3 + ((batchCount - 1L) * 2L);
-            long expectedCachedBytes = RouterLayout.Size + profile.ShelfExtentSize + sizeof(uint) + ((batchCount - 1L) * (RouterLayout.Size + sizeof(uint)));
-            long expectedUncachedArenaBytes = expectedUncachedBytes + profile.ShelfExtentSize - RouterLayout.Size;
-            if (uncachedRead.ReadCallCount != expectedUncachedReads || (uncachedRead.BytesRead != expectedUncachedBytes && uncachedRead.BytesRead != expectedUncachedArenaBytes))
+            long expectedRawReads = batchCount * 4L;
+            long expectedRawBytes = batchCount * ((RouterLayout.Size * 2L) + (sizeof(uint) * 2L));
+            if (rawRead.ReadCallCount != expectedRawReads || rawRead.BytesRead != expectedRawBytes)
             {
-                throw new InvalidDataException($"Uncached batched route walk did not preserve the expected read shape. expectedReads={expectedUncachedReads} actualReads={uncachedRead.ReadCallCount} expectedBytes={expectedUncachedBytes}/{expectedUncachedArenaBytes} actualBytes={uncachedRead.BytesRead}.");
+                throw new InvalidDataException($"Raw-file batched route walk did not preserve the expected control shape. expectedReads={expectedRawReads} actualReads={rawRead.ReadCallCount} expectedBytes={expectedRawBytes} actualBytes={rawRead.BytesRead}.");
             }
 
-            long expectedCachedEfficientReads = 3 + (batchCount - 1L);
-            long expectedCachedEfficientBytes = RouterLayout.Size + profile.ShelfExtentSize + sizeof(uint) + ((batchCount - 1L) * sizeof(uint));
-            bool cachedLegacyShape = cachedRead.ReadCallCount == expectedCachedReads && cachedRead.BytesRead == expectedCachedBytes;
-            bool cachedEfficientShape = cachedRead.ReadCallCount == expectedCachedEfficientReads && cachedRead.BytesRead == expectedCachedEfficientBytes;
-            if (!cachedLegacyShape && !cachedEfficientShape)
+            long expectedProjectedReads = 2L;
+            long expectedProjectedBytes = RouterLayout.Size * 2L;
+            if (promotedRead.ReadCallCount != expectedProjectedReads || promotedRead.BytesRead != expectedProjectedBytes)
             {
-                throw new InvalidDataException($"Arena-aware batched route walk did not preserve the expected read shape. expectedReads={expectedCachedReads}/{expectedCachedEfficientReads} actualReads={cachedRead.ReadCallCount} expectedBytes={expectedCachedBytes}/{expectedCachedEfficientBytes} actualBytes={cachedRead.BytesRead}.");
+                throw new InvalidDataException($"Promoted-view batched route walk did not preserve the expected read shape. expectedReads={expectedProjectedReads} actualReads={promotedRead.ReadCallCount} expectedBytes={expectedProjectedBytes} actualBytes={promotedRead.BytesRead}.");
+            }
+
+            long expectedArenaReads = 2L + batchCount;
+            long expectedArenaBytes = RouterLayout.Size + profile.ShelfExtentSize + (batchCount * (long)sizeof(uint));
+            if (arenaRead.ReadCallCount != expectedArenaReads || arenaRead.BytesRead != expectedArenaBytes)
+            {
+                throw new InvalidDataException($"Arena-aware batched route walk did not preserve the expected read shape. expectedReads={expectedArenaReads} actualReads={arenaRead.ReadCallCount} expectedBytes={expectedArenaBytes} actualBytes={arenaRead.BytesRead}.");
             }
         }
 
         Console.WriteLine("ss8-8 route batch policy");
         Console.WriteLine($"batchCount {batchCount}");
         Console.WriteLine($"rightShelfOffset {rightShelfOffset}");
-        Console.WriteLine($"uncachedChecksum {uncachedChecksum}");
-        Console.WriteLine($"cachedChecksum {cachedChecksum}");
-        PrintRead("ss8-8 route batch uncached", uncachedRead);
-        PrintRead("ss8-8 route batch cached", cachedRead);
+        Console.WriteLine($"rawChecksum {rawChecksum}");
+        Console.WriteLine($"promotedChecksum {promotedChecksum}");
+        Console.WriteLine($"arenaChecksum {arenaChecksum}");
+        PrintRead("ss8-8 route batch raw-file", rawRead);
+        PrintRead("ss8-8 route batch promoted-view", promotedRead);
+        PrintRead("ss8-8 route batch arena-aware", arenaRead);
         Console.WriteLine($"ss8-8-route-batch-policy-sanity ok path={path}");
         return 0;
     }
@@ -5226,7 +5279,7 @@ internal static partial class RawHarness
 
     /// <summary>
     /// Validates the first routed `SS8-8` batched point lookup over encoded keys.<br/>
-    /// The command compares uncached routing with arena-aware routing, then requires both policies to return the same identity results from the same shelf data.<br/>
+    /// The command compares raw-file, promoted-view, and arena-aware routing, then requires all policies to return the same identity results from the same shelf data.<br/>
     /// </summary>
     /// <param name="args">The harness command-line arguments.</param>
     /// <returns>Zero when batched lookup validation succeeds; otherwise one.</returns>
@@ -5240,10 +5293,12 @@ internal static partial class RawHarness
         const ulong rightPrefixBase = 0x0080_0000_0000_0000UL;
         Scalar8Scalar8Profile profile = Scalar8Scalar8Profile.Default32KiB;
         DataKernelOptions options = CreateDesignPerfOptions();
-        DataKernelReadTelemetry uncachedRead;
-        DataKernelReadTelemetry cachedRead;
-        long uncachedChecksum;
-        long cachedChecksum;
+        DataKernelReadTelemetry rawRead;
+        DataKernelReadTelemetry promotedRead;
+        DataKernelReadTelemetry arenaRead;
+        long rawChecksum;
+        long promotedChecksum;
+        long arenaChecksum;
         long rightShelfOffset;
         using (LibraDexFileSession session = LibraDexFileSession.Initialize(path, options, CreateDesignPerfMetadata(46), DataKernelTelemetryOptions.EnabledOptions))
         {
@@ -5256,10 +5311,12 @@ internal static partial class RawHarness
                 keys[i] = rightPrefixBase + (ulong)i;
             }
 
-            ulong[] uncachedIdentities = new ulong[batchCount];
-            ulong[] cachedIdentities = new ulong[batchCount];
-            byte[] uncachedFound = new byte[batchCount];
-            byte[] cachedFound = new byte[batchCount];
+            ulong[] rawIdentities = new ulong[batchCount];
+            ulong[] promotedIdentities = new ulong[batchCount];
+            ulong[] arenaIdentities = new ulong[batchCount];
+            byte[] rawFound = new byte[batchCount];
+            byte[] promotedFound = new byte[batchCount];
+            byte[] arenaFound = new byte[batchCount];
             Scalar8Scalar8RouteTarget[] routeTargets = new Scalar8Scalar8RouteTarget[batchCount];
             byte[] shelfBuffer = new byte[profile.ShelfExtentSize];
 
@@ -5270,12 +5327,27 @@ internal static partial class RawHarness
                 profile,
                 keys,
                 maxRouterHops: 8,
-                Scalar8Scalar8RouteReadPolicy.Uncached,
-                uncachedIdentities,
-                uncachedFound,
+                Scalar8Scalar8RouteReadPolicy.RawFile,
+                rawIdentities,
+                rawFound,
                 routeTargets,
                 shelfBuffer);
-            uncachedRead = session.GetAndResetReadTelemetry();
+            rawRead = session.GetAndResetReadTelemetry();
+
+            Array.Clear(routeTargets);
+            Array.Clear(shelfBuffer);
+            session.ClearRouterArenaReadCacheForValidation();
+            session.LookupScalar8Scalar8Identities(
+                setup.RootRouterOffset,
+                profile,
+                keys,
+                maxRouterHops: 8,
+                Scalar8Scalar8RouteReadPolicy.PreferPromotedViews,
+                promotedIdentities,
+                promotedFound,
+                routeTargets,
+                shelfBuffer);
+            promotedRead = session.GetAndResetReadTelemetry();
 
             Array.Clear(routeTargets);
             Array.Clear(shelfBuffer);
@@ -5286,53 +5358,58 @@ internal static partial class RawHarness
                 keys,
                 maxRouterHops: 8,
                 Scalar8Scalar8RouteReadPolicy.PreferArenaCache,
-                cachedIdentities,
-                cachedFound,
+                arenaIdentities,
+                arenaFound,
                 routeTargets,
                 shelfBuffer);
-            cachedRead = session.GetAndResetReadTelemetry();
+            arenaRead = session.GetAndResetReadTelemetry();
 
-            uncachedChecksum = CheckScalar8Scalar8BatchLookup(keys, uncachedIdentities, uncachedFound);
-            cachedChecksum = CheckScalar8Scalar8BatchLookup(keys, cachedIdentities, cachedFound);
-            if (uncachedChecksum != cachedChecksum)
+            rawChecksum = CheckScalar8Scalar8BatchLookup(keys, rawIdentities, rawFound);
+            promotedChecksum = CheckScalar8Scalar8BatchLookup(keys, promotedIdentities, promotedFound);
+            arenaChecksum = CheckScalar8Scalar8BatchLookup(keys, arenaIdentities, arenaFound);
+            if (rawChecksum != promotedChecksum || rawChecksum != arenaChecksum)
             {
-                throw new InvalidDataException("Batched lookup policies returned different checksums.");
+                throw new InvalidDataException("Raw-file, promoted-view, and arena-aware batched lookup policies returned different checksums.");
             }
 
-            long expectedUncachedReads = 3L + (batchCount * 2L);
-            long expectedUncachedBytes = (RouterLayout.Size * 2L) + (batchCount * (sizeof(uint) * 2L)) + profile.ShelfExtentSize;
-            long expectedCachedReads = 4 + ((batchCount - 1L) * 2L);
-            long expectedCachedBytes = RouterLayout.Size + profile.ShelfExtentSize + sizeof(uint) + ((batchCount - 1L) * (RouterLayout.Size + sizeof(uint))) + profile.ShelfExtentSize;
-            long expectedUncachedArenaBytes = expectedUncachedBytes + profile.ShelfExtentSize - RouterLayout.Size;
-            if (uncachedRead.ReadCallCount != expectedUncachedReads || (uncachedRead.BytesRead != expectedUncachedBytes && uncachedRead.BytesRead != expectedUncachedArenaBytes))
+            long expectedRawReads = (batchCount * 4L) + 1L;
+            long expectedRawBytes = (batchCount * ((RouterLayout.Size * 2L) + (sizeof(uint) * 2L))) + profile.ShelfExtentSize;
+            if (rawRead.ReadCallCount != expectedRawReads || rawRead.BytesRead != expectedRawBytes)
             {
-                throw new InvalidDataException($"Uncached batched lookup did not preserve the expected read shape. expectedReads={expectedUncachedReads} actualReads={uncachedRead.ReadCallCount} expectedBytes={expectedUncachedBytes}/{expectedUncachedArenaBytes} actualBytes={uncachedRead.BytesRead}.");
+                throw new InvalidDataException($"Raw-file batched lookup did not preserve the expected control shape. expectedReads={expectedRawReads} actualReads={rawRead.ReadCallCount} expectedBytes={expectedRawBytes} actualBytes={rawRead.BytesRead}.");
             }
 
-            long expectedCachedEfficientReads = 4 + (batchCount - 1L);
-            long expectedCachedEfficientBytes = RouterLayout.Size + profile.ShelfExtentSize + sizeof(uint) + ((batchCount - 1L) * sizeof(uint)) + profile.ShelfExtentSize;
-            bool cachedLegacyShape = cachedRead.ReadCallCount == expectedCachedReads && cachedRead.BytesRead == expectedCachedBytes;
-            bool cachedEfficientShape = cachedRead.ReadCallCount == expectedCachedEfficientReads && cachedRead.BytesRead == expectedCachedEfficientBytes;
-            if (!cachedLegacyShape && !cachedEfficientShape)
+            long expectedProjectedReads = 3L;
+            long expectedProjectedBytes = (RouterLayout.Size * 2L) + profile.ShelfExtentSize;
+            if (promotedRead.ReadCallCount != expectedProjectedReads || promotedRead.BytesRead != expectedProjectedBytes)
             {
-                throw new InvalidDataException($"Arena-aware batched lookup did not preserve the expected read shape. expectedReads={expectedCachedReads}/{expectedCachedEfficientReads} actualReads={cachedRead.ReadCallCount} expectedBytes={expectedCachedBytes}/{expectedCachedEfficientBytes} actualBytes={cachedRead.BytesRead}.");
+                throw new InvalidDataException($"Promoted-view batched lookup did not preserve the expected read shape. expectedReads={expectedProjectedReads} actualReads={promotedRead.ReadCallCount} expectedBytes={expectedProjectedBytes} actualBytes={promotedRead.BytesRead}.");
+            }
+
+            long expectedArenaReads = 3L + batchCount;
+            long expectedArenaBytes = RouterLayout.Size + (profile.ShelfExtentSize * 2L) + (batchCount * (long)sizeof(uint));
+            if (arenaRead.ReadCallCount != expectedArenaReads || arenaRead.BytesRead != expectedArenaBytes)
+            {
+                throw new InvalidDataException($"Arena-aware batched lookup did not preserve the expected read shape. expectedReads={expectedArenaReads} actualReads={arenaRead.ReadCallCount} expectedBytes={expectedArenaBytes} actualBytes={arenaRead.BytesRead}.");
             }
         }
 
         Console.WriteLine("ss8-8 batch lookup");
         Console.WriteLine($"batchCount {batchCount}");
         Console.WriteLine($"rightShelfOffset {rightShelfOffset}");
-        Console.WriteLine($"uncachedChecksum {uncachedChecksum}");
-        Console.WriteLine($"cachedChecksum {cachedChecksum}");
-        PrintRead("ss8-8 batch lookup uncached", uncachedRead);
-        PrintRead("ss8-8 batch lookup cached", cachedRead);
+        Console.WriteLine($"rawChecksum {rawChecksum}");
+        Console.WriteLine($"promotedChecksum {promotedChecksum}");
+        Console.WriteLine($"arenaChecksum {arenaChecksum}");
+        PrintRead("ss8-8 batch lookup raw-file", rawRead);
+        PrintRead("ss8-8 batch lookup promoted-view", promotedRead);
+        PrintRead("ss8-8 batch lookup arena-aware", arenaRead);
         Console.WriteLine($"ss8-8-batch-lookup-sanity ok path={path}");
         return 0;
     }
 
 
     /// <summary>
-    /// Measures the first routed `SS8-8` batched point lookup operation with uncached and arena-aware routing policies.<br/>
+    /// Measures the first routed `SS8-8` batched point lookup operation with promoted and arena-aware routing policies.<br/>
     /// Each iteration performs one batch lookup over the same right-side transformed shelf so the run measures route-to-shelf bridging plus shelf lower-bound lookup.<br/>
     /// </summary>
     /// <param name="args">The harness command-line arguments.</param>
@@ -5367,14 +5444,14 @@ internal static partial class RawHarness
         Scalar8Scalar8RouteTarget[] routeTargets = new Scalar8Scalar8RouteTarget[batchCount];
         byte[] shelfBuffer = new byte[profile.ShelfExtentSize];
 
-        Scalar8Scalar8BatchLookupPerfResult uncached = MeasureScalar8Scalar8BatchLookupScenario(
-            "same-shelf uncached",
+        Scalar8Scalar8BatchLookupPerfResult promoted = MeasureScalar8Scalar8BatchLookupScenario(
+            "same-shelf promoted",
             session,
             setup.RootRouterOffset,
             profile,
             keys,
             iterations,
-            Scalar8Scalar8RouteReadPolicy.Uncached,
+            Scalar8Scalar8RouteReadPolicy.PreferPromotedViews,
             identities,
             foundFlags,
             routeTargets,
@@ -5393,7 +5470,7 @@ internal static partial class RawHarness
             routeTargets,
             shelfBuffer);
 
-        Scalar8Scalar8BatchLookupPerfResult[] results = [uncached, cached];
+        Scalar8Scalar8BatchLookupPerfResult[] results = [promoted, cached];
         Console.WriteLine("ss8-8 batch lookup perf");
         Console.WriteLine($"iterations {iterations}");
         Console.WriteLine($"batchCount {batchCount}");
@@ -5456,7 +5533,7 @@ internal static partial class RawHarness
 
     /// <summary>
     /// Validates the first routed `SS8-8` range/scoop operation over one shelf.<br/>
-    /// The command compares uncached routing with arena-aware routing and requires both policies to return the same inclusive key-range identity span.<br/>
+    /// The command compares promoted routing with arena-aware routing and requires both policies to return the same inclusive key-range identity span.<br/>
     /// </summary>
     /// <param name="args">The harness command-line arguments.</param>
     /// <returns>Zero when routed range scoop validation succeeds; otherwise one.</returns>
@@ -5473,23 +5550,23 @@ internal static partial class RawHarness
         ulong upperKey = lowerKey + (ulong)(rangeLength - 1);
         Scalar8Scalar8Profile profile = Scalar8Scalar8Profile.Default32KiB;
         DataKernelOptions options = CreateDesignPerfOptions();
-        DataKernelReadTelemetry uncachedRead;
+        DataKernelReadTelemetry promotedRead;
         DataKernelReadTelemetry cachedRead;
-        DataKernelReadTelemetry crossUncachedRead;
+        DataKernelReadTelemetry crossPromotedRead;
         DataKernelReadTelemetry crossCachedRead;
-        DataKernelReadTelemetry traversalUncachedRead;
+        DataKernelReadTelemetry traversalPromotedRead;
         DataKernelReadTelemetry traversalCachedRead;
-        long uncachedChecksum;
+        long promotedChecksum;
         long cachedChecksum;
-        long crossUncachedChecksum;
+        long crossPromotedChecksum;
         long crossCachedChecksum;
-        long traversalUncachedChecksum;
+        long traversalPromotedChecksum;
         long traversalCachedChecksum;
-        int uncachedCount;
+        int promotedCount;
         int cachedCount;
-        int crossUncachedCount;
+        int crossPromotedCount;
         int crossCachedCount;
-        int traversalUncachedCount;
+        int traversalPromotedCount;
         int traversalCachedCount;
         long rightShelfOffset;
         long traversalRightShelfOffset;
@@ -5499,22 +5576,22 @@ internal static partial class RawHarness
             RouterArenaReadCachePerfSetup setup = CreateScalar8Scalar8RouterArenaReadCachePerfSetup(session, profile);
             rightShelfOffset = session.WalkScalar8Scalar8RouteTarget(setup.RootRouterOffset, lowerKey, maxRouterHops: 8).Offset;
 
-            ulong[] uncachedIdentities = new ulong[rangeLength];
+            ulong[] promotedIdentities = new ulong[rangeLength];
             ulong[] cachedIdentities = new ulong[rangeLength];
             byte[] shelfBuffer = new byte[profile.ShelfExtentSize];
 
             _ = session.GetAndResetReadTelemetry();
             session.ClearRouterArenaReadCacheForValidation();
-            uncachedCount = session.ScoopScalar8Scalar8IdentityRange(
+            promotedCount = session.ScoopScalar8Scalar8IdentityRange(
                 setup.RootRouterOffset,
                 profile,
                 lowerKey,
                 upperKey,
                 maxRouterHops: 8,
-                Scalar8Scalar8RouteReadPolicy.Uncached,
-                uncachedIdentities,
+                Scalar8Scalar8RouteReadPolicy.PreferPromotedViews,
+                promotedIdentities,
                 shelfBuffer);
-            uncachedRead = session.GetAndResetReadTelemetry();
+            promotedRead = session.GetAndResetReadTelemetry();
 
             Array.Clear(shelfBuffer);
             session.ClearRouterArenaReadCacheForValidation();
@@ -5529,22 +5606,21 @@ internal static partial class RawHarness
                 shelfBuffer);
             cachedRead = session.GetAndResetReadTelemetry();
 
-            uncachedChecksum = CheckScalar8Scalar8RangeScoop(lowerKey, uncachedIdentities, uncachedCount, rangeLength);
+            promotedChecksum = CheckScalar8Scalar8RangeScoop(lowerKey, promotedIdentities, promotedCount, rangeLength);
             cachedChecksum = CheckScalar8Scalar8RangeScoop(lowerKey, cachedIdentities, cachedCount, rangeLength);
-            if (uncachedChecksum != cachedChecksum)
+            if (promotedChecksum != cachedChecksum)
             {
                 throw new InvalidDataException("Routed range scoop policies returned different checksums.");
             }
 
-            long expectedUncachedReads = 5;
-            long expectedUncachedBytes = (RouterLayout.Size * 2L) + (2L * sizeof(uint)) + profile.ShelfExtentSize;
+            long expectedPromotedReads = 3;
+            long expectedPromotedBytes = (RouterLayout.Size * 2L) + profile.ShelfExtentSize;
             long expectedCachedReads = 5;
             long expectedCachedBytes = RouterLayout.Size + profile.ShelfExtentSize + RouterLayout.Size + sizeof(uint) + profile.ShelfExtentSize;
             long arenaReadExtraBytes = profile.ShelfExtentSize - RouterLayout.Size;
-            long expectedUncachedArenaBytes = expectedUncachedBytes + arenaReadExtraBytes;
-            if (uncachedRead.ReadCallCount != expectedUncachedReads || (uncachedRead.BytesRead != expectedUncachedBytes && uncachedRead.BytesRead != expectedUncachedArenaBytes))
+            if (promotedRead.ReadCallCount != expectedPromotedReads || promotedRead.BytesRead != expectedPromotedBytes)
             {
-                throw new InvalidDataException($"Uncached routed range scoop did not preserve the expected read shape. expectedReads={expectedUncachedReads} actualReads={uncachedRead.ReadCallCount} expectedBytes={expectedUncachedBytes}/{expectedUncachedArenaBytes} actualBytes={uncachedRead.BytesRead}.");
+                throw new InvalidDataException($"Promoted routed range scoop did not preserve the expected read shape. expectedReads={expectedPromotedReads} actualReads={promotedRead.ReadCallCount} expectedBytes={expectedPromotedBytes} actualBytes={promotedRead.BytesRead}.");
             }
 
             long expectedCachedEfficientBytes = expectedCachedBytes - RouterLayout.Size;
@@ -5558,21 +5634,21 @@ internal static partial class RawHarness
             const ulong crossLowerKey = 900UL;
             const ulong crossUpperKey = rightPrefixBase + 31UL;
             const int crossExpectedCount = 41;
-            ulong[] crossUncachedIdentities = new ulong[crossExpectedCount];
+            ulong[] crossPromotedIdentities = new ulong[crossExpectedCount];
             ulong[] crossCachedIdentities = new ulong[crossExpectedCount];
 
             Array.Clear(shelfBuffer);
             session.ClearRouterArenaReadCacheForValidation();
-            crossUncachedCount = session.ScoopScalar8Scalar8IdentityRange(
+            crossPromotedCount = session.ScoopScalar8Scalar8IdentityRange(
                 setup.RootRouterOffset,
                 profile,
                 crossLowerKey,
                 crossUpperKey,
                 maxRouterHops: 8,
-                Scalar8Scalar8RouteReadPolicy.Uncached,
-                crossUncachedIdentities,
+                Scalar8Scalar8RouteReadPolicy.PreferPromotedViews,
+                crossPromotedIdentities,
                 shelfBuffer);
-            crossUncachedRead = session.GetAndResetReadTelemetry();
+            crossPromotedRead = session.GetAndResetReadTelemetry();
 
             Array.Clear(shelfBuffer);
             session.ClearRouterArenaReadCacheForValidation();
@@ -5587,21 +5663,20 @@ internal static partial class RawHarness
                 shelfBuffer);
             crossCachedRead = session.GetAndResetReadTelemetry();
 
-            crossUncachedChecksum = CheckScalar8Scalar8CrossShelfRangeScoop(crossUncachedIdentities, crossUncachedCount);
+            crossPromotedChecksum = CheckScalar8Scalar8CrossShelfRangeScoop(crossPromotedIdentities, crossPromotedCount);
             crossCachedChecksum = CheckScalar8Scalar8CrossShelfRangeScoop(crossCachedIdentities, crossCachedCount);
-            if (crossUncachedChecksum != crossCachedChecksum)
+            if (crossPromotedChecksum != crossCachedChecksum)
             {
                 throw new InvalidDataException("Cross-shelf routed range scoop policies returned different checksums.");
             }
 
-            long expectedCrossUncachedReads = 8;
-            long expectedCrossUncachedBytes = (3L * RouterLayout.Size) + (3L * sizeof(uint)) + (2L * profile.ShelfExtentSize);
+            long expectedCrossPromotedReads = 6;
+            long expectedCrossPromotedBytes = (3L * RouterLayout.Size) + sizeof(uint) + (2L * profile.ShelfExtentSize);
             long expectedCrossCachedReads = 7;
             long expectedCrossCachedBytes = RouterLayout.Size + profile.ShelfExtentSize + sizeof(uint) + RouterLayout.Size + sizeof(uint) + (2L * profile.ShelfExtentSize);
-            long expectedCrossUncachedArenaBytes = expectedCrossUncachedBytes + arenaReadExtraBytes;
-            if (crossUncachedRead.ReadCallCount != expectedCrossUncachedReads || (crossUncachedRead.BytesRead != expectedCrossUncachedBytes && crossUncachedRead.BytesRead != expectedCrossUncachedArenaBytes))
+            if (crossPromotedRead.ReadCallCount != expectedCrossPromotedReads || crossPromotedRead.BytesRead != expectedCrossPromotedBytes)
             {
-                throw new InvalidDataException($"Uncached cross-shelf routed range scoop did not preserve the expected read shape. expectedReads={expectedCrossUncachedReads} actualReads={crossUncachedRead.ReadCallCount} expectedBytes={expectedCrossUncachedBytes}/{expectedCrossUncachedArenaBytes} actualBytes={crossUncachedRead.BytesRead}.");
+                throw new InvalidDataException($"Promoted cross-shelf routed range scoop did not preserve the expected read shape. expectedReads={expectedCrossPromotedReads} actualReads={crossPromotedRead.ReadCallCount} expectedBytes={expectedCrossPromotedBytes} actualBytes={crossPromotedRead.BytesRead}.");
             }
 
             long expectedCrossCachedEfficientBytes = expectedCrossCachedBytes - RouterLayout.Size;
@@ -5632,22 +5707,22 @@ internal static partial class RawHarness
             const ulong traversalLowerKey = rightPrefixBase + 900UL;
             const ulong traversalUpperKey = directPrefixBase + 31UL;
             const int traversalExpectedCount = 42;
-            ulong[] traversalUncachedIdentities = new ulong[traversalExpectedCount];
+            ulong[] traversalPromotedIdentities = new ulong[traversalExpectedCount];
             ulong[] traversalCachedIdentities = new ulong[traversalExpectedCount];
 
             Array.Clear(shelfBuffer);
             session.ClearRouterArenaReadCacheForValidation();
             _ = session.GetAndResetReadTelemetry();
-            traversalUncachedCount = session.ScoopScalar8Scalar8IdentityRange(
+            traversalPromotedCount = session.ScoopScalar8Scalar8IdentityRange(
                 traversalRoot.Offset,
                 profile,
                 traversalLowerKey,
                 traversalUpperKey,
                 maxRouterHops: 8,
-                Scalar8Scalar8RouteReadPolicy.Uncached,
-                traversalUncachedIdentities,
+                Scalar8Scalar8RouteReadPolicy.PreferPromotedViews,
+                traversalPromotedIdentities,
                 shelfBuffer);
-            traversalUncachedRead = session.GetAndResetReadTelemetry();
+            traversalPromotedRead = session.GetAndResetReadTelemetry();
 
             Array.Clear(shelfBuffer);
             session.ClearRouterArenaReadCacheForValidation();
@@ -5662,21 +5737,20 @@ internal static partial class RawHarness
                 shelfBuffer);
             traversalCachedRead = session.GetAndResetReadTelemetry();
 
-            traversalUncachedChecksum = CheckScalar8Scalar8TraversalRangeScoop(traversalUncachedIdentities, traversalUncachedCount);
+            traversalPromotedChecksum = CheckScalar8Scalar8TraversalRangeScoop(traversalPromotedIdentities, traversalPromotedCount);
             traversalCachedChecksum = CheckScalar8Scalar8TraversalRangeScoop(traversalCachedIdentities, traversalCachedCount);
-            if (traversalUncachedChecksum != traversalCachedChecksum)
+            if (traversalPromotedChecksum != traversalCachedChecksum)
             {
                 throw new InvalidDataException("Generalized routed range traversal policies returned different checksums.");
             }
 
-            long expectedTraversalUncachedReads = 7;
-            long expectedTraversalUncachedBytes = 73740;
+            long expectedTraversalPromotedReads = 7;
+            long expectedTraversalPromotedBytes = 73740;
             long expectedTraversalCachedReads = 6;
             long expectedTraversalCachedBytes = 102408;
-            long expectedTraversalUncachedArenaBytes = expectedTraversalUncachedBytes + arenaReadExtraBytes;
-            if (traversalUncachedRead.ReadCallCount != expectedTraversalUncachedReads || (traversalUncachedRead.BytesRead != expectedTraversalUncachedBytes && traversalUncachedRead.BytesRead != expectedTraversalUncachedArenaBytes))
+            if (traversalPromotedRead.ReadCallCount != expectedTraversalPromotedReads || traversalPromotedRead.BytesRead != expectedTraversalPromotedBytes)
             {
-                throw new InvalidDataException($"Uncached generalized routed range traversal did not preserve the expected read shape. expectedReads={expectedTraversalUncachedReads} actualReads={traversalUncachedRead.ReadCallCount} expectedBytes={expectedTraversalUncachedBytes}/{expectedTraversalUncachedArenaBytes} actualBytes={traversalUncachedRead.BytesRead}.");
+                throw new InvalidDataException($"Promoted generalized routed range traversal did not preserve the expected read shape. expectedReads={expectedTraversalPromotedReads} actualReads={traversalPromotedRead.ReadCallCount} expectedBytes={expectedTraversalPromotedBytes} actualBytes={traversalPromotedRead.BytesRead}.");
             }
 
             if (traversalCachedRead.ReadCallCount != expectedTraversalCachedReads || traversalCachedRead.BytesRead != expectedTraversalCachedBytes)
@@ -5689,25 +5763,25 @@ internal static partial class RawHarness
         Console.WriteLine($"rangeStart {rangeStart}");
         Console.WriteLine($"rangeLength {rangeLength}");
         Console.WriteLine($"rightShelfOffset {rightShelfOffset}");
-        Console.WriteLine($"uncachedCount {uncachedCount}");
+        Console.WriteLine($"promotedCount {promotedCount}");
         Console.WriteLine($"cachedCount {cachedCount}");
-        Console.WriteLine($"uncachedChecksum {uncachedChecksum}");
+        Console.WriteLine($"promotedChecksum {promotedChecksum}");
         Console.WriteLine($"cachedChecksum {cachedChecksum}");
-        Console.WriteLine($"crossUncachedCount {crossUncachedCount}");
+        Console.WriteLine($"crossPromotedCount {crossPromotedCount}");
         Console.WriteLine($"crossCachedCount {crossCachedCount}");
-        Console.WriteLine($"crossUncachedChecksum {crossUncachedChecksum}");
+        Console.WriteLine($"crossPromotedChecksum {crossPromotedChecksum}");
         Console.WriteLine($"crossCachedChecksum {crossCachedChecksum}");
         Console.WriteLine($"traversalRightShelfOffset {traversalRightShelfOffset}");
         Console.WriteLine($"traversalDirectShelfOffset {traversalDirectShelfOffset}");
-        Console.WriteLine($"traversalUncachedCount {traversalUncachedCount}");
+        Console.WriteLine($"traversalPromotedCount {traversalPromotedCount}");
         Console.WriteLine($"traversalCachedCount {traversalCachedCount}");
-        Console.WriteLine($"traversalUncachedChecksum {traversalUncachedChecksum}");
+        Console.WriteLine($"traversalPromotedChecksum {traversalPromotedChecksum}");
         Console.WriteLine($"traversalCachedChecksum {traversalCachedChecksum}");
-        PrintRead("ss8-8 range scoop uncached", uncachedRead);
+        PrintRead("ss8-8 range scoop promoted", promotedRead);
         PrintRead("ss8-8 range scoop cached", cachedRead);
-        PrintRead("ss8-8 range scoop cross uncached", crossUncachedRead);
+        PrintRead("ss8-8 range scoop cross promoted", crossPromotedRead);
         PrintRead("ss8-8 range scoop cross cached", crossCachedRead);
-        PrintRead("ss8-8 range scoop traversal uncached", traversalUncachedRead);
+        PrintRead("ss8-8 range scoop traversal promoted", traversalPromotedRead);
         PrintRead("ss8-8 range scoop traversal cached", traversalCachedRead);
         Console.WriteLine($"ss8-8-range-scoop-sanity ok path={path}");
         return 0;
@@ -6329,6 +6403,16 @@ internal static partial class RawHarness
             {
                 throw new InvalidDataException("Generic long/long batch did not commit one inserted tuple with deferred requests.");
             }
+            if (index.Entries.ExistsOtherIdentity(42, 4200))
+                throw new InvalidDataException("Typed SS8-8 other-owner check reported an owner that does not exist.");
+            ValidateGenericInsert(index.Insert(42, 4201), "long/long second-owner insert");
+            if (!index.Entries.ExistsOtherIdentity(42, 4200))
+                throw new InvalidDataException("Typed SS8-8 other-owner check did not observe the second owner.");
+            index.Delete(42, 4201);
+            if (index.Entries.ExistsOtherIdentity(42, 4200))
+            {
+                throw new InvalidDataException("Typed SS8-8 other-owner check did not track insertion and deletion.");
+            }
 
             long[] identities = new long[4];
             LibraDexGenericRangeReadResult read = index.ReadRange(42, 43, identities);
@@ -6346,6 +6430,16 @@ internal static partial class RawHarness
             telemetryOptions: DataKernelTelemetryOptions.EnabledOptions))
         {
             ValidateGenericInsert(index.Insert(guidKey, 1001), "Guid/long insert");
+            if (index.Entries.ExistsOtherIdentity(guidKey, 1001))
+                throw new InvalidDataException("Typed SS16-8 other-owner check reported an owner that does not exist.");
+            ValidateGenericInsert(index.Insert(guidKey, 1002), "Guid/long second-owner insert");
+            if (!index.Entries.ExistsOtherIdentity(guidKey, 1001))
+                throw new InvalidDataException("Typed SS16-8 other-owner check did not observe the second owner.");
+            index.Delete(guidKey, 1002);
+            if (index.Entries.ExistsOtherIdentity(guidKey, 1001))
+            {
+                throw new InvalidDataException("Typed SS16-8 other-owner check did not track insertion and deletion.");
+            }
             long[] identities = new long[2];
             LibraDexGenericRangeReadResult read = index.ReadRange(guidKey, guidKey, identities);
             ValidateGenericRead(read, identities, new long[] { 1001 }, "Guid/long same-session read");
@@ -6413,6 +6507,22 @@ internal static partial class RawHarness
             telemetryOptions: DataKernelTelemetryOptions.EnabledOptions))
         {
             ValidateGenericInsert(index.Insert(bytes16, 5001), "byte[]/long insert");
+            IFixedBinaryKeyIndex<long> borrowedIndex = index;
+            Span<byte> borrowedKey = stackalloc byte[16];
+            bytes16.CopyTo(borrowedKey);
+            ValidateGenericInsert(borrowedIndex.Insert(borrowedKey, 5002), "borrowed byte16[]/long insert");
+            if (!borrowedIndex.ContainsKey(borrowedKey) ||
+                !borrowedIndex.ContainsTuple(borrowedKey, 5002) ||
+                !borrowedIndex.ContainsOtherIdentity(borrowedKey, 5002))
+            {
+                throw new InvalidDataException("Borrowed 16-byte key ownership checks did not observe the inserted tuples.");
+            }
+            if (!borrowedIndex.Delete(borrowedKey, 5002) ||
+                borrowedIndex.ContainsTuple(borrowedKey, 5002))
+            {
+                throw new InvalidDataException("Borrowed 16-byte key deletion did not remove the exact tuple.");
+            }
+
             long[] identities = new long[2];
             LibraDexGenericRangeReadResult read = index.ReadRange(bytes16, bytes16, identities);
             ValidateGenericRead(read, identities, new long[] { 5001 }, "byte[]/long same-session read");
@@ -6472,6 +6582,18 @@ internal static partial class RawHarness
             telemetryOptions: DataKernelTelemetryOptions.EnabledOptions))
         {
             ValidateGenericInsert(index.Insert(bytes32, 9001), "byte32[]/long insert");
+            IFixedBinaryKeyIndex<long> borrowedIndex = index;
+            Span<byte> borrowedKey = stackalloc byte[32];
+            bytes32.CopyTo(borrowedKey);
+            ValidateGenericInsert(borrowedIndex.Insert(borrowedKey, 9003), "borrowed byte32[]/long insert");
+            if (!borrowedIndex.ContainsTuple(borrowedKey, 9003) ||
+                !borrowedIndex.ContainsOtherIdentity(borrowedKey, 9003) ||
+                !index.Entries.ExistsOtherIdentity(bytes32, 9003) ||
+                !borrowedIndex.Delete(borrowedKey, 9003))
+            {
+                throw new InvalidDataException("Borrowed 32-byte key mutation and ownership checks did not preserve exact tuple semantics.");
+            }
+
             long[] identities = new long[2];
             LibraDexGenericRangeReadResult read = index.ReadRange(bytes32, bytes32, identities);
             ValidateGenericRead(read, identities, new long[] { 9001 }, "byte32[]/long same-session read");
@@ -6542,6 +6664,29 @@ internal static partial class RawHarness
             ValidateGenericRead(read, identities, new long[] { 11001 }, "TimeSpan/long same-session range read");
             using LibraDexRangeReader<TimeSpan, long> reader = index.OpenRangeReader(duration, duration);
             ValidateGenericLongReader(reader, new long[] { 11001 }, "TimeSpan/long same-session reader");
+        }
+
+        using (LibraDexIndex<byte[], long> index = Indexes.CreateOrOpen<byte[], long>(
+            path,
+            DataKernelBackingKind.File,
+            slotIndex: 12,
+            name: "bytes8-long-borrowed",
+            keyWidth: LibraDexScalarWidth.Bytes8,
+            options: options,
+            telemetryOptions: DataKernelTelemetryOptions.EnabledOptions))
+        {
+            IFixedBinaryKeyIndex<long> borrowedIndex = index;
+            Span<byte> borrowedKey = stackalloc byte[8];
+            BinaryPrimitives.WriteUInt64BigEndian(borrowedKey, 0x1020304050607080UL);
+            ValidateGenericInsert(borrowedIndex.Insert(borrowedKey, 12001), "borrowed byte8[]/long insert");
+            if (!borrowedIndex.ContainsKey(borrowedKey) ||
+                !borrowedIndex.ContainsTuple(borrowedKey, 12001) ||
+                borrowedIndex.ContainsOtherIdentity(borrowedKey, 12001) ||
+                !borrowedIndex.Delete(borrowedKey, 12001) ||
+                borrowedIndex.ContainsKey(borrowedKey))
+            {
+                throw new InvalidDataException("Borrowed 8-byte key mutation and ownership checks did not preserve exact tuple semantics.");
+            }
         }
 
         using (LibraDexIndex<long, long> opened = Indexes.Open<long, long>(path, slotIndex: 0, options: options, telemetryOptions: DataKernelTelemetryOptions.EnabledOptions))
@@ -6652,6 +6797,79 @@ internal static partial class RawHarness
             ValidateGenericRead(read, identities, new long[] { 7700 }, "memory long/long read");
         }
 
+        using (Catalog utf8Catalog = Catalog.CreateMemory())
+        {
+            CatalogIdentityGroupIndexes utf8Group = utf8Catalog.Indexes["borrowed-utf8"];
+            using LibraDexStringScalar8Index exactUtf8 = utf8Group["exact"].String.Create(StringKeys.Exact);
+            using LibraDexStringScalar8Index projectedUtf8 = utf8Group["projected"].String.Create(
+                StringKeys.All);
+            byte[] resumeUtf8 = Encoding.UTF8.GetBytes("Résumé");
+            byte[] upperResumeUtf8 = Encoding.UTF8.GetBytes("RÉSUMÉ");
+            byte[] decomposedUpperResumeUtf8 = Encoding.UTF8.GetBytes("RE\u0301SUME\u0301");
+
+            ValidateGenericInsert(exactUtf8.InsertUtf8(resumeUtf8, 13001UL), "borrowed UTF-8 exact insert");
+            if (!exactUtf8.ContainsTupleUtf8(resumeUtf8, 13001UL) ||
+                exactUtf8.ContainsOtherIdentityUtf8(resumeUtf8, 13001UL))
+            {
+                throw new InvalidDataException("Borrowed UTF-8 exact ownership checks did not observe the first tuple.");
+            }
+
+            ValidateGenericInsert(exactUtf8.InsertUtf8(resumeUtf8, 13002UL), "borrowed UTF-8 second-owner insert");
+            if (!exactUtf8.ContainsOtherIdentityUtf8(resumeUtf8, 13001UL) ||
+                !exactUtf8.DeleteUtf8(resumeUtf8, 13002UL) ||
+                exactUtf8.ContainsOtherIdentityUtf8(resumeUtf8, 13001UL))
+            {
+                throw new InvalidDataException("Borrowed UTF-8 exact ownership checks did not track insertion and deletion.");
+            }
+
+            ValidateGenericInsert(exactUtf8.InsertUtf8(ReadOnlySpan<byte>.Empty, 13003UL), "borrowed UTF-8 empty insert");
+            if (!exactUtf8.ContainsTupleUtf8(ReadOnlySpan<byte>.Empty, 13003UL) ||
+                !exactUtf8.DeleteUtf8(ReadOnlySpan<byte>.Empty, 13003UL))
+            {
+                throw new InvalidDataException("Borrowed UTF-8 empty-key routing did not preserve tuple semantics.");
+            }
+
+            utf8Group.Batch.Enable();
+            ValidateGenericInsert(projectedUtf8.InsertUtf8(upperResumeUtf8, 13004UL), "borrowed UTF-8 projected group-batch insert");
+            ValidateGenericInsert(projectedUtf8.InsertUtf8(decomposedUpperResumeUtf8, 13005UL), "borrowed UTF-8 decomposed projected group-batch insert");
+            LibraDexGenericBatchCommitResult utf8Commit = utf8Group.Batch.PublishAndDisable();
+            if (utf8Commit.InsertedCount != 2 || utf8Commit.DeferredCommitRequests == 0)
+            {
+                throw new InvalidDataException("Borrowed UTF-8 projected group batch did not publish both canonical-equivalence proof tuples.");
+            }
+
+            IReadOnlyList<ulong> foldedUtf8Ids = LibraDexCondition
+                .ForGroup("borrowed-utf8")
+                .Index("projected").AsString.EqualTo("re\u0301sume\u0301", ignoreCase: true)
+                .EndCondition
+                .MaterializeWithProjectionBridge(projectedUtf8.ResolveIndex, projectedUtf8.ResolveProjection)
+                .IDsWith(deduplication: IdentityDeduplication.Preserve)
+                .ToList<ulong>();
+            IIndex projectedUtf8Runtime = projectedUtf8;
+            IReadOnlyList<string?> normalizedDuplicates = projectedUtf8Runtime.Keys
+                .AsString(SubIndexType.Normalized)
+                .Duplicates
+                .Get();
+            if (foldedUtf8Ids.Count != 2 ||
+                !foldedUtf8Ids.Contains(13004UL) ||
+                !foldedUtf8Ids.Contains(13005UL) ||
+                normalizedDuplicates.Count != 1 ||
+                normalizedDuplicates[0] != "RÉSUMÉ" ||
+                !projectedUtf8.DeleteUtf8(upperResumeUtf8, 13004UL))
+            {
+                throw new InvalidDataException("Borrowed UTF-8 projection maintenance did not preserve exact distinction, Form-C normalized equivalence, folded no-case lookup, or tuple-exact deletion.");
+            }
+
+            try
+            {
+                _ = exactUtf8.InsertUtf8(new byte[] { 0xC3, 0x28 }, 13006UL);
+                throw new InvalidDataException("Borrowed UTF-8 insertion accepted an invalid byte sequence.");
+            }
+            catch (ArgumentException)
+            {
+            }
+        }
+
         Console.WriteLine("generic index api sanity");
         Console.WriteLine($"path {path}");
         Console.WriteLine("genericLongLong ok");
@@ -6666,6 +6884,8 @@ internal static partial class RawHarness
         Console.WriteLine("genericWideRead ok");
         Console.WriteLine("genericBytes32Long ok");
         Console.WriteLine("genericBytes32Guid ok");
+        Console.WriteLine("genericBorrowedFixedBinary8_16_32 ok");
+        Console.WriteLine("genericBorrowedUtf8String ok");
         Console.WriteLine("genericTimeSpanLong ok");
         Console.WriteLine("genericMemory ok");
         Console.WriteLine($"generic-index-api-sanity ok path={path}");
@@ -6818,7 +7038,7 @@ internal static partial class RawHarness
 
             try
             {
-                _ = duplicateRangeCondition.ToList<long>(duplicateResolver, bookmark: new LibraDexBookmark(0, -1));
+                _ = duplicateRangeCondition.ToList<long>(duplicateResolver, bookmark: LibraDexBookmark.Legacy(0, -1));
                 throw new InvalidDataException("Condition range retrieval accepted a negative bookmark position.");
             }
             catch (ArgumentOutOfRangeException)
@@ -6981,7 +7201,7 @@ internal static partial class RawHarness
                 keys: IndexKeys.NonUnique);
             ValidateGenericInsert(status.Insert(7, 9900), "grouped status insert for identity-universe complement");
             using LibraDexStringScalar8Index displayName = fileCatalog.Indexes["people"]["displayName"].String.Create(
-                stringKeys: StringKeys.ExactFoldedAndSortKey,
+                stringKeys: StringKeys.All,
                 directions: LibraDexProjectionDirectionSet.ForwardAndReversed,
                 sortKeyCulture: "en-US");
             ValidateGenericInsert(displayName.Insert("Eric", 501UL), "grouped displayName insert Eric");
@@ -7081,15 +7301,18 @@ internal static partial class RawHarness
                 !scoreInfo.TryCreateShape(out LibraDexIndexShapeSpec? scoreInfoShape) ||
                 scoreInfoShape.SortOrder != LibraDexIndexSortOrder.Descending ||
                 !reopened.Indexes["people"].TryGetInfo("displayName", out CatalogIndexInfo displayNameInfo) ||
-                displayNameInfo.StringKeys != StringKeys.ExactFoldedAndSortKey ||
+                displayNameInfo.StringKeys != StringKeys.All ||
                 displayNameInfo.VarKeyMaxKeyLength != 1024 ||
                 displayNameInfo.ExactReversedProjectionSlotIndex < 0 ||
                 displayNameInfo.FoldedProjectionSlotIndex < 0 ||
                 displayNameInfo.SortKeyProjectionSlotIndex < 0 ||
                 displayNameInfo.FoldedReversedProjectionSlotIndex < 0 ||
+                displayNameInfo.NormalizedProjectionSlotIndex < 0 ||
+                displayNameInfo.NormalizedReversedProjectionSlotIndex < 0 ||
+                displayNameInfo.FoldedNormalization != LibraDexTextNormalization.FormC ||
                 displayNameInfo.SortKeyCulture != "en-US" ||
                 displayNameInfo.Directions != LibraDexProjectionDirectionSet.ForwardAndReversed ||
-                displayNameInfo.Projections.Count != 5 ||
+                displayNameInfo.Projections.Count != 7 ||
                 !reopened.Indexes["people"].TryGetInfo("policyName", out CatalogIndexInfo policyNameInfo) ||
                 policyNameInfo.StringComparisonPolicyKind != LibraDexStringComparisonPolicyKind.Custom ||
                 string.IsNullOrWhiteSpace(policyNameInfo.StringComparisonCustomComparerTypeName) ||
@@ -7369,8 +7592,8 @@ internal static partial class RawHarness
                 .ToList<long>(reopenedProductKeyResolver, deduplication: IdentityDeduplication.Preserve);
             LibraDexCompositeIndex<Guid, string, long> reopenedProductKeyTyped = reopened.IndexSet("people").CompositeIndex<Guid, string, long>("productKey");
             IReadOnlyList<long> reopenedProductKeyTypedF395Ids = reopenedProductKeyTyped
-                .Where.Part1.EqualTo(ScalarNull.Null)
-                .And.Part2.NotEqualTo(NullKey.Null)
+                .Where.Part1.IsNull()
+                .And.Part2.IsNotNull()
                 .EndCondition
                 .ToList<long>(reopenedProductKeyResolver, deduplication: IdentityDeduplication.Preserve);
             IReadOnlyList<object> reopenedProductKeyExactNullSupplierIds = ((IIdentityPrimitiveExecutor)reopenedProductKey)
@@ -7414,7 +7637,11 @@ internal static partial class RawHarness
                 reopenedTenantUserDeleteResult.MatchedCount != 1 ||
                 reopenedTenantUserDeletedIds.Count != 0)
             {
-                throw new InvalidDataException("Composite condition delete did not remove the matched terminal tuple.");
+                throw new InvalidDataException(
+                    $"Composite condition delete did not remove the matched terminal tuple. " +
+                    $"Matched={reopenedTenantUserDeleteResult.MatchedCount}; " +
+                    $"Changed={reopenedTenantUserDeleteResult.ChangedCount}; " +
+                    $"RemainingFromExistingHandle={reopenedTenantUserDeletedIds.Count}.");
             }
             LibraDexCompositeKey coleCompositeKey = Key.Of(persistedTenant, "Cole");
             LibraDexCompositeKey colinCompositeKey = Key.Of(persistedTenant, "Colin");
@@ -7801,12 +8028,12 @@ internal static partial class RawHarness
                 .ForGroup("people")
                 .Index("batchDelete").AsInt32.Between(11, 13)
                 .EndCondition;
-            LibraDexIdentityMutationResult firstBatchDeleteResult = scalarDeleteCatalog["people"]["batchDelete"].Delete(firstBatchDeleteCondition);
+            LibraDexIdentityMutationResult firstBatchDeleteResult = scalarDeleteCompactionCatalog["people"]["batchDelete"].Delete(firstBatchDeleteCondition);
             LibraDexConditionEndCondition secondBatchDeleteCondition = LibraDexCondition
                 .ForGroup("people")
                 .Index("batchDelete").AsInt32.Between(13, 15)
                 .EndCondition;
-            LibraDexIdentityMutationResult secondBatchDeleteResult = scalarDeleteCatalog["people"]["batchDelete"].Delete(secondBatchDeleteCondition);
+            LibraDexIdentityMutationResult secondBatchDeleteResult = scalarDeleteCompactionCatalog["people"]["batchDelete"].Delete(secondBatchDeleteCondition);
             LibraDexGenericBatchCommitResult batchDeleteCommit = scalarBatchDelete.Batch.CommitAndDisable();
             IReadOnlyList<long> scalarBatchDeleteIds = LibraDexCondition
                 .ForGroup("people")
@@ -8673,7 +8900,7 @@ internal static partial class RawHarness
 
             try
             {
-                _ = metadataExactCondition.ToList<long>(metadataResolver, bookmark: new LibraDexBookmark(0, -1));
+                _ = metadataExactCondition.ToList<long>(metadataResolver, bookmark: LibraDexBookmark.Legacy(0, -1));
                 throw new InvalidDataException("Adopted condition execution accepted a negative bookmark position.");
             }
             catch (ArgumentOutOfRangeException)
@@ -8784,6 +9011,8 @@ internal static partial class RawHarness
         LibraDexCompatibilityReport compatibility = catalog.Compatibility.Check();
         if (catalogValidation.Operation != LibraDexMaintenanceOperation.Validate ||
             catalogValidation.Mode != LibraDexMaintenanceMode.Light ||
+            catalogValidation.Completed ||
+            catalogValidation.IncompleteReasons != LibraDexMaintenanceIncompleteReason.OperationUnavailable ||
             inspectFormat.Operation != LibraDexToolOperation.InspectFormat ||
             exportSummary.Operation != LibraDexToolOperation.ExportSummary ||
             compatibility.Status != LibraDexCompatibilityStatus.Unknown)
@@ -8796,6 +9025,8 @@ internal static partial class RawHarness
         ValidateDeterministicScalarConditionCoverage();
         ValidateDeterministicStringConditionCoverage();
         ValidateDeterministicCompositionTerminalCoverage();
+        ValidateIndexExistenceAndGuardCoverage();
+        ValidateMaintenanceAndQueryDiagnostics();
 
         using (Catalog policyCatalog = Catalog.CreateMemory(new CatalogOptions { StringComparisonPolicy = LibraDexStringComparisonPolicy.OrdinalIgnoreCase }))
         {
@@ -9035,7 +9266,7 @@ internal static partial class RawHarness
             .Index("firstName").AsString.StartsWith("er", ignoreCase: true, culture: "en-US")
             .EndCondition;
         IReadOnlyList<LibraDexConditionLeafDescriptor> adoptedTextLeaves = adoptedTextCondition.Leaves;
-        IIndex firstNameClassificationIndex = new ClassificationOnlyIndex(firstNameShape);
+        IIndex firstNameClassificationIndex = new ClassificationOnlyIndex(catalog, firstNameShape);
         IReadOnlyList<LibraDexConditionLeafClassification> adoptedTextClassifications = adoptedTextCondition.Classify(
             new Dictionary<string, IIndex>(StringComparer.Ordinal)
             {
@@ -9046,7 +9277,7 @@ internal static partial class RawHarness
             {
                 ["firstName"] = firstNameClassificationIndex
             });
-        IIndex firstNameFoldedProjectionIndex = new ClassificationOnlyIndex(catalog.Indexes["people"]["firstNameFolded"].Shape.String<long>());
+        IIndex firstNameFoldedProjectionIndex = new ClassificationOnlyIndex(catalog, catalog.Indexes["people"]["firstNameFolded"].Shape.String<long>());
         IIdentityCriterion adoptedTextFoldedProjectionCriterion = adoptedTextCondition.MaterializeWithProjectionBridge(
             indexName => string.Equals(indexName, "firstName", StringComparison.Ordinal)
                 ? firstNameClassificationIndex
@@ -9056,7 +9287,7 @@ internal static partial class RawHarness
             .ForGroup("people")
             .Index("firstName").AsString.Between("Alice", "zoe", ignoreCase: true, culture: "en-US")
             .EndCondition;
-        IIndex firstNameSortKeyProjectionIndex = new ClassificationOnlyIndex(catalog.Indexes["people"]["firstNameSortKey"].Shape.Scalar<byte[], long>());
+        IIndex firstNameSortKeyProjectionIndex = new ClassificationOnlyIndex(catalog, catalog.Indexes["people"]["firstNameSortKey"].Shape.Scalar<byte[], long>());
         IReadOnlyList<LibraDexConditionLeafClassification> adoptedTextSortKeyClassifications = adoptedTextSortKeyCondition.Classify(
             new Dictionary<string, IIndex>(StringComparer.Ordinal)
             {
@@ -9300,7 +9531,7 @@ internal static partial class RawHarness
             new Dictionary<string, IIndex>(StringComparer.Ordinal));
         LibraDexConditionBridgePlan missingIndexBridgePlan = adoptedTextCondition.PlanBridge(
             new Dictionary<string, IIndex>(StringComparer.Ordinal));
-        IIndex wrongGroupFirstName = new ClassificationOnlyIndex(firstNameShape, groupOverride: "orders");
+        IIndex wrongGroupFirstName = new ClassificationOnlyIndex(catalog, firstNameShape, groupOverride: "orders");
         IReadOnlyList<LibraDexConditionLeafClassification> wrongGroupClassifications = adoptedTextCondition.Classify(
             new Dictionary<string, IIndex>(StringComparer.Ordinal)
             {
@@ -9327,31 +9558,31 @@ internal static partial class RawHarness
             });
         LibraDexConditionEndCondition adoptedDateCondition = LibraDexCondition
             .ForGroup("people")
-            .Index("created").AsDate.YearEqualTo(2026)
+            .Index("created").AsDateTime.YearEqualTo(2026)
             .EndCondition;
         LibraDexConditionEndCondition adoptedDateYearRangeCondition = LibraDexCondition
             .ForGroup("people")
-            .Index("created").AsDate.YearRange(2025, 2026)
+            .Index("created").AsDateTime.YearRange(2025, 2026)
             .EndCondition;
         LibraDexConditionEndCondition adoptedDateYearMonthCondition = LibraDexCondition
             .ForGroup("people")
-            .Index("created").AsDate.YearMonth(2026, 12)
+            .Index("created").AsDateTime.YearMonth(2026, 12)
             .EndCondition;
         LibraDexConditionEndCondition adoptedDateYearMonthDayCondition = LibraDexCondition
             .ForGroup("people")
-            .Index("created").AsDate.YearMonthDay(2026, 1, 1)
+            .Index("created").AsDateTime.YearMonthDay(2026, 1, 1)
             .EndCondition;
         LibraDexConditionEndCondition adoptedDateYearMonthInCondition = LibraDexCondition
             .ForGroup("people")
-            .Index("created").AsDate.YearMonthIn(new[] { (2026, 1), (2026, 12) })
+            .Index("created").AsDateTime.YearMonthIn(new[] { (2026, 1), (2026, 12) })
             .EndCondition;
         LibraDexConditionEndCondition adoptedDateYearMonthDayInCondition = LibraDexCondition
             .ForGroup("people")
-            .Index("created").AsDate.YearMonthDayIn(new[] { (2025, 12, 31), (2026, 1, 1) })
+            .Index("created").AsDateTime.YearMonthDayIn(new[] { (2025, 12, 31), (2026, 1, 1) })
             .EndCondition;
         LibraDexConditionEndCondition adoptedDateMonthOnlyCondition = LibraDexCondition
             .ForGroup("people")
-            .Index("created").AsDate.MonthEqualTo(12)
+            .Index("created").AsDateTime.MonthEqualTo(12)
             .EndCondition;
         LibraDexConditionEndCondition adoptedDateOnlyCondition = LibraDexCondition
             .ForGroup("people")
@@ -9359,7 +9590,7 @@ internal static partial class RawHarness
             .EndCondition;
         LibraDexConditionEndCondition adoptedDateOffsetCondition = LibraDexCondition
             .ForGroup("people")
-            .Index("createdOffset").AsDate.YearRange(2025, 2026)
+            .Index("createdOffset").AsDateTime.YearRange(2025, 2026)
             .EndCondition;
         LibraDexConditionEndCondition adoptedDateOffsetExactCondition = LibraDexCondition
             .ForGroup("people")
@@ -9710,7 +9941,7 @@ internal static partial class RawHarness
         IReadOnlyList<long> adoptedTimeNightIds = adoptedTimeNightCriterion.IDs.ToList<long>();
         LibraDexConditionEndCondition AdoptedDateBranch(Func<LibraDexDateConditionOperator<DateTime>, LibraDexConditionContinueOrEnd> branch)
         {
-            return branch(LibraDexCondition.ForGroup("people").Index("created").AsDate).EndCondition;
+            return branch(LibraDexCondition.ForGroup("people").Index("created").AsDateTime).EndCondition;
         }
 
         List<(string Name, LibraDexConditionEndCondition Condition, LibraDexConditionExecutionClass ExpectedClass, bool ShouldMaterialize)> adoptedDateBranchMatrix = new()
@@ -9947,6 +10178,10 @@ internal static partial class RawHarness
             .ForGroup("people")
             .Index("externalId").AsGuid.Contains(adoptedGuidFirstBytes[6..10])
             .EndCondition;
+        LibraDexConditionEndCondition adoptedGuidByteContainsAlignmentCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("externalId").AsGuid.Contains(new byte[] { 0x05 })
+            .EndCondition;
         LibraDexConditionEndCondition adoptedGuidPatternCondition = LibraDexCondition
             .ForGroup("people")
             .Index("externalId").AsGuid.Matches("00112233xxxxxxxxxxxxxxxxxxxxxxxx")
@@ -9955,6 +10190,48 @@ internal static partial class RawHarness
             .ForGroup("people")
             .Index("externalId").AsGuid.Matches(adoptedGuidFirstBytes)
             .EndCondition;
+        LibraDexConditionEndCondition adoptedGuidAnywhereContainsCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("externalId").AsGuid.Contains("0011")
+            .EndCondition;
+        LibraDexConditionEndCondition adoptedGuidFirstSegmentStringCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("externalId").AsGuid.Slice(GuidSegment.First).AsString.EqualTo("00112233")
+            .EndCondition;
+        LibraDexConditionEndCondition adoptedGuidFirstSegmentScalarCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("externalId").AsGuid.Slice(GuidSegment.First).AsUInt32.EqualTo(0x00112233U)
+            .EndCondition;
+        LibraDexConditionEndCondition adoptedGuidFirstSegmentBinaryCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("externalId").AsGuid.Slice(GuidSegment.First).AsBinary.EqualTo(Convert.FromHexString("00112233"))
+            .EndCondition;
+        LibraDexConditionEndCondition adoptedGuidVersionNibbleCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("externalId").AsGuid.Slice(startNibble: 12, nibbleCount: 1).AsByte.EqualTo(6)
+            .EndCondition;
+        int adoptedGuidDeferredSliceCalls = 0;
+        string adoptedGuidDeferredSliceValue = "00112233";
+        LibraDexConditionEndCondition adoptedGuidDeferredSliceCondition = LibraDexCondition
+            .ForGroup("people")
+            .Index("externalId").AsGuid.Slice(GuidSegment.First).AsString.EqualTo(() =>
+            {
+                adoptedGuidDeferredSliceCalls++;
+                return adoptedGuidDeferredSliceValue;
+            })
+            .EndCondition;
+        bool adoptedGuidQuestionWildcardRejected = false;
+        try
+        {
+            _ = LibraDexCondition
+                .ForGroup("people")
+                .Index("externalId").AsGuid.Matches("00112233-????-????-????-????????????")
+                .EndCondition;
+        }
+        catch (FormatException)
+        {
+            adoptedGuidQuestionWildcardRejected = true;
+        }
         LibraDexConditionEndCondition groupGuidExactCondition = catalog.Indexes["people"]
             .Where("externalId").AsGuid.EqualTo(adoptedGuidFirst)
             .EndCondition;
@@ -10081,7 +10358,7 @@ internal static partial class RawHarness
             .EndCondition;
         LibraDexConditionEndCondition adoptedBinaryDateSliceCondition = LibraDexCondition
             .ForGroup("people")
-            .Index("typedFingerprint").AsBinary.SlicedAsDateTime(4).Between(new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc), new DateTime(2026, 12, 31, 23, 59, 59, DateTimeKind.Utc))
+            .Index("typedFingerprint").AsBinary.SlicedAsDateTime(4, Coercion.DateTime.DotNetTicks).Between(new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc), new DateTime(2026, 12, 31, 23, 59, 59, DateTimeKind.Utc))
             .EndCondition;
         LibraDexConditionEndCondition adoptedBinaryUInt64SliceCondition = LibraDexCondition
             .ForGroup("people")
@@ -10114,14 +10391,14 @@ internal static partial class RawHarness
             .Index("typedFingerprint").AsBinary.SlicedAsDecimal(0).EqualTo(123.45m)
             .OR.Index("typedFingerprint").AsBinary.SlicedAsInt128(0).LessThan(Int128.Zero)
             .OR.Index("typedFingerprint").AsBinary.SlicedAsUInt128(0).EqualTo(UInt128.Parse("12345678901234567890", CultureInfo.InvariantCulture))
-            .OR.Index("typedFingerprint").AsBinary.SlicedAsBigInteger(0, 16).EqualTo(System.Numerics.BigInteger.Parse("-1234567890123456789", CultureInfo.InvariantCulture))
+            .OR.Index("typedFingerprint").AsBinary.SlicedAsBigInt(0, 16).EqualTo(System.Numerics.BigInteger.Parse("-1234567890123456789", CultureInfo.InvariantCulture))
             .EndCondition;
         LibraDexConditionEndCondition adoptedBinaryMoreDateSliceCondition = LibraDexCondition
             .ForGroup("people")
-            .Index("typedFingerprint").AsBinary.SlicedAsDateTimeOffset(0).EqualTo(new DateTimeOffset(2026, 5, 20, 8, 30, 0, TimeSpan.FromHours(-7)))
-            .OR.Index("typedFingerprint").AsBinary.SlicedAsDateOnly(0).EqualTo(new DateOnly(2026, 5, 20))
-            .OR.Index("typedFingerprint").AsBinary.SlicedAsTimeOnly(4).EqualTo(new TimeOnly(14, 15))
-            .OR.Index("typedFingerprint").AsBinary.SlicedAsTimeSpan(4).EqualTo(new TimeOnly(14, 15).ToTimeSpan())
+            .Index("typedFingerprint").AsBinary.SlicedAsDateTimeOffset(0, Coercion.DateTimeOffset.DotNetTicksAndOffset).EqualTo(new DateTimeOffset(2026, 5, 20, 8, 30, 0, TimeSpan.FromHours(-7)))
+            .OR.Index("typedFingerprint").AsBinary.SlicedAsDateOnly(0, Coercion.DateOnly.DotNetDayNumber).EqualTo(new DateOnly(2026, 5, 20))
+            .OR.Index("typedFingerprint").AsBinary.SlicedAsTimeOnly(4, Coercion.TimeOnly.DotNetTicks).EqualTo(new TimeOnly(14, 15))
+            .OR.Index("typedFingerprint").AsBinary.SlicedAsTimeSpan(4, Coercion.TimeSpan.DotNetTicks).EqualTo(new TimeOnly(14, 15).ToTimeSpan())
             .EndCondition;
         LibraDexConditionEndCondition adoptedBinaryEncodedTextSliceCondition = LibraDexCondition
             .ForGroup("people")
@@ -10221,10 +10498,22 @@ internal static partial class RawHarness
         IReadOnlyList<long> adoptedGuidContainsIds = adoptedGuidContainsCriterion.IDs.ToList<long>();
         IIdentityCriterion adoptedGuidByteContainsCriterion = adoptedGuidByteContainsCondition.Materialize(adoptedGuidIndexes);
         IReadOnlyList<long> adoptedGuidByteContainsIds = adoptedGuidByteContainsCriterion.IDs.ToList<long>();
+        IReadOnlyList<long> adoptedGuidByteContainsAlignmentIds = adoptedGuidByteContainsAlignmentCondition.Materialize(adoptedGuidIndexes).IDs.ToList<long>();
         IIdentityCriterion adoptedGuidPatternCriterion = adoptedGuidPatternCondition.Materialize(adoptedGuidIndexes);
         IReadOnlyList<long> adoptedGuidPatternIds = adoptedGuidPatternCriterion.IDs.ToList<long>();
         IIdentityCriterion adoptedGuidBytePatternCriterion = adoptedGuidBytePatternCondition.Materialize(adoptedGuidIndexes);
         IReadOnlyList<long> adoptedGuidBytePatternIds = adoptedGuidBytePatternCriterion.IDs.ToList<long>();
+        IReadOnlyList<long> adoptedGuidAnywhereContainsIds = adoptedGuidAnywhereContainsCondition.Materialize(adoptedGuidIndexes).IDs.ToList<long>();
+        IReadOnlyList<long> adoptedGuidFirstSegmentStringIds = adoptedGuidFirstSegmentStringCondition.Materialize(adoptedGuidIndexes).IDs.ToList<long>();
+        IReadOnlyList<long> adoptedGuidFirstSegmentScalarIds = adoptedGuidFirstSegmentScalarCondition.Materialize(adoptedGuidIndexes).IDs.ToList<long>();
+        IReadOnlyList<long> adoptedGuidFirstSegmentBinaryIds = adoptedGuidFirstSegmentBinaryCondition.Materialize(adoptedGuidIndexes).IDs.ToList<long>();
+        IReadOnlyList<long> adoptedGuidVersionNibbleIds = adoptedGuidVersionNibbleCondition.Materialize(adoptedGuidIndexes).IDs.ToList<long>();
+        if (adoptedGuidDeferredSliceCalls != 0)
+        {
+            throw new InvalidDataException("Deferred GUID slice factory ran before condition materialization.");
+        }
+
+        IReadOnlyList<long> adoptedGuidDeferredSliceIds = adoptedGuidDeferredSliceCondition.Materialize(adoptedGuidIndexes).IDs.ToList<long>();
         if (adoptedGuidInSetCriterion.CriteriaKind != LibraDexCriteriaKind.InSet ||
             adoptedGuidInSetIds.Count != 2 ||
             !adoptedGuidInSetIds.Contains(112233L) ||
@@ -10282,7 +10571,7 @@ internal static partial class RawHarness
         IReadOnlyList<long> adoptedBinaryEncodedTextSliceIds = adoptedBinaryEncodedTextSliceCondition.Materialize(adoptedBinaryTypedIndexes).IDs.ToList<long>();
         IReadOnlyList<long> adoptedBinaryCustomEncodedTextSliceIds = adoptedBinaryCustomEncodedTextSliceCondition.Materialize(adoptedBinaryTypedIndexes).IDs.ToList<long>();
         IReadOnlyList<long> adoptedBinaryFloatingSliceIds = adoptedBinaryFloatingSliceCondition.Materialize(adoptedBinaryTypedIndexes).IDs.ToList<long>();
-        IIndex compositeClassificationIndex = new ClassificationOnlyIndex(compositeShape);
+        IIndex compositeClassificationIndex = new ClassificationOnlyIndex(catalog, compositeShape);
         LibraDexConditionEndCondition adoptedCompositeCondition = LibraDexCondition
             .ForGroup("people")
             .Index("tenantUser").AsString.EqualTo("tenant-user-placeholder")
@@ -10351,6 +10640,20 @@ internal static partial class RawHarness
             .KeyPart("username").AsString.NotInSet(new[] { "John", "Jane" })
             .EndCondition
             .ToList<long>(routedCompositeResolver, deduplication: IdentityDeduplication.Preserve);
+        IReadOnlyList<long> routedCompositeOpenedKeyPartStringLikeIds = ((LibraDexRoutedCompositeIndex)routedCompositeIndex)
+            .Where
+            .KeyPart("tenantId").AsGuid.EqualTo(tenantA)
+            .And
+            .KeyPart("username").AsString.Like("J*n")
+            .EndCondition
+            .ToList<long>(routedCompositeResolver, deduplication: IdentityDeduplication.Preserve);
+        IReadOnlyList<long> routedCompositeOpenedKeyPartStringNotLikeIds = ((LibraDexRoutedCompositeIndex)routedCompositeIndex)
+            .Where
+            .KeyPart("tenantId").AsGuid.EqualTo(tenantA)
+            .And
+            .KeyPart("username").AsString.NotLike("J*")
+            .EndCondition
+            .ToList<long>(routedCompositeResolver, deduplication: IdentityDeduplication.Preserve);
         IReadOnlyList<long> routedCompositeOpenedKeyPartGuidInSetWithStringPrefixIds = ((LibraDexRoutedCompositeIndex)routedCompositeIndex)
             .Where
             .KeyPart("tenantId").AsGuid.InSet(new[] { tenantA })
@@ -10364,6 +10667,27 @@ internal static partial class RawHarness
             .And.Part2.StartsWith("J")
             .EndCondition
             .ToList<long>(routedCompositeResolver, deduplication: IdentityDeduplication.Preserve);
+        IReadOnlyList<long> routedCompositeTypedNotContainsIds = routedCompositeTypedIndex
+            .Where.Part1.EqualTo(tenantA)
+            .And.Part2.NotContains("o")
+            .EndCondition
+            .ToList<long>(routedCompositeResolver, deduplication: IdentityDeduplication.Preserve);
+        LibraDexConditionResultEnd<long> routedCompositeTenantResult = ((LibraDexRoutedCompositeIndex)routedCompositeIndex)
+            .Where.KeyPart("tenantId").AsGuid.EqualTo(tenantA)
+            .Return<long>();
+        long[] routedCompositeTenantNaturalResultIds = catalog.IndexSet("people").Get(routedCompositeTenantResult.EndCondition).ToArray();
+        long[] routedCompositeTenantAscendingResultIds = catalog.IndexSet("people").Get(routedCompositeTenantResult.OrderByAscending().EndCondition).ToArray();
+        long[] routedCompositeTenantDescendingResultIds = catalog.IndexSet("people").Get(routedCompositeTenantResult.OrderByDescending().EndCondition).ToArray();
+        long[] routedCompositeTenantTopResultIds = catalog.IndexSet("people").Get(routedCompositeTenantResult.Top(2).EndCondition).ToArray();
+        long[] routedCompositeTenantBottomResultIds = catalog.IndexSet("people").Get(routedCompositeTenantResult.Bottom(2).EndCondition).ToArray();
+        if (!routedCompositeTenantNaturalResultIds.SequenceEqual(routedCompositeTenantIds) ||
+            !routedCompositeTenantAscendingResultIds.SequenceEqual(routedCompositeTenantIds) ||
+            !routedCompositeTenantDescendingResultIds.SequenceEqual(routedCompositeTenantIds.Reverse()) ||
+            !routedCompositeTenantTopResultIds.SequenceEqual(routedCompositeTenantIds.Take(2)) ||
+            !routedCompositeTenantBottomResultIds.SequenceEqual(routedCompositeTenantIds.Skip(1)))
+        {
+            throw new InvalidDataException("Composite identity-return ordering and range LXL diverged from condition-plan order.");
+        }
         IIndex routedCompositeFlagsIndex = catalog.Indexes["people"]["tenantFlags"].Composite<long>(
             C.Guid("tenantId"),
             C.Scalar<uint>("flags"))
@@ -10381,18 +10705,45 @@ internal static partial class RawHarness
                 LibraDexCompositePart.Scalar<uint>("flags").AllBitsSet(0x03U))
             .EndCondition;
         IReadOnlyList<long> routedCompositeFlagsBitmaskIds = routedCompositeFlagsBitmaskCondition.ToList<long>(routedCompositeFlagsResolver, deduplication: IdentityDeduplication.Preserve);
+        LibraDexCondition<long> routedCompositeNamedFlagsResultCondition = ((LibraDexRoutedCompositeIndex)routedCompositeFlagsIndex)
+            .Where
+            .KeyPart("tenantId").AsGuid.EqualTo(tenantA)
+            .And
+            .KeyPart("flags").AsUInt32.AllBitsSet((uint)ProofPermissions.Write)
+            .Return<long>()
+            .EndCondition;
+        long[] routedCompositeNamedFlagsResultIds = catalog.IndexSet("people").Get(routedCompositeNamedFlagsResultCondition).ToArray();
+        LibraDexCompositeIndex<Guid, uint, long> routedCompositeTypedFlagsIndex = catalog.IndexSet("people").CompositeIndex<Guid, uint, long>("tenantFlags");
+        LibraDexCondition<long> routedCompositeTypedFlagsResultCondition = routedCompositeTypedFlagsIndex
+            .Where.Part1.EqualTo(tenantA)
+            .And.Part2.AllBitsSet(ProofPermissions.Write)
+            .Return<long>()
+            .EndCondition;
+        long[] routedCompositeTypedFlagsResultIds = catalog.IndexSet("people").Get(routedCompositeTypedFlagsResultCondition).ToArray();
+        long[] routedCompositeNamedFlagsDirectIds = routedCompositeNamedFlagsResultCondition.Filter!
+            .ToList<long>(routedCompositeFlagsResolver, deduplication: IdentityDeduplication.Distinct)
+            .ToArray();
+        long[] routedCompositeNamedFlagsReopenedIds = routedCompositeNamedFlagsResultCondition.Filter!
+            .ToList<long>(name => catalog.IndexSet("people").Index(name), deduplication: IdentityDeduplication.Distinct)
+            .ToArray();
+        if (!routedCompositeNamedFlagsResultIds.SequenceEqual(new[] { 7303L }) ||
+            !routedCompositeTypedFlagsResultIds.SequenceEqual(new[] { 7303L }))
+        {
+            throw new InvalidDataException(
+                $"Composite result/typed-bitmask LXL diverged: named=[{string.Join(',', routedCompositeNamedFlagsResultIds)}], typed=[{string.Join(',', routedCompositeTypedFlagsResultIds)}], direct=[{string.Join(',', routedCompositeNamedFlagsDirectIds)}], reopened=[{string.Join(',', routedCompositeNamedFlagsReopenedIds)}].");
+        }
         IReadOnlyList<long> routedCompositeOpenedKeyPartScalarNotBetweenIds = ((LibraDexRoutedCompositeIndex)routedCompositeFlagsIndex)
             .Where
             .KeyPart("tenantId").AsGuid.EqualTo(tenantA)
             .And
-            .KeyPart("flags").AsScalar<uint>().NotBetween(2U, 3U)
+            .KeyPart("flags").AsUInt32.NotBetween(2U, 3U)
             .EndCondition
             .ToList<long>(routedCompositeFlagsResolver, deduplication: IdentityDeduplication.Preserve);
         IReadOnlyList<long> routedCompositeOpenedKeyPartScalarInSetIds = ((LibraDexRoutedCompositeIndex)routedCompositeFlagsIndex)
             .Where
             .KeyPart("tenantId").AsGuid.EqualTo(tenantA)
             .And
-            .KeyPart("flags").AsScalar<uint>().InSet(new[] { 3U, 5U })
+            .KeyPart("flags").AsUInt32.InSet(new[] { 3U, 5U })
             .EndCondition
             .ToList<long>(routedCompositeFlagsResolver, deduplication: IdentityDeduplication.Preserve);
         IIndex routedCompositeGuidIndex = catalog.Indexes["people"]["tenantGuidUser"].Composite<long>(
@@ -10417,6 +10768,19 @@ internal static partial class RawHarness
                 LibraDexCompositePart.Guid("userId").StartsWith(userPrefix, byteCount: 8))
             .EndCondition;
         IReadOnlyList<long> routedCompositeGuidPrefixIds = routedCompositeGuidPrefixCondition.ToList<long>(routedCompositeGuidResolver, deduplication: IdentityDeduplication.Preserve);
+        IReadOnlyList<long> routedCompositeGuidTextPrefixIds = ((LibraDexRoutedCompositeIndex)routedCompositeGuidIndex)
+            .Where
+            .KeyPart("tenantId").AsGuid.EqualTo(tenantA)
+            .And
+            .KeyPart("userId").AsGuid.StartsWith("00112233")
+            .EndCondition
+            .ToList<long>(routedCompositeGuidResolver, deduplication: IdentityDeduplication.Preserve);
+        LibraDexCompositeIndex<Guid, Guid, long> routedCompositeTypedGuidIndex = catalog.IndexSet("people").CompositeIndex<Guid, Guid, long>("tenantGuidUser");
+        IReadOnlyList<long> routedCompositeTypedGuidContainsIds = routedCompositeTypedGuidIndex
+            .Where.Part1.EqualTo(tenantA)
+            .And.Part2.Contains("aabb")
+            .EndCondition
+            .ToList<long>(routedCompositeGuidResolver, deduplication: IdentityDeduplication.Preserve);
         IReadOnlyList<long> routedCompositeOpenedGuidNotInSetIds = ((LibraDexRoutedCompositeIndex)routedCompositeGuidIndex)
             .Where
             .KeyPart("tenantId").AsGuid.EqualTo(tenantA)
@@ -10453,7 +10817,7 @@ internal static partial class RawHarness
             .Where
             .KeyPart("tenantId").AsGuid.EqualTo(tenantA)
             .And
-            .KeyPart("created").AsDate.GreaterThan(new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc))
+            .KeyPart("created").AsDateTime.GreaterThan(new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc))
             .EndCondition
             .ToList<long>(routedCompositeDateResolver, deduplication: IdentityDeduplication.Preserve);
         IIndex routedCompositeBinaryIndex = catalog.Indexes["people"]["tenantPayload"].Composite<long>(
@@ -10481,25 +10845,29 @@ internal static partial class RawHarness
             throw new InvalidDataException("Prepared membership set did not preserve caller-supplied managed set source.");
         }
 
-        if (!ReferenceEquals(adoptedHashSetMembershipCondition.Leaves[0].Operands[0].GetValue(), adoptedAgeMembershipSet))
+        if (adoptedHashSetMembershipCondition.Leaves[0].Operands[0].GetValue() is not long[] adoptedHashSetSnapshot ||
+            !adoptedHashSetSnapshot.Order().SequenceEqual(adoptedAgeMembershipSet.Order()))
         {
-            throw new InvalidDataException("Adopted membership descriptor did not preserve caller-supplied HashSet operand.");
+            throw new InvalidDataException("Adopted membership descriptor did not materialize the caller-supplied HashSet into a stable value snapshot.");
         }
 
         if (adoptedInAliasMembershipCondition.Leaves[0].Operator != LibraDexConditionOperatorKind.InSet ||
             adoptedIsInAliasMembershipCondition.Leaves[0].Operator != LibraDexConditionOperatorKind.InSet ||
             adoptedNotInAliasMembershipCondition.Leaves[0].Operator != LibraDexConditionOperatorKind.NotInSet ||
-            !ReferenceEquals(adoptedInAliasMembershipCondition.Leaves[0].Operands[0].GetValue(), adoptedAgeInAliasSet) ||
+            adoptedInAliasMembershipCondition.Leaves[0].Operands[0].GetValue() is not long[] adoptedAliasSnapshot ||
+            !adoptedAliasSnapshot.Order().SequenceEqual(adoptedAgeInAliasSet.Order()) ||
             adoptedInAliasMembershipCriterion.CriteriaKind != LibraDexCriteriaKind.InSet ||
             adoptedInAliasMembershipCriterion.Values.Count != 1 ||
-            !ReferenceEquals(adoptedInAliasMembershipCriterion.Values[0], adoptedAgeInAliasSet))
+            adoptedInAliasMembershipCriterion.Values[0] is not long[] adoptedAliasCriterionSnapshot ||
+            !adoptedAliasCriterionSnapshot.Order().SequenceEqual(adoptedAgeInAliasSet.Order()))
         {
             throw new InvalidDataException("Adopted membership aliases did not collapse to the shared membership descriptor.");
         }
 
         if (adoptedHashSetMembershipCriterion.CriteriaKind != LibraDexCriteriaKind.InSet ||
             adoptedHashSetMembershipCriterion.Values.Count != 1 ||
-            !ReferenceEquals(adoptedHashSetMembershipCriterion.Values[0], adoptedAgeMembershipSet))
+            adoptedHashSetMembershipCriterion.Values[0] is not long[] adoptedHashSetCriterionSnapshot ||
+            !adoptedHashSetCriterionSnapshot.Order().SequenceEqual(adoptedAgeMembershipSet.Order()))
         {
             throw new InvalidDataException("Adopted membership primitive did not materialize expected exact set values.");
         }
@@ -10735,6 +11103,7 @@ internal static partial class RawHarness
             adoptedGuidByteContainsIds.Count != 2 ||
             adoptedGuidByteContainsIds[0] != 112233L ||
             adoptedGuidByteContainsIds[1] != 998877L ||
+            adoptedGuidByteContainsAlignmentIds.Count != 0 ||
             adoptedGuidPatternCriterion.CriteriaKind != LibraDexCriteriaKind.GuidPattern ||
             adoptedGuidPatternIds.Count != 2 ||
             adoptedGuidPatternIds[0] != 112233L ||
@@ -10742,6 +11111,24 @@ internal static partial class RawHarness
             adoptedGuidBytePatternCriterion.CriteriaKind != LibraDexCriteriaKind.GuidPattern ||
             adoptedGuidBytePatternIds.Count != 1 ||
             adoptedGuidBytePatternIds[0] != 112233L ||
+            adoptedGuidAnywhereContainsIds.Count != 2 ||
+            !adoptedGuidAnywhereContainsIds.Contains(112233L) ||
+            !adoptedGuidAnywhereContainsIds.Contains(119999L) ||
+            adoptedGuidFirstSegmentStringIds.Count != 2 ||
+            !adoptedGuidFirstSegmentStringIds.Contains(112233L) ||
+            !adoptedGuidFirstSegmentStringIds.Contains(119999L) ||
+            adoptedGuidFirstSegmentScalarIds.Count != 2 ||
+            !adoptedGuidFirstSegmentScalarIds.Contains(112233L) ||
+            !adoptedGuidFirstSegmentScalarIds.Contains(119999L) ||
+            adoptedGuidFirstSegmentBinaryIds.Count != 2 ||
+            !adoptedGuidFirstSegmentBinaryIds.Contains(112233L) ||
+            !adoptedGuidFirstSegmentBinaryIds.Contains(119999L) ||
+            adoptedGuidVersionNibbleIds.Count != 2 ||
+            !adoptedGuidVersionNibbleIds.Contains(112233L) ||
+            !adoptedGuidVersionNibbleIds.Contains(998877L) ||
+            adoptedGuidDeferredSliceCalls != 1 ||
+            adoptedGuidDeferredSliceIds.Count != 2 ||
+            !adoptedGuidQuestionWildcardRejected ||
             groupGuidExactIds.Count != 1 ||
             groupGuidExactIds[0] != 112233L ||
             groupGuidTextExactIds.Count != 1 ||
@@ -10877,12 +11264,19 @@ internal static partial class RawHarness
             routedCompositeOpenedKeyPartStringInSetIds[1] != 7101L ||
             routedCompositeOpenedKeyPartStringNotInSetIds.Count != 1 ||
             routedCompositeOpenedKeyPartStringNotInSetIds[0] != 7103L ||
+            routedCompositeOpenedKeyPartStringLikeIds.Count != 1 ||
+            routedCompositeOpenedKeyPartStringLikeIds[0] != 7101L ||
+            routedCompositeOpenedKeyPartStringNotLikeIds.Count != 1 ||
+            routedCompositeOpenedKeyPartStringNotLikeIds[0] != 7103L ||
             routedCompositeOpenedKeyPartGuidInSetWithStringPrefixIds.Count != 2 ||
             routedCompositeOpenedKeyPartGuidInSetWithStringPrefixIds[0] != 7102L ||
             routedCompositeOpenedKeyPartGuidInSetWithStringPrefixIds[1] != 7101L ||
             routedCompositeTypedPartIds.Count != 2 ||
             routedCompositeTypedPartIds[0] != 7102L ||
             routedCompositeTypedPartIds[1] != 7101L ||
+            routedCompositeTypedNotContainsIds.Count != 2 ||
+            routedCompositeTypedNotContainsIds[0] != 7102L ||
+            routedCompositeTypedNotContainsIds[1] != 7103L ||
             routedCompositeFlagsBitmaskIds.Count != 1 ||
             routedCompositeFlagsBitmaskIds[0] != 7303L ||
             routedCompositeOpenedKeyPartScalarNotBetweenIds.Count != 1 ||
@@ -10892,6 +11286,12 @@ internal static partial class RawHarness
             routedCompositeGuidPrefixIds.Count != 2 ||
             routedCompositeGuidPrefixIds[0] != 7402L ||
             routedCompositeGuidPrefixIds[1] != 7401L ||
+            routedCompositeGuidTextPrefixIds.Count != 2 ||
+            !routedCompositeGuidTextPrefixIds.Contains(7401L) ||
+            !routedCompositeGuidTextPrefixIds.Contains(7402L) ||
+            routedCompositeTypedGuidContainsIds.Count != 2 ||
+            !routedCompositeTypedGuidContainsIds.Contains(7401L) ||
+            !routedCompositeTypedGuidContainsIds.Contains(7403L) ||
             routedCompositeOpenedGuidNotInSetIds.Count != 2 ||
             routedCompositeOpenedGuidNotInSetIds[0] != 7402L ||
             routedCompositeOpenedGuidNotInSetIds[1] != 7401L ||
@@ -10907,7 +11307,33 @@ internal static partial class RawHarness
             routedCompositeOpenedBinaryPrefixIds[0] != 7601L ||
             routedCompositeOpenedBinaryPrefixIds[1] != 7602L)
         {
-            throw new InvalidDataException("Adopted condition builder did not preserve grouping or bridge planning metadata.");
+            throw new InvalidDataException(
+                "Adopted condition builder did not preserve grouping or bridge planning metadata. " +
+                $"string-in=[{string.Join(',', routedCompositeOpenedKeyPartStringInSetIds)}], " +
+                $"string-not-in=[{string.Join(',', routedCompositeOpenedKeyPartStringNotInSetIds)}], " +
+                $"guid-in=[{string.Join(',', routedCompositeOpenedKeyPartGuidInSetWithStringPrefixIds)}], " +
+                $"typed=[{string.Join(',', routedCompositeTypedPartIds)}], " +
+                $"flags=[{string.Join(',', routedCompositeFlagsBitmaskIds)}], " +
+                $"scalar-not-between=[{string.Join(',', routedCompositeOpenedKeyPartScalarNotBetweenIds)}], " +
+                $"scalar-in=[{string.Join(',', routedCompositeOpenedKeyPartScalarInSetIds)}], " +
+                $"guid-prefix=[{string.Join(',', routedCompositeGuidPrefixIds)}], " +
+                $"guid-text-prefix=[{string.Join(',', routedCompositeGuidTextPrefixIds)}], " +
+                $"typed-guid-contains=[{string.Join(',', routedCompositeTypedGuidContainsIds)}], " +
+                $"opened-guid-not-in=[{string.Join(',', routedCompositeOpenedGuidNotInSetIds)}], " +
+                $"date-year=[{string.Join(',', routedCompositeDateYearIds)}], " +
+                $"date-ymd=[{string.Join(',', routedCompositeDateYearMonthDayIds)}], " +
+                $"date-gt=[{string.Join(',', routedCompositeOpenedDateGreaterThanIds)}], " +
+                $"binary-prefix=[{string.Join(',', routedCompositeOpenedBinaryPrefixIds)}], " +
+                $"int32-slice=[{string.Join(',', adoptedBinaryInt32SliceIds)}], " +
+                $"guid-slice=[{string.Join(',', adoptedBinaryGuidSliceIds)}], " +
+                $"date-slice=[{string.Join(',', adoptedBinaryDateSliceIds)}], " +
+                $"uint64-slice=[{string.Join(',', adoptedBinaryUInt64SliceIds)}], " +
+                $"string-slice=[{string.Join(',', adoptedBinaryStringSliceIds)}], " +
+                $"int32-bitmask=[{string.Join(',', adoptedBinaryInt32SliceBitmaskIds)}], " +
+                $"full-numeric=[{string.Join(',', adoptedBinaryFullNumericSliceIds)}], " +
+                $"wide-numeric=[{string.Join(',', adoptedBinaryWideNumericSliceIds)}], " +
+                $"more-date=[{string.Join(',', adoptedBinaryMoreDateSliceIds)}], " +
+                $"floating=[{string.Join(',', adoptedBinaryFloatingSliceIds)}].");
         }
 
         using (Catalog scalarSelectorCatalog = Catalog.CreateMemory())
@@ -11067,22 +11493,10 @@ internal static partial class RawHarness
             index.Where.GreaterOrEqual(10).EndCondition.AndAlso(index.Where.LessOrEqual(11).EndCondition),
             deduplication: IdentityDeduplication.Preserve);
         long reusableMinimum = 10;
-        LibraDexConditionEndCondition deferredMinimum = index.Where.GreaterOrEqual(() => reusableMinimum, "minimum").EndCondition;
+        LibraDexConditionEndCondition deferredMinimum = index.Where.GreaterOrEqual(() => reusableMinimum).EndCondition;
         IReadOnlyList<long> deferredMinimumIds = index.GetIdentities(deferredMinimum, deduplication: IdentityDeduplication.Preserve);
         reusableMinimum = 12;
         IReadOnlyList<long> updatedDeferredMinimumIds = index.GetIdentities(deferredMinimum, deduplication: IdentityDeduplication.Preserve);
-        IReadOnlyList<long> replacedMinimumIds = index.GetIdentities(
-            deferredMinimum.WithValue("minimum", 11L),
-            deduplication: IdentityDeduplication.Preserve);
-        LibraDexConditionEndCondition adoptedNamedMinimum = LibraDexCondition
-            .ForGroup("surface")
-            .Index("value").AsInt64.GreaterOrEqual(0L, "minimum")
-            .EndCondition;
-        IReadOnlyList<long> adoptedNamedMinimumIds = adoptedNamedMinimum
-            .WithValue("minimum", 11L)
-            .ToList<long>(
-            surfaceResolver,
-            deduplication: IdentityDeduplication.Preserve);
         string selectedIndexName = "public-surface";
         LibraDexConditionEndCondition deferredIndexCondition = LibraDexCondition
             .ForGroup("surface")
@@ -11095,9 +11509,6 @@ internal static partial class RawHarness
         IReadOnlyList<long> updatedDeferredIndexIds = catalog.Indexes["surface"].GetIdentities<long>(
             deferredIndexCondition,
             deduplication: IdentityDeduplication.Preserve);
-        IReadOnlyList<long> replacedIndexIds = catalog.Indexes["surface"].GetIdentities<long>(
-            deferredIndexCondition.WithIndex("selected", "public-surface"),
-            deduplication: IdentityDeduplication.Preserve);
         LibraDexConditionEndCondition lowOrHighFragment = LibraDexConditionEndCondition.Grouped(index.Where.EqualTo(10).Or.EqualTo(12).EndCondition);
         IReadOnlyList<long> groupedFragmentIds = index.GetIdentities(
             lowOrHighFragment.AndAlso(() => index.Where.GreaterOrEqual(11).EndCondition),
@@ -11108,9 +11519,6 @@ internal static partial class RawHarness
             deduplication: IdentityDeduplication.Preserve);
         IReadOnlyList<long> continuedOrFragmentIds = index.GetIdentities(
             index.Where.ContinueOr(index.Where.EqualTo(10)).EqualTo(12).EndCondition,
-            deduplication: IdentityDeduplication.Preserve);
-        IReadOnlyList<long> originalDeferredAfterReplacementIds = index.GetIdentities(
-            deferredMinimum,
             deduplication: IdentityDeduplication.Preserve);
         LibraDexConditionEndCondition namedMultiKeyCondition = catalog.Indexes["surface"]
             .Where("public-surface").AsInt64.GreaterOrEqual(10L)
@@ -11717,18 +12125,10 @@ internal static partial class RawHarness
             deferredMinimumIds[0] != 1000 ||
             updatedDeferredMinimumIds.Count != 1 ||
             updatedDeferredMinimumIds[0] != 1200 ||
-            replacedMinimumIds.Count != 2 ||
-            replacedMinimumIds[0] != 1100 ||
-            replacedMinimumIds[1] != 1200 ||
-            adoptedNamedMinimumIds.Count != 2 ||
-            adoptedNamedMinimumIds[0] != 1100 ||
-            adoptedNamedMinimumIds[1] != 1200 ||
             deferredIndexValueIds.Count != 1 ||
             deferredIndexValueIds[0] != 1200 ||
             updatedDeferredIndexIds.Count != 1 ||
             updatedDeferredIndexIds[0] != 1212 ||
-            replacedIndexIds.Count != 1 ||
-            replacedIndexIds[0] != 1200 ||
             groupedFragmentIds.Count != 1 ||
             groupedFragmentIds[0] != 1200 ||
             continuedFragmentIds.Count != 2 ||
@@ -11737,8 +12137,6 @@ internal static partial class RawHarness
             continuedOrFragmentIds.Count != 2 ||
             continuedOrFragmentIds[0] != 1000 ||
             continuedOrFragmentIds[1] != 1200 ||
-            originalDeferredAfterReplacementIds.Count != 1 ||
-            originalDeferredAfterReplacementIds[0] != 1200 ||
             namedMultiKeyIds.Count != 2 ||
             namedMultiKeyIds[0] != 1000 ||
             namedMultiKeyIds[1] != 1100 ||
@@ -11906,7 +12304,7 @@ internal static partial class RawHarness
 
         try
         {
-            _ = rangeCondition.ToList<long>(surfaceResolver, bookmark: new LibraDexBookmark(0, -1));
+            _ = rangeCondition.ToList<long>(surfaceResolver, bookmark: LibraDexBookmark.Legacy(0, -1));
             throw new InvalidDataException("Condition retrieval accepted a negative bookmark position.");
         }
         catch (ArgumentOutOfRangeException)
@@ -12000,12 +12398,12 @@ internal static partial class RawHarness
         LibraDexStatsDelta catalogDelta = catalog.Stats.Since(catalogMarker);
         LibraDexStatsDelta indexDelta = index.Stats.Since(indexMarker);
         LibraDexLayoutStats layout = index.Stats.GetLayoutSnapshot();
-        if (catalogDelta.Inserts != 51 ||
+        if (catalogDelta.Inserts != 61 ||
             indexDelta.Inserts != 3 ||
             catalogDelta.Commits == 0 ||
             indexDelta.Commits == 0 ||
             index.Stats.Current.Inserts != 3 ||
-            catalog.Stats.Current.Inserts != 51 ||
+            catalog.Stats.Current.Inserts != 61 ||
             index.Stats.LastModifiedUtc is null)
         {
             throw new InvalidDataException(
@@ -12021,14 +12419,22 @@ internal static partial class RawHarness
         LibraDexMaintenanceResult indexCache = index.Maintenance.Cache();
         if (indexOptimize.Operation != LibraDexMaintenanceOperation.Optimize ||
             indexOptimize.Mode != LibraDexMaintenanceMode.Bounded ||
+            !indexOptimize.Completed ||
             indexRepack.Operation != LibraDexMaintenanceOperation.Repack ||
-            indexCache.Operation != LibraDexMaintenanceOperation.Cache)
+            !indexRepack.Completed ||
+            indexCache.Operation != LibraDexMaintenanceOperation.Cache ||
+            indexCache.Completed ||
+            indexCache.IncompleteReasons != LibraDexMaintenanceIncompleteReason.OperationUnavailable ||
+            new LibraDexMaintenanceOptions().Mode != LibraDexMaintenanceMode.Bounded ||
+            new LibraDexMaintenanceOptions().MaxWorkItems is not null)
         {
             throw new InvalidDataException("Index maintenance descriptors did not capture expected intent.");
         }
 
         ValidateKeyRouteMetadataContract();
         ValidateIndexSetInverseConditionCoverage();
+        ValidateBinarySliceRemainderAndDateGrammar();
+        ValidateTemporalScalarCodec();
 
         _ = catalogDelta;
         _ = indexDelta;
@@ -12057,12 +12463,105 @@ internal static partial class RawHarness
         Console.WriteLine("adoptedGuidBridge ok");
         Console.WriteLine("adoptedBinaryBridge ok");
         Console.WriteLine("adoptedBinaryTypedSliceBridge ok");
+        Console.WriteLine("binarySliceRemainderAndDateGrammar ok");
+        Console.WriteLine("temporalScalarCodec ok");
         Console.WriteLine("adoptedRoutedCompositeBridge ok");
         Console.WriteLine("indexSetInverseConditionBridge ok");
         Console.WriteLine("publicMaintenanceScaffold ok");
         Console.WriteLine("publicToolsCompatibilityPrepare ok");
         Console.WriteLine("public-surface-api-sanity ok");
         return 0;
+    }
+
+    /// <summary>
+    /// Validates the public LibraDex temporal scalar codec used by binary SDT producers and consumers.<br/>
+    /// The proof covers Calendar SDT quantization, Precision SDT tick fidelity, UTC instant normalization, ordered signed durations, and rejection of noncanonical date scalars.<br/>
+    /// </summary>
+    private static void ValidateTemporalScalarCodec()
+    {
+        DateTime dateTime = new(2026, 7, 27, 14, 35, 42, DateTimeKind.Utc);
+        dateTime = dateTime.AddTicks(5);
+        DateTime calendarDateTime = LibraDexTemporalScalarCodec.DecodeDateTime(
+            LibraDexTemporalScalarCodec.Encode(dateTime, DateTimeKeyEncoding.CalendarSdt),
+            DateTimeKeyEncoding.CalendarSdt);
+        DateTime precisionDateTime = LibraDexTemporalScalarCodec.DecodeDateTime(
+            LibraDexTemporalScalarCodec.Encode(dateTime, DateTimeKeyEncoding.PrecisionSdt),
+            DateTimeKeyEncoding.PrecisionSdt);
+        if (calendarDateTime != dateTime.AddTicks(-5) ||
+            calendarDateTime.Kind != DateTimeKind.Utc ||
+            precisionDateTime != dateTime ||
+            precisionDateTime.Kind != DateTimeKind.Utc)
+        {
+            throw new InvalidDataException("The public DateTime SDT codec did not preserve the selected Calendar or Precision contract.");
+        }
+
+        DateOnly dateOnly = new(2026, 7, 27);
+        foreach (DateTimeKeyEncoding encoding in new[] { DateTimeKeyEncoding.CalendarSdt, DateTimeKeyEncoding.PrecisionSdt })
+        {
+            DateOnly decoded = LibraDexTemporalScalarCodec.DecodeDateOnly(
+                LibraDexTemporalScalarCodec.Encode(dateOnly, encoding),
+                encoding);
+            if (decoded != dateOnly)
+            {
+                throw new InvalidDataException($"The public DateOnly SDT codec did not round trip {encoding}.");
+            }
+        }
+
+        TimeOnly timeOnly = new(14, 35, 42);
+        timeOnly = timeOnly.Add(TimeSpan.FromTicks(5));
+        TimeOnly calendarTimeOnly = LibraDexTemporalScalarCodec.DecodeTimeOnly(
+            LibraDexTemporalScalarCodec.Encode(timeOnly, DateTimeKeyEncoding.CalendarSdt),
+            DateTimeKeyEncoding.CalendarSdt);
+        TimeOnly precisionTimeOnly = LibraDexTemporalScalarCodec.DecodeTimeOnly(
+            LibraDexTemporalScalarCodec.Encode(timeOnly, DateTimeKeyEncoding.PrecisionSdt),
+            DateTimeKeyEncoding.PrecisionSdt);
+        if (calendarTimeOnly != timeOnly.Add(TimeSpan.FromTicks(-5)) ||
+            precisionTimeOnly != timeOnly)
+        {
+            throw new InvalidDataException("The public TimeOnly SDT codec did not preserve the selected Calendar or Precision contract.");
+        }
+
+        DateTimeOffset offsetValue = new(2026, 7, 27, 14, 35, 42, TimeSpan.FromHours(-7));
+        offsetValue = offsetValue.AddTicks(9);
+        DateTimeOffset precisionOffset = LibraDexTemporalScalarCodec.DecodeDateTimeOffset(
+            LibraDexTemporalScalarCodec.Encode(offsetValue, DateTimeKeyEncoding.PrecisionSdt),
+            DateTimeKeyEncoding.PrecisionSdt);
+        DateTimeOffset calendarOffset = LibraDexTemporalScalarCodec.DecodeDateTimeOffset(
+            LibraDexTemporalScalarCodec.Encode(offsetValue, DateTimeKeyEncoding.CalendarSdt),
+            DateTimeKeyEncoding.CalendarSdt);
+        if (precisionOffset != offsetValue.ToUniversalTime() ||
+            precisionOffset.Offset != TimeSpan.Zero ||
+            calendarOffset != offsetValue.ToUniversalTime().AddTicks(-9) ||
+            calendarOffset.Offset != TimeSpan.Zero)
+        {
+            throw new InvalidDataException("The public DateTimeOffset SDT codec did not normalize and preserve the UTC instant as specified.");
+        }
+
+        TimeSpan negative = TimeSpan.FromTicks(-123456789);
+        TimeSpan positive = TimeSpan.FromTicks(123456789);
+        ulong encodedNegative = LibraDexTemporalScalarCodec.Encode(negative);
+        ulong encodedPositive = LibraDexTemporalScalarCodec.Encode(positive);
+        if (encodedNegative >= encodedPositive ||
+            LibraDexTemporalScalarCodec.DecodeTimeSpan(encodedNegative) != negative ||
+            LibraDexTemporalScalarCodec.DecodeTimeSpan(encodedPositive) != positive)
+        {
+            throw new InvalidDataException("The public TimeSpan codec did not preserve signed duration value and unsigned scalar order.");
+        }
+
+        bool rejectedNoncanonical = false;
+        try
+        {
+            _ = LibraDexTemporalScalarCodec.DecodeDateTime(1UL, DateTimeKeyEncoding.CalendarSdt);
+        }
+        catch (ArgumentException)
+        {
+            rejectedNoncanonical = true;
+        }
+
+        if (!rejectedNoncanonical)
+        {
+            throw new InvalidDataException("The public temporal scalar codec accepted a noncanonical Calendar SDT scalar.");
+        }
     }
 
     /// <summary>
@@ -12676,15 +13175,15 @@ internal static partial class RawHarness
         ValidateGenericInsert(deletedDate.Insert(new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc), 9402L), "deterministic deleted date ordinary insert");
 
         AssertSet(
-            LibraDexCondition.ForGroup("records").Index("created").AsDate.GreaterThan(new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)).EndCondition.Materialize(createdIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
+            LibraDexCondition.ForGroup("records").Index("created").AsDateTime.GreaterThan(new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)).EndCondition.Materialize(createdIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
             new[] { 3101L, 3103L, 3104L, 3105L, 3106L, 3107L },
             "deterministic structured date GreaterThan 2026 start");
         AssertSet(
-            LibraDexCondition.ForGroup("records").Index("created").AsDate.Between(new DateTime(2026, 3, 15, 0, 0, 0, DateTimeKind.Utc), new DateTime(2026, 12, 31, 23, 59, 59, DateTimeKind.Utc)).EndCondition.Materialize(createdIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
+            LibraDexCondition.ForGroup("records").Index("created").AsDateTime.Between(new DateTime(2026, 3, 15, 0, 0, 0, DateTimeKind.Utc), new DateTime(2026, 12, 31, 23, 59, 59, DateTimeKind.Utc)).EndCondition.Materialize(createdIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
             new[] { 3101L, 3103L, 3104L, 3105L, 3107L },
             "deterministic structured date exact Between");
         DateTime deferredCutoff = new(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc);
-        LibraDexConditionEndCondition deferredDateCondition = LibraDexCondition.ForGroup("records").Index("created").AsDate.LessThan(() => deferredCutoff).EndCondition;
+        LibraDexConditionEndCondition deferredDateCondition = LibraDexCondition.ForGroup("records").Index("created").AsDateTime.LessThan(() => deferredCutoff).EndCondition;
         AssertSet(
             deferredDateCondition.Materialize(createdIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
             new[] { 3101L, 3102L, 3106L, 3107L },
@@ -12696,7 +13195,7 @@ internal static partial class RawHarness
             "deterministic structured date deferred LessThan rematerialized cutoff");
         DateTime deferredStart = new(2026, 3, 15, 0, 0, 0, DateTimeKind.Utc);
         DateTime deferredEnd = new(2026, 4, 30, 23, 59, 59, DateTimeKind.Utc);
-        LibraDexConditionEndCondition deferredDateBetweenCondition = LibraDexCondition.ForGroup("records").Index("created").AsDate.Between(() => deferredStart, () => deferredEnd).EndCondition;
+        LibraDexConditionEndCondition deferredDateBetweenCondition = LibraDexCondition.ForGroup("records").Index("created").AsDateTime.Between(() => deferredStart, () => deferredEnd).EndCondition;
         AssertSet(
             deferredDateBetweenCondition.Materialize(createdIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
             new[] { 3101L, 3103L, 3107L },
@@ -12708,63 +13207,63 @@ internal static partial class RawHarness
             new[] { 3104L, 3105L },
             "deterministic structured date deferred Between rematerialized bounds");
         AssertSet(
-            LibraDexCondition.ForGroup("records").Index("relativeCreated").AsDate.IsYesterday().EndCondition.Materialize(relativeCreatedIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
+            LibraDexCondition.ForGroup("records").Index("relativeCreated").AsDateTime.IsYesterday().EndCondition.Materialize(relativeCreatedIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
             new[] { 9101L },
             "deterministic structured date IsYesterday");
         AssertSet(
-            LibraDexCondition.ForGroup("records").Index("relativeCreated").AsDate.IsInLastDays(7).EndCondition.Materialize(relativeCreatedIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
+            LibraDexCondition.ForGroup("records").Index("relativeCreated").AsDateTime.IsInLastDays(7).EndCondition.Materialize(relativeCreatedIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
             new[] { 9101L, 9103L },
             "deterministic structured date IsInLastDays");
         AssertSet(
-            LibraDexCondition.ForGroup("records").Index("relativeUpdated").AsDate.IsInLastHours(24).EndCondition.Materialize(relativeUpdatedIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
+            LibraDexCondition.ForGroup("records").Index("relativeUpdated").AsDateTime.IsInLastHours(24).EndCondition.Materialize(relativeUpdatedIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
             new[] { 9201L },
             "deterministic structured date IsInLastHours");
         AssertSet(
-            LibraDexCondition.ForGroup("events").Index("occurred").AsDate.IsInLastMinutes(15).EndCondition.Materialize(occurredIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
+            LibraDexCondition.ForGroup("events").Index("occurred").AsDateTime.IsInLastMinutes(15).EndCondition.Materialize(occurredIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
             new[] { 9301L },
             "deterministic structured date IsInLastMinutes");
         AssertSet(
-            LibraDexCondition.ForGroup("records").Index("created").AsDate.YearEqual(2026).EndCondition.Materialize(createdIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
+            LibraDexCondition.ForGroup("records").Index("created").AsDateTime.YearEqual(2026).EndCondition.Materialize(createdIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
             new[] { 3101L, 3103L, 3104L, 3105L, 3106L, 3107L },
             "deterministic structured date YearEqual");
         AssertSet(
-            LibraDexCondition.ForGroup("rows").Index("deletedDate").AsDate.EqualTo(DateTime.MaxValue).EndCondition.Materialize(deletedDateIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
+            LibraDexCondition.ForGroup("rows").Index("deletedDate").AsDateTime.EqualTo(DateTime.MaxValue).EndCondition.Materialize(deletedDateIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
             new[] { 9401L },
             "deterministic structured date max sentinel equality");
         AssertSet(
-            LibraDexCondition.ForGroup("records").Index("created").AsDate.MonthEqual(3).EndCondition.Materialize(createdIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
+            LibraDexCondition.ForGroup("records").Index("created").AsDateTime.MonthEqual(3).EndCondition.Materialize(createdIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
             new[] { 3101L, 3102L, 3106L, 3107L },
             "deterministic structured date MonthEqual");
         AssertSet(
-            LibraDexCondition.ForGroup("records").Index("created").AsDate.DayEqual(15).EndCondition.Materialize(createdIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
+            LibraDexCondition.ForGroup("records").Index("created").AsDateTime.DayEqual(15).EndCondition.Materialize(createdIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
             new[] { 3101L, 3103L },
             "deterministic structured date DayEqual");
         AssertSet(
-            LibraDexCondition.ForGroup("records").Index("created").AsDate.MonthDay(3, 15).EndCondition.Materialize(createdIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
+            LibraDexCondition.ForGroup("records").Index("created").AsDateTime.MonthDay(3, 15).EndCondition.Materialize(createdIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
             new[] { 3101L },
             "deterministic structured date MonthDay");
         AssertSet(
-            LibraDexCondition.ForGroup("records").Index("created").AsDate.InQuarter(4).EndCondition.Materialize(createdIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
+            LibraDexCondition.ForGroup("records").Index("created").AsDateTime.InQuarter(4).EndCondition.Materialize(createdIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
             new[] { 3104L, 3105L },
             "deterministic structured date InQuarter");
         AssertSet(
-            LibraDexCondition.ForGroup("records").Index("created").AsDate.IsWeekend().EndCondition.Materialize(createdIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
+            LibraDexCondition.ForGroup("records").Index("created").AsDateTime.IsWeekend().EndCondition.Materialize(createdIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
             new[] { 3101L, 3106L },
             "deterministic structured date IsWeekend");
         AssertSet(
-            LibraDexCondition.ForGroup("records").Index("created").AsDate.IsWeekday().EndCondition.Materialize(createdIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
+            LibraDexCondition.ForGroup("records").Index("created").AsDateTime.IsWeekday().EndCondition.Materialize(createdIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
             new[] { 3102L, 3103L, 3104L, 3105L, 3107L },
             "deterministic structured date IsWeekday");
         AssertSet(
-            LibraDexCondition.ForGroup("records").Index("created").AsDate.IsFirstOfMonth().EndCondition.Materialize(createdIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
+            LibraDexCondition.ForGroup("records").Index("created").AsDateTime.IsFirstOfMonth().EndCondition.Materialize(createdIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
             new[] { 3104L },
             "deterministic structured date IsFirstOfMonth");
         AssertSet(
-            LibraDexCondition.ForGroup("records").Index("created").AsDate.IsLastOfMonth().EndCondition.Materialize(createdIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
+            LibraDexCondition.ForGroup("records").Index("created").AsDateTime.IsLastOfMonth().EndCondition.Materialize(createdIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
             new[] { 3105L },
             "deterministic structured date IsLastOfMonth");
         AssertSet(
-            LibraDexCondition.ForGroup("records").Index("created").AsDate.IsQuarterEnd().EndCondition.Materialize(createdIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
+            LibraDexCondition.ForGroup("records").Index("created").AsDateTime.IsQuarterEnd().EndCondition.Materialize(createdIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
             new[] { 3105L },
             "deterministic structured date IsQuarterEnd");
         if (precisionCreated.DateTimeKeyEncoding != DateTimeKeyEncoding.PrecisionSdt)
@@ -12773,19 +13272,19 @@ internal static partial class RawHarness
         }
 
         AssertSet(
-            LibraDexCondition.ForGroup("records").Index("precisionCreated").AsDate.EqualTo(precisionTickOne).EndCondition.Materialize(precisionCreatedIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
+            LibraDexCondition.ForGroup("records").Index("precisionCreated").AsDateTime.EqualTo(precisionTickOne).EndCondition.Materialize(precisionCreatedIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
             new[] { 8101L },
             "deterministic PrecisionSDT exact sub-millisecond equality");
         AssertSet(
-            LibraDexCondition.ForGroup("records").Index("precisionCreated").AsDate.GreaterThan(precisionTickOne).EndCondition.Materialize(precisionCreatedIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
+            LibraDexCondition.ForGroup("records").Index("precisionCreated").AsDateTime.GreaterThan(precisionTickOne).EndCondition.Materialize(precisionCreatedIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
             new[] { 8102L, 8103L },
             "deterministic PrecisionSDT strict greater-than sub-millisecond boundary");
         AssertSet(
-            LibraDexCondition.ForGroup("records").Index("precisionCreated").AsDate.IsWeekend().EndCondition.Materialize(precisionCreatedIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
+            LibraDexCondition.ForGroup("records").Index("precisionCreated").AsDateTime.IsWeekend().EndCondition.Materialize(precisionCreatedIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
             new[] { 8100L, 8101L, 8102L },
             "deterministic PrecisionSDT derived weekend");
         AssertSet(
-            LibraDexCondition.ForGroup("records").Index("precisionCreated").AsDate.IsWeekday().EndCondition.Materialize(precisionCreatedIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
+            LibraDexCondition.ForGroup("records").Index("precisionCreated").AsDateTime.IsWeekday().EndCondition.Materialize(precisionCreatedIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
             new[] { 8103L },
             "deterministic PrecisionSDT derived weekday");
         AssertSet(
@@ -12882,7 +13381,7 @@ internal static partial class RawHarness
                 ["tenantPrecisionCreated"] = reopenedPrecisionComposite
             };
             AssertSet(
-                LibraDexCondition.ForGroup("records").Index("precisionCreated").AsDate.GreaterThan(precisionTickOne).EndCondition.Materialize(reopenedPrecisionIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
+                LibraDexCondition.ForGroup("records").Index("precisionCreated").AsDateTime.GreaterThan(precisionTickOne).EndCondition.Materialize(reopenedPrecisionIndexes).IDsWith(deduplication: IdentityDeduplication.Preserve).ToList<long>(),
                 new[] { 8202L },
                 "reopened PrecisionSDT strict greater-than sub-millisecond boundary");
             AssertSet(
@@ -13081,6 +13580,11 @@ internal static partial class RawHarness
             (2, 2202L),
             (3, 2203L),
             (4, 2204L));
+        _ = CreateScalarIndex<long>(
+            "longStatus",
+            (1L, 2251L),
+            (2L, 2252L),
+            (4L, 2254L));
         _ = CreateScalarIndex<uint>(
             "permissions",
             (0x00U, 2300L),
@@ -13139,7 +13643,31 @@ internal static partial class RawHarness
         AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("tickCount").AsInt64.NotBetween(long.MinValue, -1L).EndCondition, indexes), new[] { 703L, 704L }, "proof row 15 Int64 NotBetween min negative");
         AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("int16Value").AsInt16.Between(-10, 10).EndCondition, indexes), new[] { 802L, 803L, 804L }, "proof row 18 Int16 Between mixed-sign");
         AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("sbyteCode").AsSByte.NotEqualTo(-1).EndCondition, indexes), new[] { 901L, 903L }, "proof row 19 SByte NotEqualTo");
-        AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("shortStatus").AsInt16.InSet(new short[] { 1, 4 }).EndCondition, indexes), new[] { 1001L, 1004L }, "proof row 20 Int16 enum-backed InSet");
+        int enumSetEnumerations = 0;
+        List<ProofShortStatus> currentShortStatuses = new() { ProofShortStatus.One };
+        IEnumerable<ProofShortStatus> CurrentShortStatuses()
+        {
+            enumSetEnumerations++;
+            foreach (ProofShortStatus status in currentShortStatuses)
+                yield return status;
+        }
+
+        LibraDexConditionEndCondition enumSetCondition = LibraDexCondition.ForGroup("proof")
+            .Index("shortStatus").AsInt16.InSet(CurrentShortStatuses())
+            .EndCondition;
+        if (enumSetEnumerations != 0)
+            throw new InvalidDataException("Enum membership enumerated while the reusable condition was being constructed.");
+
+        currentShortStatuses.Add(ProofShortStatus.Four);
+        AssertSet(IDs(enumSetCondition, indexes), new[] { 1001L, 1004L }, "proof row 20 Int16 enum InSet first materialization");
+        if (enumSetEnumerations != 1)
+            throw new InvalidDataException("Enum membership did not enumerate exactly once during its first materialization.");
+
+        currentShortStatuses.Clear();
+        currentShortStatuses.Add(ProofShortStatus.Two);
+        AssertSet(IDs(enumSetCondition, indexes), new[] { 1002L }, "proof row 20 Int16 enum InSet rematerialized values");
+        if (enumSetEnumerations != 2)
+            throw new InvalidDataException("Reusable enum membership did not take exactly one fresh snapshot per materialization.");
         AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("byteSeverity").AsByte.GreaterOrEqual(200).EndCondition, indexes), new[] { 1103L, 1104L }, "proof row 21 Byte GreaterOrEqual");
         AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("port").AsUInt16.Between(1024, ushort.MaxValue).EndCondition, indexes), new[] { 1202L, 1203L }, "proof row 23 UInt16 high range");
         AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("u16Code").AsUInt16.LessThan(10).EndCondition, indexes), new[] { 1301L, 1302L }, "proof row 24 UInt16 low range");
@@ -13159,10 +13687,39 @@ internal static partial class RawHarness
         AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("deleted").AsBoolean.EqualTo(false).EndCondition, indexes), new[] { 2001L }, "proof row 36 Bool false exact");
         AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("flag").AsBoolean.NotEqualTo(true).EndCondition, indexes), new[] { 2101L }, "proof row 37 Bool NotEqualTo true");
         AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("flag").AsBoolean.GreaterThan(false).EndCondition, indexes), new[] { 2102L }, "proof row 38 Bool GreaterThan false");
-        AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("status").AsInt32.EqualTo(3).EndCondition, indexes), new[] { 2203L }, "proof row 61 enum scalar exact");
-        AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("status").AsInt32.InSet(new[] { 1, 2, 3 }).EndCondition, indexes), new[] { 2201L, 2202L, 2203L }, "proof row 62 enum scalar membership");
-        AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("status").AsInt32.NotEqualTo(4).EndCondition, indexes), new[] { 2201L, 2202L, 2203L }, "proof row 63 enum scalar NotEqualTo");
-        AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("permissions").AsUInt32.AllBitsSet(0x01U).EndCondition, indexes), new[] { 2301L, 2303L, 2313L }, "proof row 66 UInt32 AllBitsSet read");
+        object[] enumCompatibleAdapters =
+        {
+            LibraDexCondition.ForGroup("proof").Index("status").AsSByte,
+            LibraDexCondition.ForGroup("proof").Index("status").AsByte,
+            LibraDexCondition.ForGroup("proof").Index("status").AsInt16,
+            LibraDexCondition.ForGroup("proof").Index("status").AsUInt16,
+            LibraDexCondition.ForGroup("proof").Index("status").AsInt32,
+            LibraDexCondition.ForGroup("proof").Index("status").AsUInt32,
+            LibraDexCondition.ForGroup("proof").Index("status").AsInt64,
+            LibraDexCondition.ForGroup("proof").Index("status").AsUInt64
+        };
+        object[] nonEnumAdapters =
+        {
+            LibraDexCondition.ForGroup("proof").Index("status").AsInt128,
+            LibraDexCondition.ForGroup("proof").Index("status").AsUInt128,
+            LibraDexCondition.ForGroup("proof").Index("status").AsBigInt,
+            LibraDexCondition.ForGroup("proof").Index("status").AsChar
+        };
+        if (enumCompatibleAdapters.Any(value => value.GetType().GetGenericTypeDefinition() != typeof(LibraDexEnumCompatibleNumericConditionOperator<>)) ||
+            nonEnumAdapters.Any(value => value.GetType().GetGenericTypeDefinition() == typeof(LibraDexEnumCompatibleNumericConditionOperator<>)))
+        {
+            throw new InvalidDataException("Enum overload discovery was not limited to the eight CLR enum-compatible numeric adapters.");
+        }
+
+        AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("status").AsInt32.EqualTo(ProofStatus.Three).EndCondition, indexes), new[] { 2203L }, "proof row 61 enum scalar exact");
+        AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("status").AsInt32.Not.EqualTo(ProofStatus.Three).EndCondition, indexes), new[] { 2201L, 2202L, 2204L }, "enum-compatible adapter preserved after Not");
+        AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("status").AsInt32.InSet(new[] { ProofStatus.One, ProofStatus.Two, ProofStatus.Three }).EndCondition, indexes), new[] { 2201L, 2202L, 2203L }, "proof row 62 enum scalar membership");
+        AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("status").AsInt32.In(new[] { ProofStatus.One, ProofStatus.Three }).EndCondition, indexes), new[] { 2201L, 2203L }, "enum scalar membership concise alias");
+        AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("status").AsInt32.NotEqualTo(ProofStatus.Four).EndCondition, indexes), new[] { 2201L, 2202L, 2203L }, "proof row 63 enum scalar NotEqualTo");
+        AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("status").AsInt32.IsNotIn(new[] { ProofStatus.Three, ProofStatus.Four }).EndCondition, indexes), new[] { 2201L, 2202L }, "enum scalar membership exclusion readable alias");
+        AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("status").AsInt32.Between(ProofStatus.Two, ProofStatus.Three).EndCondition, indexes), new[] { 2202L, 2203L }, "enum scalar ordered range");
+        AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("longStatus").AsInt64.InSet(new[] { ProofStatus.One, ProofStatus.Four }).EndCondition, indexes), new[] { 2251L, 2254L }, "Int32-backed enum converted to declared Int64 storage interpretation");
+        AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("permissions").AsUInt32.AllBitsSet(ProofPermissions.Read).EndCondition, indexes), new[] { 2301L, 2303L, 2313L }, "proof row 66 UInt32 enum AllBitsSet read");
         AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("permissions").AsUInt32.EqualTo(0x03U).EndCondition, indexes), new[] { 2303L }, "proof row 70 exact mask equality");
         AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("capabilities").AsUInt64.AllBitsSet(1UL << 42).EndCondition, indexes), new[] { 2442L, 2452L }, "proof row 74 UInt64 high-bit AllBitsSet");
         AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("capabilities").AsUInt64.NoBitsSet(0x10UL).EndCondition, indexes), new[] { 2400L, 2442L, 2432L }, "proof row 75 UInt64 NoBitsSet");
@@ -13171,6 +13728,18 @@ internal static partial class RawHarness
         AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("flagsInt").AsInt32.AllBitsSet(int.MinValue).EndCondition, indexes), new[] { 2601L }, "proof row 78 signed Int32 bitmask");
         AssertSetU(UIDs(LibraDexCondition.ForGroup("proof").Index("flags").AsUInt32.AllBitsSet(0x01U).AND.Index("displayName").AsString.StartsWith("A").EndCondition, indexes), new[] { 2301UL }, "proof row 80 bitmask plus text composition");
         AssertSet(IDs(LibraDexCondition.ForGroup("proof").Index("sentinelValue").AsInt32.NotEqualTo(-1).EndCondition, indexes), new[] { 2702L, 2703L }, "proof row 187 Int32 sentinel exclusion");
+
+        LibraDexConditionEndCondition overflowingEnumSet = LibraDexCondition.ForGroup("proof")
+            .Index("byteSeverity").AsByte.InSet(new[] { ProofWideStatus.TooLargeForByte })
+            .EndCondition;
+        try
+        {
+            _ = IDs(overflowingEnumSet, indexes);
+            throw new InvalidDataException("Enum membership conversion did not reject a value outside the selected Byte interpretation.");
+        }
+        catch (OverflowException)
+        {
+        }
     }
 
 
@@ -13193,6 +13762,15 @@ internal static partial class RawHarness
         static IReadOnlyList<ulong> IDs(LibraDexConditionEndCondition condition, LibraDexStringScalar8Index index)
         {
             return condition.MaterializeWithProjectionBridge(index.ResolveIndex, index.ResolveProjection)
+                .IDsWith(deduplication: IdentityDeduplication.Preserve)
+                .ToList<ulong>();
+        }
+
+        static IReadOnlyList<ulong> KeyStateIDs(LibraDexConditionEndCondition condition, IIndex index)
+        {
+            return condition.Materialize(name => string.Equals(name, index.Name, StringComparison.Ordinal)
+                    ? index
+                    : throw new KeyNotFoundException(name))
                 .IDsWith(deduplication: IdentityDeduplication.Preserve)
                 .ToList<ulong>();
         }
@@ -13221,6 +13799,8 @@ internal static partial class RawHarness
         using LibraDexStringScalar8Index reversedText = catalog.Indexes["strings"]["reversedText"].String.Create(
             stringKeys: StringKeys.Exact,
             directions: LibraDexProjectionDirectionSet.ForwardAndReversed);
+        using LibraDexIndex<byte[], ulong> payload = catalog.Indexes["strings"]["payload"].Blob.Scalar<ulong>(LibraDexScalarWidth.Bytes32).Create();
+        using LibraDexIndex<int, ulong> rank = catalog.Indexes["strings"]["rank"].Create<int, ulong>();
 
         ValidateGenericInsert(username.Insert("bob", 1361UL), "deterministic string username bob insert");
         ValidateGenericInsert(username.Insert("BOB", 1371UL), "deterministic string username BOB insert");
@@ -13249,6 +13829,11 @@ internal static partial class RawHarness
         ValidateGenericInsert(foldedText.Insert("xyz", 1952UL), "deterministic string foldedText xyz insert");
         ValidateGenericInsert(reversedText.Insert("www.example.com", 1971UL), "deterministic string reversedText com insert");
         ValidateGenericInsert(reversedText.Insert("www.example.net", 1972UL), "deterministic string reversedText net insert");
+        ValidateGenericInsert(payload.Insert(NullKey.Null, 1600UL), "deterministic binary null insert");
+        ValidateGenericInsert(payload.Insert(NullKey.Empty, 1601UL), "deterministic binary empty insert");
+        ValidateGenericInsert(payload.Insert(Enumerable.Range(1, 32).Select(static value => (byte)value).ToArray(), 1602UL), "deterministic binary ordinary insert");
+        ValidateGenericInsert(rank.Insert(ScalarNull.Null, 1700UL), "deterministic scalar null insert");
+        ValidateGenericInsert(rank.Insert(42, 1701UL), "deterministic scalar ordinary insert");
 
         AssertSet(IDs(LibraDexCondition.ForGroup("strings").Index("username").AsString.EqualTo("bob").EndCondition, username), new[] { 1361UL }, "proof row 136 string exact");
         AssertSet(IDs(LibraDexCondition.ForGroup("strings").Index("username").AsString.EqualTo("Bob", ignoreCase: true).EndCondition, username), new[] { 1361UL, 1371UL }, "proof row 137 string no-case exact");
@@ -13277,6 +13862,34 @@ internal static partial class RawHarness
         AssertSet(IDs(LibraDexCondition.ForGroup("strings").Index("code").AsString.EqualTo(NullKey.Empty).EndCondition, code), new[] { 1501UL }, "proof row 150 string NullKey empty");
         AssertSet(IDs(LibraDexCondition.ForGroup("strings").Index("code").AsString.LessOrEqual(string.Empty).EndCondition, code), new[] { 1500UL, 1501UL }, "proof row 150 string null empty ordering");
         AssertSet(IDs(LibraDexCondition.ForGroup("strings").Index("code").AsString.EqualTo(NullKey.NullOrEmpty).EndCondition, code), new[] { 1500UL, 1501UL }, "proof row 150 string NullKey null or empty");
+        AssertSet(IDs(LibraDexCondition.ForGroup("strings").Index("code").AsString.IsNull().EndCondition, code), new[] { 1500UL }, "proof row 151 string IsNull route");
+        AssertSet(IDs(LibraDexCondition.ForGroup("strings").Index("code").AsString.IsNotNull().EndCondition, code), new[] { 1451UL, 1501UL }, "string IsNotNull preserves empty");
+        AssertSet(IDs(LibraDexCondition.ForGroup("strings").Index("code").AsString.IsEmpty().EndCondition, code), new[] { 1501UL }, "string IsEmpty route");
+        AssertSet(IDs(LibraDexCondition.ForGroup("strings").Index("code").AsString.IsNotEmpty().EndCondition, code), new[] { 1451UL, 1500UL }, "string IsNotEmpty preserves null");
+        AssertSet(IDs(LibraDexCondition.ForGroup("strings").Index("code").AsString.IsNullOrEmpty().EndCondition, code), new[] { 1500UL, 1501UL }, "string IsNullOrEmpty routes");
+        AssertSet(IDs(LibraDexCondition.ForGroup("strings").Index("code").AsString.IsNotNullOrEmpty().EndCondition, code), new[] { 1451UL }, "string IsNotNullOrEmpty ordinary route");
+        AssertSet(IDs(LibraDexCondition.ForGroup("strings").Index("code").AsString.IsNull().EndCondition, code), new[] { 1500UL }, "named string IsNull uses NullKey route");
+        AssertSet(IDs(LibraDexCondition.ForGroup("strings").Index("code").AsString.IsEmpty().EndCondition, code), new[] { 1501UL }, "named string IsEmpty uses NullKey route");
+        AssertSet(KeyStateIDs(LibraDexCondition.ForGroup("strings").Index("payload").AsBinary.IsNull().EndCondition, payload), new[] { 1600UL }, "binary IsNull route");
+        AssertSet(KeyStateIDs(LibraDexCondition.ForGroup("strings").Index("payload").AsBinary.IsNotNull().EndCondition, payload), new[] { 1601UL, 1602UL }, "binary IsNotNull preserves empty");
+        AssertSet(KeyStateIDs(LibraDexCondition.ForGroup("strings").Index("payload").AsBinary.IsEmpty().EndCondition, payload), new[] { 1601UL }, "binary IsEmpty route");
+        AssertSet(KeyStateIDs(LibraDexCondition.ForGroup("strings").Index("payload").AsBinary.IsNotEmpty().EndCondition, payload), new[] { 1600UL, 1602UL }, "binary IsNotEmpty preserves null");
+        AssertSet(KeyStateIDs(LibraDexCondition.ForGroup("strings").Index("payload").AsBinary.IsNullOrEmpty().EndCondition, payload), new[] { 1600UL, 1601UL }, "binary IsNullOrEmpty routes");
+        AssertSet(KeyStateIDs(LibraDexCondition.ForGroup("strings").Index("payload").AsBinary.IsNotNullOrEmpty().EndCondition, payload), new[] { 1602UL }, "binary IsNotNullOrEmpty ordinary route");
+        AssertSet(KeyStateIDs(LibraDexCondition.ForGroup("strings").Index("payload").AsBinary.IsNullOrEmpty().EndCondition, payload), new[] { 1600UL, 1601UL }, "named binary IsNullOrEmpty uses NullKey routes");
+        AssertSet(KeyStateIDs(LibraDexCondition.ForGroup("strings").Index("rank").AsInt32.IsNull().EndCondition, rank), new[] { 1700UL }, "scalar IsNull route");
+        AssertSet(KeyStateIDs(LibraDexCondition.ForGroup("strings").Index("rank").AsInt32.IsNotNull().EndCondition, rank), new[] { 1701UL }, "scalar IsNotNull route");
+        AssertSet(KeyStateIDs(LibraDexCondition.ForGroup("strings").Index("rank").AsInt32.IsNull().EndCondition, rank), new[] { 1700UL }, "named scalar IsNull uses ScalarNull route");
+        AssertSet(KeyStateIDs(LibraDexCondition.ForGroup("strings").Index("rank").AsInt32.Not.IsNull().EndCondition, rank), new[] { 1701UL }, "negated scalar IsNull selects non-null route");
+        AssertSet(KeyStateIDs(payload.Where.IsNull().Or.IsEmpty().EndCondition, payload), new[] { 1600UL, 1601UL }, "opened binary root and continuation key-state aliases");
+        AssertSet(KeyStateIDs(rank.Where.IsNull().Or.IsNotNull().EndCondition, rank), new[] { 1700UL, 1701UL }, "opened scalar root and continuation null aliases");
+        if (payload.Count() == 0
+            || !payload.Exists(LibraDexCondition.ForGroup("strings").Index("payload").AsBinary.IsEmpty().EndCondition)
+            || payload.Exists(LibraDexCondition.ForGroup("strings").Index("payload").AsBinary.EqualTo(new byte[32]).EndCondition))
+        {
+            throw new InvalidDataException("Opened index count and condition existence checks did not preserve populated, matching-condition, and nonmatching-condition semantics.");
+        }
+
         AssertSet(IDs(LibraDexCondition.ForGroup("strings").Index("foldedText").AsString.EqualTo("abc", ignoreCase: true).EndCondition, foldedText), new[] { 1951UL }, "proof row 195 folded text equality");
         AssertSet(IDs(LibraDexCondition.ForGroup("strings").Index("reversedText").AsString.EndsWith("com").EndCondition, reversedText), new[] { 1971UL }, "proof row 197 reversed text suffix");
     }
@@ -13876,6 +14489,55 @@ internal static partial class RawHarness
         }
 
         ValidateGenericInsert(index.Insert(10, 100), "single-key first insert");
+        if (!index.TryGetSingleKey(100, out long firstKey) || firstKey != 10 ||
+            index.TryGetSingleKey(999, out _))
+        {
+            throw new InvalidDataException("Single-key-per-identity lookup did not return the inserted key or reject a missing identity.");
+        }
+
+        Func<string, IIndex> singleKeyResolver = indexName => string.Equals(indexName, "value", StringComparison.Ordinal)
+            ? index
+            : throw new KeyNotFoundException(indexName);
+        LibraDexConditionEndCondition singleLeafCondition = LibraDexCondition
+            .ForGroup("single-key")
+            .Index("value").AsInt64.EqualTo(10)
+            .EndCondition;
+        IIdentityCriterionProjection singleLeafProjection = singleLeafCondition
+            .Materialize(singleKeyResolver)
+            .IDsWith(deduplication: IdentityDeduplication.Distinct);
+        if (singleLeafProjection.Plan().RequiresDistinct ||
+            !singleLeafProjection.Iterate<long>().SequenceEqual(new[] { 100L }))
+        {
+            throw new InvalidDataException("A single-key primitive retained redundant runtime identity deduplication or changed its result stream.");
+        }
+
+        LibraDexConditionEndCondition duplicateMembershipCondition = LibraDexCondition
+            .ForGroup("single-key")
+            .Index("value").AsInt64.In(new long[] { 10, 10 })
+            .EndCondition;
+        IIdentityCriterionProjection duplicateMembershipProjection = duplicateMembershipCondition
+            .Materialize(singleKeyResolver)
+            .IDsWith(deduplication: IdentityDeduplication.Distinct);
+        if (!duplicateMembershipProjection.Plan().RequiresDistinct ||
+            !duplicateMembershipProjection.Iterate<long>().SequenceEqual(new[] { 100L }))
+        {
+            throw new InvalidDataException("A duplicate membership primitive incorrectly inherited single-key deduplication elision.");
+        }
+
+        LibraDexConditionEndCondition duplicateUnionCondition = LibraDexCondition
+            .ForGroup("single-key")
+            .Index("value").AsInt64.EqualTo(10)
+            .Or.Index("value").AsInt64.EqualTo(10)
+            .EndCondition;
+        IIdentityCriterionProjection duplicateUnionProjection = duplicateUnionCondition
+            .Materialize(singleKeyResolver)
+            .IDsWith(deduplication: IdentityDeduplication.Distinct);
+        if (!duplicateUnionProjection.Plan().RequiresDistinct ||
+            !duplicateUnionProjection.Iterate<long>().SequenceEqual(new[] { 100L }))
+        {
+            throw new InvalidDataException("Composite duplicate-producing identity criteria did not retain distinct-result enforcement.");
+        }
+
         LibraDexGenericInsertResult duplicateIdentityDifferentKey = index.Insert(11, 100);
         if (duplicateIdentityDifferentKey.Inserted ||
             index.Count() != 1 ||
@@ -13885,7 +14547,9 @@ internal static partial class RawHarness
         }
 
         index.Rekey(100, 10, 12);
-        if (index.Count() != 1 ||
+        if (!index.TryGetSingleKey(100, out long rekeyedKey) ||
+            rekeyedKey != 12 ||
+            index.Count() != 1 ||
             index.Count(LibraDexCondition.ForGroup("single-key").Index("value").AsInt64.EqualTo(10).EndCondition) != 0 ||
             index.Count(LibraDexCondition.ForGroup("single-key").Index("value").AsInt64.EqualTo(12).EndCondition) != 1 ||
             index.Insert(10, 100).Inserted)
@@ -13905,6 +14569,11 @@ internal static partial class RawHarness
             if (commit.InsertedCount != 1)
             {
                 throw new InvalidDataException("Single-key-per-identity explicit batch did not publish exactly one accepted insert.");
+            }
+
+            if (!index.TryGetSingleKey(300, out long batchKey) || batchKey != 30)
+            {
+                throw new InvalidDataException("Single-key-per-identity lookup did not rebuild correctly after explicit batch publication.");
             }
         }
 
@@ -13928,6 +14597,11 @@ internal static partial class RawHarness
 
         LibraDexQueuedWriter<long, long> writer = index.BeginConcurrentWriter();
         ValidateGenericInsert(writer.Insert(50, 500), "single-key queued writer first insert");
+        if (!index.TryGetSingleKey(500, out long queuedKey) || queuedKey != 50)
+        {
+            throw new InvalidDataException("Single-key-per-identity lookup was not maintained by queued insertion.");
+        }
+
         if (writer.Insert(51, 500).Inserted)
         {
             throw new InvalidDataException("Single-key-per-identity queued writer allowed a staged duplicate identity at a different key.");
@@ -13945,6 +14619,11 @@ internal static partial class RawHarness
             if (concurrentPublish.InsertedCount != 1)
             {
                 throw new InvalidDataException("Single-key-per-identity concurrent batch did not publish exactly one accepted insert.");
+            }
+
+            if (!index.TryGetSingleKey(600, out long concurrentKey) || concurrentKey != 60)
+            {
+                throw new InvalidDataException("Single-key-per-identity lookup did not rebuild correctly after concurrent batch publication.");
             }
         }
 
@@ -13965,17 +14644,12 @@ internal static partial class RawHarness
                 throw new InvalidDataException("Single-key-per-identity metadata was not preserved across catalog reopen.");
             }
 
-            IIndex reopenedIndex = reopened.Indexes["single-key"]["value"].Open();
-            try
+            using LibraDexIndex<long, long> reopenedIndex = reopened.Indexes["single-key"]["value"].Int64Keys<long>().Open();
+            if (reopenedIndex.IdentityKeyMultiplicity != IdentityKeyMultiplicity.SingleKeyPerIdentity ||
+                !reopenedIndex.TryGetSingleKey(200, out long reopenedKey) ||
+                reopenedKey != 20)
             {
-                if (reopenedIndex.IdentityKeyMultiplicity != IdentityKeyMultiplicity.SingleKeyPerIdentity)
-                {
-                    throw new InvalidDataException("Single-key-per-identity reopened index did not expose the persisted contract.");
-                }
-            }
-            finally
-            {
-                (reopenedIndex as IDisposable)?.Dispose();
+                throw new InvalidDataException("Single-key-per-identity reopened index did not expose the persisted contract and identity lookup.");
             }
         }
     }
@@ -14752,6 +15426,54 @@ internal static partial class RawHarness
             throw new ArgumentOutOfRangeException(nameof(args), "SV8 routed sanity requires positive items, positive duplicate modulo, and identity length 16-1024.");
         }
 
+        {
+            Scalar8VarIdentityProfile regressionProfile = Scalar8VarIdentityProfile.Default16KiB;
+            byte[] regressionBytes = new byte[regressionProfile.ShelfExtentSize];
+            Scalar8VarIdentityLayout.Initialize(regressionBytes, regressionProfile);
+            if (!Scalar8VarIdentityMutableShelfView.TryCreate(regressionBytes, regressionProfile, out Scalar8VarIdentityMutableShelfView sourceShelf))
+            {
+                throw new InvalidDataException("SV8 pooled tombstone regression could not create its source shelf.");
+            }
+
+            ulong[] regressionKeys = [3, 1, 2, 0, 3, 2, 1, 0];
+            for (int i = 0; i < regressionKeys.Length; i++)
+            {
+                if (sourceShelf.Insert(regressionKeys[i], CreateScalar8VarIdentity(i, 16), allowDuplicateKeys: true) != Scalar8VarIdentityInsertResult.Inserted)
+                {
+                    throw new InvalidDataException($"SV8 pooled tombstone regression could not insert source tuple {i}.");
+                }
+            }
+
+            sourceShelf.EnsureSlotBytesCurrent();
+            sourceShelf.Release(clearShelfBytes: false);
+            int regressionSlotCapacity = Scalar8VarIdentityLayout.CalculateSlotCapacityBytes(regressionProfile.ShelfExtentSize) / Scalar8VarIdentityLayout.SlotSize;
+            bool[] poisonedDeletedSlots = ArrayPool<bool>.Shared.Rent(regressionSlotCapacity);
+            poisonedDeletedSlots.AsSpan(0, regressionSlotCapacity).Fill(true);
+            ArrayPool<bool>.Shared.Return(poisonedDeletedSlots, clearArray: false);
+
+            if (!Scalar8VarIdentityMutableShelfView.TryCreatePooled(regressionBytes, regressionProfile, pooledBytes: false, out Scalar8VarIdentityMutableShelfView pooledShelf))
+            {
+                throw new InvalidDataException("SV8 pooled tombstone regression could not decode the poisoned-pool shelf.");
+            }
+
+            try
+            {
+                int marked = pooledShelf.MarkKeyRangeDeleted(1, 2);
+                int normalized = pooledShelf.NormalizeDeletedSlotsForPublication();
+                if (marked != 4 || normalized != 4 || pooledShelf.ItemCount != 4 ||
+                    pooledShelf.ReadKeyAt(0) != 0 || pooledShelf.ReadKeyAt(1) != 0 ||
+                    pooledShelf.ReadKeyAt(2) != 3 || pooledShelf.ReadKeyAt(3) != 3)
+                {
+                    throw new InvalidDataException(
+                        $"SV8 pooled tombstone regression failed: marked={marked}, normalized={normalized}, survivors={pooledShelf.ItemCount}.");
+                }
+            }
+            finally
+            {
+                pooledShelf.Release(clearShelfBytes: false);
+            }
+        }
+
         File.Delete(path);
         Directory.CreateDirectory(Path.GetDirectoryName(path) ?? ".");
         DataKernelOptions options = CreateDesignPerfOptions();
@@ -14894,10 +15616,40 @@ internal static partial class RawHarness
             Scalar8VarIdentityRangeReader.UseExhaustiveRouteTraversal = previousTraversalMode;
         }
 
+        StringBuilder preRangeDeleteDiagnostic = new();
+        for (int keyIndex = 0; keyIndex <= Math.Min(2, duplicateModulo - 1); keyIndex++)
+        {
+            ulong diagnosticKey = CreateScalar8VarIdentityKey(keyIndex, duplicateModulo);
+            preRangeDeleteDiagnostic.AppendLine(reopened.DescribeScalar8VarIdentityExactKeyRoutes(rootOffset, identityLength, diagnosticKey, maxRows: 0));
+        }
+
         long rangeDeleted = reopened.DeleteScalar8VarIdentityKeyRange(rootOffset, identityLength, lower, upper);
         if (rangeDeleted != expected - 1)
         {
-            throw new InvalidDataException($"Routed SV8 range delete removed {rangeDeleted}; expected {expected - 1} after the exact delete.");
+            int remainingAfterRangeDelete;
+            try
+            {
+                Scalar8VarIdentityRangeReader.UseExhaustiveRouteTraversal = true;
+                using Scalar8VarIdentityRangeReader diagnosticReader = reopened.OpenScalar8VarIdentityRangeReader(rootOffset, identityLength, lower, upper);
+                remainingAfterRangeDelete = diagnosticReader.Count;
+            }
+            finally
+            {
+                Scalar8VarIdentityRangeReader.UseExhaustiveRouteTraversal = previousTraversalMode;
+            }
+
+            StringBuilder diagnostic = new();
+            for (int keyIndex = 0; keyIndex <= Math.Min(2, duplicateModulo - 1); keyIndex++)
+            {
+                ulong diagnosticKey = CreateScalar8VarIdentityKey(keyIndex, duplicateModulo);
+                diagnostic.AppendLine(reopened.DescribeScalar8VarIdentityExactKeyRoutes(rootOffset, identityLength, diagnosticKey, maxRows: 0));
+            }
+
+            throw new InvalidDataException(
+                $"Routed SV8 range delete removed {rangeDeleted}; expected {expected - 1} after the exact delete; " +
+                $"the exhaustive post-delete reader found {remainingAfterRangeDelete} remaining rows." +
+                $"{Environment.NewLine}Pre-delete topology:{Environment.NewLine}{preRangeDeleteDiagnostic}" +
+                $"Post-delete topology:{Environment.NewLine}{diagnostic}");
         }
 
         try
@@ -18790,17 +19542,22 @@ internal static partial class RawHarness
             automaticPolicy,
             lower,
             upper);
-        if (vs8OnDemand.CandidateCount < 2 || vs16OnDemand.CandidateCount < 2)
+        if (vs8OnDemand.CandidateCount < 1 || vs16OnDemand.CandidateCount < 1)
         {
-            throw new InvalidDataException("Varlen optimizer mode sanity expected full-walk on-demand mode to retain later queued candidates after the first candidate.");
+            throw new InvalidDataException(
+                $"Varlen optimizer mode sanity expected each full-walk on-demand mode to retain at least one queued candidate; " +
+                $"VS8={vs8OnDemand.CandidateCount}, VS16={vs16OnDemand.CandidateCount}.");
         }
 
-        if (vs8OnDemand.Maintenance.ConsideredCount < 2 ||
-            vs16OnDemand.Maintenance.ConsideredCount < 2 ||
-            vs8OnDemand.Maintenance.CoveredCandidateCount < 1 ||
-            vs16OnDemand.Maintenance.CoveredCandidateCount < 1)
+        if (vs8OnDemand.Maintenance.ConsideredCount != vs8OnDemand.CandidateCount ||
+            vs16OnDemand.Maintenance.ConsideredCount != vs16OnDemand.CandidateCount ||
+            vs8OnDemand.Maintenance.CoveredCandidateCount != vs8OnDemand.CandidateCount - 1 ||
+            vs16OnDemand.Maintenance.CoveredCandidateCount != vs16OnDemand.CandidateCount - 1)
         {
-            throw new InvalidDataException("Varlen optimizer mode sanity expected on-demand maintenance to consider later queued candidates and mark same-root work as covered.");
+            throw new InvalidDataException(
+                $"Varlen optimizer mode sanity expected on-demand maintenance to consider every queued candidate, publish one root-prefix replacement, and cover any remainder; " +
+                $"VS8 candidates/considered/covered={vs8OnDemand.CandidateCount}/{vs8OnDemand.Maintenance.ConsideredCount}/{vs8OnDemand.Maintenance.CoveredCandidateCount}, " +
+                $"VS16 candidates/considered/covered={vs16OnDemand.CandidateCount}/{vs16OnDemand.Maintenance.ConsideredCount}/{vs16OnDemand.Maintenance.CoveredCandidateCount}.");
         }
 
         if (vs8Automatic.Maintenance.ConsideredCount != 1 ||
@@ -18822,7 +19579,7 @@ internal static partial class RawHarness
         Console.WriteLine($"candidateHitCount {candidateHitCount}");
         Console.WriteLine("policyBoundaryGuards ok");
         Console.WriteLine("candidateQueueRetention ok");
-        Console.WriteLine("onDemandCoveredCandidateCoalescing ok");
+        Console.WriteLine("onDemandRootPrefixCoalescing ok");
         PrintVarLenOptimizerModeResult("vs8OnDemand", vs8OnDemand);
         PrintVarLenOptimizerModeResult("vs8Automatic", vs8Automatic);
         PrintVarLenOptimizerModeResult("vs16OnDemand", vs16OnDemand);
@@ -19282,17 +20039,12 @@ internal static partial class RawHarness
                 throw new InvalidDataException($"Expected exactly one VS8 mb-router transform, got {transformCount}.");
             }
 
-            byte[] childRouterBytes = new byte[RouterLayout.Size];
-            session.ReadRouterPageForRangeScan(childRouterOffset, childRouterBytes);
-            RouterReader childReader = new(childRouterBytes);
-            if (!childReader.IsValid || !childReader.HasDirectIndex || childReader.PrefixByteCount != 1 || childReader.RouteCount != RouterLayout.MaxOneByteRouteCount)
-            {
-                throw new InvalidDataException($"Expected transformed VS8 child to be an expanded exact-stem router, got valid={childReader.IsValid} direct={childReader.HasDirectIndex} prefixBytes={childReader.PrefixByteCount} routes={childReader.RouteCount}.");
-            }
+            _ = ValidateVarKeyExactStemChain(session, childRouterOffset, sharedPrefixLength, 0x35, "VS8 live");
         }
 
         using (LibraDexFileSession reopened = LibraDexFileSession.Open(path, options, DataKernelTelemetryOptions.EnabledOptions))
         {
+            _ = ValidateVarKeyExactStemChain(reopened, childRouterOffset, sharedPrefixLength, 0x35, "VS8 reopen");
             byte[] lower = CreateVarKeyScalar8LongSharedPrefixKey(0, keyLength, sharedPrefixLength);
             lower.AsSpan(sharedPrefixLength).Clear();
             byte[] upper = CreateVarKeyScalar8LongSharedPrefixKey(0, keyLength, sharedPrefixLength);
@@ -21924,6 +22676,8 @@ internal static partial class RawHarness
             }
         }
 
+        ValidateScalar8Scalar8TerminalIdentityBatchAbort(path + ".terminal-abort", options);
+
         using (Scalar8Scalar8Index memory = Indexes.SS88.CreateOrOpen(
             backingKind: DataKernelBackingKind.Memory,
             name: "memory-batch",
@@ -21985,10 +22739,125 @@ internal static partial class RawHarness
         Console.WriteLine("batchCommitReopen ok");
         Console.WriteLine("batchAbort ok");
         Console.WriteLine("batchAbortReopen ok");
+        Console.WriteLine("terminalIdentityBatchAbort ok");
         Console.WriteLine("batchNestedGuard ok");
         Console.WriteLine("memoryBatchCommitAbort ok");
         Console.WriteLine($"ss8-8-batch-sanity ok path={path}");
         return 0;
+    }
+
+
+    /// <summary>
+    /// Validates that aborting a durability batch removes a staged local mutation from an existing `SS8-8` terminal-identity route.<br/>
+    /// The setup first publishes enough duplicate-key identities to force the exhausted-key representation, then stages a new lowest identity so the terminal-local prepend path updates its session caches.<br/>
+    /// Both the still-open session and a reopened session must expose exactly the original sequence after abort.<br/>
+    /// </summary>
+    /// <param name="path">The isolated file-backed proof path.<br/></param>
+    /// <param name="options">The DataKernel options shared with the surrounding batch sanity command.<br/></param>
+    private static void ValidateScalar8Scalar8TerminalIdentityBatchAbort(string path, DataKernelOptions options)
+    {
+        File.Delete(path);
+        int originalIdentityCount = Scalar8Scalar8Profile.Default32KiB.MaxItemCount + 64;
+        ulong encodedKey = Scalar8Scalar8Layout.EncodeUnsignedScalar8(42);
+        ulong firstEncodedIdentity = Scalar8Scalar8Layout.EncodeUnsignedScalar8(10_000);
+        Scalar8Scalar8IndexHandle handle;
+
+        using (Scalar8Scalar8Index index = Indexes.SS88.Create(
+            path,
+            DataKernelBackingKind.File,
+            name: "terminal-abort",
+            options: options,
+            developerMetadata: CreateDesignPerfMetadata(83),
+            telemetryOptions: DataKernelTelemetryOptions.EnabledOptions))
+        {
+            handle = index.Handle;
+            using (Scalar8Scalar8Batch setup = index.BeginBatch())
+            {
+                for (int i = 0; i < originalIdentityCount; i++)
+                {
+                    Scalar8Scalar8EncodedInsertResult insert = setup.InsertEncoded(encodedKey, firstEncodedIdentity + (ulong)i);
+                    if (insert.Outcome != Scalar8Scalar8EncodedInsertOutcome.Inserted)
+                    {
+                        throw new InvalidDataException($"Terminal batch-abort setup insert {i} returned {insert.Outcome}.");
+                    }
+                }
+
+                _ = setup.Commit();
+            }
+
+            Scalar8Scalar8RoutePathTarget terminal = index.Session.WalkScalar8Scalar8RoutePathTarget(
+                handle.RootRouterOffset,
+                encodedKey,
+                maxRouterHops: Scalar8Scalar8Layout.KeySize,
+                Scalar8Scalar8RouteReadPolicy.PreferPromotedViews);
+            if (terminal.Target.Kind != Scalar8Scalar8RouteTargetKind.TerminalIdentityRoot)
+            {
+                throw new InvalidDataException($"Terminal batch-abort setup resolved {terminal.Target.Kind} instead of TerminalIdentityRoot.");
+            }
+
+            using (Scalar8Scalar8Batch aborted = index.BeginBatch())
+            {
+                Scalar8Scalar8EncodedInsertResult insert = aborted.InsertEncoded(encodedKey, firstEncodedIdentity - 1);
+                if (insert.Outcome != Scalar8Scalar8EncodedInsertOutcome.Inserted)
+                {
+                    throw new InvalidDataException($"Terminal batch-abort staged prepend returned {insert.Outcome}.");
+                }
+
+                _ = aborted.Abort();
+            }
+
+            ValidateScalar8Scalar8TerminalIdentityBatchAbortSequence(
+                index,
+                encodedKey,
+                firstEncodedIdentity,
+                originalIdentityCount,
+                "live");
+        }
+
+        using Scalar8Scalar8Index reopened = Indexes.SS88.Open(
+            path,
+            options: options,
+            telemetryOptions: DataKernelTelemetryOptions.EnabledOptions);
+        ValidateScalar8Scalar8TerminalIdentityBatchAbortSequence(
+            reopened,
+            encodedKey,
+            firstEncodedIdentity,
+            originalIdentityCount,
+            "reopen");
+    }
+
+
+    /// <summary>
+    /// Confirms the exact surviving identity sequence for the terminal-identity durability-batch abort proof.<br/>
+    /// Exact count and ordinal checks catch both stale cache visibility and accidental durable publication of the staged prepend.<br/>
+    /// </summary>
+    /// <param name="index">The live or reopened index to inspect.<br/></param>
+    /// <param name="encodedKey">The duplicate encoded key whose route is exhausted.<br/></param>
+    /// <param name="firstEncodedIdentity">The first identity that was durably published during setup.<br/></param>
+    /// <param name="expectedCount">The number of identities published before the aborted mutation.<br/></param>
+    /// <param name="phase">A diagnostic label identifying live-session or reopen validation.<br/></param>
+    private static void ValidateScalar8Scalar8TerminalIdentityBatchAbortSequence(
+        Scalar8Scalar8Index index,
+        ulong encodedKey,
+        ulong firstEncodedIdentity,
+        int expectedCount,
+        string phase)
+    {
+        ulong[] identities = new ulong[expectedCount + 2];
+        Scalar8Scalar8EncodedRangeReadResult read = index.ReadEncodedRange(encodedKey, encodedKey, identities);
+        if (read.IdentityCount != expectedCount)
+        {
+            throw new InvalidDataException($"Terminal batch-abort {phase} count was {read.IdentityCount}; expected {expectedCount}.");
+        }
+
+        for (int i = 0; i < expectedCount; i++)
+        {
+            ulong expectedIdentity = firstEncodedIdentity + (ulong)i;
+            if (identities[i] != expectedIdentity)
+            {
+                throw new InvalidDataException($"Terminal batch-abort {phase} ordinal {i} was {identities[i]}; expected {expectedIdentity}.");
+            }
+        }
     }
 
 
@@ -22029,8 +22898,8 @@ internal static partial class RawHarness
         ulong[] identities = new ulong[rangeLength];
         byte[] shelfBuffer = new byte[profile.ShelfExtentSize];
 
-        Scalar8Scalar8RangeScoopPerfResult uncached = MeasureScalar8Scalar8RangeScoopScenario(
-            "same-shelf uncached",
+        Scalar8Scalar8RangeScoopPerfResult promoted = MeasureScalar8Scalar8RangeScoopScenario(
+            "same-shelf promoted",
             session,
             setup.RootRouterOffset,
             profile,
@@ -22038,7 +22907,7 @@ internal static partial class RawHarness
             upperKey,
             iterations,
             rangeLength,
-            Scalar8Scalar8RouteReadPolicy.Uncached,
+            Scalar8Scalar8RouteReadPolicy.PreferPromotedViews,
             identities,
             shelfBuffer,
             validationKind: 0);
@@ -22062,8 +22931,8 @@ internal static partial class RawHarness
         const int crossRangeLength = 41;
         ulong[] crossIdentities = new ulong[crossRangeLength];
 
-        Scalar8Scalar8RangeScoopPerfResult crossUncached = MeasureScalar8Scalar8RangeScoopScenario(
-            "cross-shelf uncached",
+        Scalar8Scalar8RangeScoopPerfResult crossPromoted = MeasureScalar8Scalar8RangeScoopScenario(
+            "cross-shelf promoted",
             session,
             setup.RootRouterOffset,
             profile,
@@ -22071,7 +22940,7 @@ internal static partial class RawHarness
             crossUpperKey,
             iterations,
             crossRangeLength,
-            Scalar8Scalar8RouteReadPolicy.Uncached,
+            Scalar8Scalar8RouteReadPolicy.PreferPromotedViews,
             crossIdentities,
             shelfBuffer,
             validationKind: 1);
@@ -22111,8 +22980,8 @@ internal static partial class RawHarness
         ulong[] traversalIdentitiesBuffer = new ulong[traversalRangeLength];
         byte[] traversalCoalesceBuffer = new byte[profile.ShelfExtentSize * 4];
 
-        Scalar8Scalar8RangeScoopPerfResult traversalUncached = MeasureScalar8Scalar8RangeScoopScenario(
-            "traversal uncached",
+        Scalar8Scalar8RangeScoopPerfResult traversalPromoted = MeasureScalar8Scalar8RangeScoopScenario(
+            "traversal promoted",
             session,
             traversalRoot.Offset,
             profile,
@@ -22120,7 +22989,7 @@ internal static partial class RawHarness
             traversalUpperKey,
             iterations,
             traversalRangeLength,
-            Scalar8Scalar8RouteReadPolicy.Uncached,
+            Scalar8Scalar8RouteReadPolicy.PreferPromotedViews,
             traversalIdentitiesBuffer,
             shelfBuffer,
             validationKind: 2);
@@ -22167,7 +23036,7 @@ internal static partial class RawHarness
             traversalIdentitiesBuffer,
             validationKind: 2);
 
-        Scalar8Scalar8RangeScoopPerfResult[] results = [uncached, cached, crossUncached, crossCached, traversalUncached, traversalCached, traversalApiCoalescingCached, traversalPooledCoalescingCached];
+        Scalar8Scalar8RangeScoopPerfResult[] results = [promoted, cached, crossPromoted, crossCached, traversalPromoted, traversalCached, traversalApiCoalescingCached, traversalPooledCoalescingCached];
         Console.WriteLine("ss8-8 range scoop perf");
         Console.WriteLine($"iterations {iterations}");
         Console.WriteLine($"rangeLength {rangeLength}");
@@ -22254,8 +23123,8 @@ internal static partial class RawHarness
         byte[] shelfBuffer = new byte[profile.ShelfExtentSize];
         byte[] coalesceBuffer = new byte[checked(profile.ShelfExtentSize * Math.Min(coalesceShelves, shelfCount))];
 
-        Scalar8Scalar8RangeScoopPerfResult uncached = MeasureScalar8Scalar8RangeScoopScenario(
-            "wide-root uncached",
+        Scalar8Scalar8RangeScoopPerfResult promoted = MeasureScalar8Scalar8RangeScoopScenario(
+            "wide-root promoted",
             session,
             root.Offset,
             profile,
@@ -22263,13 +23132,13 @@ internal static partial class RawHarness
             upperKey,
             iterations,
             expectedCount,
-            Scalar8Scalar8RouteReadPolicy.Uncached,
+            Scalar8Scalar8RouteReadPolicy.PreferPromotedViews,
             output,
             shelfBuffer,
             validationKind: 3);
 
-        Scalar8Scalar8RangeScoopPerfResult coalescedUncached = MeasureScalar8Scalar8RangeScoopCoalescedScenario(
-            "wide-root coalesced uncached",
+        Scalar8Scalar8RangeScoopPerfResult coalescedPromoted = MeasureScalar8Scalar8RangeScoopCoalescedScenario(
+            "wide-root coalesced promoted",
             session,
             root.Offset,
             profile,
@@ -22277,7 +23146,7 @@ internal static partial class RawHarness
             upperKey,
             iterations,
             expectedCount,
-            Scalar8Scalar8RouteReadPolicy.Uncached,
+            Scalar8Scalar8RouteReadPolicy.PreferPromotedViews,
             output,
             coalesceBuffer,
             validationKind: 3);
@@ -22328,7 +23197,7 @@ internal static partial class RawHarness
             output,
             validationKind: 3);
 
-        Scalar8Scalar8RangeScoopPerfResult[] results = [uncached, coalescedUncached, coalescedCached, apiCoalescedCached, pooledCoalescedCached];
+        Scalar8Scalar8RangeScoopPerfResult[] results = [promoted, coalescedPromoted, coalescedCached, apiCoalescedCached, pooledCoalescedCached];
         Console.WriteLine("ss8-8 wide range scoop perf");
         Console.WriteLine($"iterations {iterations}");
         Console.WriteLine($"shelfCount {shelfCount}");
@@ -22434,8 +23303,8 @@ internal static partial class RawHarness
         ulong wideUpperKey = ((ulong)(byte)(startPrefix + wideShelfCount - 1) << 56) + (ulong)(wideItemsPerShelf - 1);
         ulong[] wideOutput = new ulong[wideRangeLength];
         byte[] coalesceBuffer = new byte[checked(profile.ShelfExtentSize * wideShelfCount)];
-        Scalar8Scalar8RangeScoopPerfResult wideUncached = MeasureScalar8Scalar8RangeScoopScenario(
-            "wide-root uncached",
+        Scalar8Scalar8RangeScoopPerfResult widePromoted = MeasureScalar8Scalar8RangeScoopScenario(
+            "wide-root promoted",
             session,
             wideRoot.Offset,
             profile,
@@ -22443,7 +23312,7 @@ internal static partial class RawHarness
             wideUpperKey,
             wideIterations,
             wideRangeLength,
-            Scalar8Scalar8RouteReadPolicy.Uncached,
+            Scalar8Scalar8RouteReadPolicy.PreferPromotedViews,
             wideOutput,
             shelfBuffer,
             validationKind: 3);
@@ -22462,7 +23331,7 @@ internal static partial class RawHarness
             coalesceBuffer,
             validationKind: 3);
 
-        Scalar8Scalar8RangeScoopPerfResult[] readResults = [sameCached, wideUncached, wideCoalesced];
+        Scalar8Scalar8RangeScoopPerfResult[] readResults = [sameCached, widePromoted, wideCoalesced];
         string reportPath = WriteScalar8Scalar8NormalizedCheckpointReport(artifactDirectory, writeRuns, smallIterations, wideIterations, profile, writeResults, readResults);
         Console.WriteLine("ss8-8 normalized checkpoint");
         Console.WriteLine($"writeRuns {writeRuns:N0}");
@@ -31474,24 +32343,24 @@ internal static partial class RawHarness
             };
             LibraDexConditionEndCondition fixedCondition = LibraDexCondition
                 .ForGroup("people")
-                .Index("score").AsBigInteger.Between(new BigInteger(-10), new BigInteger(10))
+                .Index("score").AsBigInt.Between(new BigInteger(-10), new BigInteger(10))
                 .EndCondition;
             LibraDexConditionEndCondition fixedMembershipCondition = LibraDexCondition
                 .ForGroup("people")
-                .Index("score").AsBigInteger.InSet(new[] { BigInteger.Zero, huge })
+                .Index("score").AsBigInt.InSet(new[] { BigInteger.Zero, huge })
                 .EndCondition;
             LibraDexConditionEndCondition fixedRoutedCondition = LibraDexCondition
                 .ForGroup("people")
-                .Index("scoreRouted").AsBigInteger.GreaterOrEqual(new BigInteger(2997))
+                .Index("scoreRouted").AsBigInt.GreaterOrEqual(new BigInteger(2997))
                 .EndCondition;
             LibraDexConditionEndCondition varCondition = LibraDexCondition
                 .ForGroup("people")
-                .Index("scoreVar").AsBigInteger.GreaterThan(new BigInteger(-10))
-                .AND.Index("scoreVar").AsBigInteger.LessThan(new BigInteger(10))
+                .Index("scoreVar").AsBigInt.GreaterThan(new BigInteger(-10))
+                .AND.Index("scoreVar").AsBigInt.LessThan(new BigInteger(10))
                 .EndCondition;
             LibraDexConditionEndCondition varIdentityCondition = LibraDexCondition
                 .ForGroup("people")
-                .Index("scoreVarIdentity").AsBigInteger.Between(new BigInteger(1498), new BigInteger(1499))
+                .Index("scoreVarIdentity").AsBigInt.Between(new BigInteger(1498), new BigInteger(1499))
                 .EndCondition;
 
             long[] fixedConditionIds = fixedCondition.ToList<long>(bigIntResolver, deduplication: IdentityDeduplication.Preserve).Order().ToArray();
@@ -31664,14 +32533,14 @@ internal static partial class RawHarness
             };
             long[] reopenedConditionIds = LibraDexCondition
                 .ForGroup("people")
-                .Index("score").AsBigInteger.Between(new BigInteger(-10), new BigInteger(10))
+                .Index("score").AsBigInt.Between(new BigInteger(-10), new BigInteger(10))
                 .EndCondition
                 .ToList<long>(reopenedBigIntResolver, deduplication: IdentityDeduplication.Preserve)
                 .Order()
                 .ToArray();
             IReadOnlyList<byte[]> reopenedVarIdentityConditionIds = LibraDexCondition
                 .ForGroup("people")
-                .Index("scoreVarIdentity").AsBigInteger.EqualTo(new BigInteger(1500))
+                .Index("scoreVarIdentity").AsBigInt.EqualTo(new BigInteger(1500))
                 .EndCondition
                 .ToList<byte[]>(reopenedBigIntResolver, deduplication: IdentityDeduplication.Preserve);
             if (!reopenedConditionIds.SequenceEqual(new[] { 22L, 23L, 24L }) ||
@@ -33257,5 +34126,1241 @@ internal static partial class RawHarness
 
 
     private readonly record struct AllShapeReadRangeCase(string Name, int LowerPrefix, int UpperPrefix);
+
+
+    /// <summary>
+    /// Validates offset-to-end binary string slices and contiguous structured-date grammar over typed binary slices.<br/>
+    /// The fixture covers inclusive year boundaries, DateOnly quarter expansion, UTF-8 and UTF-16 remainder matching, retained bounded matching, strict invalid UTF-8 rejection, explicit .NET replacement fallback, and caller-encoded remainder equality.<br/>
+    /// </summary>
+    private static void ValidateBinarySliceRemainderAndDateGrammar()
+    {
+        using Catalog catalog = Catalog.CreateMemory();
+        LibraDexIndex<byte[], long> dateIndex = catalog.Indexes["binary-slice-grammar"]["date"].Blob.Scalar<long>(LibraDexScalarWidth.Bytes32).Create();
+        LibraDexIndex<byte[], long> dateOnlyIndex = catalog.Indexes["binary-slice-grammar"]["dateOnly"].Blob.Scalar<long>(LibraDexScalarWidth.Bytes32).Create();
+        LibraDexIndex<byte[], long> utf8Index = catalog.Indexes["binary-slice-grammar"]["utf8"].Blob.Scalar<long>(LibraDexScalarWidth.Bytes32).Create();
+        LibraDexIndex<byte[], long> utf16Index = catalog.Indexes["binary-slice-grammar"]["utf16"].Blob.Scalar<long>(LibraDexScalarWidth.Bytes32).Create();
+        LibraDexIndex<byte[], long> customIndex = catalog.Indexes["binary-slice-grammar"]["custom"].Blob.Scalar<long>(LibraDexScalarWidth.Bytes32).Create();
+        LibraDexIndex<byte[], long> dateVariantsIndex = catalog.Indexes["binary-slice-grammar"]["dateVariants"].Blob.Scalar<long>(LibraDexScalarWidth.Bytes32).Create();
+        LibraDexIndex<byte[], long> dateOnlyVariantsIndex = catalog.Indexes["binary-slice-grammar"]["dateOnlyVariants"].Blob.Scalar<long>(LibraDexScalarWidth.Bytes32).Create();
+        LibraDexIndex<byte[], long> timeOnlyVariantsIndex = catalog.Indexes["binary-slice-grammar"]["timeOnlyVariants"].Blob.Scalar<long>(LibraDexScalarWidth.Bytes32).Create();
+        LibraDexIndex<byte[], long> dateTimeOffsetVariantsIndex = catalog.Indexes["binary-slice-grammar"]["dateTimeOffsetVariants"].Blob.Scalar<long>(LibraDexScalarWidth.Bytes32).Create();
+        LibraDexIndex<byte[], long> timeSpanVariantsIndex = catalog.Indexes["binary-slice-grammar"]["timeSpanVariants"].Blob.Scalar<long>(LibraDexScalarWidth.Bytes16).Create();
+
+        byte[] dateStart = new byte[32];
+        byte[] dateEnd = new byte[32];
+        byte[] dateNext = new byte[32];
+        BinaryPrimitives.WriteInt64LittleEndian(dateStart.AsSpan(20, 8), new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc).Ticks);
+        BinaryPrimitives.WriteInt64LittleEndian(dateEnd.AsSpan(20, 8), new DateTime(2027, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddTicks(-1).Ticks);
+        BinaryPrimitives.WriteInt64LittleEndian(dateNext.AsSpan(20, 8), new DateTime(2027, 1, 1, 0, 0, 0, DateTimeKind.Utc).Ticks);
+        ValidateGenericInsert(dateIndex.Insert(dateStart, 1L), "binary slice year-start insert");
+        ValidateGenericInsert(dateIndex.Insert(dateEnd, 2L), "binary slice year-end insert");
+        ValidateGenericInsert(dateIndex.Insert(dateNext, 3L), "binary slice next-year insert");
+
+        byte[] dateOnlyQ2 = new byte[32];
+        byte[] dateOnlyQ3 = new byte[32];
+        BinaryPrimitives.WriteInt32LittleEndian(dateOnlyQ2.AsSpan(24, 4), new DateOnly(2026, 6, 30).DayNumber);
+        BinaryPrimitives.WriteInt32LittleEndian(dateOnlyQ3.AsSpan(24, 4), new DateOnly(2026, 7, 1).DayNumber);
+        ValidateGenericInsert(dateOnlyIndex.Insert(dateOnlyQ2, 4L), "binary DateOnly Q2 insert");
+        ValidateGenericInsert(dateOnlyIndex.Insert(dateOnlyQ3, 5L), "binary DateOnly Q3 insert");
+
+        byte[] utf8Prefix = new byte[32];
+        byte[] utf8NonPrefix = new byte[32];
+        byte[] invalidUtf8 = new byte[32];
+        utf8Prefix.AsSpan().Fill((byte)' ');
+        utf8NonPrefix.AsSpan().Fill((byte)' ');
+        invalidUtf8.AsSpan().Fill((byte)' ');
+        _ = Encoding.UTF8.GetBytes("ABC remainder", utf8Prefix.AsSpan(4));
+        _ = Encoding.UTF8.GetBytes("xABC remainder", utf8NonPrefix.AsSpan(4));
+        invalidUtf8[4] = 0xFF;
+        ValidateGenericInsert(utf8Index.Insert(utf8Prefix, 10L), "UTF-8 remainder prefix insert");
+        ValidateGenericInsert(utf8Index.Insert(utf8NonPrefix, 11L), "UTF-8 remainder non-prefix insert");
+        ValidateGenericInsert(utf8Index.Insert(invalidUtf8, 12L), "invalid UTF-8 remainder insert");
+
+        byte[] utf16Contains = new byte[32];
+        _ = Encoding.Unicode.GetBytes("xxerrorxxxx", utf16Contains.AsSpan(10));
+        ValidateGenericInsert(utf16Index.Insert(utf16Contains, 20L), "UTF-16 remainder contains insert");
+
+        byte[] customText = new byte[32];
+        _ = Encoding.BigEndianUnicode.GetBytes("ZX", customText.AsSpan(28));
+        ValidateGenericInsert(customIndex.Insert(customText, 30L), "custom-encoding remainder insert");
+
+        DateTime dateVariantValue = new(2026, 9, 17, 13, 14, 15, 321, DateTimeKind.Utc);
+        dateVariantValue = dateVariantValue.AddTicks(4_567);
+        byte[] dateVariants = new byte[32];
+        BinaryPrimitives.WriteUInt64BigEndian(dateVariants.AsSpan(0, 8), LibraDexTemporalScalarCodec.Encode(dateVariantValue, DateTimeKeyEncoding.CalendarSdt));
+        BinaryPrimitives.WriteUInt64BigEndian(dateVariants.AsSpan(8, 8), LibraDexTemporalScalarCodec.Encode(dateVariantValue, DateTimeKeyEncoding.PrecisionSdt));
+        BinaryPrimitives.WriteInt64LittleEndian(dateVariants.AsSpan(16, 8), dateVariantValue.Ticks);
+        ValidateGenericInsert(dateVariantsIndex.Insert(dateVariants, 101L), "binary DateTime representation insert");
+
+        DateOnly dateOnlyVariantValue = new(2026, 9, 17);
+        byte[] dateOnlyVariants = new byte[32];
+        BinaryPrimitives.WriteUInt64BigEndian(dateOnlyVariants.AsSpan(0, 8), LibraDexTemporalScalarCodec.Encode(dateOnlyVariantValue, DateTimeKeyEncoding.CalendarSdt));
+        BinaryPrimitives.WriteUInt64BigEndian(dateOnlyVariants.AsSpan(8, 8), LibraDexTemporalScalarCodec.Encode(dateOnlyVariantValue, DateTimeKeyEncoding.PrecisionSdt));
+        BinaryPrimitives.WriteInt32LittleEndian(dateOnlyVariants.AsSpan(16, 4), dateOnlyVariantValue.DayNumber);
+        ValidateGenericInsert(dateOnlyVariantsIndex.Insert(dateOnlyVariants, 102L), "binary DateOnly representation insert");
+
+        TimeOnly timeOnlyVariantValue = new(13, 14, 15, 321);
+        timeOnlyVariantValue = timeOnlyVariantValue.Add(TimeSpan.FromTicks(4_567));
+        byte[] timeOnlyVariants = new byte[32];
+        BinaryPrimitives.WriteUInt64BigEndian(timeOnlyVariants.AsSpan(0, 8), LibraDexTemporalScalarCodec.Encode(timeOnlyVariantValue, DateTimeKeyEncoding.CalendarSdt));
+        BinaryPrimitives.WriteUInt64BigEndian(timeOnlyVariants.AsSpan(8, 8), LibraDexTemporalScalarCodec.Encode(timeOnlyVariantValue, DateTimeKeyEncoding.PrecisionSdt));
+        BinaryPrimitives.WriteInt64LittleEndian(timeOnlyVariants.AsSpan(16, 8), timeOnlyVariantValue.Ticks);
+        ValidateGenericInsert(timeOnlyVariantsIndex.Insert(timeOnlyVariants, 103L), "binary TimeOnly representation insert");
+
+        DateTimeOffset dateTimeOffsetVariantValue = new(2026, 9, 17, 13, 14, 15, 321, TimeSpan.FromHours(-7));
+        dateTimeOffsetVariantValue = dateTimeOffsetVariantValue.AddTicks(4_567);
+        byte[] dateTimeOffsetVariants = new byte[32];
+        BinaryPrimitives.WriteUInt64BigEndian(dateTimeOffsetVariants.AsSpan(0, 8), LibraDexTemporalScalarCodec.Encode(dateTimeOffsetVariantValue, DateTimeKeyEncoding.CalendarSdt));
+        BinaryPrimitives.WriteUInt64BigEndian(dateTimeOffsetVariants.AsSpan(8, 8), LibraDexTemporalScalarCodec.Encode(dateTimeOffsetVariantValue, DateTimeKeyEncoding.PrecisionSdt));
+        BinaryPrimitives.WriteInt64LittleEndian(dateTimeOffsetVariants.AsSpan(16, 8), dateTimeOffsetVariantValue.Ticks);
+        BinaryPrimitives.WriteInt64LittleEndian(dateTimeOffsetVariants.AsSpan(24, 8), dateTimeOffsetVariantValue.Offset.Ticks);
+        ValidateGenericInsert(dateTimeOffsetVariantsIndex.Insert(dateTimeOffsetVariants, 104L), "binary DateTimeOffset representation insert");
+
+        TimeSpan timeSpanVariantValue = TimeSpan.FromDays(-2) + TimeSpan.FromTicks(4_567);
+        byte[] timeSpanVariants = new byte[16];
+        BinaryPrimitives.WriteUInt64BigEndian(timeSpanVariants.AsSpan(0, 8), unchecked((ulong)(timeSpanVariantValue.Ticks ^ long.MinValue)));
+        BinaryPrimitives.WriteInt64LittleEndian(timeSpanVariants.AsSpan(8, 8), timeSpanVariantValue.Ticks);
+        ValidateGenericInsert(timeSpanVariantsIndex.Insert(timeSpanVariants, 105L), "binary TimeSpan representation insert");
+
+        IReadOnlyDictionary<string, IIndex> indexes = new Dictionary<string, IIndex>(StringComparer.Ordinal)
+        {
+            ["date"] = dateIndex,
+            ["dateOnly"] = dateOnlyIndex,
+            ["utf8"] = utf8Index,
+            ["utf16"] = utf16Index,
+            ["custom"] = customIndex,
+            ["dateVariants"] = dateVariantsIndex,
+            ["dateOnlyVariants"] = dateOnlyVariantsIndex,
+            ["timeOnlyVariants"] = timeOnlyVariantsIndex,
+            ["dateTimeOffsetVariants"] = dateTimeOffsetVariantsIndex,
+            ["timeSpanVariants"] = timeSpanVariantsIndex
+        };
+        IReadOnlyList<long> yearIds = LibraDexCondition.ForGroup("binary-slice-grammar")
+            .Index("date").AsBinary.SlicedAsDateTime(20, Coercion.DateTime.DotNetTicks).YearEqualTo(2026)
+            .EndCondition.Materialize(indexes).IDs.ToList<long>();
+        IReadOnlyList<long> dateOnlyIds = LibraDexCondition.ForGroup("binary-slice-grammar")
+            .Index("dateOnly").AsBinary.SlicedAsDateOnly(24, Coercion.DateOnly.DotNetDayNumber).YearQuarter(2026, 2)
+            .EndCondition.Materialize(indexes).IDs.ToList<long>();
+        IReadOnlyList<long> utf8RemainderIds = LibraDexCondition.ForGroup("binary-slice-grammar")
+            .Index("utf8").AsBinary.SlicedAsUtf8String(4).StartsWith("ABC")
+            .EndCondition.Materialize(indexes).IDs.ToList<long>();
+        IReadOnlyList<long> utf8BoundedIds = LibraDexCondition.ForGroup("binary-slice-grammar")
+            .Index("utf8").AsBinary.SlicedAsUtf8String(4, 3).EqualTo("ABC")
+            .EndCondition.Materialize(indexes).IDs.ToList<long>();
+        IReadOnlyList<long> invalidUtf8Ids = LibraDexCondition.ForGroup("binary-slice-grammar")
+            .Index("utf8").AsBinary.SlicedAsUtf8String(4).Contains("\uFFFD")
+            .EndCondition.Materialize(indexes).IDs.ToList<long>();
+        IReadOnlyList<long> replacementUtf8Ids = LibraDexCondition.ForGroup("binary-slice-grammar")
+            .Index("utf8").AsBinary.SlicedAsUtf8String(4, 28, Coercion.Text.DotNetReplacement).Contains("\uFFFD")
+            .EndCondition.Materialize(indexes).IDs.ToList<long>();
+        IReadOnlyList<long> utf16RemainderIds = LibraDexCondition.ForGroup("binary-slice-grammar")
+            .Index("utf16").AsBinary.SlicedAsUtf16String(10).Contains("error")
+            .EndCondition.Materialize(indexes).IDs.ToList<long>();
+        IReadOnlyList<long> customRemainderIds = LibraDexCondition.ForGroup("binary-slice-grammar")
+            .Index("custom").AsBinary.SlicedAsEncodedString(28, Encoding.BigEndianUnicode).EqualTo("ZX")
+            .EndCondition.Materialize(indexes).IDs.ToList<long>();
+        LibraDexTextEncoding stableBigEndianUnicode = LibraDexTextEncoding.ForCodePage(
+            Encoding.BigEndianUnicode.CodePage,
+            Coercion.Text.DotNetReplacement);
+        IReadOnlyList<long> stableCustomRemainderIds = LibraDexCondition.ForGroup("binary-slice-grammar")
+            .Index("custom").AsBinary.SlicedAsEncodedString(28, stableBigEndianUnicode).EqualTo("ZX")
+            .EndCondition.Materialize(indexes).IDs.ToList<long>();
+        if (!LibraDexTextEncoding.TryFrom(Encoding.BigEndianUnicode, out LibraDexTextEncoding recognizedBigEndianUnicode) ||
+            recognizedBigEndianUnicode.CodePage != Encoding.BigEndianUnicode.CodePage ||
+            recognizedBigEndianUnicode.Coercion != Coercion.Text.DotNetReplacement ||
+            !recognizedBigEndianUnicode.Encode("ZX").AsSpan().SequenceEqual(customText.AsSpan(28, 4)) ||
+            recognizedBigEndianUnicode.Decode(customText.AsSpan(28, 4)) != "ZX")
+        {
+            throw new InvalidOperationException("Stable text-encoding recognition or conversion did not reproduce registered UTF-16BE behavior.");
+        }
+
+        byte[] malformedBigEndianUnicode = { 0xD8, 0x00 };
+        bool strictRejectedMalformed = false;
+        try
+        {
+            _ = LibraDexTextEncoding.ForCodePage(
+                Encoding.BigEndianUnicode.CodePage,
+                Coercion.Text.Strict).Decode(malformedBigEndianUnicode);
+        }
+        catch (DecoderFallbackException)
+        {
+            strictRejectedMalformed = true;
+        }
+
+        if (!strictRejectedMalformed ||
+            !stableBigEndianUnicode.Decode(malformedBigEndianUnicode).Contains("\uFFFD", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Stable text-encoding strict and replacement coercions did not remain distinct.");
+        }
+        IReadOnlyList<long> dateCalendarIds = LibraDexCondition.ForGroup("binary-slice-grammar")
+            .Index("dateVariants").AsBinary.SlicedAsDateTime(0, Coercion.DateTime.LibraDexCalendarSdt).YearEqualTo(2026)
+            .EndCondition.Materialize(indexes).IDs.ToList<long>();
+        IReadOnlyList<long> datePrecisionIds = LibraDexCondition.ForGroup("binary-slice-grammar")
+            .Index("dateVariants").AsBinary.SlicedAsDateTime(8, Coercion.DateTime.LibraDexPrecisionSdt).EqualTo(dateVariantValue)
+            .EndCondition.Materialize(indexes).IDs.ToList<long>();
+        IReadOnlyList<long> dateTicksIds = LibraDexCondition.ForGroup("binary-slice-grammar")
+            .Index("dateVariants").AsBinary.SlicedAsDateTime(16, Coercion.DateTime.DotNetTicks).EqualTo(dateVariantValue)
+            .EndCondition.Materialize(indexes).IDs.ToList<long>();
+        IReadOnlyList<long> dateOnlyCalendarIds = LibraDexCondition.ForGroup("binary-slice-grammar")
+            .Index("dateOnlyVariants").AsBinary.SlicedAsDateOnly(0, Coercion.DateOnly.LibraDexCalendarSdt).EqualTo(dateOnlyVariantValue)
+            .EndCondition.Materialize(indexes).IDs.ToList<long>();
+        IReadOnlyList<long> dateOnlyPrecisionIds = LibraDexCondition.ForGroup("binary-slice-grammar")
+            .Index("dateOnlyVariants").AsBinary.SlicedAsDateOnly(8, Coercion.DateOnly.LibraDexPrecisionSdt).EqualTo(dateOnlyVariantValue)
+            .EndCondition.Materialize(indexes).IDs.ToList<long>();
+        IReadOnlyList<long> dateOnlyDayNumberIds = LibraDexCondition.ForGroup("binary-slice-grammar")
+            .Index("dateOnlyVariants").AsBinary.SlicedAsDateOnly(16, Coercion.DateOnly.DotNetDayNumber).EqualTo(dateOnlyVariantValue)
+            .EndCondition.Materialize(indexes).IDs.ToList<long>();
+        IReadOnlyList<long> timeOnlyCalendarIds = LibraDexCondition.ForGroup("binary-slice-grammar")
+            .Index("timeOnlyVariants").AsBinary.SlicedAsTimeOnly(0, Coercion.TimeOnly.LibraDexCalendarSdt).EqualTo(timeOnlyVariantValue)
+            .EndCondition.Materialize(indexes).IDs.ToList<long>();
+        IReadOnlyList<long> timeOnlyPrecisionIds = LibraDexCondition.ForGroup("binary-slice-grammar")
+            .Index("timeOnlyVariants").AsBinary.SlicedAsTimeOnly(8, Coercion.TimeOnly.LibraDexPrecisionSdt).EqualTo(timeOnlyVariantValue)
+            .EndCondition.Materialize(indexes).IDs.ToList<long>();
+        IReadOnlyList<long> timeOnlyTicksIds = LibraDexCondition.ForGroup("binary-slice-grammar")
+            .Index("timeOnlyVariants").AsBinary.SlicedAsTimeOnly(16, Coercion.TimeOnly.DotNetTicks).EqualTo(timeOnlyVariantValue)
+            .EndCondition.Materialize(indexes).IDs.ToList<long>();
+        DateTimeOffset utcEquivalent = dateTimeOffsetVariantValue.ToUniversalTime();
+        IReadOnlyList<long> dateTimeOffsetCalendarIds = LibraDexCondition.ForGroup("binary-slice-grammar")
+            .Index("dateTimeOffsetVariants").AsBinary.SlicedAsDateTimeOffset(0, Coercion.DateTimeOffset.LibraDexCalendarSdtUtc).EqualTo(utcEquivalent)
+            .EndCondition.Materialize(indexes).IDs.ToList<long>();
+        IReadOnlyList<long> dateTimeOffsetPrecisionIds = LibraDexCondition.ForGroup("binary-slice-grammar")
+            .Index("dateTimeOffsetVariants").AsBinary.SlicedAsDateTimeOffset(8, Coercion.DateTimeOffset.LibraDexPrecisionSdtUtc).EqualTo(utcEquivalent)
+            .EndCondition.Materialize(indexes).IDs.ToList<long>();
+        IReadOnlyList<long> dateTimeOffsetPairIds = LibraDexCondition.ForGroup("binary-slice-grammar")
+            .Index("dateTimeOffsetVariants").AsBinary.SlicedAsDateTimeOffset(16, Coercion.DateTimeOffset.DotNetTicksAndOffset).EqualTo(utcEquivalent)
+            .EndCondition.Materialize(indexes).IDs.ToList<long>();
+        IReadOnlyList<long> timeSpanOrderedIds = LibraDexCondition.ForGroup("binary-slice-grammar")
+            .Index("timeSpanVariants").AsBinary.SlicedAsTimeSpan(0, Coercion.TimeSpan.LibraDexOrderedTicks).EqualTo(timeSpanVariantValue)
+            .EndCondition.Materialize(indexes).IDs.ToList<long>();
+        IReadOnlyList<long> timeSpanTicksIds = LibraDexCondition.ForGroup("binary-slice-grammar")
+            .Index("timeSpanVariants").AsBinary.SlicedAsTimeSpan(8, Coercion.TimeSpan.DotNetTicks).EqualTo(timeSpanVariantValue)
+            .EndCondition.Materialize(indexes).IDs.ToList<long>();
+
+        _ = LibraDexCondition.ForGroup("binary-slice-grammar").Index("utf8").AsBinary.SlicedAsLatin1String(4).Contains("ABC");
+        _ = LibraDexCondition.ForGroup("binary-slice-grammar").Index("utf8").AsBinary.SlicedAsAsciiString(4).StartsWith("ABC");
+        _ = LibraDexCondition.ForGroup("binary-slice-grammar").Index("utf8").AsBinary.SlicedAsUtf32String(4).EqualTo("ABC");
+
+        if (yearIds.Count != 2 ||
+            !yearIds.Contains(1L) ||
+            !yearIds.Contains(2L) ||
+            dateOnlyIds.Count != 1 ||
+            dateOnlyIds[0] != 4L ||
+            utf8RemainderIds.Count != 1 ||
+            utf8RemainderIds[0] != 10L ||
+            utf8BoundedIds.Count != 1 ||
+            utf8BoundedIds[0] != 10L ||
+            invalidUtf8Ids.Count != 0 ||
+            replacementUtf8Ids.Count != 1 ||
+            replacementUtf8Ids[0] != 12L ||
+            utf16RemainderIds.Count != 1 ||
+            utf16RemainderIds[0] != 20L ||
+            customRemainderIds.Count != 1 ||
+            customRemainderIds[0] != 30L ||
+            stableCustomRemainderIds.Count != 1 ||
+            stableCustomRemainderIds[0] != 30L ||
+            !HasOnlyIdentity(dateCalendarIds, 101L) ||
+            !HasOnlyIdentity(datePrecisionIds, 101L) ||
+            !HasOnlyIdentity(dateTicksIds, 101L) ||
+            !HasOnlyIdentity(dateOnlyCalendarIds, 102L) ||
+            !HasOnlyIdentity(dateOnlyPrecisionIds, 102L) ||
+            !HasOnlyIdentity(dateOnlyDayNumberIds, 102L) ||
+            !HasOnlyIdentity(timeOnlyCalendarIds, 103L) ||
+            !HasOnlyIdentity(timeOnlyPrecisionIds, 103L) ||
+            !HasOnlyIdentity(timeOnlyTicksIds, 103L) ||
+            !HasOnlyIdentity(dateTimeOffsetCalendarIds, 104L) ||
+            !HasOnlyIdentity(dateTimeOffsetPrecisionIds, 104L) ||
+            !HasOnlyIdentity(dateTimeOffsetPairIds, 104L) ||
+            !HasOnlyIdentity(timeSpanOrderedIds, 105L) ||
+            !HasOnlyIdentity(timeSpanTicksIds, 105L))
+        {
+            throw new InvalidDataException("Binary slice remainder or structured-date grammar did not preserve the expected boundaries and encoded-text semantics.");
+        }
+    }
+
+    /// <summary>
+    /// Confirms that one focused condition returned exactly the expected identity.<br/>
+    /// Keeping the assertion shape shared makes the temporal representation matrix readable while still rejecting missing, duplicate, or unexpected results.<br/>
+    /// </summary>
+    /// <param name="identities">The identities materialized by one focused condition.</param>
+    /// <param name="expectedIdentity">The sole identity expected from that condition.</param>
+    /// <returns><see langword="true"/> only when the result contains exactly the expected identity.</returns>
+    private static bool HasOnlyIdentity(IReadOnlyList<long> identities, long expectedIdentity)
+    {
+        return identities.Count == 1 && identities[0] == expectedIdentity;
+    }
+
+    /// <summary>
+    /// Validates direct key, identity, and entry checks together with execution-time condition existence grammar.<br/>
+    /// The fixture deliberately exercises duplicate candidates, caller-owned result spans, bounded readers, a missing transient index guard, strict unguarded resolution, and lazy inverse completion so the low-friction surface cannot hide planner regressions.<br/>
+    /// </summary>
+    private static void ValidateIndexExistenceAndGuardCoverage()
+    {
+        using Catalog catalog = Catalog.CreateMemory();
+        CatalogIdentityGroupIndexes users = catalog.IndexSet("existence-users");
+        using LibraDexStringScalar8Index roles = users["roles"].String.Create(StringKeys.Exact);
+        using LibraDexStringScalar8Index createOnOpen = users["create-on-open"].String.Create(
+            StringKeys.Exact,
+            identityLookupMode: IdentityLookupMode.CreateOnOpen);
+        if (createOnOpen.IdentityLookup.Mode != IdentityLookupMode.CreateOnOpen ||
+            createOnOpen.IdentityLookup.State != IdentityLookupState.Partial)
+        {
+            throw new InvalidDataException("The create-time CreateOnOpen policy did not prepare a partial session-local inversion.");
+        }
+
+        using LibraDexStringScalar8Index buildOnOpenSeed = users["build-on-open"].String.Create(StringKeys.Exact);
+        ValidateGenericInsert(buildOnOpenSeed.Insert("seed", 91UL), "build-on-open seed insert");
+        using LibraDexStringScalar8Index buildOnOpen = users["build-on-open"].String.Open(
+            identityLookupMode: IdentityLookupMode.BuildOnOpen);
+        if (buildOnOpen.IdentityLookup.Mode != IdentityLookupMode.BuildOnOpen ||
+            buildOnOpen.IdentityLookup.State != IdentityLookupState.Complete ||
+            !buildOnOpen.Identities.Exists(91UL))
+        {
+            throw new InvalidDataException("The blocking BuildOnOpen policy did not return a completely populated identity inversion.");
+        }
+
+        ValidateGenericInsert(roles.Insert("admin", 1UL), "existence role admin/1 insert");
+        ValidateGenericInsert(roles.Insert("editor", 1UL), "existence role editor/1 insert");
+        ValidateGenericInsert(roles.Insert("editor", 2UL), "existence role editor/2 insert");
+        ValidateGenericInsert(roles.Insert("ADMIN", 4UL), "existence role ADMIN/4 insert");
+        if (roles.Insert("admin", 1UL).Inserted)
+            throw new InvalidDataException("An exact repeated tuple was inserted and could distort duplicate/singleton cardinality.");
+
+        using LibraDexStringScalar8Index direct = users["direct-key"].String.Create(StringKeys.Exact);
+        ValidateGenericInsert(direct.Insert(null!, 10UL), "direct null/10 insert");
+        ValidateGenericInsert(direct.Insert(string.Empty, 11UL), "direct empty/11 insert");
+        ValidateGenericInsert(direct.Insert("beta", 12UL), "direct beta/12 insert");
+        ValidateGenericInsert(direct.Insert("beta", 13UL), "direct beta/13 insert");
+        ValidateGenericInsert(direct.Insert("omega", 12UL), "direct omega/12 insert");
+        for (ulong identity = 1000UL; identity < 2024UL; identity++)
+            ValidateGenericInsert(direct.Insert("overflow", identity), $"direct overflow/{identity} insert");
+
+        IReadOnlyList<ulong> directBetaIdentities = direct.Identities.GetByKey("beta");
+        IReadOnlyList<LibraDexIndexEntry<string, ulong>> directBetaEntries = direct.Entries.GetByKey("beta");
+        string[] directKeys = [ "omega", "missing", "beta", "beta", string.Empty, null! ];
+        IReadOnlyDictionary<string, IReadOnlyList<ulong>> directIdentities = direct.Identities.GetByKeys(directKeys);
+        IReadOnlyDictionary<string, long> directCounts = direct.Identities.CountByKeys(directKeys);
+        IReadOnlyDictionary<string, IReadOnlyList<LibraDexIndexEntry<string, ulong>>> directEntries =
+            direct.Entries.GetByKeys(directKeys);
+        string[] expectedDirectOrder = [ null!, string.Empty, "beta", "missing", "omega" ];
+        if (directBetaIdentities.Count != 2 ||
+            directBetaIdentities[0] != 12UL ||
+            directBetaIdentities[1] != 13UL ||
+            directBetaEntries.Count != 2 ||
+            direct.Identities.CountByKey("beta") != 2 ||
+            direct.Identities.CountByKey("missing") != 0 ||
+            directIdentities.Count != expectedDirectOrder.Length ||
+            !directIdentities.Keys.SequenceEqual(expectedDirectOrder) ||
+            directCounts.Count != expectedDirectOrder.Length ||
+            !directCounts.Keys.SequenceEqual(expectedDirectOrder) ||
+            directEntries.Count != expectedDirectOrder.Length ||
+            !directEntries.Keys.SequenceEqual(expectedDirectOrder) ||
+            directIdentities["missing"].Count != 0 ||
+            directCounts["missing"] != 0 ||
+            directEntries["missing"].Count != 0 ||
+            directIdentities[null!].Count != 1 ||
+            directIdentities[null!][0] != 10UL ||
+            directIdentities[string.Empty].Count != 1 ||
+            directIdentities[string.Empty][0] != 11UL ||
+            directIdentities["omega"].Count != 1 ||
+            directIdentities["omega"][0] != 12UL)
+        {
+            throw new InvalidDataException("Typed direct exact-key lookup did not preserve point routing, natural key/identity order, duplicate-input normalization, missing keys, or null/empty routes.");
+        }
+
+        IReadOnlyList<ulong> overflowIdentities = direct.Identities.GetByKey("overflow");
+        if (overflowIdentities.Count != 1024 ||
+            overflowIdentities[0] != 1000UL ||
+            overflowIdentities[^1] != 2023UL ||
+            direct.Identities.CountByKey("overflow") != 1024)
+        {
+            throw new InvalidDataException("Direct exact-key lookup did not follow the complete continued identity run.");
+        }
+
+        IIndex runtimeDirect = direct;
+        IReadOnlyDictionary<string, IReadOnlyList<ulong>> runtimeTypedDirect =
+            runtimeDirect.Identities.GetByKeys<string, ulong>(directKeys);
+        IReadOnlyDictionary<byte[]?, IReadOnlyList<byte[]>> runtimeRawDirect =
+            runtimeDirect.Identities.GetByKeys(directKeys.Cast<object?>().ToArray());
+        IReadOnlyDictionary<byte[]?, IReadOnlyList<LibraDexIndexEntry<byte[]?, byte[]>>> runtimeRawEntries =
+            runtimeDirect.Entries.GetByKeys(directKeys.Cast<object?>().ToArray());
+        byte[] encodedBetaDirect = LibraDexStringScalar8Index.EncodeGroupingKey("beta");
+        if (runtimeTypedDirect.Count != expectedDirectOrder.Length ||
+            !runtimeTypedDirect.Keys.SequenceEqual(expectedDirectOrder) ||
+            runtimeRawDirect.Count != expectedDirectOrder.Length ||
+            !runtimeRawDirect.TryGetValue(encodedBetaDirect, out IReadOnlyList<byte[]>? rawBetaIdentities) ||
+            rawBetaIdentities.Count != 2 ||
+            System.Buffers.Binary.BinaryPrimitives.ReadUInt64BigEndian(rawBetaIdentities[0]) !=
+                LibraDexGenericScalarCodec<ulong>.Encode8(12UL) ||
+            !runtimeRawEntries.TryGetValue(encodedBetaDirect, out IReadOnlyList<LibraDexIndexEntry<byte[]?, byte[]>>? rawBetaEntries) ||
+            rawBetaEntries.Count != 2 ||
+            rawBetaEntries.Any(entry => entry.Key is null || !entry.Key.AsSpan().SequenceEqual(encodedBetaDirect)))
+        {
+            throw new InvalidDataException("Non-generic direct exact-key lookup did not return canonical structural binary dictionaries or agree with typed projection.");
+        }
+
+        bool unsupportedDirectProjectionRejected = false;
+        try
+        {
+            _ = runtimeDirect.Identities.GetByKey<string, Version>("beta");
+        }
+        catch (NotSupportedException)
+        {
+            unsupportedDirectProjectionRejected = true;
+        }
+
+        if (!unsupportedDirectProjectionRejected)
+            throw new InvalidDataException("Direct generic lookup accepted a CLR type outside the supported projection vocabulary.");
+
+        if (!catalog.HasIndex("existence-users", "roles") ||
+            !users.HasIndex("roles") ||
+            users.HasIndex("transient") ||
+            !roles.Keys.Exists("admin") ||
+            roles.Keys.Exists("missing") ||
+            !roles.Keys.ExistsAny(new[] { "missing", "editor" }) ||
+            roles.Keys.ExistsAll(new[] { "admin", "missing" }))
+        {
+            throw new InvalidDataException("Catalog discovery or direct key-existence semantics did not match the expected active definitions and exact key routes.");
+        }
+
+        IReadOnlyList<string> duplicateKeys = roles.Keys.Duplicates.Get();
+        IReadOnlyList<ulong> duplicateIdentities = roles.Identities.Duplicates.Get();
+        IReadOnlyList<LibraDexIndexEntry<string, ulong>> duplicateKeyEntries = roles.Entries.DuplicateKeys.Get();
+        IReadOnlyList<LibraDexIndexEntry<string, ulong>> duplicateIdentityEntries = roles.Entries.DuplicateIdentities.Get();
+        IReadOnlyList<string> singletonKeys = roles.Keys.Singletons.Get();
+        IReadOnlyList<ulong> singletonIdentities = roles.Identities.Singletons.Get();
+        IReadOnlyList<LibraDexIndexEntry<string, ulong>> singletonKeyEntries = roles.Entries.SingletonKeys.Get();
+        IReadOnlyList<LibraDexIndexEntry<string, ulong>> singletonIdentityEntries = roles.Entries.SingletonIdentities.Get();
+        if (duplicateKeys.Count != 1 || duplicateKeys[0] != "editor" ||
+            duplicateIdentities.Count != 1 || duplicateIdentities[0] != 1UL ||
+            duplicateKeyEntries.Count != 2 ||
+            duplicateIdentityEntries.Count != 2 ||
+            !duplicateIdentityEntries.Any(entry => entry.Key == "admin" && entry.Identity == 1UL) ||
+            !duplicateIdentityEntries.Any(entry => entry.Key == "editor" && entry.Identity == 1UL) ||
+            singletonKeys.Count != 2 ||
+            !singletonKeys.Contains("admin") ||
+            !singletonKeys.Contains("ADMIN") ||
+            singletonIdentities.Count != 2 ||
+            !singletonIdentities.Contains(2UL) ||
+            !singletonIdentities.Contains(4UL) ||
+            singletonKeyEntries.Count != 2 ||
+            !singletonKeyEntries.Any(entry => entry.Key == "admin" && entry.Identity == 1UL) ||
+            !singletonKeyEntries.Any(entry => entry.Key == "ADMIN" && entry.Identity == 4UL) ||
+            singletonIdentityEntries.Count != 2 ||
+            !singletonIdentityEntries.Any(entry => entry.Key == "editor" && entry.Identity == 2UL) ||
+            !singletonIdentityEntries.Any(entry => entry.Key == "ADMIN" && entry.Identity == 4UL))
+        {
+            throw new InvalidDataException("Typed cardinality projections did not distinguish duplicate and singleton keys, identities, or their complete entry tuples.");
+        }
+
+        IIndex runtimeRoles = roles;
+        IReadOnlyList<byte[]?> runtimeDuplicateKeys = runtimeRoles.Keys.Duplicates.Get();
+        IReadOnlyList<string?> runtimeDuplicateEmails = runtimeRoles.Keys.Duplicates.AsString.Get();
+        IReadOnlyList<object> runtimeDuplicateIdentities = runtimeRoles.Identities.Duplicates.Get();
+        IReadOnlyList<LibraDexIndexEntry<byte[]?, object>> runtimeDuplicateKeyEntries =
+            runtimeRoles.Entries.DuplicateKeys.Get();
+        IReadOnlyList<LibraDexIndexEntry<byte[]?, object>> runtimeDuplicateIdentityEntries =
+            runtimeRoles.Entries.DuplicateIdentities.Get();
+        IReadOnlyList<byte[]?> runtimeSingletonKeys = runtimeRoles.Keys.Singletons.Get();
+        IReadOnlyList<string?> runtimeSingletonRoles = runtimeRoles.Keys.Singletons.AsString.Get();
+        IReadOnlyList<object> runtimeSingletonIdentities = runtimeRoles.Identities.Singletons.Get();
+        IReadOnlyList<LibraDexIndexEntry<byte[]?, object>> runtimeSingletonKeyEntries =
+            runtimeRoles.Entries.SingletonKeys.Get();
+        IReadOnlyList<LibraDexIndexEntry<byte[]?, object>> runtimeSingletonIdentityEntries =
+            runtimeRoles.Entries.SingletonIdentities.Get();
+        byte[] encodedAdmin = LibraDexStringScalar8Index.EncodeGroupingKey("admin");
+        byte[] encodedEditor = LibraDexStringScalar8Index.EncodeGroupingKey("editor");
+        if (runtimeDuplicateKeys.Count != 1 ||
+            runtimeDuplicateKeys[0] is not byte[] runtimeKey ||
+            !runtimeKey.AsSpan().SequenceEqual(encodedEditor) ||
+            runtimeDuplicateEmails.Count != 1 ||
+            runtimeDuplicateEmails[0] != "editor" ||
+            runtimeDuplicateIdentities.Count != 1 ||
+            runtimeDuplicateIdentities[0] is not ulong runtimeIdentity ||
+            runtimeIdentity != 1UL ||
+            runtimeDuplicateKeyEntries.Count != 2 ||
+            runtimeDuplicateKeyEntries.Any(entry => entry.Key is null || !entry.Key.AsSpan().SequenceEqual(encodedEditor)) ||
+            runtimeDuplicateIdentityEntries.Count != 2 ||
+            !runtimeDuplicateIdentityEntries.Any(entry =>
+                entry.Identity is 1UL &&
+                entry.Key is not null &&
+                entry.Key.AsSpan().SequenceEqual(encodedAdmin)) ||
+            !runtimeDuplicateIdentityEntries.Any(entry =>
+                entry.Identity is 1UL &&
+                entry.Key is not null &&
+                entry.Key.AsSpan().SequenceEqual(encodedEditor)) ||
+            runtimeSingletonKeys.Count != 2 ||
+            runtimeSingletonRoles.Count != 2 ||
+            !runtimeSingletonRoles.Contains("admin") ||
+            !runtimeSingletonRoles.Contains("ADMIN") ||
+            runtimeSingletonIdentities.Count != 2 ||
+            !runtimeSingletonIdentities.Contains(2UL) ||
+            !runtimeSingletonIdentities.Contains(4UL) ||
+            runtimeSingletonKeyEntries.Count != 2 ||
+            runtimeSingletonIdentityEntries.Count != 2)
+        {
+            throw new InvalidDataException("Non-generic cardinality surfaces did not preserve raw keys, explicit string materialization, runtime identities, or complete entries.");
+        }
+
+        IReadOnlyList<string?> scanFoldedDuplicates = runtimeRoles.Keys.AsString(SubIndexType.Folded).Duplicates.Get();
+        IReadOnlyList<string?> scanFoldedSingletons = runtimeRoles.Keys.AsString(SubIndexType.Folded).Singletons.Get();
+        if (scanFoldedDuplicates.Count != 2 ||
+            !scanFoldedDuplicates.Contains("admin") ||
+            !scanFoldedDuplicates.Contains("editor") ||
+            scanFoldedSingletons.Count != 0)
+        {
+            throw new InvalidDataException("Explicit folded cardinality projection did not preserve duplicate and singleton equality during scan-time conversion.");
+        }
+
+        using (LibraDexDuplicateReader<byte[]?> rawDuplicateReader = runtimeRoles.Keys.Duplicates.OpenReader())
+        {
+            if (!rawDuplicateReader.Read() ||
+                rawDuplicateReader.Current is not byte[] rawReaderKey ||
+                !rawReaderKey.AsSpan().SequenceEqual(LibraDexStringScalar8Index.EncodeGroupingKey("editor")) ||
+                rawDuplicateReader.Read())
+            {
+                throw new InvalidDataException("Raw duplicate-key reader did not emit the exact encoded duplicate once without a result collection.");
+            }
+        }
+
+        using (LibraDexSingletonReader<string?> singletonReader = runtimeRoles.Keys.Singletons.AsString.OpenReader())
+        {
+            HashSet<string?> streamedSingletons = new(StringComparer.Ordinal);
+            while (singletonReader.Read())
+                streamedSingletons.Add(singletonReader.Current);
+            if (streamedSingletons.Count != 2 ||
+                !streamedSingletons.Contains("admin") ||
+                !streamedSingletons.Contains("ADMIN"))
+            {
+                throw new InvalidDataException("The singleton-key reader did not stream each exact singleton key once.");
+            }
+        }
+
+        using LibraDexStringScalar8Index foldedRoles = users["folded-roles"].String.Create(StringKeys.ExactAndFolded);
+        ValidateGenericInsert(foldedRoles.Insert("Admin", 10UL), "folded duplicate role Admin/10 insert");
+        ValidateGenericInsert(foldedRoles.Insert("admin", 11UL), "folded duplicate role admin/11 insert");
+        IIndex runtimeFoldedRoles = foldedRoles;
+        IReadOnlyList<byte[]?> exactCaseDuplicates = runtimeFoldedRoles.Keys.Duplicates.Get();
+        IReadOnlyList<string?> foldedCaseDuplicates = runtimeFoldedRoles.Keys.AsString(SubIndexType.Folded).Duplicates.Get();
+        IReadOnlyList<string?> exactCaseSingletons = runtimeFoldedRoles.Keys.Singletons.AsString.Get();
+        IReadOnlyList<string?> foldedCaseSingletons = runtimeFoldedRoles.Keys.AsString(SubIndexType.Folded).Singletons.Get();
+        if (exactCaseDuplicates.Count != 0 ||
+            foldedCaseDuplicates.Count != 1 ||
+            foldedCaseDuplicates[0] != "admin" ||
+            exactCaseSingletons.Count != 2 ||
+            foldedCaseSingletons.Count != 0)
+        {
+            throw new InvalidDataException("Projection position did not distinguish exact physical cardinality from folded-string cardinality.");
+        }
+
+        LibraDexIndex<byte[], ulong> payload = users["payload"].Blob
+            .Scalar<ulong>(LibraDexScalarWidth.Bytes32)
+            .Create();
+        byte[] payloadA = new byte[32];
+        byte[] payloadB = new byte[32];
+        byte[] payloadC = new byte[32];
+        payloadA[0] = 1;
+        payloadB[0] = 2;
+        payloadC[0] = 3;
+        System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(payloadA.AsSpan(6, sizeof(int)), 42);
+        System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(payloadB.AsSpan(6, sizeof(int)), 42);
+        System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(payloadC.AsSpan(6, sizeof(int)), 7);
+        ValidateGenericInsert(payload.Insert(payloadA, 20UL), "raw projection payload A/20 insert");
+        ValidateGenericInsert(payload.Insert(payloadA, 21UL), "raw projection payload A/21 insert");
+        ValidateGenericInsert(payload.Insert(payloadB, 22UL), "raw projection payload B/22 insert");
+        ValidateGenericInsert(payload.Insert(payloadC, 23UL), "raw projection payload C/23 insert");
+        IIndex runtimePayload = payload;
+        IReadOnlyList<int> returnedSlice = runtimePayload.Keys.Duplicates
+            .Slice(6, sizeof(int))
+            .AsInt32()
+            .Get();
+        IReadOnlyList<int> exactSingletonSlices = runtimePayload.Keys.Singletons
+            .Slice(6, sizeof(int))
+            .AsInt32()
+            .Get();
+        IReadOnlyList<int> projectedSliceSingletons = runtimePayload.Keys
+            .Slice(6, sizeof(int))
+            .AsInt32()
+            .Singletons
+            .Get();
+        IReadOnlyList<int> projectedSliceDuplicates = runtimePayload.Keys
+            .Slice(6, sizeof(int))
+            .AsInt32()
+            .Duplicates
+            .Get();
+        IReadOnlyList<Int128> widenedDotNetDuplicates = runtimePayload.Keys.Duplicates
+            .Slice(6, sizeof(int))
+            .AsInt128()
+            .Get();
+        if (returnedSlice.Count != 1 ||
+            returnedSlice[0] != 42 ||
+            projectedSliceDuplicates.Count != 1 ||
+            projectedSliceDuplicates[0] != 42 ||
+            widenedDotNetDuplicates.Count != 1 ||
+            widenedDotNetDuplicates[0] != 42 ||
+            exactSingletonSlices.Count != 2 ||
+            !exactSingletonSlices.Contains(42) ||
+            !exactSingletonSlices.Contains(7) ||
+            projectedSliceSingletons.Count != 1 ||
+            projectedSliceSingletons[0] != 7)
+        {
+            throw new InvalidDataException("Little-endian numeric projection did not preserve duplicate/singleton stage semantics or checked Int32-to-Int128 widening.");
+        }
+
+        byte[] canonicalPayload = new byte[32];
+        canonicalPayload[0] = 4;
+        Span<byte> canonicalDestination = canonicalPayload.AsSpan(6, sizeof(ulong));
+        if (LibraDexCanonical.Numeric.Write(123456, canonicalDestination) != sizeof(ulong) ||
+            LibraDexCanonical.Numeric.Read<int>(canonicalDestination) != 123456)
+        {
+            throw new InvalidDataException("Public canonical numeric helpers did not round-trip caller-owned storage.");
+        }
+
+        LibraDexIndex<byte[], ulong> canonicalPayloadIndex = users["canonical-payload"].Blob
+            .Scalar<ulong>(LibraDexScalarWidth.Bytes32)
+            .Create();
+        ValidateGenericInsert(canonicalPayloadIndex.Insert(canonicalPayload, 24UL), "canonical projection payload/24 insert");
+        ValidateGenericInsert(canonicalPayloadIndex.Insert(canonicalPayload, 25UL), "canonical projection payload/25 insert");
+        IIndex runtimeCanonicalPayload = canonicalPayloadIndex;
+        IReadOnlyList<int> canonicalDuplicates = runtimeCanonicalPayload.Keys.Duplicates
+            .Slice(6, sizeof(ulong))
+            .AsInt32(Coercion.Numeric.LibraDex)
+            .Get();
+        IReadOnlyList<Int128> widenedCanonicalDuplicates = runtimeCanonicalPayload.Keys.Duplicates
+            .Slice(6, sizeof(ulong))
+            .AsInt128(Coercion.Numeric.LibraDex)
+            .Get();
+        LibraDexConditionEndCondition canonicalSliceCondition = LibraDexCondition
+            .ForGroup("existence-users")
+            .Index("canonical-payload").AsBinary.SlicedAsInt32(6, Coercion.Numeric.LibraDex).EqualTo(123456)
+            .AND.Index("canonical-payload").AsBinary.SlicedAsInt128(6, sizeof(ulong), Coercion.Numeric.LibraDex).EqualTo((Int128)123456)
+            .EndCondition;
+        IReadOnlyList<ulong> canonicalSliceConditionIds = canonicalSliceCondition
+            .Materialize(new Dictionary<string, IIndex>(StringComparer.Ordinal)
+            {
+                ["canonical-payload"] = canonicalPayloadIndex
+            })
+            .IDs
+            .ToList<ulong>();
+        if (!canonicalDuplicates.Contains(123456) ||
+            !widenedCanonicalDuplicates.Contains((Int128)123456) ||
+            canonicalSliceConditionIds.Count != 2 ||
+            !canonicalSliceConditionIds.Contains(24UL) ||
+            !canonicalSliceConditionIds.Contains(25UL))
+        {
+            throw new InvalidDataException("Explicit LibraDex numeric coercion did not decode and widen a canonical eight-byte scalar across duplicate projection and condition execution.");
+        }
+
+        byte[] allocatedCanonical = LibraDexCanonical.Numeric.Encode(123456);
+        if (!allocatedCanonical.AsSpan().SequenceEqual(canonicalDestination))
+            throw new InvalidDataException("Allocating and caller-buffer canonical numeric helpers produced different Int32 bytes.");
+
+        bool checkedNarrowingRejected = false;
+        try
+        {
+            _ = runtimeCanonicalPayload.Keys.Duplicates
+                .Slice(6, sizeof(ulong))
+                .AsInt32()
+                .Get();
+        }
+        catch (OverflowException)
+        {
+            checkedNarrowingRejected = true;
+        }
+
+        if (!checkedNarrowingRejected)
+            throw new InvalidDataException("Numeric projection silently truncated an out-of-range eight-byte value while narrowing to Int32.");
+
+        using (LibraDexDuplicateReader<LibraDexIndexEntry<string, ulong>> duplicateReader = roles.Entries.DuplicateIdentities.OpenReader())
+        {
+            int duplicateEntryCount = 0;
+            while (duplicateReader.Read())
+                duplicateEntryCount++;
+            if (duplicateEntryCount != 2)
+                throw new InvalidDataException("The duplicate-identity reader did not stream every matching key/identity entry.");
+        }
+
+        if (roles.IdentityLookup.Mode != IdentityLookupMode.Explicit ||
+            roles.IdentityLookup.State != IdentityLookupState.NotCreated)
+        {
+            throw new InvalidDataException("The default identity-lookup lifecycle did not remain explicit and uncreated.");
+        }
+
+        roles.IdentityLookup.Configure(IdentityLookupMode.CreateOnOpen);
+        if (roles.IdentityLookup.Mode != IdentityLookupMode.CreateOnOpen ||
+            roles.IdentityLookup.State != IdentityLookupState.Partial)
+        {
+            throw new InvalidDataException("CreateOnOpen did not create a partial session-local inversion for the live index.");
+        }
+
+        roles.IdentityLookup.Build();
+        if (roles.IdentityLookup.State != IdentityLookupState.Complete)
+            throw new InvalidDataException("An explicit identity-lookup build did not complete the opened index inversion.");
+
+        IReadOnlyList<ulong> invertedSingletonIdentities = roles.Identities.Singletons.Get();
+        IReadOnlyList<LibraDexIndexEntry<string, ulong>> invertedSingletonEntries =
+            roles.Entries.SingletonIdentities.Get();
+        if (invertedSingletonIdentities.Count != 2 ||
+            !invertedSingletonIdentities.Contains(2UL) ||
+            !invertedSingletonIdentities.Contains(4UL) ||
+            invertedSingletonEntries.Count != 2)
+        {
+            throw new InvalidDataException("Singleton identity discovery did not use the complete inversion with the same cardinality semantics as a forward walk.");
+        }
+
+        ValidateGenericInsert(roles.Insert("reviewer", 3UL), "identity-lookup post-build mutation insert");
+        if (roles.IdentityLookup.State != IdentityLookupState.Partial ||
+            !roles.Identities.Exists(3UL) ||
+            roles.Identities.Exists(999UL) ||
+            roles.IdentityLookup.State != IdentityLookupState.Complete)
+        {
+            throw new InvalidDataException("A post-build string mutation did not invalidate inverse absence proof and repopulate the lazy inversion during later identity checks.");
+        }
+
+        roles.IdentityLookup.Configure(IdentityLookupMode.Disabled);
+        if (roles.IdentityLookup.Mode != IdentityLookupMode.Disabled ||
+            roles.IdentityLookup.State != IdentityLookupState.Unavailable)
+        {
+            throw new InvalidDataException("Disabling identity lookup did not release the usable inversion state.");
+        }
+
+        roles.IdentityLookup.Configure(IdentityLookupMode.CreateOnFirstUse);
+        if (roles.IdentityLookup.State != IdentityLookupState.NotCreated ||
+            !roles.Identities.Exists(1UL) ||
+            roles.IdentityLookup.State != IdentityLookupState.Partial)
+        {
+            throw new InvalidDataException("CreateOnFirstUse did not defer inversion creation until the first identity lookup.");
+        }
+
+        ulong[] identityCandidates = [1UL, 99UL, 1UL, 2UL];
+        Span<bool> identityStates = stackalloc bool[identityCandidates.Length];
+        int identityStateCount = roles.Identities.Check(identityCandidates, identityStates);
+        if (identityStateCount != 4 ||
+            !identityStates[0] || identityStates[1] || !identityStates[2] || !identityStates[3] ||
+            !roles.Identities.ExistsAny(new[] { 99UL, 2UL }) ||
+            roles.Identities.ExistsAll(new[] { 1UL, 99UL }))
+        {
+            throw new InvalidDataException("Identity existence batching did not preserve duplicate positions, hits, misses, or Any/All semantics.");
+        }
+
+        LibraDexIndexEntry<string, ulong>[] entryCandidates =
+        [
+            new("admin", 1UL),
+            new("admin", 2UL),
+            new("editor", 2UL)
+        ];
+        Span<bool> entryStates = stackalloc bool[entryCandidates.Length];
+        roles.Entries.Check(entryCandidates, entryStates);
+        if (!entryStates[0] || entryStates[1] || !entryStates[2] ||
+            !roles.Entries.Exists("editor", 1UL) || roles.Entries.Exists("missing", 1UL))
+        {
+            throw new InvalidDataException("Exact entry existence checks did not remain scoped to the supplied key/identity association.");
+        }
+
+        using (LibraDexExistenceCheckReader<ulong> reader = roles.Identities.OpenCheckReader(identityCandidates, batchSize: 2))
+        {
+            int ordinal = 0;
+            while (reader.Read())
+            {
+                if (reader.Value != identityCandidates[ordinal] || reader.Exists != identityStates[ordinal])
+                    throw new InvalidDataException("The bounded identity check reader did not preserve candidate order or positional states.");
+                ordinal++;
+            }
+
+            if (ordinal != identityCandidates.Length)
+                throw new InvalidDataException("The bounded identity check reader did not consume every candidate.");
+        }
+
+        string[] requestedRoles = ["admin", "editor"];
+        int deferredAnyCalls = 0;
+        LibraDexConditionEndCondition anyCondition = users
+            .Where("roles").Keys.ExistsAny(() =>
+            {
+                deferredAnyCalls++;
+                return requestedRoles;
+            })
+            .EndCondition;
+        LibraDexConditionEndCondition allCondition = users
+            .Where("roles").Keys.ExistsAll(requestedRoles)
+            .EndCondition;
+        IReadOnlyList<ulong> anyIdentities = users.GetIdentities<ulong>(anyCondition, deduplication: IdentityDeduplication.Distinct);
+        IReadOnlyList<ulong> allIdentities = users.GetIdentities<ulong>(allCondition, deduplication: IdentityDeduplication.Distinct);
+        if (deferredAnyCalls != 1 ||
+            anyIdentities.Count != 2 || !anyIdentities.Contains(1UL) || !anyIdentities.Contains(2UL) ||
+            allIdentities.Count != 1 || allIdentities[0] != 1UL ||
+            !users.Exists(allCondition))
+        {
+            throw new InvalidDataException("Condition key existence did not preserve deferred single-use evaluation, Any union, All intersection, or producer-side existence semantics.");
+        }
+
+        LibraDexConditionEndCondition guardedPresent = users
+            .Where("roles").Exists.And.Index("roles").AsString.EqualTo("admin")
+            .EndCondition;
+        LibraDexConditionEndCondition guardedMissing = users
+            .Where("transient").Exists.And.Index("transient").AsString.EqualTo("active")
+            .EndCondition;
+        IReadOnlyList<ulong> guardedPresentIdentities = users.GetIdentities<ulong>(guardedPresent);
+        IReadOnlyList<ulong> guardedMissingIdentities = users.GetIdentities<ulong>(guardedMissing);
+        string guardedIndexName = "roles";
+        LibraDexConditionEndCondition deferredGuard = LibraDexCondition
+            .ForGroup("existence-users")
+            .Where(() => guardedIndexName, "guardedIndex").Exists.And
+            .Index(() => guardedIndexName, "guardedIndex").AsString.EqualTo("admin")
+            .EndCondition;
+        IReadOnlyList<ulong> deferredGuardIdentities = users.GetIdentities<ulong>(deferredGuard);
+        bool strictMissingFailed = false;
+        bool orGuardRejected = false;
+        try
+        {
+            _ = users.GetIdentities<ulong>(users.Where("transient").AsString.EqualTo("active").EndCondition);
+        }
+        catch (InvalidDataException)
+        {
+            strictMissingFailed = true;
+        }
+
+        try
+        {
+            _ = users.Where("roles").AsString.EqualTo("admin")
+                .OR.Index("transient").Exists.And.Index("transient").AsString.EqualTo("active")
+                .EndCondition;
+        }
+        catch (NotSupportedException)
+        {
+            orGuardRejected = true;
+        }
+
+        if (guardedPresentIdentities.Count != 1 || guardedPresentIdentities[0] != 1UL ||
+            guardedMissingIdentities.Count != 0 ||
+            deferredGuardIdentities.Count != 1 || deferredGuardIdentities[0] != 1UL ||
+            users.Exists(guardedMissing) ||
+            !strictMissingFailed ||
+            !orGuardRejected)
+        {
+            throw new InvalidDataException("Index-availability guards did not short-circuit only missing guarded branches while retaining strict unguarded failures.");
+        }
+
+        users.Inverse.CreateLazy("roles");
+        if (users.Inverse.State != CatalogIndexSetInverseState.Building ||
+            !roles.Identities.Exists(1UL) ||
+            roles.Identities.Exists(99UL) ||
+            !users.Inverse.IsInSync ||
+            users.Inverse.State != CatalogIndexSetInverseState.Current)
+        {
+            throw new InvalidDataException("The explicit lazy inverse did not expose discovered hits, resume a forward walk for a miss, and become authoritative after reaching the end.");
+        }
+    }
+
+    /// <summary>
+    /// Validates the unified maintenance assessment, explicit query measurement, and bounded opt-in execution history.<br/>
+    /// The contrived fixture walks eager, iterator, and reader completion boundaries so telemetry cannot silently retain an unbounded query object graph or mislabel early disposal.<br/>
+    /// </summary>
+    private static void ValidateMaintenanceAndQueryDiagnostics()
+    {
+        using Catalog catalog = Catalog.CreateMemory();
+        CatalogIdentityGroupIndexes values = catalog.Indexes["diagnostics"];
+        LibraDexIndex<long, long> score = values["score"].Int64Keys<long>().Create(
+            keys: IndexKeys.NonUnique);
+        ValidateGenericInsert(score.Insert(10L, 1L), "diagnostics score 10/1 insert");
+        ValidateGenericInsert(score.Insert(20L, 2L), "diagnostics score 20/2 insert");
+        ValidateGenericInsert(score.Insert(30L, 3L), "diagnostics score 30/3 insert");
+
+        LibraDexCondition<long> condition = values
+            .Where("score").AsInt64.GreaterOrEqual(10L)
+            .Return<long>()
+            .EndCondition;
+        LibraDexQueryExplanation explanation = values.Explain(condition);
+        if (explanation.RequiresScan ||
+            explanation.IndexesUsed.Count != 1 ||
+            explanation.IndexesUsed[0] != "score" ||
+            explanation.ScanReasons.Count != 0)
+        {
+            throw new InvalidDataException("Indexed condition explanation did not report the expected fast-path index and empty scan-reason set.");
+        }
+
+        if (catalog.Diagnostics.Queries.IsEnabled ||
+            catalog.Diagnostics.Queries.Recent.Count != 0)
+        {
+            throw new InvalidDataException("Bounded query history must be disabled and empty by default.");
+        }
+
+        catalog.Diagnostics.Queries.Enable(
+            capacity: 8,
+            fields: QueryDiagnosticFields.Execution | QueryDiagnosticFields.Allocations);
+        LibraDexQueryMeasurement<long> measured = values.Measure(condition);
+        if (measured.Results.Count != 3 ||
+            measured.Diagnostics.RowsReturned != 3 ||
+            measured.Diagnostics.RequiresScan ||
+            measured.Diagnostics.ThreadAllocatedBytes < 0)
+        {
+            throw new InvalidDataException("Explicit condition measurement did not return the expected results and exact-execution diagnostics.");
+        }
+
+        _ = values.Get(condition);
+        _ = values.Iterate(condition).Take(1).ToArray();
+        using (LibraDexResultReader<long> earlyReader = values.OpenReader(condition))
+        {
+            if (!earlyReader.Next() || earlyReader.Current != 1L)
+                throw new InvalidDataException("Tracked result reader did not expose the first diagnostic fixture identity.");
+        }
+
+        using (LibraDexResultReader<long> completeReader = values.OpenReader(condition))
+        {
+            while (completeReader.Next())
+            {
+            }
+        }
+
+        IReadOnlyList<LibraDexQueryTelemetryEntry> recent = catalog.Diagnostics.Queries.Recent;
+        if (recent.Count != 5 ||
+            recent[0].Completion != LibraDexQueryCompletion.Completed ||
+            recent[2].Completion != LibraDexQueryCompletion.StoppedEarly ||
+            recent[3].Completion != LibraDexQueryCompletion.StoppedEarly ||
+            recent[4].Completion != LibraDexQueryCompletion.Completed ||
+            recent[0].RowsReturned != 3 ||
+            recent[4].RowsReturned != 3)
+        {
+            throw new InvalidDataException("Bounded query telemetry did not preserve one eager publication and correct iterator/reader completion boundaries.");
+        }
+
+        LibraDexMaintenanceAssessment assessment = catalog.Maintenance.Assess(
+            minimumReclaimableBytes: 1024);
+        if (assessment.MinimumReclaimableBytes != 1024 ||
+            !assessment.CanAttributeRepackCandidates ||
+            assessment.RepackCandidates.Count != 0 ||
+            assessment.ReclaimComponents.Count != 0 ||
+            assessment.ProjectionIssues.Count != 0)
+        {
+            throw new InvalidDataException("Maintenance assessment did not authoritatively report zero reclaim for a fixed-width index.");
+        }
+
+        bool negativeThresholdRejected = false;
+        try
+        {
+            _ = catalog.Maintenance.Assess(-1);
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            negativeThresholdRejected = true;
+        }
+
+        if (!negativeThresholdRejected)
+            throw new InvalidDataException("Maintenance assessment accepted a negative reclaim threshold.");
+
+        catalog.Diagnostics.Queries.Disable();
+        if (catalog.Diagnostics.Queries.IsEnabled ||
+            catalog.Diagnostics.Queries.Recent.Count != 0)
+        {
+            throw new InvalidDataException("Disabling query telemetry did not release its bounded history.");
+        }
+
+        ValidateMaintenanceReclaimAttribution();
+    }
+
+    /// <summary>
+    /// Validates exact persisted reclaim attribution, logical projection rollup, threshold filtering, and reopen durability.<br/>
+    /// The fixture keeps each physical component below automatic payload-repack thresholds so assessment must observe the orphaned bytes rather than a shelf already compacted by deletion.<br/>
+    /// </summary>
+    private static void ValidateMaintenanceReclaimAttribution()
+    {
+        string path = Path.Combine(
+            Path.GetTempPath(),
+            $"libradex-maintenance-assess-{Guid.NewGuid():N}.lbdx");
+        long expectedReclaimableBytes;
+        try
+        {
+            using (Catalog catalog = Catalog.Create(path))
+            {
+                using LibraDexStringScalar8Index email = catalog.Indexes["maintenance-users"]["email"].String.Create(
+                    stringKeys: StringKeys.ExactAndFolded);
+                for (ulong identity = 1; identity <= 6; identity++)
+                {
+                    string key = $"{identity:D2}-" + new string((char)('a' + identity), 700);
+                    ValidateGenericInsert(email.Insert(key, identity), $"maintenance email {identity} insert");
+                }
+
+                for (ulong identity = 1; identity <= 2; identity++)
+                {
+                    string key = $"{identity:D2}-" + new string((char)('a' + identity), 700);
+                    if (!email.Delete(key, identity))
+                        throw new InvalidDataException($"Maintenance fixture could not delete email tuple {identity}.");
+                }
+
+                LibraDexMaintenanceAssessment assessment = catalog.Maintenance.Assess(
+                    minimumReclaimableBytes: 1);
+                if (!assessment.CanAttributeRepackCandidates ||
+                    assessment.UnattributedReclaimedCellCount != 0 ||
+                    assessment.RepackCandidates.Count != 1 ||
+                    assessment.ReclaimComponents.Count != 2 ||
+                    assessment.ProjectionIssues.Count != 0)
+                {
+                    throw new InvalidDataException(
+                        $"Maintenance assessment attribution mismatch: complete={assessment.CanAttributeRepackCandidates}, " +
+                        $"unattributed={assessment.UnattributedReclaimedCellCount}, candidates={assessment.RepackCandidates.Count}, " +
+                        $"components={assessment.ReclaimComponents.Count}, projectionIssues={assessment.ProjectionIssues.Count}.");
+                }
+
+                LibraDexRepackCandidate candidate = assessment.RepackCandidates[0];
+                if (candidate.Group != "maintenance-users" ||
+                    candidate.IndexName != "email" ||
+                    candidate.ReclaimableBytes <= 0)
+                {
+                    throw new InvalidDataException("Maintenance assessment did not identify the expected logical source index and positive reclaim total.");
+                }
+
+                long componentBytes = 0;
+                bool foundExact = false;
+                bool foundFolded = false;
+                for (int i = 0; i < assessment.ReclaimComponents.Count; i++)
+                {
+                    LibraDexReclaimComponent component = assessment.ReclaimComponents[i];
+                    componentBytes = checked(componentBytes + component.ReclaimableBytes);
+                    foundExact |= component.Projection == LibraDexIndexProjectionKind.Exact &&
+                        component.Direction == LibraDexIndexByteDirection.Forward;
+                    foundFolded |= component.Projection == LibraDexIndexProjectionKind.FoldedText &&
+                        component.Direction == LibraDexIndexByteDirection.Forward;
+                }
+
+                if (!foundExact ||
+                    !foundFolded ||
+                    componentBytes != candidate.ReclaimableBytes)
+                {
+                    throw new InvalidDataException("Maintenance projection components did not sum exactly to the logical repack candidate.");
+                }
+
+                LibraDexMaintenanceAssessment aboveThreshold = catalog.Maintenance.Assess(
+                    minimumReclaimableBytes: checked(candidate.ReclaimableBytes + 1));
+                if (!aboveThreshold.CanAttributeRepackCandidates ||
+                    aboveThreshold.RepackCandidates.Count != 0 ||
+                    aboveThreshold.ReclaimComponents.Count != 2)
+                {
+                    throw new InvalidDataException("Maintenance threshold filtering discarded physical evidence or retained a sub-threshold recommendation.");
+                }
+
+                expectedReclaimableBytes = candidate.ReclaimableBytes;
+            }
+
+            using (Catalog reopened = Catalog.Open(path))
+            {
+                LibraDexMaintenanceAssessment assessment = reopened.Maintenance.Assess(
+                    minimumReclaimableBytes: 1);
+                if (!assessment.CanAttributeRepackCandidates ||
+                    assessment.RepackCandidates.Count != 1 ||
+                    assessment.RepackCandidates[0].ReclaimableBytes != expectedReclaimableBytes ||
+                    assessment.ReclaimComponents.Count != 2)
+                {
+                    throw new InvalidDataException("Maintenance reclaim attribution did not survive catalog close and reopen.");
+                }
+            }
+        }
+        finally
+        {
+            if (File.Exists(path))
+                File.Delete(path);
+        }
+    }
+
+    /// <summary>
+    /// Proves the regex execution-ownership contract used by string conditions.<br/>
+    /// String-pattern overloads must create one compiled regex owned by the materialized predicate, while <see cref="Regex"/> overloads must retain the exact caller-provided instance and its execution options.<br/>
+    /// </summary>
+    /// <param name="args">Command-line arguments; this proof currently requires no options.<br/></param>
+    /// <returns>Zero when boolean, capture, membership, and caller-owned regex construction all satisfy the contract.<br/></returns>
+    private static int RunRegexExecutionOwnershipSanity(string[] args)
+    {
+        _ = args;
+        LibraDexStringComparisonPolicy policy = LibraDexStringComparisonPolicy.FromLegacy(
+            ignoreCase: true,
+            cultureName: null);
+        FieldInfo regexField = typeof(LibraDexStringPatternPredicate).GetField(
+            "regex",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new MissingFieldException(typeof(LibraDexStringPatternPredicate).FullName, "regex");
+
+        LibraDexStringPatternPredicate ownedBoolean = LibraDexStringPatternPredicate.CreateRegex(
+            LibraDexStringPatternMode.RegexMatches,
+            "^admin",
+            policy);
+        LibraDexStringPatternPredicate ownedCapture = LibraDexStringPatternPredicate.CreateRegexCapture(
+            LibraDexStringPatternMode.MatchesWith,
+            @"([A-Z]\d)-(\d{4})",
+            "2345",
+            groupNumber: 2,
+            policy: policy);
+        LibraDexStringPatternPredicate ownedMembership = LibraDexStringPatternPredicate.CreateRegexCaptureSet(
+            LibraDexStringPatternMode.MatchesInSet,
+            @"([A-Z]\d)-(\d{4})",
+            new[] { "2345", "6789" },
+            groupNumber: 2,
+            policy: policy);
+
+        foreach (LibraDexStringPatternPredicate predicate in new[] { ownedBoolean, ownedCapture, ownedMembership })
+        {
+            Regex runtimeRegex = regexField.GetValue(predicate) as Regex
+                ?? throw new InvalidDataException("A string-pattern overload did not materialize an owned Regex instance.");
+            if ((runtimeRegex.Options & RegexOptions.Compiled) == 0 ||
+                (runtimeRegex.Options & RegexOptions.IgnoreCase) == 0 ||
+                (runtimeRegex.Options & RegexOptions.CultureInvariant) == 0)
+            {
+                throw new InvalidDataException(
+                    $"A string-pattern overload materialized unexpected regex options: {runtimeRegex.Options}.");
+            }
+        }
+
+        Regex supplied = new(
+            @"^[A-Z]\d-\d{4}$",
+            RegexOptions.CultureInvariant,
+            TimeSpan.FromMilliseconds(250));
+        LibraDexStringPatternPredicate adopted = LibraDexStringPatternPredicate.CreateRegex(
+            LibraDexStringPatternMode.RegexMatches,
+            supplied,
+            policy);
+        if (!ReferenceEquals(regexField.GetValue(adopted), supplied))
+        {
+            throw new InvalidDataException(
+                "A caller-provided Regex instance was reconstructed instead of being adopted directly.");
+        }
+
+        Console.WriteLine(
+            "regex-execution-ownership-sanity: string overloads compile once; Regex overload preserves caller instance");
+        return 0;
+    }
+
+    /// <summary>
+    /// Proves that one logical string index can own, persist, reopen, mutate, and semantically resolve several culture-aware sort-key profiles.<br/>
+    /// The fixture covers compatibility ordinal zero, an additional case-sensitive culture, prepared-key maintenance, exact condition routing, profile mismatch rejection, and persisted collation signatures.<br/>
+    /// </summary>
+    /// <param name="args">Optional `--path` override for the disposable catalog file.<br/></param>
+    /// <returns>Zero when every multi-profile ownership and execution assertion passes.<br/></returns>
+    private static int RunStringCultureProfilesSanity(string[] args)
+    {
+        string path = GetOption(args, "--path", Path.Combine(Path.GetTempPath(), "libradex-string-culture-profiles-sanity.lbdx"));
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        if (File.Exists(path))
+        {
+            File.Delete(path);
+        }
+
+        try
+        {
+            LibraDexStringSortKeyProfile[] profiles =
+            [
+                new("en-US", CompareOptions.IgnoreCase),
+                new("sv-SE", CompareOptions.None),
+                new(null, CompareOptions.IgnoreCase | CompareOptions.IgnoreNonSpace)
+            ];
+
+            using (Catalog catalog = Catalog.Create(path))
+            {
+                CatalogNamedStringKeyBuilder builder = catalog.Indexes["people"]["name"].String;
+                using (LibraDexStringScalar8Index exact = builder.Create(stringKeys: StringKeys.Exact))
+                    ValidateGenericInsert(exact.Insert("Alice", 101), "pre-profile Alice insert");
+                using (LibraDexStringScalar8Index first = builder.AddSortKeyProfile(profiles[0])) { }
+                using (LibraDexStringScalar8Index second = builder.AddSortKeyProfile(profiles[1])) { }
+                using LibraDexStringScalar8Index names = builder.AddSortKeyProfile(profiles[2]);
+                using LibraDexStringScalar8Index duplicate = builder.AddSortKeyProfile(profiles[2]);
+                LibraDexStringScalar8Index.LibraDexStringScalar8PreparedKey prepared = names.PrepareKey("Ake");
+                ValidateGenericInsert(names.InsertPrepared(prepared, 102), "multi-culture prepared Ake insert");
+
+                if (!catalog.Indexes["people"].TryGetInfo("name", out CatalogIndexInfo info) ||
+                    info.StringKeys != StringKeys.ExactAndSortKey ||
+                    info.SortKeyProfiles is not { Count: 3 } persisted ||
+                    persisted[0].CultureName != "en-US" ||
+                    persisted[0].CompareOptions != CompareOptions.IgnoreCase ||
+                    persisted[1].CultureName != "sv-SE" ||
+                    persisted[1].CompareOptions != CompareOptions.None ||
+                    persisted[2].CultureName.Length != 0 ||
+                    persisted[2].CompareOptions != (CompareOptions.IgnoreCase | CompareOptions.IgnoreNonSpace) ||
+                    persisted.Select(static profile => profile.SlotIndex).Distinct().Count() != 3 ||
+                    persisted.Any(static profile => profile.SortVersionFullVersion == 0 || profile.SortVersionId == Guid.Empty))
+                {
+                    throw new InvalidDataException("String culture profile creation did not expose three distinct versioned owned projections.");
+                }
+
+                LibraDexConditionEndCondition equality = LibraDexCondition
+                    .ForGroup("people")
+                    .Index("name").AsString.EqualTo("ALICE", ignoreCase: true, culture: "en-US")
+                    .EndCondition;
+                IReadOnlyList<ulong> equalityIds = equality
+                    .MaterializeWithProjectionBridge(names.ResolveIndex, names.ResolveProjection)
+                    .IDs
+                    .ToList<ulong>();
+                if (equalityIds.Count != 1 || equalityIds[0] != 101)
+                {
+                    throw new InvalidDataException("The en-US ignore-case profile did not execute an exact maintained sort-key equality lookup.");
+                }
+
+                LibraDexConditionLeafDescriptor swedishDescriptor = new(
+                    "name",
+                    LibraDexConditionValueKind.String,
+                    LibraDexConditionOperatorKind.GreaterThan,
+                    new[] { LibraDexConditionOperand.Value("A") },
+                    IgnoreCase: false,
+                    Culture: "sv-SE",
+                    StringComparisonPolicy: LibraDexStringComparisonPolicy.ForCulture("sv-SE", CompareOptions.None));
+                LibraDexConditionLeafClassification sortKeyClassification = new(
+                    "name",
+                    LibraDexConditionValueKind.String,
+                    LibraDexConditionOperatorKind.GreaterThan,
+                    LibraDexConditionExecutionClass.ProjectionBacked,
+                    "Harness exact-profile resolution.",
+                    LibraDexIndexProjectionKind.SortKey);
+                IIndex? swedishProjection = names.ResolveProjection(swedishDescriptor, sortKeyClassification);
+                LibraDexConditionLeafDescriptor mismatchedDescriptor = new(
+                    "name",
+                    LibraDexConditionValueKind.String,
+                    LibraDexConditionOperatorKind.GreaterThan,
+                    new[] { LibraDexConditionOperand.Value("A") },
+                    IgnoreCase: true,
+                    Culture: "sv-SE",
+                    StringComparisonPolicy: LibraDexStringComparisonPolicy.ForCulture("sv-SE", CompareOptions.IgnoreCase));
+                if (swedishProjection is null ||
+                    !swedishProjection.Name.EndsWith("#sortkey-1", StringComparison.Ordinal) ||
+                    names.ResolveProjection(mismatchedDescriptor, sortKeyClassification) is not null)
+                {
+                    throw new InvalidDataException("Sort-key resolution did not require an exact culture and CompareOptions match.");
+                }
+            }
+
+            LibraDexCompactionResult compaction = Catalog.Compact(path);
+            if (compaction.LogicalIndexCount != 1 || compaction.TupleCount != 2)
+            {
+                throw new InvalidDataException(
+                    $"Culture-profile compaction reported indexes={compaction.LogicalIndexCount} and tuples={compaction.TupleCount}; expected one logical index and two authoritative tuples.");
+            }
+
+            using (Catalog reopened = Catalog.Open(path))
+            using (LibraDexStringScalar8Index names = reopened.Indexes["people"]["name"].String.Open())
+            {
+                if (!reopened.Indexes["people"].TryGetInfo("name", out CatalogIndexInfo info) ||
+                    info.SortKeyProfiles is not { Count: 3 })
+                {
+                    throw new InvalidDataException("Reopen did not restore all persisted string culture profiles.");
+                }
+
+                LibraDexConditionEndCondition preparedEquality = LibraDexCondition
+                    .ForGroup("people")
+                    .Index("name").AsString.EqualTo("AKE", ignoreCase: true, culture: "en-US")
+                    .EndCondition;
+                IReadOnlyList<ulong> ids = preparedEquality
+                    .MaterializeWithProjectionBridge(names.ResolveIndex, names.ResolveProjection)
+                    .IDs
+                    .ToList<ulong>();
+                if (ids.Count != 1 || ids[0] != 102)
+                {
+                    throw new InvalidDataException("Prepared insertion did not maintain every reopened culture sort-key projection.");
+                }
+            }
+
+            Console.WriteLine("string-culture-profiles-sanity: 3 owned profiles; exact semantic routing; persisted sort versions; compaction and reopen pass");
+            return 0;
+        }
+        finally
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+    }
 
 }

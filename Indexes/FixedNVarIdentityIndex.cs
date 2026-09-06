@@ -106,6 +106,17 @@ internal sealed class FixedNVarIdentityIndex : IDisposable
         return shelf.CountItemsInKeyRange(lowerKey, upperKey);
     }
 
+    /// <summary>
+    /// Streams every live tuple through the shape-native fixed-N variable-identity reader.<br/>
+    /// Both key and identity arrays are owned copies suitable for maintenance work after cursor advancement.<br/>
+    /// </summary>
+    /// <returns>Authoritative tuples in physical key/identity order.<br/></returns>
+    internal IEnumerable<FixedNVarIdentityTuple> IterateTuples()
+    {
+        ThrowIfDisposed();
+        return session.IterateFixedNVarIdentityTuples(handle);
+    }
+
     public void Dispose()
     {
         disposed = true;

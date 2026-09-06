@@ -18,9 +18,15 @@ public sealed class CatalogIndexSetInverse
     private CatalogIndexSetInverseSchema schema = CatalogIndexSetInverseSchema.Empty;
     private LibraDexStatsDelta lastCatalogStats;
     private CatalogIndexSetInverseBuildStats lastBuildStats;
+    private readonly Dictionary<int, IEnumerator<LibraDexObjectTuple>> lazyCursors = new();
+    private readonly Dictionary<string, IIndex> openedIndexes = new(StringComparer.Ordinal);
+    private bool[] lazyIndexComplete = Array.Empty<bool>();
+    private Stopwatch? lazyBuildStopwatch;
+    private long lazyTupleCount;
     private bool isCreated;
     private bool includeAllWhenEmpty = true;
     private bool hasBuildSnapshot;
+    private bool isLazyBuild;
 
     internal CatalogIndexSetInverse(CatalogIdentityGroupIndexes indexSet)
     {
@@ -48,6 +54,33 @@ public sealed class CatalogIndexSetInverse
             lock (sync)
             {
                 return isCreated && hasBuildSnapshot && !NeedsRebuildCore();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Gets whether the configured inverse has completely scanned every participating forward index and still matches the observed catalog mutation counters.<br/>
+    /// Positive rows discovered during a lazy build may be used before this becomes true; only an in-sync inverse may treat a missing row as proof of absence without continuing the forward walk.<br/>
+    /// </summary>
+    public bool IsInSync => IsFresh;
+
+    /// <summary>
+    /// Gets the current runtime lifecycle state of this optional inverse map.<br/>
+    /// The state is diagnostic metadata for the current catalog session; durable inverse storage can preserve the same public state model when connected.<br/>
+    /// </summary>
+    public CatalogIndexSetInverseState State
+    {
+        get
+        {
+            lock (sync)
+            {
+                if (!isCreated)
+                    return CatalogIndexSetInverseState.Disabled;
+                if (hasBuildSnapshot && !NeedsRebuildCore())
+                    return CatalogIndexSetInverseState.Current;
+                if (isLazyBuild && !hasBuildSnapshot)
+                    return CatalogIndexSetInverseState.Building;
+                return CatalogIndexSetInverseState.Stale;
             }
         }
     }
@@ -108,7 +141,28 @@ public sealed class CatalogIndexSetInverse
                 }
             }
 
+            isLazyBuild = false;
+            DisposeLazyCursors();
             RebuildCore();
+            return this;
+        }
+    }
+
+    /// <summary>
+    /// Enables an explicitly configured lazy runtime inverse over the selected forward indexes.<br/>
+    /// Creation records the schema and mutation snapshot but performs no forward scan; later identity checks first consult discovered inverse rows and then resume one forward-index walk while adding every encountered tuple to the inverse.<br/>
+    /// This is opt-in because an ordinary read should not silently create inverse state for an index set whose owner did not request it.<br/>
+    /// </summary>
+    /// <param name="indexNames">Optional index names to include; when omitted, all indexes currently in the index set participate.<br/></param>
+    /// <returns>This inverse surface.<br/></returns>
+    public CatalogIndexSetInverse CreateLazy(params string[] indexNames)
+    {
+        lock (sync)
+        {
+            isCreated = true;
+            ConfigureSelection(indexNames);
+            isLazyBuild = true;
+            ResetLazyBuildCore();
             return this;
         }
     }
@@ -130,7 +184,10 @@ public sealed class CatalogIndexSetInverse
             {
                 selectedIndexOrder.Add(indexName);
             }
-            RebuildCore();
+            if (isLazyBuild)
+                ResetLazyBuildCore();
+            else
+                RebuildCore();
             return this;
         }
     }
@@ -144,7 +201,229 @@ public sealed class CatalogIndexSetInverse
     public CatalogIndexSetInverse Include(IIndex index)
     {
         ValidateIndex(index);
+        lock (sync)
+        {
+            openedIndexes[index.Name] = index;
+        }
         return Include(index.Name);
+    }
+
+    internal bool Includes(string indexName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(indexName);
+        lock (sync)
+        {
+            return isCreated && schema.TryGetOrdinal(indexName, out _);
+        }
+    }
+
+    internal void EnsureLazyIndex(IIndex index)
+    {
+        ValidateIndex(index);
+        lock (sync)
+        {
+            openedIndexes[index.Name] = index;
+            if (isCreated && schema.TryGetOrdinal(index.Name, out _))
+                return;
+
+            isCreated = true;
+            includeAllWhenEmpty = false;
+            if (selectedIndexes.Add(index.Name))
+                selectedIndexOrder.Add(index.Name);
+            isLazyBuild = true;
+            ResetLazyBuildCore();
+        }
+    }
+
+    internal void BuildIndex(string indexName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(indexName);
+        lock (sync)
+        {
+            EnsureCreated();
+            if (!schema.TryGetOrdinal(indexName, out int ordinal))
+                throw new InvalidOperationException($"Index '{indexName}' is not included in the '{IndexSetName}' identity inversion.");
+            if (!isLazyBuild)
+            {
+                if (NeedsRebuildCore())
+                    RebuildCore();
+                return;
+            }
+            if (!lastCatalogStats.Equals(indexSet.Catalog.Stats.Current))
+                ResetLazyBuildCore();
+            if (!schema.TryGetOrdinal(indexName, out ordinal))
+                throw new InvalidOperationException($"Index '{indexName}' is no longer included in the '{IndexSetName}' identity inversion.");
+            if (!lazyIndexComplete[ordinal])
+                AdvanceLazyIndexCore(ordinal, targetIdentity: null, out _);
+        }
+    }
+
+    internal void Exclude(string indexName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(indexName);
+        lock (sync)
+        {
+            openedIndexes.Remove(indexName);
+            if (!isCreated || !schema.TryGetOrdinal(indexName, out _))
+                return;
+
+            includeAllWhenEmpty = false;
+            selectedIndexes.Remove(indexName);
+            selectedIndexOrder.RemoveAll(candidate => string.Equals(candidate, indexName, StringComparison.Ordinal));
+            if (selectedIndexOrder.Count == 0)
+            {
+                isCreated = false;
+                isLazyBuild = false;
+                hasBuildSnapshot = false;
+                lastBuildStats = default;
+                DisposeLazyCursors();
+                lazyIndexComplete = Array.Empty<bool>();
+                lazyBuildStopwatch = null;
+                lazyTupleCount = 0;
+                schema = CatalogIndexSetInverseSchema.Empty;
+                identityKeys = new Dictionary<object, CatalogIndexSetInverseEntry>(LibraDexObjectValueComparer.Instance);
+                return;
+            }
+
+            isLazyBuild = true;
+            ResetLazyBuildCore();
+        }
+    }
+
+    internal IdentityLookupState GetIndexState(string indexName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(indexName);
+        lock (sync)
+        {
+            if (!isCreated || !schema.TryGetOrdinal(indexName, out int ordinal))
+                return IdentityLookupState.NotCreated;
+            if (!lastCatalogStats.Equals(indexSet.Catalog.Stats.Current))
+                return IdentityLookupState.Partial;
+            if (!isLazyBuild)
+                return hasBuildSnapshot ? IdentityLookupState.Complete : IdentityLookupState.Partial;
+            return lazyIndexComplete.Length > ordinal && lazyIndexComplete[ordinal]
+                ? IdentityLookupState.Complete
+                : IdentityLookupState.Partial;
+        }
+    }
+
+    internal object[] GetDuplicateIdentities(string indexName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(indexName);
+        lock (sync)
+        {
+            PrepareIndexForCompleteRead(indexName, out int ordinal);
+            List<object> duplicates = new();
+            foreach ((object identity, CatalogIndexSetInverseEntry entry) in identityKeys)
+            {
+                List<object?>? values = entry.Values[ordinal];
+                if (HasMultipleDistinctValues(values))
+                    duplicates.Add(identity);
+            }
+
+            return duplicates.ToArray();
+        }
+    }
+
+    internal LibraDexObjectTuple[] GetEntriesForDuplicateIdentities(string indexName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(indexName);
+        lock (sync)
+        {
+            PrepareIndexForCompleteRead(indexName, out int ordinal);
+            List<LibraDexObjectTuple> entries = new();
+            foreach ((object identity, CatalogIndexSetInverseEntry entry) in identityKeys)
+            {
+                List<object?>? values = entry.Values[ordinal];
+                if (!HasMultipleDistinctValues(values))
+                    continue;
+                for (int i = 0; i < values!.Count; i++)
+                    entries.Add(new LibraDexObjectTuple(values[i], identity));
+            }
+
+            return entries.ToArray();
+        }
+    }
+
+    internal object[] GetSingletonIdentities(string indexName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(indexName);
+        lock (sync)
+        {
+            PrepareIndexForCompleteRead(indexName, out int ordinal);
+            List<object> singletons = new();
+            foreach ((object identity, CatalogIndexSetInverseEntry entry) in identityKeys)
+            {
+                if (HasExactlyOneDistinctValue(entry.Values[ordinal]))
+                    singletons.Add(identity);
+            }
+
+            return singletons.ToArray();
+        }
+    }
+
+    internal LibraDexObjectTuple[] GetEntriesForSingletonIdentities(string indexName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(indexName);
+        lock (sync)
+        {
+            PrepareIndexForCompleteRead(indexName, out int ordinal);
+            List<LibraDexObjectTuple> entries = new();
+            foreach ((object identity, CatalogIndexSetInverseEntry entry) in identityKeys)
+            {
+                List<object?>? values = entry.Values[ordinal];
+                if (!HasExactlyOneDistinctValue(values))
+                    continue;
+
+                object? first = values![0];
+                entries.Add(new LibraDexObjectTuple(first, identity));
+            }
+
+            return entries.ToArray();
+        }
+    }
+
+    private void PrepareIndexForCompleteRead(string indexName, out int ordinal)
+    {
+        EnsureCreated();
+        if (!schema.TryGetOrdinal(indexName, out ordinal))
+            throw new InvalidOperationException($"Index '{indexName}' is not included in the '{IndexSetName}' identity inversion.");
+        if (!lastCatalogStats.Equals(indexSet.Catalog.Stats.Current))
+            ResetLazyBuildCore();
+        if (!schema.TryGetOrdinal(indexName, out ordinal))
+            throw new InvalidOperationException($"Index '{indexName}' is no longer included in the '{IndexSetName}' identity inversion.");
+        if (isLazyBuild && !lazyIndexComplete[ordinal])
+            AdvanceLazyIndexCore(ordinal, targetIdentity: null, out _);
+        else if (!isLazyBuild && NeedsRebuildCore())
+            RebuildCore();
+    }
+
+    private static bool HasMultipleDistinctValues(List<object?>? values)
+    {
+        if (values is null || values.Count < 2)
+            return false;
+        object? first = values[0];
+        for (int i = 1; i < values.Count; i++)
+        {
+            if (!LibraDexObjectTuple.ValueEquals(first, values[i]))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static bool HasExactlyOneDistinctValue(List<object?>? values)
+    {
+        if (values is null || values.Count == 0)
+            return false;
+        object? first = values[0];
+        for (int i = 1; i < values.Count; i++)
+        {
+            if (!LibraDexObjectTuple.ValueEquals(first, values[i]))
+                return false;
+        }
+
+        return true;
     }
 
     /// <summary>
@@ -157,6 +436,8 @@ public sealed class CatalogIndexSetInverse
         lock (sync)
         {
             EnsureCreated();
+            isLazyBuild = false;
+            DisposeLazyCursors();
             RebuildCore();
             return this;
         }
@@ -170,8 +451,13 @@ public sealed class CatalogIndexSetInverse
         lock (sync)
         {
             isCreated = false;
+            isLazyBuild = false;
             hasBuildSnapshot = false;
             lastBuildStats = default;
+            DisposeLazyCursors();
+            lazyIndexComplete = Array.Empty<bool>();
+            lazyBuildStopwatch = null;
+            lazyTupleCount = 0;
             schema = CatalogIndexSetInverseSchema.Empty;
             identityKeys = new Dictionary<object, CatalogIndexSetInverseEntry>(LibraDexObjectValueComparer.Instance);
         }
@@ -304,6 +590,45 @@ public sealed class CatalogIndexSetInverse
         }
     }
 
+    internal bool TryIdentityExists(string indexName, object identity, out bool exists)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(indexName);
+        ArgumentNullException.ThrowIfNull(identity);
+        lock (sync)
+        {
+            if (!isCreated || !schema.TryGetOrdinal(indexName, out int ordinal))
+            {
+                exists = false;
+                return false;
+            }
+
+            if (!isLazyBuild)
+            {
+                EnsureCurrentCore();
+                exists = HasIndexedValue(identity, ordinal);
+                return true;
+            }
+
+            if (!lastCatalogStats.Equals(indexSet.Catalog.Stats.Current))
+                ResetLazyBuildCore();
+
+            if (HasIndexedValue(identity, ordinal))
+            {
+                exists = true;
+                return true;
+            }
+
+            if (lazyIndexComplete[ordinal])
+            {
+                exists = false;
+                return true;
+            }
+
+            AdvanceLazyIndexCore(ordinal, identity, out exists);
+            return true;
+        }
+    }
+
     internal bool AnyKey(object identity, string indexName, Func<object?, bool> predicate)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(indexName);
@@ -418,14 +743,19 @@ public sealed class CatalogIndexSetInverse
     private void EnsureCurrentCore()
     {
         EnsureCreated();
-        if (NeedsRebuildCore())
+        if (isLazyBuild)
         {
-            RebuildCore();
+            if (!lastCatalogStats.Equals(indexSet.Catalog.Stats.Current))
+                ResetLazyBuildCore();
+            CompleteLazyBuildCore();
         }
+        else if (NeedsRebuildCore())
+            RebuildCore();
     }
 
     private void RebuildCore()
     {
+        DisposeLazyCursors();
         Stopwatch stopwatch = Stopwatch.StartNew();
         CatalogIndexInfo[] infos = indexSet.List();
         CatalogIndexSetInverseSchema nextSchema = CatalogIndexSetInverseSchema.Create(ResolveIncludedIndexNames(infos));
@@ -434,7 +764,7 @@ public sealed class CatalogIndexSetInverse
         for (int schemaOrdinal = 0; schemaOrdinal < nextSchema.Names.Length; schemaOrdinal++)
         {
             string indexName = nextSchema.Names[schemaOrdinal];
-            IIndex index = indexSet.Index(indexName);
+            IIndex index = ResolveIndex(indexName);
             foreach (LibraDexObjectTuple tuple in IterateAllTuples(indexName, index))
             {
                 if (!next.TryGetValue(tuple.Identity, out CatalogIndexSetInverseEntry? entry))
@@ -460,6 +790,129 @@ public sealed class CatalogIndexSetInverse
             next.Count,
             tupleCount,
             EstimateMapBytes(next, nextSchema.Names.Length, tupleCount));
+    }
+
+    private void ConfigureSelection(string[] indexNames)
+    {
+        if (indexNames.Length == 0)
+        {
+            includeAllWhenEmpty = true;
+            selectedIndexes.Clear();
+            selectedIndexOrder.Clear();
+            return;
+        }
+
+        includeAllWhenEmpty = false;
+        selectedIndexes.Clear();
+        selectedIndexOrder.Clear();
+        for (int i = 0; i < indexNames.Length; i++)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(indexNames[i]);
+            if (selectedIndexes.Add(indexNames[i]))
+                selectedIndexOrder.Add(indexNames[i]);
+        }
+    }
+
+    private void ResetLazyBuildCore()
+    {
+        DisposeLazyCursors();
+        string[] names = ResolveIncludedIndexNames(indexSet.List());
+        schema = CatalogIndexSetInverseSchema.Create(names);
+        identityKeys = new Dictionary<object, CatalogIndexSetInverseEntry>(LibraDexObjectValueComparer.Instance);
+        lazyIndexComplete = new bool[names.Length];
+        lazyTupleCount = 0;
+        lazyBuildStopwatch = Stopwatch.StartNew();
+        lastCatalogStats = indexSet.Catalog.Stats.Current;
+        lastBuildStats = new CatalogIndexSetInverseBuildStats(
+            DateTimeOffset.UtcNow,
+            TimeSpan.Zero,
+            names.Length,
+            0,
+            0,
+            0);
+        hasBuildSnapshot = names.Length == 0;
+        if (hasBuildSnapshot)
+            CompleteLazyBuildStatsCore();
+    }
+
+    private void CompleteLazyBuildCore()
+    {
+        for (int ordinal = 0; ordinal < schema.Names.Length; ordinal++)
+        {
+            if (!lazyIndexComplete[ordinal])
+                AdvanceLazyIndexCore(ordinal, targetIdentity: null, out _);
+        }
+    }
+
+    private void AdvanceLazyIndexCore(int ordinal, object? targetIdentity, out bool found)
+    {
+        found = false;
+        if (!lazyCursors.TryGetValue(ordinal, out IEnumerator<LibraDexObjectTuple>? cursor))
+        {
+            string indexName = schema.Names[ordinal];
+            IIndex index = ResolveIndex(indexName);
+            cursor = IterateAllTuples(indexName, index).GetEnumerator();
+            lazyCursors.Add(ordinal, cursor);
+        }
+
+        while (cursor.MoveNext())
+        {
+            LibraDexObjectTuple tuple = cursor.Current;
+            AddInverseTuple(ordinal, tuple);
+            if (targetIdentity is not null && LibraDexObjectValueComparer.Instance.Equals(tuple.Identity, targetIdentity))
+            {
+                found = true;
+                return;
+            }
+        }
+
+        cursor.Dispose();
+        lazyCursors.Remove(ordinal);
+        lazyIndexComplete[ordinal] = true;
+        for (int i = 0; i < lazyIndexComplete.Length; i++)
+        {
+            if (!lazyIndexComplete[i])
+                return;
+        }
+
+        hasBuildSnapshot = true;
+        CompleteLazyBuildStatsCore();
+    }
+
+    private void AddInverseTuple(int ordinal, LibraDexObjectTuple tuple)
+    {
+        if (!identityKeys.TryGetValue(tuple.Identity, out CatalogIndexSetInverseEntry? entry))
+        {
+            entry = new CatalogIndexSetInverseEntry(schema.Names.Length);
+            identityKeys.Add(tuple.Identity, entry);
+        }
+
+        entry.Add(ordinal, tuple.Key);
+        lazyTupleCount++;
+    }
+
+    private bool HasIndexedValue(object identity, int ordinal)
+        => identityKeys.TryGetValue(identity, out CatalogIndexSetInverseEntry? entry) && entry.Values[ordinal] is not null;
+
+    private void CompleteLazyBuildStatsCore()
+    {
+        lazyBuildStopwatch?.Stop();
+        TimeSpan elapsed = lazyBuildStopwatch?.Elapsed ?? TimeSpan.Zero;
+        lastCatalogStats = indexSet.Catalog.Stats.Current;
+        lastBuildStats = new CatalogIndexSetInverseBuildStats(
+            DateTimeOffset.UtcNow,
+            elapsed,
+            schema.Names.Length,
+            identityKeys.Count,
+            lazyTupleCount,
+            EstimateMapBytes(identityKeys, schema.Names.Length, lazyTupleCount));
+    }
+
+    private void DisposeLazyCursors()
+    {
+        foreach (IEnumerator<LibraDexObjectTuple> cursor in lazyCursors.Values)
+            cursor.Dispose();
+        lazyCursors.Clear();
     }
 
     private bool NeedsRebuildCore()
@@ -499,6 +952,13 @@ public sealed class CatalogIndexSetInverse
         return perIdentityBytes + listBytes + tupleCount * 16L;
     }
 
+    private IIndex ResolveIndex(string indexName)
+    {
+        if (openedIndexes.TryGetValue(indexName, out IIndex? index))
+            return index;
+        return indexSet.Index(indexName);
+    }
+
     private static IEnumerable<LibraDexObjectTuple> IterateAllTuples(string indexName, IIndex index)
     {
         LibraDexIdentityPrimitiveRequest request = new(LibraDexCriteriaKind.All, Array.Empty<object?>());
@@ -514,6 +974,35 @@ public sealed class CatalogIndexSetInverse
 
         throw new NotSupportedException($"Index '{indexName}' cannot expose key/identity tuples for the inverse key map.");
     }
+}
+
+/// <summary>
+/// Identifies the runtime lifecycle state of an optional index-set inverse map.<br/>
+/// </summary>
+public enum CatalogIndexSetInverseState
+{
+    /// <summary>
+    /// No inverse map has been enabled for this index set.<br/>
+    /// </summary>
+    Disabled = 0,
+
+    /// <summary>
+    /// An explicitly configured lazy inverse is accepting identity checks and incrementally scanning participating forward indexes.<br/>
+    /// Positive discovered rows are usable, while an undiscovered identity still requires the resumable forward walk.<br/>
+    /// </summary>
+    Building = 1,
+
+    /// <summary>
+    /// Every participating forward index has been scanned and the inverse matches the observed catalog mutation counters.<br/>
+    /// Both hits and misses are authoritative for the current session snapshot.<br/>
+    /// </summary>
+    Current = 2,
+
+    /// <summary>
+    /// The inverse was built previously but catalog mutation counters no longer match its observed source state.<br/>
+    /// Eager maps rebuild before use; lazy maps reset their resumable build before the next identity check.<br/>
+    /// </summary>
+    Stale = 3
 }
 
 /// <summary>
@@ -680,30 +1169,84 @@ public sealed class LibraDexInverseIdentityTypeSelector
         this.inverse = inverse;
     }
 
-    /// <summary>
-    /// Selects Int64 identity predicates for the inverse identity source.<br/>
-    /// </summary>
-    public LibraDexInverseIdentityOperator<long> AsInt64 => new(group, inverse);
+    /// <summary>Selects Boolean identity predicates for the inverse identity source.<br/></summary>
+    public LibraDexInverseIdentityOperator<bool> AsBoolean => Select<bool>();
 
-    /// <summary>
-    /// Selects UInt64 identity predicates for the inverse identity source.<br/>
-    /// </summary>
-    public LibraDexInverseIdentityOperator<ulong> AsUInt64 => new(group, inverse);
+    /// <summary>Selects Byte identity predicates for the inverse identity source.<br/></summary>
+    public LibraDexInverseIdentityOperator<byte> AsByte => Select<byte>();
 
-    /// <summary>
-    /// Selects Int32 identity predicates for the inverse identity source.<br/>
-    /// </summary>
-    public LibraDexInverseIdentityOperator<int> AsInt32 => new(group, inverse);
+    /// <summary>Selects SByte identity predicates for the inverse identity source.<br/></summary>
+    public LibraDexInverseIdentityOperator<sbyte> AsSByte => Select<sbyte>();
+
+    /// <summary>Selects Int16 identity predicates for the inverse identity source.<br/></summary>
+    public LibraDexInverseIdentityOperator<short> AsInt16 => Select<short>();
+
+    /// <summary>Selects UInt16 identity predicates for the inverse identity source.<br/></summary>
+    public LibraDexInverseIdentityOperator<ushort> AsUInt16 => Select<ushort>();
+
+    /// <summary>Selects Int32 identity predicates for the inverse identity source.<br/></summary>
+    public LibraDexInverseIdentityOperator<int> AsInt32 => Select<int>();
+
+    /// <summary>Selects UInt32 identity predicates for the inverse identity source.<br/></summary>
+    public LibraDexInverseIdentityOperator<uint> AsUInt32 => Select<uint>();
+
+    /// <summary>Selects Int64 identity predicates for the inverse identity source.<br/></summary>
+    public LibraDexInverseIdentityOperator<long> AsInt64 => Select<long>();
+
+    /// <summary>Selects UInt64 identity predicates for the inverse identity source.<br/></summary>
+    public LibraDexInverseIdentityOperator<ulong> AsUInt64 => Select<ulong>();
+
+    /// <summary>Selects Int128 identity predicates for the inverse identity source.<br/></summary>
+    public LibraDexInverseIdentityOperator<Int128> AsInt128 => Select<Int128>();
+
+    /// <summary>Selects UInt128 identity predicates for the inverse identity source.<br/></summary>
+    public LibraDexInverseIdentityOperator<UInt128> AsUInt128 => Select<UInt128>();
+
+    /// <summary>Selects Single identity predicates for the inverse identity source.<br/></summary>
+    public LibraDexInverseIdentityOperator<float> AsSingle => Select<float>();
+
+    /// <summary>Selects Double identity predicates for the inverse identity source.<br/></summary>
+    public LibraDexInverseIdentityOperator<double> AsDouble => Select<double>();
+
+    /// <summary>Selects Decimal identity predicates for the inverse identity source.<br/></summary>
+    public LibraDexInverseIdentityOperator<decimal> AsDecimal => Select<decimal>();
+
+    /// <summary>Selects BigInteger identity predicates for the inverse identity source.<br/></summary>
+    public LibraDexInverseIdentityOperator<System.Numerics.BigInteger> AsBigInt => Select<System.Numerics.BigInteger>();
+
+    /// <summary>Selects Char identity predicates for the inverse identity source.<br/></summary>
+    public LibraDexInverseIdentityOperator<char> AsChar => Select<char>();
 
     /// <summary>
     /// Selects GUID identity predicates for the inverse identity source.<br/>
     /// </summary>
-    public LibraDexInverseIdentityOperator<Guid> AsGuid => new(group, inverse);
+    public LibraDexInverseIdentityOperator<Guid> AsGuid => Select<Guid>();
+
+    /// <summary>Selects raw binary identity predicates for the inverse identity source.<br/></summary>
+    public LibraDexInverseIdentityOperator<byte[]> AsBinary => Select<byte[]>();
+
+    /// <summary>Selects DateTime identity predicates for the inverse identity source.<br/></summary>
+    public LibraDexInverseIdentityOperator<DateTime> AsDateTime => Select<DateTime>();
+
+    /// <summary>Selects DateTimeOffset identity predicates for the inverse identity source.<br/></summary>
+    public LibraDexInverseIdentityOperator<DateTimeOffset> AsDateTimeOffset => Select<DateTimeOffset>();
+
+    /// <summary>Selects DateOnly identity predicates for the inverse identity source.<br/></summary>
+    public LibraDexInverseIdentityOperator<DateOnly> AsDateOnly => Select<DateOnly>();
+
+    /// <summary>Selects TimeOnly identity predicates for the inverse identity source.<br/></summary>
+    public LibraDexInverseIdentityOperator<TimeOnly> AsTimeOnly => Select<TimeOnly>();
+
+    /// <summary>Selects TimeSpan identity predicates for the inverse identity source.<br/></summary>
+    public LibraDexInverseIdentityOperator<TimeSpan> AsTimeSpan => Select<TimeSpan>();
 
     /// <summary>
     /// Selects string identity predicates for the inverse identity source.<br/>
     /// </summary>
     public LibraDexInverseStringIdentityOperator AsString => new(group, inverse);
+
+    private LibraDexInverseIdentityOperator<TIdentity> Select<TIdentity>()
+        => new(group, inverse);
 
     /// <summary>
     /// Starts the inverse condition from an explicit caller-supplied identity set.<br/>
@@ -986,12 +1529,7 @@ public sealed class LibraDexInverseKeyTypeSelector
         this.keyAsSource = keyAsSource;
     }
 
-    /// <summary>
-    /// Selects typed comparison operators for the inverse key value.<br/>
-    /// </summary>
-    /// <typeparam name="TValue">The expected key value type.</typeparam>
-    /// <returns>A typed inverse-key operator.</returns>
-    public LibraDexInverseKeyOperator<TValue> As<TValue>()
+    private LibraDexInverseKeyOperator<TValue> Select<TValue>()
         => new(builder, inverse, source, indexName, keyAsSource);
 
     /// <summary>
@@ -1002,27 +1540,87 @@ public sealed class LibraDexInverseKeyTypeSelector
     /// <summary>
     /// Selects Boolean operators for the inverse key value.<br/>
     /// </summary>
-    public LibraDexInverseKeyOperator<bool> AsBoolean => As<bool>();
+    public LibraDexInverseKeyOperator<bool> AsBoolean => Select<bool>();
+
+    /// <summary>Selects Byte operators for the inverse key value.<br/></summary>
+    public LibraDexInverseKeyOperator<byte> AsByte => Select<byte>();
+
+    /// <summary>Selects SByte operators for the inverse key value.<br/></summary>
+    public LibraDexInverseKeyOperator<sbyte> AsSByte => Select<sbyte>();
+
+    /// <summary>Selects Int16 operators for the inverse key value.<br/></summary>
+    public LibraDexInverseKeyOperator<short> AsInt16 => Select<short>();
+
+    /// <summary>Selects UInt16 operators for the inverse key value.<br/></summary>
+    public LibraDexInverseKeyOperator<ushort> AsUInt16 => Select<ushort>();
+
+    /// <summary>Selects UInt32 operators for the inverse key value.<br/></summary>
+    public LibraDexInverseKeyOperator<uint> AsUInt32 => Select<uint>();
+
+    /// <summary>Selects Int128 operators for the inverse key value.<br/></summary>
+    public LibraDexInverseKeyOperator<Int128> AsInt128 => Select<Int128>();
+
+    /// <summary>Selects UInt128 operators for the inverse key value.<br/></summary>
+    public LibraDexInverseKeyOperator<UInt128> AsUInt128 => Select<UInt128>();
 
     /// <summary>
     /// Selects GUID operators for the inverse key value.<br/>
     /// </summary>
-    public LibraDexInverseKeyOperator<Guid> AsGuid => As<Guid>();
+    public LibraDexInverseKeyOperator<Guid> AsGuid => Select<Guid>();
+
+    /// <summary>Selects raw binary operators for the inverse key value.<br/></summary>
+    public LibraDexInverseKeyOperator<byte[]> AsBinary => Select<byte[]>();
 
     /// <summary>
     /// Selects Int64 operators for the inverse key value.<br/>
     /// </summary>
-    public LibraDexInverseKeyOperator<long> AsInt64 => As<long>();
+    public LibraDexInverseKeyOperator<long> AsInt64 => Select<long>();
 
     /// <summary>
     /// Selects UInt64 operators for the inverse key value.<br/>
     /// </summary>
-    public LibraDexInverseKeyOperator<ulong> AsUInt64 => As<ulong>();
+    public LibraDexInverseKeyOperator<ulong> AsUInt64 => Select<ulong>();
 
     /// <summary>
     /// Selects Int32 operators for the inverse key value.<br/>
     /// </summary>
-    public LibraDexInverseKeyOperator<int> AsInt32 => As<int>();
+    public LibraDexInverseKeyOperator<int> AsInt32 => Select<int>();
+
+    /// <summary>
+    /// Selects exact Decimal operators for the inverse key value.<br/>
+    /// </summary>
+    public LibraDexInverseKeyOperator<decimal> AsDecimal => Select<decimal>();
+
+    /// <summary>
+    /// Selects native Single operators for the inverse key value.<br/>
+    /// </summary>
+    public LibraDexInverseKeyOperator<float> AsSingle => Select<float>();
+
+    /// <summary>
+    /// Selects native Double operators for the inverse key value.<br/>
+    /// </summary>
+    public LibraDexInverseKeyOperator<double> AsDouble => Select<double>();
+
+    /// <summary>Selects BigInteger operators for the inverse key value.<br/></summary>
+    public LibraDexInverseKeyOperator<System.Numerics.BigInteger> AsBigInt => Select<System.Numerics.BigInteger>();
+
+    /// <summary>Selects Char operators for the inverse key value.<br/></summary>
+    public LibraDexInverseKeyOperator<char> AsChar => Select<char>();
+
+    /// <summary>Selects DateTime operators for the inverse key value.<br/></summary>
+    public LibraDexInverseKeyOperator<DateTime> AsDateTime => Select<DateTime>();
+
+    /// <summary>Selects DateTimeOffset operators for the inverse key value.<br/></summary>
+    public LibraDexInverseKeyOperator<DateTimeOffset> AsDateTimeOffset => Select<DateTimeOffset>();
+
+    /// <summary>Selects DateOnly operators for the inverse key value.<br/></summary>
+    public LibraDexInverseKeyOperator<DateOnly> AsDateOnly => Select<DateOnly>();
+
+    /// <summary>Selects TimeOnly operators for the inverse key value.<br/></summary>
+    public LibraDexInverseKeyOperator<TimeOnly> AsTimeOnly => Select<TimeOnly>();
+
+    /// <summary>Selects TimeSpan operators for the inverse key value.<br/></summary>
+    public LibraDexInverseKeyOperator<TimeSpan> AsTimeSpan => Select<TimeSpan>();
 }
 
 /// <summary>
@@ -1217,6 +1815,52 @@ public sealed class LibraDexInverseStringKeyOperator : LibraDexInverseKeyOperato
         _ = culture;
         StringComparison comparison = ignoreCase ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
         return Add(candidate => candidate is string text && text.Contains(value, comparison));
+    }
+
+    /// <summary>
+    /// Filters identities whose inverse string key does not contain <paramref name="value"/>.<br/>
+    /// Null and non-string inverse values do not match the negated string predicate.<br/>
+    /// </summary>
+    /// <param name="value">The substring to exclude.</param>
+    /// <param name="ignoreCase">When true, uses case-insensitive comparison.</param>
+    /// <param name="culture">The optional culture name governing comparison.</param>
+    /// <returns>An inverse continuation.</returns>
+    public LibraDexInverseConditionContinueOrEnd NotContains(string value, bool ignoreCase = false, string? culture = null)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        LibraDexStringComparisonPolicy policy = LibraDexStringComparisonPolicy.FromLegacy(ignoreCase, culture);
+        return Add(candidate => candidate is string text &&
+            policy.ResolveCulture().CompareInfo.IndexOf(text, value, policy.CompareOptions) < 0);
+    }
+
+    /// <summary>
+    /// Filters identities whose inverse string key matches a wildcard pattern.<br/>
+    /// `*` matches zero or more characters and `?` matches one; an ordinary backslash remains literal unless it escapes wildcard syntax.<br/>
+    /// </summary>
+    /// <param name="pattern">The wildcard pattern.</param>
+    /// <param name="ignoreCase">When true, uses case-insensitive comparison.</param>
+    /// <param name="culture">The optional culture name governing comparison.</param>
+    /// <returns>An inverse continuation.</returns>
+    public LibraDexInverseConditionContinueOrEnd Like(string pattern, bool ignoreCase = false, string? culture = null)
+        => AddWildcard(pattern, negate: false, ignoreCase, culture);
+
+    /// <summary>
+    /// Filters identities whose inverse string key does not match a wildcard pattern.<br/>
+    /// Null and non-string inverse values do not match the negated string predicate.<br/>
+    /// </summary>
+    /// <param name="pattern">The wildcard pattern to exclude.</param>
+    /// <param name="ignoreCase">When true, uses case-insensitive comparison.</param>
+    /// <param name="culture">The optional culture name governing comparison.</param>
+    /// <returns>An inverse continuation.</returns>
+    public LibraDexInverseConditionContinueOrEnd NotLike(string pattern, bool ignoreCase = false, string? culture = null)
+        => AddWildcard(pattern, negate: true, ignoreCase, culture);
+
+    private LibraDexInverseConditionContinueOrEnd AddWildcard(string pattern, bool negate, bool ignoreCase, string? culture)
+    {
+        LibraDexStringComparisonPolicy policy = LibraDexStringComparisonPolicy.FromLegacy(ignoreCase, culture);
+        LibraDexWildcardPattern wildcard = LibraDexWildcardPattern.Create(pattern, policy);
+        return Add(candidate => candidate is string text &&
+            (wildcard.Matches(text, policy.ResolveCulture().CompareInfo, policy.CompareOptions) != negate));
     }
 }
 

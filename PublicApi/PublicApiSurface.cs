@@ -364,7 +364,13 @@ public enum LibraDexCriteriaKind
     /// The descriptor represents null or empty key states over metadata-backed key-state routes.<br/>
     /// `NullKey.Null` and `NullKey.Empty` read compact identity-only routes, while `NullKey.NullOrEmpty` reads both routes in key-state order.<br/>
     /// </summary>
-    KeyState = 22
+    KeyState = 22,
+
+    /// <summary>
+    /// The descriptor represents a planner-visible numeric transform followed by a typed comparison.<br/>
+    /// The first implementation performs an explicit compact-key scan; future inverse-range planning can replace supported cases without changing caller syntax.<br/>
+    /// </summary>
+    NumericTransform = 23
 }
 
 public enum LibraDexSetOperationKind
@@ -448,6 +454,34 @@ public readonly record struct LibraDexExternalIdentityContext(object Identity, l
 public readonly record struct LibraDexExternalEntry<TKey, TIdentity>(TKey Key, TIdentity Identity);
 
 /// <summary>
+/// Provides a non-generic insertion bridge over one physical LibraDex concurrent batch.<br/>
+/// Runtime owners such as Abraxas use this only after opening a catalog index through metadata; strongly typed callers should continue to use the concrete index's typed concurrent-batch surface.<br/>
+/// A batch stages only the physical shapes supported by its owning index, may publish narrow topology fallbacks before final publication, and is not a transactional rollback boundary.<br/>
+/// </summary>
+public interface ILibraDexConcurrentInsertBatch : IDisposable
+{
+    /// <summary>
+    /// Inserts one runtime key/identity tuple after validating both values against the owning index's persisted CLR contracts.<br/>
+    /// </summary>
+    /// <param name="key">Runtime key value accepted by the owning index.<br/></param>
+    /// <param name="identity">Runtime identity value accepted by the owning index.<br/></param>
+    /// <returns>The primary insertion outcome.<br/></returns>
+    LibraDexGenericInsertResult Insert(object? key, object identity);
+
+    /// <summary>
+    /// Publishes remaining staged shelf-local work and closes the batch.<br/>
+    /// </summary>
+    /// <returns>Aggregate publication and fallback telemetry for the completed batch.<br/></returns>
+    LibraDexConcurrentBatchPublishResult Publish();
+
+    /// <summary>
+    /// Aborts unpublished staged work and closes the batch.<br/>
+    /// Already published topology fallbacks remain visible and require owner-level convergence handling when a later operation fails.<br/>
+    /// </summary>
+    void Abort();
+}
+
+/// <summary>
 /// Represents one public key/identity tuple returned by a LibraDex index.<br/>
 /// The left side is the indexed key and the right side is the identity associated with that key.<br/>
 /// </summary>
@@ -455,6 +489,36 @@ public readonly record struct LibraDexExternalEntry<TKey, TIdentity>(TKey Key, T
 /// <typeparam name="TIdentity">The public identity type.</typeparam>
 public interface IIndex
 {
+    /// <summary>
+    /// Gets the open catalog that owns this index handle and its underlying session lifetime.<br/>
+    /// Every public LibraDex index belongs to exactly one catalog; low-level physical storage primitives do not implement this interface.<br/>
+    /// </summary>
+    Catalog Catalog { get; }
+
+    /// <summary>
+    /// Gets non-generic key membership and duplicate-analysis operations for this opened index.<br/>
+    /// Typed index handles expose the corresponding strongly typed facade under the same member name.<br/>
+    /// </summary>
+    LibraDexIndexKeys Keys => new(this);
+
+    /// <summary>
+    /// Gets non-generic identity membership and duplicate-analysis operations for this opened index.<br/>
+    /// Typed index handles expose the corresponding strongly typed facade under the same member name.<br/>
+    /// </summary>
+    LibraDexIndexIdentities Identities => new(this);
+
+    /// <summary>
+    /// Gets non-generic exact-entry and duplicate-analysis operations for this opened index.<br/>
+    /// Typed index handles expose the corresponding strongly typed facade under the same member name.<br/>
+    /// </summary>
+    LibraDexIndexEntries Entries => new(this);
+
+    /// <summary>
+    /// Gets runtime identity-to-key lookup controls for this opened catalog index.<br/>
+    /// The lookup policy and materialized inversion are session-local and do not change persisted index metadata.<br/>
+    /// </summary>
+    LibraDexIdentityLookup IdentityLookup => new(this);
+
     /// <summary>
     /// Gets the index name recorded in catalog metadata or the fixed directory slot.<br/>
     /// </summary>
@@ -532,6 +596,18 @@ public interface IIndex
     /// <param name="identity">The runtime identity value to associate with the key.</param>
     /// <returns>The insert result plus any route-create and insert commit telemetry.</returns>
     LibraDexGenericInsertResult Insert(object? key, object identity);
+
+    /// <summary>
+    /// Attempts to begin a non-generic concurrent insertion batch for this index's physical shape.<br/>
+    /// Returning <see langword="false"/> is a capability result: callers may use a narrower serialized lane without treating the index as invalid.<br/>
+    /// </summary>
+    /// <param name="batch">Receives the opened batch when this physical shape supports concurrent insertion; otherwise <see langword="null"/>.<br/></param>
+    /// <returns><see langword="true"/> when a batch was opened; otherwise <see langword="false"/>.<br/></returns>
+    bool TryBeginConcurrentInsertBatch(out ILibraDexConcurrentInsertBatch? batch)
+    {
+        batch = null;
+        return false;
+    }
 
     /// <summary>
     /// Deletes one runtime key/identity tuple after validating both values against this index's persisted CLR type contract.<br/>
@@ -776,8 +852,6 @@ public interface IIdentityCriterionProjection
 /// <param name="CriteriaKind">The normalized primitive lookup kind.</param>
 /// <param name="Values">The already materialized operand values for the primitive.</param>
 /// <param name="TakeLimit">An optional maximum number of identities required by the caller.</param>
-public readonly record struct LibraDexBookmark(long Generation, long Position);
-
 /// <summary>
 /// Represents the materialized result of a programmatic identity criteria projection.<br/>
 /// This keeps execution metadata beside the returned identities so generated callers can inspect plan shape without rerunning planning separately.<br/>
@@ -822,7 +896,10 @@ public readonly record struct LibraDexQueryDiagnostics(
     LibraDexExecutionKind ExecutionKind,
     string? ProjectionName = null,
     long RowsScanned = 0,
-    long RowsReturned = 0);
+    long RowsReturned = 0,
+    long ElapsedTicks = 0,
+    long ThreadAllocatedBytes = 0,
+    bool RequiresScan = false);
 /// <summary>
 /// Identifies which public projection a descriptor returns.<br/>
 /// The enum is public because condition diagnostics and materializers report terminal shape explicitly.<br/>
@@ -978,7 +1055,7 @@ public readonly record struct LibraDexIdentityQueryOptions(
             throw new ArgumentOutOfRangeException(nameof(TakeCount), TakeCount, "Take cannot be negative.");
         }
 
-        if (Bookmark is { Position: < 0 })
+        if (Bookmark is { ResultsConsumed: < 0 })
         {
             throw new ArgumentOutOfRangeException(nameof(Bookmark), Bookmark, "Bookmark position cannot be negative.");
         }
@@ -1270,26 +1347,59 @@ public enum LibraDexMaintenanceMode
 
 /// <summary>
 /// Represents public options for a maintenance operation.<br/>
-/// Options are intentionally small in the scaffold; shape-specific maintenance should add explicit members only when concrete behavior exists.<br/>
+/// Light resolves to 16 work items, bounded resolves to 256 work items, and full is unbounded unless <see cref="MaxWorkItems"/> supplies an explicit positive override.<br/>
 /// </summary>
 public sealed class LibraDexMaintenanceOptions
 {
     /// <summary>
     /// Gets or initializes the requested maintenance mode.<br/>
-    /// Bounded is the default because it keeps explicit maintenance useful without implying unbounded cold optimization by accident.<br/>
+    /// Bounded is the default and resolves to at most 256 physical traversal units.<br/>
     /// </summary>
     public LibraDexMaintenanceMode Mode { get; init; } = LibraDexMaintenanceMode.Bounded;
 
     /// <summary>
-    /// Gets or initializes the maximum number of candidates, routes, shelves, or other work units the operation should consider when applicable.<br/>
-    /// Null means the connected operation can use its own mode-specific default.<br/>
+    /// Gets or initializes an explicit positive cumulative work limit that overrides the selected mode.<br/>
+    /// Null uses the mode-owned limit; zero and negative values are rejected.<br/>
     /// </summary>
     public int? MaxWorkItems { get; init; }
 }
 
 /// <summary>
+/// Identifies why a maintenance request did not complete every requested operation.<br/>
+/// Multiple reasons may be combined when, for example, supported work reaches its limit while another logical topology is unsupported.<br/>
+/// </summary>
+[Flags]
+public enum LibraDexMaintenanceIncompleteReason
+{
+    /// <summary>
+    /// The maintenance request completed every applicable operation.<br/>
+    /// </summary>
+    None = 0,
+
+    /// <summary>
+    /// The resolved mode or explicit work limit stopped execution before every planned work item was visited.<br/>
+    /// </summary>
+    WorkLimit = 1,
+
+    /// <summary>
+    /// One or more logical indexes use a valid topology whose requested maintenance implementation is not connected yet.<br/>
+    /// </summary>
+    UnsupportedTopology = 2,
+
+    /// <summary>
+    /// A physical topology could not be classified or completely traversed as a known valid maintenance shape.<br/>
+    /// </summary>
+    InvalidTopology = 4,
+
+    /// <summary>
+    /// The public operation exists as a scaffold but has no executable implementation.<br/>
+    /// </summary>
+    OperationUnavailable = 8
+}
+
+/// <summary>
 /// Represents the result of a maintenance operation.<br/>
-/// The first scaffold reports operation intent; connected implementations can populate work and change counters without changing public call sites.<br/>
+/// Connected operations report exact work/change counters plus structured incomplete reasons without requiring callers to parse <see cref="Message"/>.<br/>
 /// </summary>
 public readonly record struct LibraDexMaintenanceResult(
     LibraDexMaintenanceOperation Operation,
@@ -1297,7 +1407,20 @@ public readonly record struct LibraDexMaintenanceResult(
     bool Completed,
     int ConsideredCount,
     int ChangedCount,
-    string Message);
+    string Message)
+{
+    /// <summary>
+    /// Gets the machine-readable reasons why <see cref="Completed"/> is false.<br/>
+    /// A completed result always reports <see cref="LibraDexMaintenanceIncompleteReason.None"/>.<br/>
+    /// </summary>
+    public LibraDexMaintenanceIncompleteReason IncompleteReasons { get; init; }
+
+    /// <summary>
+    /// Gets the number of distinct logical indexes whose requested topology is valid but unsupported by the connected operation.<br/>
+    /// Physical maintained companions roll into their logical owner and therefore do not inflate this count.<br/>
+    /// </summary>
+    public int UnsupportedCount { get; init; }
+}
 
 /// <summary>
 /// Identifies a catalog-level utility operation.<br/>
@@ -1730,6 +1853,16 @@ public sealed class CatalogMaintenance
     public Catalog Catalog { get; }
 
     /// <summary>
+    /// Inspects physical index topology and persisted projection metadata and returns an actionable, non-mutating maintenance assessment.<br/>
+    /// This blocking maintenance walk attributes exact orphaned variable-record bytes to logical indexes and rolls maintained projection bytes into their source index while retaining component detail.<br/>
+    /// Unknown physical targets or unattributed session-local cells make the evidence flag false rather than producing an estimate.<br/>
+    /// </summary>
+    /// <param name="minimumReclaimableBytes">The minimum exact reclaimable bytes required for a logical-index repack candidate; zero accepts any positive attributed amount.<br/></param>
+    /// <returns>A disconnected maintenance assessment containing repack candidates, projection issues, and evidence-availability flags.<br/></returns>
+    public LibraDexMaintenanceAssessment Assess(long minimumReclaimableBytes = 0)
+        => LibraDexMaintenanceAssessmentBuilder.Assess(Catalog, minimumReclaimableBytes);
+
+    /// <summary>
     /// Captures catalog validation intent.<br/>
     /// Connected validation should inspect catalog-level structure and compatibility without changing persisted state.<br/>
     /// </summary>
@@ -1738,13 +1871,17 @@ public sealed class CatalogMaintenance
     public LibraDexMaintenanceResult Validate(LibraDexMaintenanceOptions? options = null)
     {
         LibraDexMaintenanceOptions effective = options ?? new LibraDexMaintenanceOptions { Mode = LibraDexMaintenanceMode.Light };
+        _ = LibraDexMaintenancePolicy.ResolveWorkLimit(effective);
         return new LibraDexMaintenanceResult(
             LibraDexMaintenanceOperation.Validate,
             effective.Mode,
             Completed: false,
             ConsideredCount: 0,
             ChangedCount: 0,
-            Message: "Catalog validation is part of the public API scaffold but is not connected to structural validation yet.");
+            Message: "Catalog validation is part of the public API scaffold but is not connected to structural validation yet.")
+        {
+            IncompleteReasons = LibraDexMaintenanceIncompleteReason.OperationUnavailable
+        };
     }
 
     /// <summary>
@@ -1756,13 +1893,305 @@ public sealed class CatalogMaintenance
     public LibraDexMaintenanceResult Optimize(LibraDexMaintenanceOptions? options = null)
     {
         LibraDexMaintenanceOptions effective = options ?? new LibraDexMaintenanceOptions();
+        int? workLimit = LibraDexMaintenancePolicy.ResolveWorkLimit(effective);
+        CatalogIndexInfo[] infos = Catalog.Indexes.List();
+        Dictionary<int, CatalogIndexInfo> bySlot = infos.ToDictionary(static info => info.SlotIndex);
+        HashSet<int> companionSlots = new();
+        for (int i = 0; i < infos.Length; i++)
+        {
+            AddCompanionSlot(companionSlots, infos[i].ExactReversedProjectionSlotIndex);
+            AddCompanionSlot(companionSlots, infos[i].FoldedProjectionSlotIndex);
+            AddCompanionSlot(companionSlots, infos[i].SortKeyProjectionSlotIndex);
+            AddSortKeyProfileSlots(companionSlots, infos[i].SortKeyProfiles);
+            AddCompanionSlot(companionSlots, infos[i].FoldedReversedProjectionSlotIndex);
+            AddCompanionSlot(companionSlots, infos[i].NormalizedProjectionSlotIndex);
+            AddCompanionSlot(companionSlots, infos[i].NormalizedReversedProjectionSlotIndex);
+        }
+
+        List<(int OwnerSlot, CatalogIndexInfo Physical, LibraDexMaintenanceTopologyKind Kind)> supported = new();
+        HashSet<int> unsupportedOwners = new();
+        HashSet<LibraDexMaintenanceTopologyKind> unsupportedKinds = new();
+        LibraDexMaintenanceIncompleteReason incompleteReasons = LibraDexMaintenanceIncompleteReason.None;
+        HashSet<int> plannedSlots = new();
+        for (int i = 0; i < infos.Length; i++)
+        {
+            CatalogIndexInfo logical = infos[i];
+            if (companionSlots.Contains(logical.SlotIndex))
+                continue;
+
+            PlanPhysical(logical.SlotIndex);
+            PlanPhysical(logical.ExactReversedProjectionSlotIndex);
+            PlanPhysical(logical.FoldedProjectionSlotIndex);
+            PlanPhysical(logical.SortKeyProjectionSlotIndex);
+            if (logical.SortKeyProfiles is { Count: > 1 } optimizeSortKeyProfiles)
+            {
+                for (int j = 1; j < optimizeSortKeyProfiles.Count; j++)
+                    PlanPhysical(optimizeSortKeyProfiles[j].SlotIndex);
+            }
+            PlanPhysical(logical.FoldedReversedProjectionSlotIndex);
+            PlanPhysical(logical.NormalizedProjectionSlotIndex);
+            PlanPhysical(logical.NormalizedReversedProjectionSlotIndex);
+
+            void PlanPhysical(int slotIndex)
+            {
+                if (slotIndex < 0 || !plannedSlots.Add(slotIndex))
+                    return;
+                if (!bySlot.TryGetValue(slotIndex, out CatalogIndexInfo physical))
+                {
+                    incompleteReasons |= LibraDexMaintenanceIncompleteReason.InvalidTopology;
+                    return;
+                }
+
+                LibraDexMaintenanceTopologyKind kind =
+                    Catalog.Session.ClassifyMaintenanceTopology(physical.RootRouterOffset);
+                switch (kind)
+                {
+                    case LibraDexMaintenanceTopologyKind.VarKeyScalar8:
+                    case LibraDexMaintenanceTopologyKind.VarKeyScalar16:
+                    case LibraDexMaintenanceTopologyKind.VarKeyVarIdentity:
+                    case LibraDexMaintenanceTopologyKind.Scalar8VarIdentity:
+                    case LibraDexMaintenanceTopologyKind.Scalar16VarIdentity:
+                        supported.Add((logical.SlotIndex, physical, kind));
+                        break;
+                    case LibraDexMaintenanceTopologyKind.Invalid:
+                        incompleteReasons |= LibraDexMaintenanceIncompleteReason.InvalidTopology;
+                        break;
+                }
+            }
+        }
+
+        int considered = 0;
+        int changed = 0;
+        for (int i = 0; i < supported.Count; i++)
+        {
+            if (workLimit is int cap && considered >= cap)
+            {
+                incompleteReasons |= LibraDexMaintenanceIncompleteReason.WorkLimit;
+                break;
+            }
+
+            CatalogIndexInfo physical = supported[i].Physical;
+            int maxKeyLength = physical.VarKeyMaxKeyLength;
+            if (maxKeyLength <= 0)
+                maxKeyLength = 1024;
+            int? remaining = workLimit is int limit ? limit - considered : null;
+            LibraDexMaintenanceWalkResult result = supported[i].Kind switch
+            {
+                LibraDexMaintenanceTopologyKind.VarKeyScalar8 =>
+                    Catalog.Session.OptimizeVarKeyScalar8Topology(
+                        physical.RootRouterOffset,
+                        maxKeyLength,
+                        requestedRouteCount: 16,
+                        remaining),
+                LibraDexMaintenanceTopologyKind.VarKeyScalar16 =>
+                    Catalog.Session.OptimizeVarKeyScalar16Topology(
+                        physical.RootRouterOffset,
+                        maxKeyLength,
+                        requestedRouteCount: 16,
+                        remaining),
+                LibraDexMaintenanceTopologyKind.VarKeyVarIdentity =>
+                    Catalog.Session.OptimizeVarKeyVarIdentityTopology(
+                        physical.RootRouterOffset,
+                        maxKeyLength,
+                        physical.VarIdentityMaxLength,
+                        remaining),
+                LibraDexMaintenanceTopologyKind.Scalar8VarIdentity =>
+                    Catalog.Session.OptimizeScalar8VarIdentityTopology(
+                        physical.RootRouterOffset,
+                        physical.VarIdentityMaxLength,
+                        remaining),
+                LibraDexMaintenanceTopologyKind.Scalar16VarIdentity =>
+                    Catalog.Session.OptimizeScalar16VarIdentityTopology(
+                        physical.RootRouterOffset,
+                        physical.VarIdentityMaxLength,
+                        remaining),
+                _ => throw new InvalidOperationException("The catalog optimizer plan contains an unsupported topology.")
+            };
+            considered = checked(considered + result.ConsideredCount);
+            changed = checked(changed + result.ChangedCount);
+            incompleteReasons |= result.IncompleteReasons;
+            if (!result.Completed)
+                break;
+        }
+
+        bool complete = incompleteReasons == LibraDexMaintenanceIncompleteReason.None;
+        string budget = workLimit is int resolved ? resolved.ToString() : "unlimited";
+        string unsupported = unsupportedKinds.Count == 0
+            ? "none"
+            : string.Join(", ", unsupportedKinds.OrderBy(static kind => kind));
         return new LibraDexMaintenanceResult(
             LibraDexMaintenanceOperation.Optimize,
             effective.Mode,
-            Completed: false,
-            ConsideredCount: 0,
-            ChangedCount: 0,
-            Message: "Catalog optimization is part of the public API scaffold but is not connected to physical maintenance yet.");
+            complete,
+            considered,
+            changed,
+            complete
+                ? $"Catalog variable-record topology optimization completed within the {budget}-item budget; obsolete extents remain unreachable until closed-file compaction."
+                : $"Catalog optimization was incomplete. Reasons: {incompleteReasons}. Budget: {budget}. Unsupported logical indexes: {unsupportedOwners.Count}. Unsupported topologies: {unsupported}.")
+        {
+            IncompleteReasons = incompleteReasons,
+            UnsupportedCount = unsupportedOwners.Count
+        };
+    }
+
+    /// <summary>
+    /// Rebuilds reclaimable variable-record arenas across active logical indexes and their maintained projections without changing catalog file length.<br/>
+    /// Use closed-file <see cref="Catalog.Compact(string, LibraDexCompactionOptions?, CancellationToken)"/> after repack when the goal is physical file-size reduction.<br/>
+    /// </summary>
+    /// <param name="options">Optional maintenance mode and cumulative shelf-work limit.<br/></param>
+    /// <returns>The number of variable shelves considered and rewritten; <see cref="LibraDexMaintenanceResult.Completed"/> is false when a work limit or an unsupported physical shape prevented a complete walk.<br/></returns>
+    public LibraDexMaintenanceResult Repack(LibraDexMaintenanceOptions? options = null)
+    {
+        LibraDexMaintenanceOptions effective = options ?? new LibraDexMaintenanceOptions();
+        int? workLimit = LibraDexMaintenancePolicy.ResolveWorkLimit(effective);
+        CatalogIndexInfo[] infos = Catalog.Indexes.List();
+        Dictionary<int, CatalogIndexInfo> bySlot = infos.ToDictionary(static info => info.SlotIndex);
+        HashSet<int> companionSlots = new();
+        for (int i = 0; i < infos.Length; i++)
+        {
+            AddCompanionSlot(companionSlots, infos[i].ExactReversedProjectionSlotIndex);
+            AddCompanionSlot(companionSlots, infos[i].FoldedProjectionSlotIndex);
+            AddCompanionSlot(companionSlots, infos[i].SortKeyProjectionSlotIndex);
+            AddSortKeyProfileSlots(companionSlots, infos[i].SortKeyProfiles);
+            AddCompanionSlot(companionSlots, infos[i].FoldedReversedProjectionSlotIndex);
+            AddCompanionSlot(companionSlots, infos[i].NormalizedProjectionSlotIndex);
+            AddCompanionSlot(companionSlots, infos[i].NormalizedReversedProjectionSlotIndex);
+        }
+
+        List<(CatalogIndexInfo Physical, int MaxKeyLength, int MaxIdentityLength)> physicalPlan = new();
+        HashSet<int> plannedSlots = new();
+        LibraDexMaintenanceIncompleteReason incompleteReasons = LibraDexMaintenanceIncompleteReason.None;
+        for (int i = 0; i < infos.Length; i++)
+        {
+            CatalogIndexInfo logical = infos[i];
+            if (companionSlots.Contains(logical.SlotIndex))
+                continue;
+
+            PlanPhysical(logical.SlotIndex);
+            PlanPhysical(logical.ExactReversedProjectionSlotIndex);
+            PlanPhysical(logical.FoldedProjectionSlotIndex);
+            PlanPhysical(logical.SortKeyProjectionSlotIndex);
+            if (logical.SortKeyProfiles is { Count: > 1 } repackSortKeyProfiles)
+            {
+                for (int j = 1; j < repackSortKeyProfiles.Count; j++)
+                    PlanPhysical(repackSortKeyProfiles[j].SlotIndex);
+            }
+            PlanPhysical(logical.FoldedReversedProjectionSlotIndex);
+            PlanPhysical(logical.NormalizedProjectionSlotIndex);
+            PlanPhysical(logical.NormalizedReversedProjectionSlotIndex);
+
+            void PlanPhysical(int slotIndex)
+            {
+                if (slotIndex < 0 || !plannedSlots.Add(slotIndex))
+                    return;
+                if (!bySlot.TryGetValue(slotIndex, out CatalogIndexInfo physical))
+                {
+                    incompleteReasons |= LibraDexMaintenanceIncompleteReason.InvalidTopology;
+                    return;
+                }
+                if (physical.RootRouterOffset <= 0)
+                    return;
+
+                int maxKeyLength = physical.VarKeyMaxKeyLength > 0
+                    ? physical.VarKeyMaxKeyLength
+                    : logical.VarKeyMaxKeyLength;
+                int maxIdentityLength = physical.VarIdentityMaxLength > 0
+                    ? physical.VarIdentityMaxLength
+                    : logical.VarIdentityMaxLength;
+                LibraDexMaintenanceTopologyKind kind =
+                    Catalog.Session.ClassifyMaintenanceTopology(physical.RootRouterOffset);
+                if (kind == LibraDexMaintenanceTopologyKind.Invalid)
+                {
+                    incompleteReasons |= LibraDexMaintenanceIncompleteReason.InvalidTopology;
+                    return;
+                }
+                if ((kind == LibraDexMaintenanceTopologyKind.VarKeyScalar8 ||
+                     kind == LibraDexMaintenanceTopologyKind.VarKeyScalar16 ||
+                     kind == LibraDexMaintenanceTopologyKind.VarKeyVarIdentity) &&
+                    maxKeyLength <= 0)
+                {
+                    incompleteReasons |= LibraDexMaintenanceIncompleteReason.InvalidTopology;
+                    return;
+                }
+                if ((kind == LibraDexMaintenanceTopologyKind.VarKeyVarIdentity ||
+                     kind == LibraDexMaintenanceTopologyKind.Scalar8VarIdentity ||
+                     kind == LibraDexMaintenanceTopologyKind.Scalar16VarIdentity) &&
+                    maxIdentityLength <= 0)
+                {
+                    incompleteReasons |= LibraDexMaintenanceIncompleteReason.InvalidTopology;
+                    return;
+                }
+
+                physicalPlan.Add((physical, maxKeyLength, maxIdentityLength));
+            }
+        }
+
+        int considered = 0;
+        int changed = 0;
+        for (int i = 0; i < physicalPlan.Count; i++)
+        {
+            if (workLimit is int cap && considered >= cap)
+            {
+                incompleteReasons |= LibraDexMaintenanceIncompleteReason.WorkLimit;
+                break;
+            }
+
+            var planned = physicalPlan[i];
+            CatalogIndexInfo physical = planned.Physical;
+            int? remaining = workLimit is int limit ? limit - considered : null;
+            LibraDexMaintenanceWalkResult result = Catalog.Session.RepackIndexPayload(
+                physical.SlotIndex,
+                planned.MaxKeyLength,
+                planned.MaxIdentityLength,
+                remaining);
+            considered = checked(considered + result.ConsideredCount);
+            changed = checked(changed + result.ChangedCount);
+            incompleteReasons |= result.IncompleteReasons;
+            if (!result.Completed)
+                break;
+        }
+
+        bool complete = incompleteReasons == LibraDexMaintenanceIncompleteReason.None;
+        string budget = workLimit is int resolved ? resolved.ToString() : "unlimited";
+        return new LibraDexMaintenanceResult(
+            LibraDexMaintenanceOperation.Repack,
+            effective.Mode,
+            complete,
+            considered,
+            changed,
+            complete
+                ? $"Catalog physical topology repack completed within the {budget}-item budget; file length is unchanged."
+                : $"Catalog repack was incomplete. Reasons: {incompleteReasons}. Budget: {budget}.")
+        {
+            IncompleteReasons = incompleteReasons
+        };
+    }
+
+    private static void AddCompanionSlot(HashSet<int> slots, int slotIndex)
+    {
+        if (slotIndex >= 0)
+            slots.Add(slotIndex);
+    }
+
+    /// <summary>
+    /// Adds owned sort-key profile slots beyond the legacy primary slot to one maintenance companion set.<br/>
+    /// Ordinal zero is already added through <see cref="CatalogIndexInfo.SortKeyProjectionSlotIndex"/>.<br/>
+    /// </summary>
+    /// <param name="slots">The distinct companion-slot set.<br/></param>
+    /// <param name="profiles">The persisted sort-key profiles, or null for legacy/non-string metadata.<br/></param>
+    private static void AddSortKeyProfileSlots(
+        HashSet<int> slots,
+        IReadOnlyList<LibraDexStringSortKeyProjectionInfo>? profiles)
+    {
+        if (profiles is null)
+        {
+            return;
+        }
+
+        for (int i = 1; i < profiles.Count; i++)
+        {
+            AddCompanionSlot(slots, profiles[i].SlotIndex);
+        }
     }
 }
 
@@ -2030,6 +2459,7 @@ public sealed class LibraDexIndexMaintenance<TKey, TIdentity>
     public LibraDexMaintenanceResult Validate(LibraDexMaintenanceOptions? options = null)
     {
         LibraDexMaintenanceOptions effective = options ?? new LibraDexMaintenanceOptions { Mode = LibraDexMaintenanceMode.Light };
+        _ = LibraDexMaintenancePolicy.ResolveWorkLimit(effective);
         return CreateResult(LibraDexMaintenanceOperation.Validate, effective, "Index validation is part of the public API scaffold but is not connected to structural validation yet.");
     }
 
@@ -2042,7 +2472,14 @@ public sealed class LibraDexIndexMaintenance<TKey, TIdentity>
     public LibraDexMaintenanceResult Optimize(LibraDexMaintenanceOptions? options = null)
     {
         LibraDexMaintenanceOptions effective = options ?? new LibraDexMaintenanceOptions();
-        return CreateResult(LibraDexMaintenanceOperation.Optimize, effective, "Index optimization is part of the public API scaffold but is not connected to physical maintenance yet.");
+        _ = LibraDexMaintenancePolicy.ResolveWorkLimit(effective);
+        return new LibraDexMaintenanceResult(
+            LibraDexMaintenanceOperation.Optimize,
+            effective.Mode,
+            Completed: true,
+            ConsideredCount: 0,
+            ChangedCount: 0,
+            Message: "This fixed-scalar index has no variable-key optimizer topology; catalog optimization completed with no index-local work.");
     }
 
     /// <summary>
@@ -2054,7 +2491,14 @@ public sealed class LibraDexIndexMaintenance<TKey, TIdentity>
     public LibraDexMaintenanceResult Repack(LibraDexMaintenanceOptions? options = null)
     {
         LibraDexMaintenanceOptions effective = options ?? new LibraDexMaintenanceOptions();
-        return CreateResult(LibraDexMaintenanceOperation.Repack, effective, "Index repack is part of the public API scaffold but is not connected to physical maintenance yet.");
+        _ = LibraDexMaintenancePolicy.ResolveWorkLimit(effective);
+        return new LibraDexMaintenanceResult(
+            LibraDexMaintenanceOperation.Repack,
+            effective.Mode,
+            Completed: true,
+            ConsideredCount: 0,
+            ChangedCount: 0,
+            Message: "This fixed-scalar index has no variable-record arena to repack.");
     }
 
     /// <summary>
@@ -2066,6 +2510,7 @@ public sealed class LibraDexIndexMaintenance<TKey, TIdentity>
     public LibraDexMaintenanceResult Cache(LibraDexMaintenanceOptions? options = null)
     {
         LibraDexMaintenanceOptions effective = options ?? new LibraDexMaintenanceOptions { Mode = LibraDexMaintenanceMode.Light };
+        _ = LibraDexMaintenancePolicy.ResolveWorkLimit(effective);
         return CreateResult(LibraDexMaintenanceOperation.Cache, effective, "Index cache maintenance is part of the public API scaffold but is not connected to runtime cache work yet.");
     }
 
@@ -2080,6 +2525,61 @@ public sealed class LibraDexIndexMaintenance<TKey, TIdentity>
             Completed: false,
             ConsideredCount: 0,
             ChangedCount: 0,
-            message);
+            message)
+        {
+            IncompleteReasons = LibraDexMaintenanceIncompleteReason.OperationUnavailable
+        };
     }
+}
+
+/// <summary>
+/// Exposes synchronous fixed-width binary-key operations without requiring callers to allocate a standalone <see cref="byte"/> array.<br/>
+/// Implementations consume the supplied span before returning and must not retain or publish caller-owned memory beyond the call.<br/>
+/// When an explicit durability batch or maintained projection requires retained ownership, the implementation may copy deliberately while preserving the ordinary index mutation contract.<br/>
+/// </summary>
+public interface IFixedBinaryKeyIndex<TIdentity> : IIndex
+{
+    /// <summary>
+    /// Inserts one fixed-width binary key and runtime identity through the owning index's ordinary batching, uniqueness, multiplicity, projection, routing, and telemetry pipeline.<br/>
+    /// The key length must equal <see cref="IIndex.FixedKeyByteWidth"/>.<br/>
+    /// </summary>
+    /// <param name="key">The caller-owned fixed-width binary key consumed synchronously.<br/></param>
+    /// <param name="identity">The runtime identity value associated with the key.<br/></param>
+    /// <returns>The insert result plus route and commit telemetry when available.<br/></returns>
+    LibraDexGenericInsertResult Insert(ReadOnlySpan<byte> key, TIdentity identity);
+
+    /// <summary>
+    /// Deletes one exact fixed-width binary key and runtime identity tuple through the owning index's ordinary mutation pipeline.<br/>
+    /// The key length must equal <see cref="IIndex.FixedKeyByteWidth"/>.<br/>
+    /// </summary>
+    /// <param name="key">The caller-owned fixed-width binary key consumed synchronously.<br/></param>
+    /// <param name="identity">The runtime identity side of the tuple.<br/></param>
+    /// <returns><see langword="true"/> when one exact tuple was removed.<br/></returns>
+    bool Delete(ReadOnlySpan<byte> key, TIdentity identity);
+
+    /// <summary>
+    /// Tests whether the fixed-width binary key currently owns at least one identity without allocating a standalone key array.<br/>
+    /// The key length must equal <see cref="IIndex.FixedKeyByteWidth"/>.<br/>
+    /// </summary>
+    /// <param name="key">The caller-owned fixed-width binary key consumed synchronously.<br/></param>
+    /// <returns><see langword="true"/> when the key exists; otherwise <see langword="false"/>.<br/></returns>
+    bool ContainsKey(ReadOnlySpan<byte> key);
+
+    /// <summary>
+    /// Tests whether one exact borrowed fixed-width binary key and runtime identity tuple exists.<br/>
+    /// The key is consumed synchronously and is not retained after this method returns.<br/>
+    /// </summary>
+    /// <param name="key">The exact fixed-width key bytes.<br/></param>
+    /// <param name="identity">The runtime identity value.<br/></param>
+    /// <returns><see langword="true"/> when the exact tuple exists; otherwise <see langword="false"/>.<br/></returns>
+    bool ContainsTuple(ReadOnlySpan<byte> key, TIdentity identity);
+
+    /// <summary>
+    /// Tests whether a borrowed fixed-width binary key is associated with any identity other than the supplied identity.<br/>
+    /// This supports allocation-free unique-key preflight while allowing an existing record to retain its own key.<br/>
+    /// </summary>
+    /// <param name="key">The exact fixed-width key bytes.<br/></param>
+    /// <param name="identity">The runtime identity that may legitimately own the key.<br/></param>
+    /// <returns><see langword="true"/> when at least one different identity owns the key; otherwise <see langword="false"/>.<br/></returns>
+    bool ContainsOtherIdentity(ReadOnlySpan<byte> key, TIdentity identity);
 }

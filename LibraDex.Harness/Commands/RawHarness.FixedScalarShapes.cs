@@ -373,7 +373,7 @@ internal static partial class RawHarness
         LibraDexConditionEndCondition multiRangeCondition = LibraDexCondition
             .ForGroup("generic-count-fanout-proof")
             .Index("created")
-            .AsDate
+            .AsDateTime
             .YearInMonths(2026, 1, 1, 2)
             .EndCondition;
 
@@ -464,7 +464,7 @@ internal static partial class RawHarness
         long bigIntMembershipCount = LibraDexCondition
             .ForGroup("non-generic-count-fanout-proof")
             .Index("score")
-            .AsBigInteger
+            .AsBigInt
             .InSet(new[] { new BigInteger(10), new BigInteger(10), new BigInteger(20) })
             .EndCondition
             .Count(resolver, IdentityDeduplication.Preserve);
@@ -817,6 +817,11 @@ internal static partial class RawHarness
         const ulong firstArenaKey = 0x0080_0000_0000_0000UL + 10_000UL;
         _ = session.SplitRoutedScalar8Scalar8ByShelfTransform(root.Offset, 0x00, 0x80, profile, firstArenaKey, firstArenaKey);
 
+        for (int i = 0; i < keys.Length; i++)
+        {
+            keys[i] += 0x0100_0000_0000_0000UL;
+            identities[i] = keys[i];
+        }
         _ = session.CreateScalar8Scalar8ShelfAndLinkRootRoutes(root.Offset, profile, keys, identities, [0x01]);
         const ulong secondArenaKey = 0x0180_0000_0000_0000UL + 10_000UL;
         _ = session.SplitRoutedScalar8Scalar8ByShelfTransform(root.Offset, 0x01, 0x80, profile, secondArenaKey, secondArenaKey);
@@ -2332,32 +2337,35 @@ internal static partial class RawHarness
     /// <param name="encodedIdentityLows">Receives the generated encoded low identity halves.</param>
     /// <param name="leftCount">The number of low-third-prefix tuples.</param>
     /// <param name="rightCount">The number of high-third-prefix tuples.</param>
+    /// <param name="includeIntermediateStem">Whether to move the split to byte depth three behind a shared `0x22` byte at depth two so exact-stem intermediate routing is exercised.<br/></param>
     private static void CreateScalar8Scalar16DeeperTransformSplitVectors(
         Scalar8Scalar16Profile profile,
         out ulong[] encodedKeys,
         out ulong[] encodedIdentityHighs,
         out ulong[] encodedIdentityLows,
         out int leftCount,
-        out int rightCount)
+        out int rightCount,
+        bool includeIntermediateStem = false)
     {
         leftCount = profile.MaxItemCount / 2;
         rightCount = profile.MaxItemCount - leftCount;
         encodedKeys = new ulong[profile.MaxItemCount];
         encodedIdentityHighs = new ulong[profile.MaxItemCount];
         encodedIdentityLows = new ulong[profile.MaxItemCount];
+        ulong leftBase = includeIntermediateStem ? 0x0000_2200_0000_0000UL : 0;
+        ulong rightBase = includeIntermediateStem ? 0x0000_2280_0000_0000UL : 0x0000_8000_0000_0000UL;
         int index = 0;
         for (int i = 0; i < leftCount; i++)
         {
-            encodedKeys[index] = Scalar8Scalar16Layout.EncodeUnsignedScalar8((ulong)i);
+            encodedKeys[index] = leftBase + (ulong)i;
             encodedIdentityHighs[index] = 0;
             encodedIdentityLows[index] = (ulong)i;
             index++;
         }
 
-        const ulong thirdByteRightBase = 0x0000_8000_0000_0000UL;
         for (int i = 0; i < rightCount; i++)
         {
-            encodedKeys[index] = thirdByteRightBase + (ulong)i;
+            encodedKeys[index] = rightBase + (ulong)i;
             encodedIdentityHighs[index] = 0;
             encodedIdentityLows[index] = (ulong)i;
             index++;
@@ -2375,32 +2383,35 @@ internal static partial class RawHarness
     /// <param name="encodedIdentities">Receives the generated encoded identities.</param>
     /// <param name="leftCount">The number of low-third-prefix tuples.</param>
     /// <param name="rightCount">The number of high-third-prefix tuples.</param>
+    /// <param name="includeIntermediateStem">Whether to move the split to byte depth three behind a shared `0x22` byte at depth two so exact-stem intermediate routing is exercised.<br/></param>
     private static void CreateScalar16Scalar8DeeperTransformSplitVectors(
         Scalar16Scalar8Profile profile,
         out ulong[] encodedKeyHighs,
         out ulong[] encodedKeyLows,
         out ulong[] encodedIdentities,
         out int leftCount,
-        out int rightCount)
+        out int rightCount,
+        bool includeIntermediateStem = false)
     {
         leftCount = profile.MaxItemCount / 2;
         rightCount = profile.MaxItemCount - leftCount;
         encodedKeyHighs = new ulong[profile.MaxItemCount];
         encodedKeyLows = new ulong[profile.MaxItemCount];
         encodedIdentities = new ulong[profile.MaxItemCount];
+        ulong leftBaseHigh = includeIntermediateStem ? 0x0000_2200_0000_0000UL : 0;
+        ulong rightBaseHigh = includeIntermediateStem ? 0x0000_2280_0000_0000UL : 0x0000_8000_0000_0000UL;
         int index = 0;
         for (int i = 0; i < leftCount; i++)
         {
-            encodedKeyHighs[index] = 0;
+            encodedKeyHighs[index] = leftBaseHigh;
             encodedKeyLows[index] = (ulong)i;
             encodedIdentities[index] = Scalar16Scalar8Layout.EncodeUnsignedScalar8((ulong)i);
             index++;
         }
 
-        const ulong thirdByteRightBaseHigh = 0x0000_8000_0000_0000UL;
         for (int i = 0; i < rightCount; i++)
         {
-            encodedKeyHighs[index] = thirdByteRightBaseHigh;
+            encodedKeyHighs[index] = rightBaseHigh;
             encodedKeyLows[index] = (ulong)i;
             encodedIdentities[index] = Scalar16Scalar8Layout.EncodeUnsignedScalar8((ulong)i);
             index++;
@@ -2420,6 +2431,7 @@ internal static partial class RawHarness
     /// <param name="encodedIdentities">Receives the generated encoded identities.</param>
     /// <param name="leftCount">The number of low-third-prefix tuples.</param>
     /// <param name="rightCount">The number of high-third-prefix tuples.</param>
+    /// <param name="includeIntermediateStem">Whether to move the split to byte depth three behind a shared `0x22` byte at depth two so exact-stem intermediate routing is exercised.<br/></param>
     private static void CreateFixed32Scalar8DeeperTransformSplitVectors(
         Fixed32Scalar8Profile profile,
         out ulong[] key0s,
@@ -2428,7 +2440,8 @@ internal static partial class RawHarness
         out ulong[] key3s,
         out ulong[] encodedIdentities,
         out int leftCount,
-        out int rightCount)
+        out int rightCount,
+        bool includeIntermediateStem = false)
     {
         leftCount = profile.MaxItemCount / 2;
         rightCount = profile.MaxItemCount - leftCount;
@@ -2437,10 +2450,12 @@ internal static partial class RawHarness
         key2s = new ulong[profile.MaxItemCount];
         key3s = new ulong[profile.MaxItemCount];
         encodedIdentities = new ulong[profile.MaxItemCount];
+        ulong leftBase0 = includeIntermediateStem ? 0x0000_2200_0000_0000UL : 0;
+        ulong rightBase0 = includeIntermediateStem ? 0x0000_2280_0000_0000UL : 0x0000_8000_0000_0000UL;
         int index = 0;
         for (int i = 0; i < leftCount; i++)
         {
-            key0s[index] = 0;
+            key0s[index] = leftBase0;
             key1s[index] = 0;
             key2s[index] = 0;
             key3s[index] = (ulong)i;
@@ -2448,10 +2463,9 @@ internal static partial class RawHarness
             index++;
         }
 
-        const ulong thirdByteRightBase0 = 0x0000_8000_0000_0000UL;
         for (int i = 0; i < rightCount; i++)
         {
-            key0s[index] = thirdByteRightBase0;
+            key0s[index] = rightBase0;
             key1s[index] = 0;
             key2s[index] = 0;
             key3s[index] = (ulong)i;
@@ -2472,6 +2486,7 @@ internal static partial class RawHarness
     /// <param name="encodedIdentityLows">Receives the generated encoded low identity halves.</param>
     /// <param name="leftCount">The number of low-third-prefix tuples.</param>
     /// <param name="rightCount">The number of high-third-prefix tuples.</param>
+    /// <param name="includeIntermediateStem">Whether to move the split to byte depth three behind a shared `0x22` byte at depth two so exact-stem intermediate routing is exercised.<br/></param>
     private static void CreateScalar16Scalar16DeeperTransformSplitVectors(
         Scalar16Scalar16Profile profile,
         out ulong[] encodedKeyHighs,
@@ -2479,7 +2494,8 @@ internal static partial class RawHarness
         out ulong[] encodedIdentityHighs,
         out ulong[] encodedIdentityLows,
         out int leftCount,
-        out int rightCount)
+        out int rightCount,
+        bool includeIntermediateStem = false)
     {
         leftCount = profile.MaxItemCount / 2;
         rightCount = profile.MaxItemCount - leftCount;
@@ -2487,20 +2503,21 @@ internal static partial class RawHarness
         encodedKeyLows = new ulong[profile.MaxItemCount];
         encodedIdentityHighs = new ulong[profile.MaxItemCount];
         encodedIdentityLows = new ulong[profile.MaxItemCount];
+        ulong leftBaseHigh = includeIntermediateStem ? 0x0000_2200_0000_0000UL : 0;
+        ulong rightBaseHigh = includeIntermediateStem ? 0x0000_2280_0000_0000UL : 0x0000_8000_0000_0000UL;
         int index = 0;
         for (int i = 0; i < leftCount; i++)
         {
-            encodedKeyHighs[index] = 0;
+            encodedKeyHighs[index] = leftBaseHigh;
             encodedKeyLows[index] = (ulong)i;
             encodedIdentityHighs[index] = 0;
             encodedIdentityLows[index] = (ulong)i;
             index++;
         }
 
-        const ulong thirdByteRightBaseHigh = 0x0000_8000_0000_0000UL;
         for (int i = 0; i < rightCount; i++)
         {
-            encodedKeyHighs[index] = thirdByteRightBaseHigh;
+            encodedKeyHighs[index] = rightBaseHigh;
             encodedKeyLows[index] = (ulong)i;
             encodedIdentityHighs[index] = 0;
             encodedIdentityLows[index] = (ulong)i;
@@ -4423,10 +4440,11 @@ internal static partial class RawHarness
     /// </summary>
     /// <param name="telemetry">The commit telemetry to validate.</param>
     /// <param name="profile">The `SS8-8` shelf profile used by the appended replacement shelves.</param>
+    /// <param name="additionalRouterPages">The exact number of appended intermediate router pages beyond the rewritten source router.<br/></param>
     /// <exception cref="InvalidDataException">Thrown when the commit shape drifts from the expected transform split mutation shape.</exception>
-    private static void ValidateScalar8Scalar8TransformCommit(DataKernelCommitTelemetry telemetry, Scalar8Scalar8Profile profile)
+    private static void ValidateScalar8Scalar8TransformCommit(DataKernelCommitTelemetry telemetry, Scalar8Scalar8Profile profile, int additionalRouterPages = 0)
     {
-        long expectedBytes = (profile.ShelfExtentSize * 2L) + RouterLayout.Size;
+        long expectedBytes = (profile.ShelfExtentSize * 2L) + (RouterLayout.Size * (1L + additionalRouterPages));
         if (telemetry.SetLengthCallCount != 0)
         {
             throw new InvalidDataException("SS8-8 transform split used SetLength.");
@@ -4450,10 +4468,11 @@ internal static partial class RawHarness
     /// </summary>
     /// <param name="telemetry">The commit telemetry to validate.</param>
     /// <param name="profile">The `SS16-8` shelf profile used by the appended replacement shelves.</param>
+    /// <param name="additionalRouterPages">The exact number of appended intermediate router pages beyond the rewritten source router.<br/></param>
     /// <exception cref="InvalidDataException">Thrown when the commit shape drifts from the expected transform split mutation shape.</exception>
-    private static void ValidateScalar16Scalar8TransformCommit(DataKernelCommitTelemetry telemetry, Scalar16Scalar8Profile profile)
+    private static void ValidateScalar16Scalar8TransformCommit(DataKernelCommitTelemetry telemetry, Scalar16Scalar8Profile profile, int additionalRouterPages = 0)
     {
-        long expectedBytes = (profile.ShelfExtentSize * 2L) + RouterLayout.Size;
+        long expectedBytes = (profile.ShelfExtentSize * 2L) + (RouterLayout.Size * (1L + additionalRouterPages));
         if (telemetry.SetLengthCallCount != 0)
         {
             throw new InvalidDataException("SS16-8 transform split used SetLength.");
@@ -4477,10 +4496,11 @@ internal static partial class RawHarness
     /// </summary>
     /// <param name="telemetry">The commit telemetry to validate.</param>
     /// <param name="profile">The `FS32-8` shelf profile used by the appended replacement shelves.</param>
+    /// <param name="additionalRouterPages">The exact number of appended intermediate router pages beyond the rewritten source router.<br/></param>
     /// <exception cref="InvalidDataException">Thrown when the commit shape drifts from the expected transform split mutation shape.</exception>
-    private static void ValidateFixed32Scalar8TransformCommit(DataKernelCommitTelemetry telemetry, Fixed32Scalar8Profile profile)
+    private static void ValidateFixed32Scalar8TransformCommit(DataKernelCommitTelemetry telemetry, Fixed32Scalar8Profile profile, int additionalRouterPages = 0)
     {
-        long expectedBytes = (profile.ShelfExtentSize * 2L) + RouterLayout.Size;
+        long expectedBytes = (profile.ShelfExtentSize * 2L) + (RouterLayout.Size * (1L + additionalRouterPages));
         if (telemetry.SetLengthCallCount != 0)
         {
             throw new InvalidDataException("FS32-8 transform split used SetLength.");
@@ -4504,10 +4524,11 @@ internal static partial class RawHarness
     /// </summary>
     /// <param name="telemetry">The commit telemetry to validate.</param>
     /// <param name="profile">The `SS8-16` shelf profile used by the appended replacement shelves.</param>
+    /// <param name="additionalRouterPages">The exact number of appended intermediate router pages beyond the rewritten source router.<br/></param>
     /// <exception cref="InvalidDataException">Thrown when the commit shape drifts from the expected transform split mutation shape.</exception>
-    private static void ValidateScalar8Scalar16TransformCommit(DataKernelCommitTelemetry telemetry, Scalar8Scalar16Profile profile)
+    private static void ValidateScalar8Scalar16TransformCommit(DataKernelCommitTelemetry telemetry, Scalar8Scalar16Profile profile, int additionalRouterPages = 0)
     {
-        long expectedBytes = (profile.ShelfExtentSize * 2L) + RouterLayout.Size;
+        long expectedBytes = (profile.ShelfExtentSize * 2L) + (RouterLayout.Size * (1L + additionalRouterPages));
         if (telemetry.SetLengthCallCount != 0)
         {
             throw new InvalidDataException("SS8-16 transform split used SetLength.");
@@ -4531,10 +4552,11 @@ internal static partial class RawHarness
     /// </summary>
     /// <param name="telemetry">The commit telemetry to validate.</param>
     /// <param name="profile">The `SS16-16` shelf profile used by the appended replacement shelves.</param>
+    /// <param name="additionalRouterPages">The exact number of appended intermediate router pages beyond the rewritten source router.<br/></param>
     /// <exception cref="InvalidDataException">Thrown when the commit shape drifts from the expected transform split mutation shape.</exception>
-    private static void ValidateScalar16Scalar16TransformCommit(DataKernelCommitTelemetry telemetry, Scalar16Scalar16Profile profile)
+    private static void ValidateScalar16Scalar16TransformCommit(DataKernelCommitTelemetry telemetry, Scalar16Scalar16Profile profile, int additionalRouterPages = 0)
     {
-        long expectedBytes = (profile.ShelfExtentSize * 2L) + RouterLayout.Size;
+        long expectedBytes = (profile.ShelfExtentSize * 2L) + (RouterLayout.Size * (1L + additionalRouterPages));
         if (telemetry.SetLengthCallCount != 0)
         {
             throw new InvalidDataException("SS16-16 transform split used SetLength.");
@@ -12172,5 +12194,479 @@ internal static partial class RawHarness
         double LibraDexLogicalMiBs,
         double SqliteLogicalMiBs,
         double RawReadBaselinePercent);
+
+    /// <summary>
+    /// Proves exact CLR Decimal ordering, canonical equality, adjacent boundary movement, condition execution, and catalog reopen through the public fixed-16 scalar surface.<br/>
+    /// Directed values include the `1.11`/`1.2` significand-alignment case that a variable-length raw coefficient encoding orders incorrectly; deterministic random values widen the proof across valid CLR coefficient and scale combinations.<br/>
+    /// </summary>
+    /// <param name="args">Command arguments; this proof currently has no options.<br/></param>
+    /// <returns>Zero when codec, condition, and reopen parity are proven; otherwise an exception is thrown.<br/></returns>
+    private static int RunDecimalScalarProof(string[] args)
+    {
+        _ = args;
+
+        static UInt128 Encode(decimal value)
+        {
+            LibraDexGenericScalarCodec<decimal>.Encode16(value, out ulong high, out ulong low);
+            return ((UInt128)high << 64) | low;
+        }
+
+        static void AssertOrderedAndRoundTrips(decimal[] values, string context)
+        {
+            Array.Sort(values, static (left, right) => decimal.Compare(left, right));
+            UInt128 previousCode = 0;
+            decimal previousValue = default;
+            for (int i = 0; i < values.Length; i++)
+            {
+                decimal value = values[i];
+                UInt128 code = Encode(value);
+                LibraDexGenericScalarCodec<decimal>.Encode16(value, out ulong high, out ulong low);
+                decimal decoded = LibraDexGenericScalarCodec<decimal>.Decode16(high, low);
+                if (decoded != value || Encode(decoded) != code)
+                    throw new InvalidDataException($"Decimal {context} round-trip failed for {value}.");
+
+                if (i != 0)
+                {
+                    int numericComparison = decimal.Compare(previousValue, value);
+                    int encodedComparison = previousCode.CompareTo(code);
+                    if (Math.Sign(numericComparison) != Math.Sign(encodedComparison))
+                    {
+                        throw new InvalidDataException(
+                            $"Decimal {context} order diverged for {previousValue} and {value}: numeric={numericComparison}, encoded={encodedComparison}.");
+                    }
+                }
+
+                previousCode = code;
+                previousValue = value;
+            }
+        }
+
+        static IReadOnlyList<long> Query(
+            LibraDexConditionEndCondition condition,
+            LibraDexIndex<decimal, long> index)
+            => condition.ToList<long>(name => name == "price" ? index : throw new KeyNotFoundException(name));
+
+        static void AssertCount(IReadOnlyList<long> actual, int expected, string context)
+        {
+            if (actual.Count != expected)
+                throw new InvalidDataException($"Decimal {context} returned {actual.Count} identities; expected {expected}.");
+        }
+
+        decimal negativeZero = new decimal(0, 0, 0, isNegative: true, scale: 28);
+        decimal epsilon = new decimal(1, 0, 0, isNegative: false, scale: 28);
+        decimal[] directed =
+        {
+            decimal.MinValue,
+            -1000000000000000000000000000m,
+            -1000m,
+            -1.2m,
+            -1.11m,
+            -1m,
+            -0.1m,
+            -epsilon,
+            negativeZero,
+            decimal.Zero,
+            epsilon,
+            0.1m,
+            1m,
+            1.0m,
+            1.00m,
+            1.01m,
+            1.11m,
+            1.2m,
+            9.9m,
+            10m,
+            1000m,
+            1000000000000000000000000000m,
+            decimal.MaxValue
+        };
+        AssertOrderedAndRoundTrips(directed.ToArray(), "directed");
+
+        if (Encode(1m) != Encode(1.0m) ||
+            Encode(1.0m) != Encode(1.00m) ||
+            Encode(decimal.Zero) != Encode(negativeZero) ||
+            Encode(1.11m) >= Encode(1.2m))
+        {
+            throw new InvalidDataException("Decimal canonical equality or aligned-significand ordering failed.");
+        }
+
+        var random = new Random(0x4C584C);
+        decimal[] randomValues = new decimal[25_000];
+        for (int i = 0; i < randomValues.Length; i++)
+        {
+            int lo = unchecked((int)(uint)random.NextInt64(0, 1L << 32));
+            int mid = unchecked((int)(uint)random.NextInt64(0, 1L << 32));
+            int hi = unchecked((int)(uint)random.NextInt64(0, 1L << 32));
+            randomValues[i] = new decimal(lo, mid, hi, random.Next(2) != 0, (byte)random.Next(29));
+        }
+        AssertOrderedAndRoundTrips(randomValues, "deterministic-random");
+
+        using (Catalog identityCatalog = Catalog.CreateMemory())
+        using (LibraDexIndex<long, decimal> identityIndex = identityCatalog.Indexes["decimal-identities"]["byOrdinal"].Int64Keys<decimal>().Create())
+        {
+            _ = identityCatalog.Indexes["decimal-identities"].Identities.Decimal;
+            ValidateGenericInsert(identityIndex.Insert(1L, -1.11m), "Decimal identity negative insert");
+            ValidateGenericInsert(identityIndex.Insert(2L, 1.2m), "Decimal identity positive insert");
+            IReadOnlyList<decimal> identities = LibraDexCondition
+                .ForGroup("decimal-identities")
+                .Index("byOrdinal")
+                .AsInt64
+                .GreaterOrEqual(1L)
+                .EndCondition
+                .ToList<decimal>(name => name == "byOrdinal" ? identityIndex : throw new KeyNotFoundException(name));
+            if (identities.Count != 2 || identities[0] != -1.11m || identities[1] != 1.2m)
+                throw new InvalidDataException("Decimal scalar-16 identity materialization did not preserve exact values.");
+        }
+
+        decimal[] adjacencyValues = { decimal.MinValue, -1.2m, -1m, -epsilon, decimal.Zero, epsilon, 1m, 1.2m, decimal.MaxValue };
+        for (int i = 0; i < adjacencyValues.Length; i++)
+        {
+            decimal value = adjacencyValues[i];
+            if (value != decimal.MaxValue)
+            {
+                if (!LibraDexGenericScalarCodec<decimal>.TryGetNextValue(value, out decimal next) ||
+                    next <= value ||
+                    !LibraDexGenericScalarCodec<decimal>.TryGetPreviousValue(next, out decimal returned) ||
+                    returned != value)
+                {
+                    throw new InvalidDataException($"Decimal successor/predecessor parity failed at {value}.");
+                }
+            }
+
+            if (value != decimal.MinValue)
+            {
+                if (!LibraDexGenericScalarCodec<decimal>.TryGetPreviousValue(value, out decimal previous) ||
+                    previous >= value ||
+                    !LibraDexGenericScalarCodec<decimal>.TryGetNextValue(previous, out decimal returned) ||
+                    returned != value)
+                {
+                    throw new InvalidDataException($"Decimal predecessor/successor parity failed at {value}.");
+                }
+            }
+        }
+
+        _ = Encode(123.45m);
+        const int encodeIterations = 1_000_000;
+        long allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
+        UInt128 allocationChecksum = 0;
+        long encodeStarted = Stopwatch.GetTimestamp();
+        for (int i = 0; i < encodeIterations; i++)
+            allocationChecksum ^= Encode(directed[i % directed.Length]);
+        TimeSpan encodeElapsed = Stopwatch.GetElapsedTime(encodeStarted);
+        long allocatedBytes = GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
+        if (allocatedBytes != 0 || allocationChecksum == 0)
+            throw new InvalidDataException($"Decimal scalar encoding allocated {allocatedBytes} bytes or produced an empty checksum.");
+
+        string path = Path.Combine("artifacts", "decimal-scalar-proof.lbdx");
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
+        File.Delete(path);
+        try
+        {
+            using (Catalog catalog = Catalog.Create(path))
+            {
+                LibraDexIndex<decimal, long> index = catalog.Indexes["prices"]["price"].DecimalKeys<long>().Create(IndexKeys.NonUnique);
+                for (int i = 0; i < directed.Length; i++)
+                    ValidateGenericInsert(index.Insert(directed[i], i + 1L), $"Decimal directed insert {i}");
+
+                AssertCount(
+                    Query(LibraDexCondition.ForGroup("prices").Index("price").AsDecimal.EqualTo(1m).EndCondition, index),
+                    directed.Count(static value => value == 1m),
+                    "equal canonical scales");
+                AssertCount(
+                    Query(LibraDexCondition.ForGroup("prices").Index("price").AsDecimal.LessThan(1.2m).EndCondition, index),
+                    directed.Count(static value => value < 1.2m),
+                    "less-than aligned significand");
+                AssertCount(
+                    Query(LibraDexCondition.ForGroup("prices").Index("price").AsDecimal.Between(-1.2m, 1.2m).EndCondition, index),
+                    directed.Count(static value => value >= -1.2m && value <= 1.2m),
+                    "inclusive range");
+                AssertCount(
+                    Query(LibraDexCondition.ForGroup("prices").Index("price").AsDecimal.InSet(new[] { -1.11m, 1m, 1.2m }).EndCondition, index),
+                    directed.Count(static value => value == -1.11m || value == 1m || value == 1.2m),
+                    "membership");
+                AssertCount(
+                    Query(LibraDexCondition.ForGroup("prices").Index("price").AsDecimal.GreaterThan(decimal.MaxValue).EndCondition, index),
+                    0,
+                    "greater-than maximum");
+                AssertCount(
+                    Query(LibraDexCondition.ForGroup("prices").Index("price").AsDecimal.LessThan(decimal.MinValue).EndCondition, index),
+                    0,
+                    "less-than minimum");
+            }
+
+            using (Catalog reopened = Catalog.Open(path))
+            using (LibraDexIndex<decimal, long> index = reopened.Indexes["prices"]["price"].DecimalKeys<long>().Open(IndexKeys.NonUnique))
+            {
+                IReadOnlyList<long> all = Query(
+                    LibraDexCondition.ForGroup("prices").Index("price").AsDecimal.GreaterOrEqual(decimal.MinValue).EndCondition,
+                    index);
+                AssertCount(all, directed.Length, "reopen full-domain range");
+                decimal previous = decimal.MinValue;
+                for (int i = 0; i < all.Count; i++)
+                {
+                    decimal value = directed[checked((int)all[i] - 1)];
+                    if (i != 0 && value < previous)
+                        throw new InvalidDataException("Decimal reopened reader returned keys outside numeric order.");
+                    previous = value;
+                }
+            }
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+
+        double encodeNs = encodeElapsed.TotalNanoseconds / encodeIterations;
+        Console.WriteLine($"decimal-scalar-proof ok directed={directed.Length} random={randomValues.Length} encodeNs={encodeNs:F2} encodeAllocatedBytes={allocatedBytes} checksum={allocationChecksum}");
+        return 0;
+    }
+
+    /// <summary>
+    /// Proves native Single and Double ordering, NaN/zero canonicalization, special-value fluent conditions, and catalog reopen through the scalar-8 surface.<br/>
+    /// The LXL cases walk negative infinity, finite negatives, both CLR zero signs, finite positives, positive infinity, and materially different NaN payloads before deterministic raw-bit random coverage.<br/>
+    /// </summary>
+    /// <param name="args">Command arguments; this proof currently has no options.<br/></param>
+    /// <returns>Zero when codec, condition, allocation, and reopen parity are proven; otherwise an exception is thrown.<br/></returns>
+    private static int RunFloatingScalarProof(string[] args)
+    {
+        _ = args;
+
+        static int CompareSingle(float left, float right)
+        {
+            bool leftNaN = float.IsNaN(left);
+            bool rightNaN = float.IsNaN(right);
+            if (leftNaN || rightNaN)
+                return leftNaN == rightNaN ? 0 : leftNaN ? -1 : 1;
+            return left.CompareTo(right);
+        }
+
+        static int CompareDouble(double left, double right)
+        {
+            bool leftNaN = double.IsNaN(left);
+            bool rightNaN = double.IsNaN(right);
+            if (leftNaN || rightNaN)
+                return leftNaN == rightNaN ? 0 : leftNaN ? -1 : 1;
+            return left.CompareTo(right);
+        }
+
+        static void AssertSingle(float[] values, string context)
+        {
+            Array.Sort(values, CompareSingle);
+            ulong previousCode = 0;
+            float previousValue = float.NaN;
+            for (int i = 0; i < values.Length; i++)
+            {
+                float value = values[i];
+                ulong code = LibraDexGenericScalarCodec<float>.Encode8(value);
+                float decoded = LibraDexGenericScalarCodec<float>.Decode8(code);
+                if (float.IsNaN(value))
+                {
+                    if (code != 0 || !float.IsNaN(decoded))
+                        throw new InvalidDataException($"Single {context} NaN canonicalization failed.");
+                }
+                else if (value == 0f)
+                {
+                    if (code != 0x80000000UL || BitConverter.SingleToUInt32Bits(decoded) != 0)
+                        throw new InvalidDataException($"Single {context} zero canonicalization failed.");
+                }
+                else if (BitConverter.SingleToUInt32Bits(value) != BitConverter.SingleToUInt32Bits(decoded))
+                {
+                    throw new InvalidDataException($"Single {context} bit round-trip failed for {value}.");
+                }
+
+                if (i != 0 && Math.Sign(CompareSingle(previousValue, value)) != Math.Sign(previousCode.CompareTo(code)))
+                    throw new InvalidDataException($"Single {context} order diverged for {previousValue} and {value}.");
+                previousValue = value;
+                previousCode = code;
+            }
+        }
+
+        static void AssertDouble(double[] values, string context)
+        {
+            Array.Sort(values, CompareDouble);
+            ulong previousCode = 0;
+            double previousValue = double.NaN;
+            for (int i = 0; i < values.Length; i++)
+            {
+                double value = values[i];
+                ulong code = LibraDexGenericScalarCodec<double>.Encode8(value);
+                double decoded = LibraDexGenericScalarCodec<double>.Decode8(code);
+                if (double.IsNaN(value))
+                {
+                    if (code != 0 || !double.IsNaN(decoded))
+                        throw new InvalidDataException($"Double {context} NaN canonicalization failed.");
+                }
+                else if (value == 0d)
+                {
+                    if (code != 0x8000000000000000UL || BitConverter.DoubleToUInt64Bits(decoded) != 0)
+                        throw new InvalidDataException($"Double {context} zero canonicalization failed.");
+                }
+                else if (BitConverter.DoubleToUInt64Bits(value) != BitConverter.DoubleToUInt64Bits(decoded))
+                {
+                    throw new InvalidDataException($"Double {context} bit round-trip failed for {value}.");
+                }
+
+                if (i != 0 && Math.Sign(CompareDouble(previousValue, value)) != Math.Sign(previousCode.CompareTo(code)))
+                    throw new InvalidDataException($"Double {context} order diverged for {previousValue} and {value}.");
+                previousValue = value;
+                previousCode = code;
+            }
+        }
+
+        static void AssertCount(IReadOnlyList<long> actual, int expected, string context)
+        {
+            if (actual.Count != expected)
+                throw new InvalidDataException($"Floating {context} returned {actual.Count} identities; expected {expected}.");
+        }
+
+        float[] singles =
+        {
+            BitConverter.UInt32BitsToSingle(0xFFC00001U),
+            float.NaN,
+            float.NegativeInfinity,
+            float.MinValue,
+            -1f,
+            -float.Epsilon,
+            BitConverter.UInt32BitsToSingle(0x80000000U),
+            0f,
+            float.Epsilon,
+            0.5f,
+            1f,
+            float.MaxValue,
+            float.PositiveInfinity,
+            BitConverter.UInt32BitsToSingle(0x7FA12345U)
+        };
+        double[] doubles =
+        {
+            BitConverter.UInt64BitsToDouble(0xFFF8000000000001UL),
+            double.NaN,
+            double.NegativeInfinity,
+            double.MinValue,
+            -1d,
+            -double.Epsilon,
+            BitConverter.UInt64BitsToDouble(0x8000000000000000UL),
+            0d,
+            double.Epsilon,
+            0.95d,
+            1d,
+            double.MaxValue,
+            double.PositiveInfinity,
+            BitConverter.UInt64BitsToDouble(0x7FF123456789ABCDUL)
+        };
+        AssertSingle(singles.ToArray(), "directed LXL");
+        AssertDouble(doubles.ToArray(), "directed LXL");
+
+        var random = new Random(0x46504C58);
+        float[] randomSingles = new float[25_000];
+        double[] randomDoubles = new double[25_000];
+        for (int i = 0; i < randomSingles.Length; i++)
+        {
+            randomSingles[i] = BitConverter.UInt32BitsToSingle(unchecked((uint)random.NextInt64(0, 1L << 32)));
+            randomDoubles[i] = BitConverter.UInt64BitsToDouble(unchecked((ulong)random.NextInt64()) ^ ((ulong)random.Next(2) << 63));
+        }
+        AssertSingle(randomSingles, "deterministic random bits");
+        AssertDouble(randomDoubles, "deterministic random bits");
+
+        if (!LibraDexGenericScalarCodec<float>.TryGetNextValue(-float.Epsilon, out float singleZero) || singleZero != 0f ||
+            !LibraDexGenericScalarCodec<float>.TryGetPreviousValue(0f, out float singleNegativeEpsilon) || singleNegativeEpsilon != -float.Epsilon ||
+            !LibraDexGenericScalarCodec<double>.TryGetNextValue(-double.Epsilon, out double doubleZero) || doubleZero != 0d ||
+            !LibraDexGenericScalarCodec<double>.TryGetPreviousValue(0d, out double doubleNegativeEpsilon) || doubleNegativeEpsilon != -double.Epsilon)
+        {
+            throw new InvalidDataException("Floating predecessor/successor LXL failed across canonical zero.");
+        }
+
+        using (Catalog identityCatalog = Catalog.CreateMemory())
+        using (LibraDexIndex<long, float> singleIdentityIndex = identityCatalog.Indexes["floating-single-identities"]["ordinal"].Int64Keys<float>().Create())
+        using (LibraDexIndex<long, double> doubleIdentityIndex = identityCatalog.Indexes["floating-double-identities"]["ordinal"].Int64Keys<double>().Create())
+        {
+            _ = identityCatalog.Indexes["floating-single-identities"].Identities.Single;
+            _ = identityCatalog.Indexes["floating-double-identities"].Identities.Double;
+            ValidateGenericInsert(singleIdentityIndex.Insert(1L, float.NaN), "Single identity NaN insert");
+            ValidateGenericInsert(singleIdentityIndex.Insert(2L, -0f), "Single identity zero insert");
+            ValidateGenericInsert(doubleIdentityIndex.Insert(1L, double.NegativeInfinity), "Double identity infinity insert");
+            ValidateGenericInsert(doubleIdentityIndex.Insert(2L, 0.95d), "Double identity finite insert");
+
+            IReadOnlyList<float> singleIdentities = LibraDexCondition.ForGroup("floating-single-identities").Index("ordinal").AsInt64.Between(1L, 2L).EndCondition
+                .ToList<float>(name => name == "ordinal" ? singleIdentityIndex : throw new KeyNotFoundException(name));
+            IReadOnlyList<double> doubleIdentities = LibraDexCondition.ForGroup("floating-double-identities").Index("ordinal").AsInt64.Between(1L, 2L).EndCondition
+                .ToList<double>(name => name == "ordinal" ? doubleIdentityIndex : throw new KeyNotFoundException(name));
+            if (singleIdentities.Count != 2 || !float.IsNaN(singleIdentities[0]) || BitConverter.SingleToUInt32Bits(singleIdentities[1]) != 0 ||
+                doubleIdentities.Count != 2 || !double.IsNegativeInfinity(doubleIdentities[0]) || doubleIdentities[1] != 0.95d)
+            {
+                throw new InvalidDataException("Floating scalar-8 identity materialization did not preserve canonical values.");
+            }
+        }
+
+        const int encodeIterations = 1_000_000;
+        _ = LibraDexGenericScalarCodec<double>.Encode8(0.95d);
+        long allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
+        ulong checksum = 0;
+        long encodeStarted = Stopwatch.GetTimestamp();
+        for (int i = 0; i < encodeIterations; i++)
+        {
+            checksum ^= LibraDexGenericScalarCodec<float>.Encode8(singles[i % singles.Length]);
+            checksum ^= LibraDexGenericScalarCodec<double>.Encode8(doubles[i % doubles.Length]);
+        }
+        TimeSpan encodeElapsed = Stopwatch.GetElapsedTime(encodeStarted);
+        long allocatedBytes = GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
+        if (allocatedBytes != 0 || checksum == 0)
+            throw new InvalidDataException($"Floating scalar encoding allocated {allocatedBytes} bytes or produced an empty checksum.");
+
+        string path = Path.Combine("artifacts", "floating-scalar-proof.lbdx");
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
+        File.Delete(path);
+        try
+        {
+            using (Catalog catalog = Catalog.Create(path))
+            {
+                LibraDexIndex<float, long> singleIndex = catalog.Indexes["floating"]["single"].SingleKeys<long>().Create(IndexKeys.NonUnique);
+                LibraDexIndex<double, long> doubleIndex = catalog.Indexes["floating"]["double"].DoubleKeys<long>().Create(IndexKeys.NonUnique);
+                for (int i = 0; i < singles.Length; i++)
+                    ValidateGenericInsert(singleIndex.Insert(singles[i], i + 1L), $"Single directed insert {i}");
+                for (int i = 0; i < doubles.Length; i++)
+                    ValidateGenericInsert(doubleIndex.Insert(doubles[i], i + 1L), $"Double directed insert {i}");
+
+                IReadOnlyList<long> SingleQuery(LibraDexConditionEndCondition condition)
+                    => condition.ToList<long>(name => name == "single" ? singleIndex : throw new KeyNotFoundException(name));
+                IReadOnlyList<long> DoubleQuery(LibraDexConditionEndCondition condition)
+                    => condition.ToList<long>(name => name == "double" ? doubleIndex : throw new KeyNotFoundException(name));
+
+                AssertCount(SingleQuery(LibraDexCondition.ForGroup("floating").Index("single").AsSingle.IsNaN().EndCondition), singles.Count(float.IsNaN), "Single IsNaN");
+                AssertCount(SingleQuery(LibraDexCondition.ForGroup("floating").Index("single").AsSingle.IsFinite().EndCondition), singles.Count(float.IsFinite), "Single IsFinite");
+                AssertCount(SingleQuery(LibraDexCondition.ForGroup("floating").Index("single").AsSingle.IsInfinity().EndCondition), singles.Count(float.IsInfinity), "Single IsInfinity");
+                AssertCount(SingleQuery(LibraDexCondition.ForGroup("floating").Index("single").AsSingle.IsPositiveInfinity().EndCondition), singles.Count(float.IsPositiveInfinity), "Single positive infinity");
+                AssertCount(SingleQuery(LibraDexCondition.ForGroup("floating").Index("single").AsSingle.IsNonFinite().EndCondition), singles.Count(static value => !float.IsFinite(value)), "Single IsNonFinite");
+                AssertCount(SingleQuery(LibraDexCondition.ForGroup("floating").Index("single").AsSingle.GreaterOrEqual(float.NaN).EndCondition), 0, "Single ordered NaN boundary");
+                AssertCount(SingleQuery(LibraDexCondition.ForGroup("floating").Index("single").AsSingle.Between(-1f, 1f).EndCondition), singles.Count(static value => !float.IsNaN(value) && value >= -1f && value <= 1f), "Single numeric range");
+
+                AssertCount(DoubleQuery(LibraDexCondition.ForGroup("floating").Index("double").AsDouble.IsNaN().EndCondition), doubles.Count(double.IsNaN), "Double IsNaN");
+                AssertCount(DoubleQuery(LibraDexCondition.ForGroup("floating").Index("double").AsDouble.IsFinite().EndCondition), doubles.Count(double.IsFinite), "Double IsFinite");
+                AssertCount(DoubleQuery(LibraDexCondition.ForGroup("floating").Index("double").AsDouble.IsInfinity().EndCondition), doubles.Count(double.IsInfinity), "Double IsInfinity");
+                AssertCount(DoubleQuery(LibraDexCondition.ForGroup("floating").Index("double").AsDouble.IsNegativeInfinity().EndCondition), doubles.Count(double.IsNegativeInfinity), "Double negative infinity");
+                AssertCount(DoubleQuery(LibraDexCondition.ForGroup("floating").Index("double").AsDouble.IsNonFinite().EndCondition), doubles.Count(static value => !double.IsFinite(value)), "Double IsNonFinite");
+                AssertCount(DoubleQuery(LibraDexCondition.ForGroup("floating").Index("double").AsDouble.GreaterOrEqual(0.95d).EndCondition), doubles.Count(static value => !double.IsNaN(value) && value >= 0.95d), "Double numeric threshold");
+            }
+
+            using (Catalog reopened = Catalog.Open(path))
+            using (LibraDexIndex<float, long> singleIndex = reopened.Indexes["floating"]["single"].SingleKeys<long>().Open(IndexKeys.NonUnique))
+            using (LibraDexIndex<double, long> doubleIndex = reopened.Indexes["floating"]["double"].DoubleKeys<long>().Open(IndexKeys.NonUnique))
+            {
+                IReadOnlyList<long> reopenedSingles = LibraDexCondition.ForGroup("floating").Index("single").AsSingle.Between(float.NegativeInfinity, float.PositiveInfinity).EndCondition
+                    .ToList<long>(name => name == "single" ? singleIndex : throw new KeyNotFoundException(name));
+                IReadOnlyList<long> reopenedDoubles = LibraDexCondition.ForGroup("floating").Index("double").AsDouble.IsNonFinite().EndCondition
+                    .ToList<long>(name => name == "double" ? doubleIndex : throw new KeyNotFoundException(name));
+                AssertCount(reopenedSingles, singles.Count(static value => !float.IsNaN(value)), "Single reopen numeric domain");
+                AssertCount(reopenedDoubles, doubles.Count(static value => !double.IsFinite(value)), "Double reopen non-finite");
+            }
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+
+        double encodeNs = encodeElapsed.TotalNanoseconds / (encodeIterations * 2d);
+        Console.WriteLine($"floating-scalar-proof ok singleDirected={singles.Length} doubleDirected={doubles.Length} randomEach={randomSingles.Length} encodeNs={encodeNs:F2} encodeAllocatedBytes={allocatedBytes} checksum={checksum}");
+        return 0;
+    }
 
 }

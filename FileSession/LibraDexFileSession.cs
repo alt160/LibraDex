@@ -23,9 +23,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
     private const int DefaultScalar16Scalar16MaxRouterHops = 8;
     private const int DefaultFixed32Scalar8MaxRouterHops = 40;
     private const int DefaultFixed32Scalar16MaxRouterHops = 40;
-    internal const int DefaultVarKeyScalar8MaxRouterHops = 128;
-    internal const int DefaultVarKeyScalar16MaxRouterHops = 128;
-    private const int DefaultVarKeyVarIdentityMaxRouterHops = 128;
+    internal const int DefaultVarKeyScalar8MaxRouterHops = ushort.MaxValue + 1;
+    internal const int DefaultVarKeyScalar16MaxRouterHops = ushort.MaxValue + 1;
+    private const int DefaultVarKeyVarIdentityMaxRouterHops = ushort.MaxValue + 1;
     private const int VarKeyScalar8MutationHintMaxBytes = 32;
     private const int VarKeyScalar8MutationHintWarmupItemCount = 4;
     private const int VarKeyScalar8MutationHintSampleMask = 0x0F;
@@ -132,6 +132,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
     private readonly List<long> releasedWriteContextShelfSignals = [];
     private readonly LibraDexWriteAdmission concurrentWriteAdmission = new();
     private readonly object writePublicationSync = new();
+    private readonly object varKeyScalar8TopologyGateSync = new();
+    private readonly Dictionary<long, ReaderWriterLockSlim> varKeyScalar8TopologyMutationSyncByRoot = [];
     private readonly ReaderWriterLockSlim scalar8Scalar8WriterOperationSync = new(LockRecursionPolicy.SupportsRecursion);
     private readonly object scalar8Scalar8TopologyGateSync = new();
     private readonly Dictionary<long, ReaderWriterLockSlim> scalar8Scalar8TopologyMutationSyncByRoot = [];
@@ -175,6 +177,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
 
     internal static Action<byte, long, long, int>? Scalar8Scalar8TopologyOwnerEnteredForValidation;
     internal static Action<byte, byte, long, long, int>? PrimitiveTopologyOwnerEnteredForValidation;
+    internal static Action? LiveBackupCopyEnteredForValidation;
+    internal static Action<long, long>? LiveBackupCopyBlockCompletedForValidation;
 
     private readonly record struct KeyStateRouteMutationKey(int SlotIndex, KeyStateRoute Route);
 
@@ -253,6 +257,30 @@ internal sealed partial class LibraDexFileSession : IDisposable
     /// <returns>A thread-affine scope that must be disposed with the owning cursor.<br/></returns>
     internal DataKernel.CoherentReadLease EnterCoherentRead()
         => kernel.EnterCoherentRead();
+
+    /// <summary>
+    /// Enters the DataKernel maintenance-only coherent reader lane that permits same-thread write upgrade.<br/>
+    /// This preserves one authoritative topology snapshot across optimizer enumeration and compare-and-publish replacement without excluding unrelated readers.<br/>
+    /// </summary>
+    /// <returns>A thread-affine lease that must cover the complete read/replace operation.<br/></returns>
+    internal DataKernel.CoherentReadLease EnterCoherentUpgradeableRead()
+        => kernel.EnterCoherentUpgradeableRead();
+
+    /// <summary>
+    /// Captures exact persisted allocator metadata and reusable-capacity accounting for catalog maintenance diagnostics.<br/>
+    /// This is session-internal because the public maintenance assessment combines it with catalog and active-topology attribution.<br/>
+    /// </summary>
+    /// <returns>The current allocator storage snapshot, or the default snapshot for catalogs without a durable allocator.<br/></returns>
+    internal FileAllocationStorageSnapshot GetFileAllocationStorageSnapshot()
+        => kernel.GetFileAllocationStorageSnapshot();
+
+    /// <summary>
+    /// Verifies that the current maintenance thread returned every coherent reader owned by this session.<br/>
+    /// This forwards the DataKernel lifecycle assertion so higher layers can identify the exact index phase that leaked a reader before disposal or publication attempts obscure the source.<br/>
+    /// </summary>
+    /// <param name="operation">The completed operation description used in a failure message.<br/></param>
+    internal void AssertNoRetainedCoherentRead(string operation)
+        => kernel.AssertNoRetainedCoherentRead(operation);
 
     /// <summary>
     /// Waits until a conflicting writer context releases one physical shelf offset.<br/>
@@ -621,6 +649,29 @@ internal sealed partial class LibraDexFileSession : IDisposable
                 appendTelemetry);
         }
 
+        if (TryInsertTerminalIdentity8Locally(
+            rootOffset,
+            TerminalIdentityRootLayout.ShapeScalar8,
+            expectedKey,
+            profile.ShelfExtentSize,
+            encodedIdentity,
+            allowDuplicateKeys,
+            out Scalar8Scalar8InsertResult localInsertResult,
+            out DataKernelCommitTelemetry localTelemetry))
+        {
+            return new Scalar8Scalar8RoutedInsertResult(
+                localInsertResult == Scalar8Scalar8InsertResult.Inserted
+                    ? Scalar8Scalar8RoutedInsertKind.WalkedNoSplit
+                    : localInsertResult == Scalar8Scalar8InsertResult.KeyConflict
+                        ? Scalar8Scalar8RoutedInsertKind.KeyConflict
+                        : Scalar8Scalar8RoutedInsertKind.NoOp,
+                localInsertResult,
+                rootOffset,
+                localInsertResult == Scalar8Scalar8InsertResult.Inserted ? rootOffset : 0,
+                0,
+                localTelemetry);
+        }
+
         long obsoleteFirstShelfOffset = ReadTerminalIdentityFirstShelfOffset(rootOffset, expectedKey);
         List<ulong> identities = ReadTerminalIdentity8RouteIdentities(rootOffset, expectedKey, profile.ShelfExtentSize);
         if (!allowDuplicateKeys && identities.Count != 0)
@@ -928,8 +979,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
             identityIndex += take;
         }
 
-        DataKernelCommitTelemetry telemetry = CommitAndInvalidateRouterReadCache();
         ReleaseScalar8Scalar8DuplicateRunChain(obsoleteTailOffset, profile);
+        DataKernelCommitTelemetry telemetry = CommitAndInvalidateRouterReadCache();
         return telemetry;
     }
 
@@ -984,16 +1035,19 @@ internal sealed partial class LibraDexFileSession : IDisposable
     }
 
     /// <summary>
-    /// Deepens an `SS8-8` route when a terminal identity root is reached by a different incoming key.<br/>
-    /// Terminal identity roots are valid only behind an exact exhausted-key route; this repairs broader parent routes by moving the existing root behind a newly inserted child router.<br/>
+    /// Separates an `SS8-8` route when a terminal identity root is reached by a different incoming key.<br/>
+    /// When the keys already differ at a consumed router depth, the stale incoming-key alias is cleared at that first divergent router so ordinary unset-route insertion can create an independent shelf.<br/>
+    /// When the keys share every consumed byte, the existing terminal root is moved behind one deeper exact-key router and the caller retries.<br/>
     /// </summary>
-    /// <param name="pathTarget">The walked route target that reached a terminal identity root.</param>
-    /// <param name="profile">The `SS8-8` shelf profile used for empty fallback shelves.</param>
-    /// <param name="encodedKey">The incoming encoded key that selected the terminal root route.</param>
-    /// <param name="telemetry">Receives DataKernel telemetry when route deepening writes storage.</param>
-    /// <returns>True when the route was deepened and the caller should retry the insert; false when the terminal root already matches the incoming key.</returns>
-    /// <exception cref="InvalidDataException">Thrown when the terminal root is invalid or routing bytes are already exhausted for two different keys.</exception>
+    /// <param name="rootRouterOffset">The root router offset used to locate an already-consumed divergent byte.<br/></param>
+    /// <param name="pathTarget">The walked route target that reached a terminal identity root.<br/></param>
+    /// <param name="profile">The `SS8-8` shelf profile used for empty fallback shelves.<br/></param>
+    /// <param name="encodedKey">The incoming encoded key that selected the terminal root route.<br/></param>
+    /// <param name="telemetry">Receives DataKernel telemetry when route separation writes storage.<br/></param>
+    /// <returns><see langword="true"/> when the route changed and the caller should retry the insert; otherwise <see langword="false"/> when the terminal root already matches the incoming key.<br/></returns>
+    /// <exception cref="InvalidDataException">Thrown when the terminal root or the shared route topology is invalid.<br/></exception>
     private bool TryDeepenMismatchedScalar8Scalar8TerminalIdentityRoute(
+        long rootRouterOffset,
         Scalar8Scalar8RoutePathTarget pathTarget,
         Scalar8Scalar8Profile profile,
         ulong encodedKey,
@@ -1019,6 +1073,17 @@ internal sealed partial class LibraDexFileSession : IDisposable
             return false;
         }
 
+        if (TryClearMismatchedScalar8Scalar8ConsumedRouteAlias(
+            rootRouterOffset,
+            pathTarget,
+            rootKey,
+            encodedKey,
+            "terminal",
+            out telemetry))
+        {
+            return true;
+        }
+
         if (target.RouterDepth + 1 >= Scalar8Scalar8Layout.KeySize)
         {
             throw new InvalidDataException($"The routed SS8-8 terminal identity root reached a different key after all key bytes were consumed. IncomingKey=0x{encodedKey:X16}; RootKey=0x{rootKey:X16}; RouterDepth={target.RouterDepth}; ParentRouterOffset={pathTarget.ParentRouterOffset}; RoutePrefix=0x{pathTarget.RoutePrefixByte:X2}; RootOffset={target.Offset}.");
@@ -1041,6 +1106,94 @@ internal sealed partial class LibraDexFileSession : IDisposable
         InvalidateRouterReadCacheForRouterRewrite(target.Offset);
         telemetry = CommitAndDeferRouterReadCacheInvalidation();
         return true;
+    }
+
+    /// <summary>
+    /// Clears a stale incoming-key alias at the first already-consumed byte where an existing routed `SS8-8` key differs from the incoming key.<br/>
+    /// The existing-key prefix retains the shared target while only the incoming-key prefix becomes unset, allowing the ordinary insertion path to create independent storage.<br/>
+    /// The method does nothing when the first differing byte has not yet been consumed because normal route deepening or shelf splitting can still separate those keys.<br/>
+    /// </summary>
+    /// <param name="rootRouterOffset">Root router offset from which the routed path is walked.<br/></param>
+    /// <param name="pathTarget">Target reached by both the existing and incoming keys through the stale alias.<br/></param>
+    /// <param name="existingKey">Single key proven to own the reached shelf or terminal root.<br/></param>
+    /// <param name="incomingKey">Different key whose route must be separated.<br/></param>
+    /// <param name="routeKind">Short diagnostic label identifying the reached target shape.<br/></param>
+    /// <param name="telemetry">Receives DataKernel commit telemetry when the alias is cleared.<br/></param>
+    /// <returns><see langword="true"/> when an already-consumed alias was cleared; otherwise <see langword="false"/>.<br/></returns>
+    /// <exception cref="InvalidDataException">Thrown when the routed topology does not contain the expected shared target at the first differing key byte.<br/></exception>
+    private bool TryClearMismatchedScalar8Scalar8ConsumedRouteAlias(
+        long rootRouterOffset,
+        Scalar8Scalar8RoutePathTarget pathTarget,
+        ulong existingKey,
+        ulong incomingKey,
+        string routeKind,
+        out DataKernelCommitTelemetry telemetry)
+    {
+        telemetry = default;
+        Scalar8Scalar8RouteTarget target = pathTarget.Target;
+        int firstDifferentDepth = 0;
+        while (firstDifferentDepth < Scalar8Scalar8Layout.KeySize &&
+               GetScalar8Scalar8Prefix(existingKey, firstDifferentDepth) == GetScalar8Scalar8Prefix(incomingKey, firstDifferentDepth))
+        {
+            firstDifferentDepth++;
+        }
+
+        if (firstDifferentDepth > target.RouterDepth)
+        {
+            return false;
+        }
+
+        long routerOffset = rootRouterOffset;
+        for (int hop = 0; hop <= target.RouterDepth; hop++)
+        {
+            byte[] routerBytes = new byte[RouterLayout.Size];
+            kernel.Read(routerOffset, routerBytes);
+            RouterReader reader = new(routerBytes);
+            if (!reader.IsValid || reader.PrefixByteCount != 1)
+            {
+                throw new InvalidDataException($"The mismatched SS8-8 {routeKind} route contains an invalid or non-one-byte router before the first divergent key byte.");
+            }
+
+            if (reader.KeyDepth == firstDifferentDepth)
+            {
+                byte existingPrefix = GetScalar8Scalar8Prefix(existingKey, firstDifferentDepth);
+                byte incomingPrefix = GetScalar8Scalar8Prefix(incomingKey, firstDifferentDepth);
+                long existingTargetOffset = reader.FindTarget(existingPrefix);
+                long incomingTargetOffset = reader.FindTarget(incomingPrefix);
+                if (existingTargetOffset == 0 || existingTargetOffset != incomingTargetOffset)
+                {
+                    throw new InvalidDataException($"The mismatched SS8-8 {routeKind} route does not share one target at its first divergent key byte. KeyDepth={firstDifferentDepth}; ExistingPrefix=0x{existingPrefix:X2}; IncomingPrefix=0x{incomingPrefix:X2}; ExistingTarget={existingTargetOffset}; IncomingTarget={incomingTargetOffset}.");
+                }
+
+                long[] divergentTargets = new long[RouterLayout.MaxOneByteRouteCount];
+                for (int i = 0; i < divergentTargets.Length; i++)
+                    divergentTargets[i] = reader.FindTarget((byte)i);
+                divergentTargets[incomingPrefix] = 0;
+
+                RawDataReservation divergentRouterRewrite = kernel.ReserveAt(routerOffset, RouterLayout.Size);
+                RouterWriter divergentWriter = new(divergentRouterRewrite.Span);
+                divergentWriter.InitializeExpandedOneByte(reader.KeyDepth, reader.AllocationClassId, divergentTargets);
+                InvalidateRouterReadCacheForRouterRewrite(routerOffset);
+                telemetry = CommitAndDeferRouterReadCacheInvalidation();
+                return true;
+            }
+
+            if (reader.KeyDepth > firstDifferentDepth)
+            {
+                throw new InvalidDataException($"The mismatched SS8-8 {routeKind} route skipped its first divergent key byte. FirstDifferentDepth={firstDifferentDepth}; RouterDepth={reader.KeyDepth}; RouterOffset={routerOffset}.");
+            }
+
+            byte sharedPrefix = GetScalar8Scalar8Prefix(existingKey, reader.KeyDepth);
+            long nextRouterOffset = reader.FindTarget(sharedPrefix);
+            if (nextRouterOffset == 0 || ClassifyScalar8Scalar8RouteTarget(nextRouterOffset) != Scalar8Scalar8RouteTargetKind.Router)
+            {
+                throw new InvalidDataException($"The mismatched SS8-8 {routeKind} route ended before its first divergent key byte. FirstDifferentDepth={firstDifferentDepth}; RouterDepth={reader.KeyDepth}; RouterOffset={routerOffset}; TargetOffset={nextRouterOffset}.");
+            }
+
+            routerOffset = nextRouterOffset;
+        }
+
+        throw new InvalidDataException($"The mismatched SS8-8 {routeKind} route did not expose its first divergent key byte. FirstDifferentDepth={firstDifferentDepth}; TerminalRouterDepth={target.RouterDepth}.");
     }
 
     /// <summary>
@@ -1180,6 +1333,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
         long obsoleteFirstShelfOffset = 0)
     {
         long firstShelfOffset = 0;
+        long tailShelfOffset = 0;
         if (identities.Count != 0)
         {
             int capacity = TerminalIdentity8ShelfLayout.GetCapacity(shelfExtentSize);
@@ -1189,38 +1343,35 @@ internal sealed partial class LibraDexFileSession : IDisposable
             }
 
             int remaining = identities.Count;
-            int identityIndex = 0;
-            long previousShelfOffset = 0;
-            RawDataReservation previousReservation = default;
+            long nextShelfOffset = 0;
             while (remaining > 0)
             {
                 int take = Math.Min(capacity, remaining);
-                remaining -= take;
+                int identityIndex = remaining - take;
                 RawDataReservation shelfReservation = kernel.Reserve(shelfExtentSize);
-                if (firstShelfOffset == 0)
+                TerminalIdentity8ShelfLayout.Initialize(
+                    shelfReservation.Span,
+                    identities,
+                    identityIndex,
+                    take,
+                    nextShelfOffset);
+                if (tailShelfOffset == 0)
                 {
-                    firstShelfOffset = shelfReservation.Extent.Offset;
+                    tailShelfOffset = shelfReservation.Extent.Offset;
                 }
 
-                TerminalIdentity8ShelfLayout.Initialize(shelfReservation.Span, identities, identityIndex, take, 0);
-                if (previousShelfOffset != 0)
-                {
-                    RawDataReservation previousRewrite = kernel.ReserveAt(previousShelfOffset, shelfExtentSize);
-                    previousReservation.Span.Slice(0, shelfExtentSize).CopyTo(previousRewrite.Span);
-                    TerminalIdentity8ShelfLayout.WriteNextShelfOffset(previousRewrite.Span, shelfReservation.Extent.Offset);
-                }
-
-                previousShelfOffset = shelfReservation.Extent.Offset;
-                previousReservation = shelfReservation;
-                identityIndex += take;
+                firstShelfOffset = shelfReservation.Extent.Offset;
+                nextShelfOffset = shelfReservation.Extent.Offset;
+                remaining = identityIndex;
             }
         }
 
         RawDataReservation rootRewrite = kernel.ReserveAt(rootOffset, TerminalIdentityRootLayout.Size);
         TerminalIdentityRootLayout.Initialize(rootRewrite.Span, shape, keyBytes, shelfExtentSize, firstShelfOffset);
+        TerminalIdentityRootLayout.WriteTailShelfOffset(rootRewrite.Span, tailShelfOffset);
         ClearTerminalIdentityReadCaches();
-        DataKernelCommitTelemetry telemetry = CommitAndInvalidateRouterReadCache();
         ReleaseTerminalIdentity8ShelfChain(obsoleteFirstShelfOffset, shelfExtentSize);
+        DataKernelCommitTelemetry telemetry = CommitAndInvalidateRouterReadCache();
         return telemetry;
     }
 
@@ -1282,154 +1433,177 @@ internal sealed partial class LibraDexFileSession : IDisposable
         out DataKernelCommitTelemetry telemetry)
     {
         telemetry = default;
-        byte[] rootBytes = ReadTerminalIdentityRootBytes(rootOffset);
-        if (!IsTerminalIdentityRootForKey(rootBytes, expectedKeyBytes, out long firstShelfOffset))
+        lock (writePublicationSync)
         {
-            throw new InvalidDataException("The terminal identity root does not match the routed key.");
-        }
-
-        if (firstShelfOffset == 0)
-        {
-            lock (writePublicationSync)
+            kernel.EnterExclusiveStoragePublication();
+            try
             {
-                kernel.EnterExclusiveStoragePublication();
-                try
+                byte[] rootBytes = ReadTerminalIdentityRootBytes(rootOffset);
+                if (!IsTerminalIdentityRootForKey(rootBytes, expectedKeyBytes, out long firstShelfOffset))
                 {
-                    rootBytes = ReadTerminalIdentityRootBytes(rootOffset);
-                    if (!IsTerminalIdentityRootForKey(rootBytes, expectedKeyBytes, out firstShelfOffset))
-                    {
-                        throw new InvalidDataException("The terminal identity root does not match the routed key.");
-                    }
+                    throw new InvalidDataException("The terminal identity root does not match the routed key.");
+                }
 
-                    if (firstShelfOffset != 0)
+                long persistedTailShelfOffset = TerminalIdentityRootLayout.ReadTailShelfOffset(rootBytes);
+                if (firstShelfOffset == 0)
+                {
+                    if (persistedTailShelfOffset != 0)
                     {
-                        return false;
+                        throw new InvalidDataException("The empty terminal identity root has a nonzero tail shelf offset.");
                     }
 
                     RawDataReservation shelfReservation = kernel.Reserve(shelfExtentSize);
                     InitializeTerminalIdentity8SingleIdentityShelf(shelfReservation.Span, encodedIdentity, nextShelfOffset: 0);
-                    RawDataReservation firstOffsetRewrite = kernel.ReserveAt(
-                        rootOffset + TerminalIdentityRootLayout.FirstShelfOffsetOffset,
-                        sizeof(long));
-                    BinaryPrimitives.WriteInt64LittleEndian(firstOffsetRewrite.Span, shelfReservation.Extent.Offset);
-                    byte[] updatedRootBytes = new byte[TerminalIdentityRootLayout.Size];
-                    rootBytes.AsSpan(0, TerminalIdentityRootLayout.Size).CopyTo(updatedRootBytes);
-                    TerminalIdentityRootLayout.WriteFirstShelfOffset(updatedRootBytes, shelfReservation.Extent.Offset);
-                    byte[] updatedShelfBytes = new byte[shelfExtentSize];
-                    shelfReservation.Span.Slice(0, shelfExtentSize).CopyTo(updatedShelfBytes);
+                    byte[] initializedRootBytes = rootBytes.AsSpan(0, TerminalIdentityRootLayout.Size).ToArray();
+                    TerminalIdentityRootLayout.WriteFirstShelfOffset(initializedRootBytes, shelfReservation.Extent.Offset);
+                    TerminalIdentityRootLayout.WriteTailShelfOffset(initializedRootBytes, shelfReservation.Extent.Offset);
+                    RawDataReservation rootRewrite = kernel.ReserveAt(rootOffset, TerminalIdentityRootLayout.Size);
+                    initializedRootBytes.CopyTo(rootRewrite.Span);
+                    byte[] updatedShelfBytes = shelfReservation.Span.Slice(0, shelfExtentSize).ToArray();
                     telemetry = CommitWithoutInvalidatingRouterReadCache();
-                    terminalIdentityRootReadCache[rootOffset] = updatedRootBytes;
+                    terminalIdentityRootReadCache[rootOffset] = initializedRootBytes;
                     terminalIdentity8ShelfReadCache[shelfReservation.Extent.Offset] = updatedShelfBytes;
                     return true;
                 }
-                finally
+
+                long currentOffset = ResolveTerminalIdentity8TailOffset(
+                    firstShelfOffset,
+                    persistedTailShelfOffset,
+                    shelfExtentSize,
+                    "append");
+                bool repairLegacyTail = persistedTailShelfOffset == 0;
+                byte[] currentBytes = ReadTerminalIdentity8ShelfBytesCached(currentOffset, shelfExtentSize)
+                    .AsSpan(0, shelfExtentSize)
+                    .ToArray();
+                ValidateTerminalIdentity8Shelf(currentBytes, shelfExtentSize);
+                int count = TerminalIdentity8ShelfLayout.ReadItemCount(currentBytes);
+                long nextOffset = TerminalIdentity8ShelfLayout.ReadNextShelfOffset(currentBytes);
+                if (nextOffset != 0)
                 {
-                    kernel.ExitExclusiveStoragePublication();
+                    throw new InvalidDataException("The terminal identity root tail shelf has a nonzero next-shelf offset.");
                 }
+
+                int capacity = TerminalIdentity8ShelfLayout.GetCapacity(shelfExtentSize);
+                if (!allowDuplicateKeys && count != 0)
+                {
+                    return false;
+                }
+
+                if (count != 0 && TerminalIdentity8ShelfLayout.ReadIdentity(currentBytes, count - 1) >= encodedIdentity)
+                {
+                    return false;
+                }
+
+                byte[]? updatedRootBytes = null;
+                if (count < capacity)
+                {
+                    RawDataReservation identityRewrite = kernel.ReserveAt(
+                        currentOffset + TerminalIdentity8ShelfLayout.IdentityBytesOffset + (count * TerminalIdentity8ShelfLayout.IdentitySize),
+                        TerminalIdentity8ShelfLayout.IdentitySize);
+                    BinaryPrimitives.WriteUInt64BigEndian(identityRewrite.Span, encodedIdentity);
+
+                    RawDataReservation countRewrite = kernel.ReserveAt(
+                        currentOffset + TerminalIdentity8ShelfLayout.ItemCountOffset,
+                        sizeof(int));
+                    BinaryPrimitives.WriteInt32LittleEndian(countRewrite.Span, count + 1);
+                    if (repairLegacyTail)
+                    {
+                        updatedRootBytes = rootBytes.AsSpan(0, TerminalIdentityRootLayout.Size).ToArray();
+                        TerminalIdentityRootLayout.WriteTailShelfOffset(updatedRootBytes, currentOffset);
+                        RawDataReservation rootRewrite = kernel.ReserveAt(rootOffset, TerminalIdentityRootLayout.Size);
+                        updatedRootBytes.CopyTo(rootRewrite.Span);
+                    }
+
+                    telemetry = CommitWithoutInvalidatingRouterReadCache();
+                    TerminalIdentity8ShelfLayout.WriteIdentity(currentBytes, count, encodedIdentity);
+                    TerminalIdentity8ShelfLayout.WriteItemCount(currentBytes, count + 1);
+                    if (updatedRootBytes is not null)
+                    {
+                        terminalIdentityRootReadCache[rootOffset] = updatedRootBytes;
+                    }
+
+                    terminalIdentity8ShelfReadCache[currentOffset] = currentBytes;
+                    return true;
+                }
+
+                RawDataReservation append = kernel.Reserve(shelfExtentSize);
+                InitializeTerminalIdentity8SingleIdentityShelf(append.Span, encodedIdentity, nextShelfOffset: 0);
+                RawDataReservation tailNextRewrite = kernel.ReserveAt(
+                    currentOffset + TerminalIdentity8ShelfLayout.NextShelfOffsetOffset,
+                    sizeof(long));
+                BinaryPrimitives.WriteInt64LittleEndian(tailNextRewrite.Span, append.Extent.Offset);
+                updatedRootBytes = rootBytes.AsSpan(0, TerminalIdentityRootLayout.Size).ToArray();
+                TerminalIdentityRootLayout.WriteTailShelfOffset(updatedRootBytes, append.Extent.Offset);
+                RawDataReservation appendedRootRewrite = kernel.ReserveAt(rootOffset, TerminalIdentityRootLayout.Size);
+                updatedRootBytes.CopyTo(appendedRootRewrite.Span);
+                byte[] appendedShelfBytes = append.Span.Slice(0, shelfExtentSize).ToArray();
+                telemetry = CommitWithoutInvalidatingRouterReadCache();
+                TerminalIdentity8ShelfLayout.WriteNextShelfOffset(currentBytes, append.Extent.Offset);
+                terminalIdentityRootReadCache[rootOffset] = updatedRootBytes;
+                terminalIdentity8ShelfReadCache[currentOffset] = currentBytes;
+                terminalIdentity8ShelfReadCache[append.Extent.Offset] = appendedShelfBytes;
+                return true;
+            }
+            finally
+            {
+                kernel.ExitExclusiveStoragePublication();
             }
         }
+    }
 
+    /// <summary>
+    /// Resolves the last shelf of one scalar-8 terminal identity chain while preserving the direct-tail hot path.<br/>
+    /// A nonzero persisted tail is trusted as root-owned topology metadata and validated only as a terminal shelf; full first-to-tail reachability belongs to topology assessment and maintenance.<br/>
+    /// A nonempty legacy root whose tail is zero is walked once through narrow shelf headers so the next mutation can repair the root without scanning identity payloads.<br/>
+    /// </summary>
+    /// <param name="firstShelfOffset">The first shelf offset persisted in the terminal root.<br/></param>
+    /// <param name="persistedTailShelfOffset">The tail shelf offset persisted in the terminal root, or zero for a legacy root.<br/></param>
+    /// <param name="shelfExtentSize">The fixed extent size of every linked identity shelf.<br/></param>
+    /// <param name="operation">Short operation name included in corruption diagnostics.<br/></param>
+    /// <returns>The validated last shelf offset, or zero when the root is empty.<br/></returns>
+    private long ResolveTerminalIdentity8TailOffset(
+        long firstShelfOffset,
+        long persistedTailShelfOffset,
+        int shelfExtentSize,
+        string operation)
+    {
+        if (firstShelfOffset == 0)
+        {
+            if (persistedTailShelfOffset != 0)
+            {
+                throw new InvalidDataException($"Terminal identity {operation} found an empty root with nonzero tail {persistedTailShelfOffset}.");
+            }
+
+            return 0;
+        }
+
+        if (persistedTailShelfOffset != 0)
+        {
+            _ = ReadTerminalIdentity8ShelfCountNarrow(persistedTailShelfOffset, shelfExtentSize, out long nextShelfOffset);
+            if (nextShelfOffset != 0)
+            {
+                throw new InvalidDataException($"Terminal identity {operation} tail {persistedTailShelfOffset} links to shelf {nextShelfOffset}.");
+            }
+
+            return persistedTailShelfOffset;
+        }
+
+        HashSet<long> visited = [];
         long currentOffset = firstShelfOffset;
         while (true)
         {
-            byte[] currentBytes = ReadTerminalIdentity8ShelfBytesCached(currentOffset, shelfExtentSize);
-            ValidateTerminalIdentity8Shelf(currentBytes, shelfExtentSize);
-            int count = TerminalIdentity8ShelfLayout.ReadItemCount(currentBytes);
-            long nextOffset = TerminalIdentity8ShelfLayout.ReadNextShelfOffset(currentBytes);
-            if (nextOffset != 0)
+            if (!visited.Add(currentOffset))
             {
-                currentOffset = nextOffset;
-                continue;
+                throw new InvalidDataException($"Terminal identity {operation} found a cycle at shelf {currentOffset} while resolving a legacy zero tail.");
             }
 
-            if (!allowDuplicateKeys && count != 0)
+            _ = ReadTerminalIdentity8ShelfCountNarrow(currentOffset, shelfExtentSize, out long nextShelfOffset);
+            if (nextShelfOffset == 0)
             {
-                return false;
+                return currentOffset;
             }
 
-            if (count != 0 && TerminalIdentity8ShelfLayout.ReadIdentity(currentBytes, count - 1) >= encodedIdentity)
-            {
-                return false;
-            }
-
-            int capacity = TerminalIdentity8ShelfLayout.GetCapacity(shelfExtentSize);
-            if (count < capacity)
-            {
-                lock (writePublicationSync)
-                {
-                    kernel.EnterExclusiveStoragePublication();
-                    try
-                    {
-                        currentBytes = ReadTerminalIdentity8ShelfBytesCached(currentOffset, shelfExtentSize);
-                        ValidateTerminalIdentity8Shelf(currentBytes, shelfExtentSize);
-                        count = TerminalIdentity8ShelfLayout.ReadItemCount(currentBytes);
-                        nextOffset = TerminalIdentity8ShelfLayout.ReadNextShelfOffset(currentBytes);
-                        if (nextOffset != 0 ||
-                            count >= capacity ||
-                            (!allowDuplicateKeys && count != 0) ||
-                            (count != 0 && TerminalIdentity8ShelfLayout.ReadIdentity(currentBytes, count - 1) >= encodedIdentity))
-                        {
-                            return false;
-                        }
-
-                        RawDataReservation identityRewrite = kernel.ReserveAt(
-                            currentOffset + TerminalIdentity8ShelfLayout.IdentityBytesOffset + (count * TerminalIdentity8ShelfLayout.IdentitySize),
-                            TerminalIdentity8ShelfLayout.IdentitySize);
-                        BinaryPrimitives.WriteUInt64BigEndian(identityRewrite.Span, encodedIdentity);
-
-                        RawDataReservation countRewrite = kernel.ReserveAt(
-                            currentOffset + TerminalIdentity8ShelfLayout.ItemCountOffset,
-                            sizeof(int));
-                        BinaryPrimitives.WriteInt32LittleEndian(countRewrite.Span, count + 1);
-                        telemetry = CommitWithoutInvalidatingRouterReadCache();
-                        TerminalIdentity8ShelfLayout.WriteIdentity(currentBytes, count, encodedIdentity);
-                        TerminalIdentity8ShelfLayout.WriteItemCount(currentBytes, count + 1);
-                        terminalIdentity8ShelfReadCache[currentOffset] = currentBytes;
-                        return true;
-                    }
-                    finally
-                    {
-                        kernel.ExitExclusiveStoragePublication();
-                    }
-                }
-            }
-
-            lock (writePublicationSync)
-            {
-                kernel.EnterExclusiveStoragePublication();
-                try
-                {
-                    currentBytes = ReadTerminalIdentity8ShelfBytesCached(currentOffset, shelfExtentSize);
-                    ValidateTerminalIdentity8Shelf(currentBytes, shelfExtentSize);
-                    count = TerminalIdentity8ShelfLayout.ReadItemCount(currentBytes);
-                    nextOffset = TerminalIdentity8ShelfLayout.ReadNextShelfOffset(currentBytes);
-                    if (nextOffset != 0 ||
-                        count < capacity ||
-                        (!allowDuplicateKeys && count != 0) ||
-                        (count != 0 && TerminalIdentity8ShelfLayout.ReadIdentity(currentBytes, count - 1) >= encodedIdentity))
-                    {
-                        return false;
-                    }
-
-                    RawDataReservation append = kernel.Reserve(shelfExtentSize);
-                    InitializeTerminalIdentity8SingleIdentityShelf(append.Span, encodedIdentity, nextShelfOffset: 0);
-                    RawDataReservation tailNextRewrite = kernel.ReserveAt(
-                        currentOffset + TerminalIdentity8ShelfLayout.NextShelfOffsetOffset,
-                        sizeof(long));
-                    BinaryPrimitives.WriteInt64LittleEndian(tailNextRewrite.Span, append.Extent.Offset);
-                    byte[] appendedShelfBytes = new byte[shelfExtentSize];
-                    append.Span.Slice(0, shelfExtentSize).CopyTo(appendedShelfBytes);
-                    telemetry = CommitWithoutInvalidatingRouterReadCache();
-                    TerminalIdentity8ShelfLayout.WriteNextShelfOffset(currentBytes, append.Extent.Offset);
-                    terminalIdentity8ShelfReadCache[currentOffset] = currentBytes;
-                    terminalIdentity8ShelfReadCache[append.Extent.Offset] = appendedShelfBytes;
-                    return true;
-                }
-                finally
-                {
-                    kernel.ExitExclusiveStoragePublication();
-                }
-            }
+            currentOffset = nextShelfOffset;
         }
     }
 
@@ -1591,7 +1765,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
         TerminalIdentity8ShelfLayout.WriteIdentity(target, 0, encodedIdentity);
     }
 
-    private List<ulong> ReadTerminalIdentity8RouteIdentities(long rootOffset, ReadOnlySpan<byte> expectedKeyBytes, int shelfExtentSize)
+    internal List<ulong> ReadTerminalIdentity8RouteIdentities(long rootOffset, ReadOnlySpan<byte> expectedKeyBytes, int shelfExtentSize)
     {
         byte[] rootBytes = ReadTerminalIdentityRootBytes(rootOffset);
         if (!IsTerminalIdentityRootForKey(rootBytes, expectedKeyBytes, out long shelfOffset))
@@ -1752,8 +1926,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
     }
 
     /// <summary>
-    /// Releases a superseded terminal identity shelf chain from a memory-backed DataKernel arena.<br/>
-    /// File-backed kernels ignore each release call, preserving append-only durable-file behavior until a separate compaction pass exists.<br/>
+    /// Stages release of a superseded terminal identity shelf chain through the backing-specific allocator.<br/>
+    /// Callers stage the authoritative root or route rewrite first, then invoke this helper before the enclosing commit so file retirement publishes after topology while memory arenas recover the same extents safely.<br/>
     /// </summary>
     /// <param name="firstShelfOffset">The first shelf in the old linked identity chain, or zero when there is no old chain.</param>
     /// <param name="shelfExtentSize">The fixed extent size of every shelf in the chain.</param>
@@ -1765,7 +1939,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
             byte[] shelfBytes = ReadTerminalIdentity8ShelfBytesCached(currentOffset, shelfExtentSize);
             long nextOffset = TerminalIdentity8ShelfLayout.ReadNextShelfOffset(shelfBytes);
             terminalIdentity8ShelfReadCache.TryRemove(currentOffset, out _);
-            kernel.ReleaseMemoryExtent(currentOffset, shelfExtentSize);
+            kernel.StageExtentRetirement(currentOffset, shelfExtentSize);
             currentOffset = nextOffset;
         }
     }
@@ -1791,8 +1965,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
     }
 
     /// <summary>
-    /// Releases a superseded `SS8-8` duplicate-run tail chain from a memory-backed DataKernel arena.<br/>
+    /// Stages release of a superseded `SS8-8` duplicate-run tail chain through the backing-specific allocator.<br/>
     /// The head shelf is intentionally not released because the rewrite keeps using that offset as the new duplicate-run head.<br/>
+    /// File-backed callers invoke this after staging the head rewrite and before commit so retirement is ordered behind topology publication.<br/>
     /// </summary>
     /// <param name="firstTailOffset">The first old tail shelf offset, or zero when the old run had no tail.</param>
     /// <param name="profile">The `SS8-8` shelf profile that determines the shelf extent length.</param>
@@ -1810,7 +1985,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
             }
 
             long nextOffset = shelf.DuplicateRunNextOffset;
-            kernel.ReleaseMemoryExtent(currentOffset, profile.ShelfExtentSize);
+            kernel.StageExtentRetirement(currentOffset, profile.ShelfExtentSize);
             currentOffset = nextOffset;
         }
     }
@@ -1839,6 +2014,17 @@ internal sealed partial class LibraDexFileSession : IDisposable
     {
         Span<byte> expectedKey = stackalloc byte[Scalar8Scalar8Layout.KeySize];
         BinaryPrimitives.WriteUInt64BigEndian(expectedKey, encodedKey);
+        if (TryDeleteTerminalIdentity8Locally(
+            rootOffset,
+            TerminalIdentityRootLayout.ShapeScalar8,
+            expectedKey,
+            profile.ShelfExtentSize,
+            encodedIdentity,
+            out int localDeleted))
+        {
+            return localDeleted;
+        }
+
         List<ulong> identities = ReadTerminalIdentity8RouteIdentities(rootOffset, expectedKey, profile.ShelfExtentSize);
         int deleted = 0;
         if (encodedIdentity.HasValue)
@@ -1911,10 +2097,553 @@ internal sealed partial class LibraDexFileSession : IDisposable
     }
 
     /// <summary>
+    /// Inserts one out-of-tail encoded identity by mutating only the terminal shelf and link pages whose logical contents change.<br/>
+    /// A non-full shelf is rewritten in place; a full head or interval boundary receives one linked singleton shelf; and an interior full shelf is split into one positional rewrite plus one appended shelf.<br/>
+    /// The method validates the root key and shape, preserves strict cross-shelf ordering, stages every structural byte before one publication, and updates read caches only after that publication succeeds.<br/>
+    /// Returning false is reserved for an empty terminal root so the established root-initialization fallback remains authoritative.<br/>
+    /// </summary>
+    /// <param name="rootOffset">The terminal identity root offset selected by the route walker.<br/></param>
+    /// <param name="expectedShape">The terminal root shape required by the calling index.<br/></param>
+    /// <param name="expectedKeyBytes">The complete exhausted key bytes required in the terminal root.<br/></param>
+    /// <param name="shelfExtentSize">The fixed extent size of each identity-only shelf.<br/></param>
+    /// <param name="encodedIdentity">The encoded identity to insert in global ascending order.<br/></param>
+    /// <param name="allowDuplicateKeys">Whether the routed key may own more than one identity.<br/></param>
+    /// <param name="insertResult">Receives inserted, already-present, or key-conflict status when the operation is handled.<br/></param>
+    /// <param name="telemetry">Receives publication telemetry when persistent bytes change.<br/></param>
+    /// <returns><see langword="true"/> when the mutation or no-op was handled locally; otherwise <see langword="false"/>.<br/></returns>
+    private bool TryInsertTerminalIdentity8Locally(
+        long rootOffset,
+        byte expectedShape,
+        ReadOnlySpan<byte> expectedKeyBytes,
+        int shelfExtentSize,
+        ulong encodedIdentity,
+        bool allowDuplicateKeys,
+        out Scalar8Scalar8InsertResult insertResult,
+        out DataKernelCommitTelemetry telemetry)
+    {
+        insertResult = default;
+        telemetry = default;
+        int capacity = TerminalIdentity8ShelfLayout.GetCapacity(shelfExtentSize);
+        if (capacity <= 0)
+        {
+            throw new InvalidDataException("The terminal identity shelf extent is too small for identity payloads.");
+        }
+
+        lock (writePublicationSync)
+        {
+            kernel.EnterExclusiveStoragePublication();
+            try
+            {
+                byte[] rootBytes = ReadTerminalIdentityRootBytes(rootOffset);
+                if (TerminalIdentityRootLayout.ReadShape(rootBytes) != expectedShape ||
+                    !IsTerminalIdentityRootForKey(rootBytes, expectedKeyBytes, out long firstShelfOffset))
+                {
+                    throw new InvalidDataException("The terminal identity root does not match the routed key and shape.");
+                }
+
+                if (firstShelfOffset == 0)
+                {
+                    return false;
+                }
+
+                long persistedTailShelfOffset = TerminalIdentityRootLayout.ReadTailShelfOffset(rootBytes);
+                long tailShelfOffset = ResolveTerminalIdentity8TailOffset(
+                    firstShelfOffset,
+                    persistedTailShelfOffset,
+                    shelfExtentSize,
+                    "local insert");
+                bool repairLegacyTail = persistedTailShelfOffset == 0;
+                if (!allowDuplicateKeys)
+                {
+                    insertResult = Scalar8Scalar8InsertResult.KeyConflict;
+                    return true;
+                }
+
+                long previousOffset = 0;
+                ulong previousLastIdentity = 0;
+                long currentOffset = firstShelfOffset;
+                while (currentOffset != 0)
+                {
+                    byte[] currentBytes = ReadTerminalIdentity8ShelfBytesCached(currentOffset, shelfExtentSize)
+                        .AsSpan(0, shelfExtentSize)
+                        .ToArray();
+                    ValidateTerminalIdentity8Shelf(currentBytes, shelfExtentSize);
+                    int count = TerminalIdentity8ShelfLayout.ReadItemCount(currentBytes);
+                    long nextOffset = TerminalIdentity8ShelfLayout.ReadNextShelfOffset(currentBytes);
+                    if (count != 0 && previousOffset != 0 && TerminalIdentity8ShelfLayout.ReadIdentity(currentBytes, 0) <= previousLastIdentity)
+                    {
+                        throw new InvalidDataException("The terminal identity shelf chain is not strictly ordered across its shelf boundary.");
+                    }
+
+                    int insertIndex = FindTerminalIdentity8InsertIndex(currentBytes, count, encodedIdentity);
+                    if (insertIndex < 0)
+                    {
+                        insertResult = Scalar8Scalar8InsertResult.AlreadyPresent;
+                        return true;
+                    }
+
+                    ulong firstIdentity = count == 0 ? 0 : TerminalIdentity8ShelfLayout.ReadIdentity(currentBytes, 0);
+                    ulong lastIdentity = count == 0 ? 0 : TerminalIdentity8ShelfLayout.ReadIdentity(currentBytes, count - 1);
+                    if (count != 0 && encodedIdentity > lastIdentity && nextOffset != 0)
+                    {
+                        previousOffset = currentOffset;
+                        previousLastIdentity = lastIdentity;
+                        currentOffset = nextOffset;
+                        continue;
+                    }
+
+                    if (count < capacity)
+                    {
+                        for (int i = count; i > insertIndex; i--)
+                        {
+                            TerminalIdentity8ShelfLayout.WriteIdentity(currentBytes, i, TerminalIdentity8ShelfLayout.ReadIdentity(currentBytes, i - 1));
+                        }
+
+                        TerminalIdentity8ShelfLayout.WriteIdentity(currentBytes, insertIndex, encodedIdentity);
+                        TerminalIdentity8ShelfLayout.WriteItemCount(currentBytes, count + 1);
+                        int identityRewriteOffset = checked(TerminalIdentity8ShelfLayout.IdentityBytesOffset + (insertIndex * TerminalIdentity8ShelfLayout.IdentitySize));
+                        int identityRewriteLength = checked((count - insertIndex + 1) * TerminalIdentity8ShelfLayout.IdentitySize);
+                        if (insertIndex == 0)
+                        {
+                            int contiguousRewriteOffset = TerminalIdentity8ShelfLayout.ItemCountOffset;
+                            int contiguousRewriteLength = checked(identityRewriteOffset + identityRewriteLength - contiguousRewriteOffset);
+                            RawDataReservation contiguousRewrite = kernel.ReserveAt(currentOffset + contiguousRewriteOffset, contiguousRewriteLength);
+                            currentBytes.AsSpan(contiguousRewriteOffset, contiguousRewriteLength).CopyTo(contiguousRewrite.Span);
+                        }
+                        else
+                        {
+                            RawDataReservation identityRewrite = kernel.ReserveAt(currentOffset + identityRewriteOffset, identityRewriteLength);
+                            currentBytes.AsSpan(identityRewriteOffset, identityRewriteLength).CopyTo(identityRewrite.Span);
+                            RawDataReservation countRewrite = kernel.ReserveAt(
+                                currentOffset + TerminalIdentity8ShelfLayout.ItemCountOffset,
+                                sizeof(int));
+                            BinaryPrimitives.WriteInt32LittleEndian(countRewrite.Span, count + 1);
+                        }
+
+                        byte[]? repairedRootBytes = null;
+                        if (repairLegacyTail)
+                        {
+                            repairedRootBytes = rootBytes.AsSpan(0, TerminalIdentityRootLayout.Size).ToArray();
+                            TerminalIdentityRootLayout.WriteTailShelfOffset(repairedRootBytes, tailShelfOffset);
+                            RawDataReservation rootRewrite = kernel.ReserveAt(rootOffset, TerminalIdentityRootLayout.Size);
+                            repairedRootBytes.CopyTo(rootRewrite.Span);
+                        }
+
+                        telemetry = CommitWithoutInvalidatingRouterReadCache();
+                        if (repairedRootBytes is not null)
+                        {
+                            terminalIdentityRootReadCache[rootOffset] = repairedRootBytes;
+                        }
+
+                        terminalIdentity8ShelfReadCache[currentOffset] = currentBytes;
+                        insertResult = Scalar8Scalar8InsertResult.Inserted;
+                        return true;
+                    }
+
+                    if (encodedIdentity < firstIdentity)
+                    {
+                        RawDataReservation prepend = kernel.Reserve(shelfExtentSize);
+                        InitializeTerminalIdentity8SingleIdentityShelf(prepend.Span, encodedIdentity, currentOffset);
+                        byte[] prependedBytes = prepend.Span.Slice(0, shelfExtentSize).ToArray();
+                        byte[]? previousBytesForCache = null;
+                        byte[]? updatedRootBytes = null;
+                        if (previousOffset == 0)
+                        {
+                            updatedRootBytes = rootBytes.AsSpan(0, TerminalIdentityRootLayout.Size).ToArray();
+                            TerminalIdentityRootLayout.WriteFirstShelfOffset(updatedRootBytes, prepend.Extent.Offset);
+                            if (repairLegacyTail)
+                            {
+                                TerminalIdentityRootLayout.WriteTailShelfOffset(updatedRootBytes, tailShelfOffset);
+                            }
+
+                            RawDataReservation rootRewrite = kernel.ReserveAt(rootOffset, TerminalIdentityRootLayout.Size);
+                            updatedRootBytes.CopyTo(rootRewrite.Span);
+                        }
+                        else
+                        {
+                            byte[] previousBytes = ReadTerminalIdentity8ShelfBytesCached(previousOffset, shelfExtentSize)
+                                .AsSpan(0, shelfExtentSize)
+                                .ToArray();
+                            ValidateTerminalIdentity8Shelf(previousBytes, shelfExtentSize);
+                            if (TerminalIdentity8ShelfLayout.ReadNextShelfOffset(previousBytes) != currentOffset)
+                            {
+                                throw new InvalidDataException("The terminal identity predecessor changed before local prepend publication.");
+                            }
+
+                            TerminalIdentity8ShelfLayout.WriteNextShelfOffset(previousBytes, prepend.Extent.Offset);
+                            RawDataReservation previousRewrite = kernel.ReserveAt(previousOffset, shelfExtentSize);
+                            previousBytes.CopyTo(previousRewrite.Span);
+                            previousBytesForCache = previousBytes;
+                            if (repairLegacyTail)
+                            {
+                                updatedRootBytes = rootBytes.AsSpan(0, TerminalIdentityRootLayout.Size).ToArray();
+                                TerminalIdentityRootLayout.WriteTailShelfOffset(updatedRootBytes, tailShelfOffset);
+                                RawDataReservation rootRewrite = kernel.ReserveAt(rootOffset, TerminalIdentityRootLayout.Size);
+                                updatedRootBytes.CopyTo(rootRewrite.Span);
+                            }
+                        }
+
+                        telemetry = CommitWithoutInvalidatingRouterReadCache();
+                        if (updatedRootBytes is not null)
+                        {
+                            terminalIdentityRootReadCache[rootOffset] = updatedRootBytes;
+                        }
+
+                        if (previousBytesForCache is not null)
+                        {
+                            terminalIdentity8ShelfReadCache[previousOffset] = previousBytesForCache;
+                        }
+
+                        terminalIdentity8ShelfReadCache[prepend.Extent.Offset] = prependedBytes;
+                        insertResult = Scalar8Scalar8InsertResult.Inserted;
+                        return true;
+                    }
+
+                    if (nextOffset == 0 && encodedIdentity > lastIdentity)
+                    {
+                        RawDataReservation append = kernel.Reserve(shelfExtentSize);
+                        InitializeTerminalIdentity8SingleIdentityShelf(append.Span, encodedIdentity, nextShelfOffset: 0);
+                        byte[] appendedBytes = append.Span.Slice(0, shelfExtentSize).ToArray();
+                        TerminalIdentity8ShelfLayout.WriteNextShelfOffset(currentBytes, append.Extent.Offset);
+                        RawDataReservation currentRewrite = kernel.ReserveAt(currentOffset, shelfExtentSize);
+                        currentBytes.CopyTo(currentRewrite.Span);
+                        byte[] updatedRootBytes = rootBytes.AsSpan(0, TerminalIdentityRootLayout.Size).ToArray();
+                        TerminalIdentityRootLayout.WriteTailShelfOffset(updatedRootBytes, append.Extent.Offset);
+                        RawDataReservation rootRewrite = kernel.ReserveAt(rootOffset, TerminalIdentityRootLayout.Size);
+                        updatedRootBytes.CopyTo(rootRewrite.Span);
+                        telemetry = CommitWithoutInvalidatingRouterReadCache();
+                        terminalIdentityRootReadCache[rootOffset] = updatedRootBytes;
+                        terminalIdentity8ShelfReadCache[currentOffset] = currentBytes;
+                        terminalIdentity8ShelfReadCache[append.Extent.Offset] = appendedBytes;
+                        insertResult = Scalar8Scalar8InsertResult.Inserted;
+                        return true;
+                    }
+
+                    ulong[] splitIdentities = new ulong[count + 1];
+                    for (int sourceIndex = 0, targetIndex = 0; sourceIndex < count; sourceIndex++, targetIndex++)
+                    {
+                        if (targetIndex == insertIndex)
+                        {
+                            splitIdentities[targetIndex++] = encodedIdentity;
+                        }
+
+                        splitIdentities[targetIndex] = TerminalIdentity8ShelfLayout.ReadIdentity(currentBytes, sourceIndex);
+                    }
+
+                    if (insertIndex == count)
+                    {
+                        splitIdentities[count] = encodedIdentity;
+                    }
+
+                    int leftCount = splitIdentities.Length / 2;
+                    int rightCount = splitIdentities.Length - leftCount;
+                    RawDataReservation rightAppend = kernel.Reserve(shelfExtentSize);
+                    TerminalIdentity8ShelfLayout.Initialize(rightAppend.Span, splitIdentities, leftCount, rightCount, nextOffset);
+                    byte[] rightBytes = rightAppend.Span.Slice(0, shelfExtentSize).ToArray();
+                    byte[] leftBytes = new byte[shelfExtentSize];
+                    TerminalIdentity8ShelfLayout.Initialize(leftBytes, splitIdentities, 0, leftCount, rightAppend.Extent.Offset);
+                    RawDataReservation leftRewrite = kernel.ReserveAt(currentOffset, shelfExtentSize);
+                    leftBytes.CopyTo(leftRewrite.Span);
+                    byte[]? updatedSplitRootBytes = null;
+                    if (currentOffset == tailShelfOffset || repairLegacyTail)
+                    {
+                        updatedSplitRootBytes = rootBytes.AsSpan(0, TerminalIdentityRootLayout.Size).ToArray();
+                        TerminalIdentityRootLayout.WriteTailShelfOffset(
+                            updatedSplitRootBytes,
+                            currentOffset == tailShelfOffset ? rightAppend.Extent.Offset : tailShelfOffset);
+                        RawDataReservation rootRewrite = kernel.ReserveAt(rootOffset, TerminalIdentityRootLayout.Size);
+                        updatedSplitRootBytes.CopyTo(rootRewrite.Span);
+                    }
+
+                    telemetry = CommitWithoutInvalidatingRouterReadCache();
+                    if (updatedSplitRootBytes is not null)
+                    {
+                        terminalIdentityRootReadCache[rootOffset] = updatedSplitRootBytes;
+                    }
+
+                    terminalIdentity8ShelfReadCache[currentOffset] = leftBytes;
+                    terminalIdentity8ShelfReadCache[rightAppend.Extent.Offset] = rightBytes;
+                    insertResult = Scalar8Scalar8InsertResult.Inserted;
+                    return true;
+                }
+
+                throw new InvalidDataException("The non-empty terminal identity root did not resolve to a shelf.");
+            }
+            finally
+            {
+                kernel.ExitExclusiveStoragePublication();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Deletes one or all identities from a terminal identity route without rebuilding unaffected shelves.<br/>
+    /// Exact deletion rewrites only the containing shelf, or unlinks that shelf by changing only its predecessor/root link when the shelf becomes empty.<br/>
+    /// Delete-all counts the current chain, clears the terminal root once, publishes that root, and then releases the unreachable chain for memory-backed storage.<br/>
+    /// Read-cache mutation and memory release occur only after storage publication succeeds; file-backed extents remain reclaimable by ordinary shadow compaction.<br/>
+    /// </summary>
+    /// <param name="rootOffset">The terminal identity root offset selected by the route walker.<br/></param>
+    /// <param name="expectedShape">The terminal root shape required by the calling index.<br/></param>
+    /// <param name="expectedKeyBytes">The complete exhausted key bytes required in the terminal root.<br/></param>
+    /// <param name="shelfExtentSize">The fixed extent size of every identity-only shelf.<br/></param>
+    /// <param name="encodedIdentity">The exact identity to delete, or null to delete the complete logical key.<br/></param>
+    /// <param name="deleted">Receives the number of identities removed when the operation is handled.<br/></param>
+    /// <returns><see langword="true"/> when the route was handled locally; otherwise <see langword="false"/> for the established fallback.<br/></returns>
+    private bool TryDeleteTerminalIdentity8Locally(
+        long rootOffset,
+        byte expectedShape,
+        ReadOnlySpan<byte> expectedKeyBytes,
+        int shelfExtentSize,
+        ulong? encodedIdentity,
+        out int deleted)
+    {
+        deleted = 0;
+        lock (writePublicationSync)
+        {
+            kernel.EnterExclusiveStoragePublication();
+            try
+            {
+                byte[] rootBytes = ReadTerminalIdentityRootBytes(rootOffset);
+                if (TerminalIdentityRootLayout.ReadShape(rootBytes) != expectedShape ||
+                    !IsTerminalIdentityRootForKey(rootBytes, expectedKeyBytes, out long firstShelfOffset))
+                {
+                    throw new InvalidDataException("The terminal identity delete root does not match the routed key and shape.");
+                }
+
+                if (firstShelfOffset == 0)
+                {
+                    return true;
+                }
+
+                long persistedTailShelfOffset = TerminalIdentityRootLayout.ReadTailShelfOffset(rootBytes);
+                long tailShelfOffset = ResolveTerminalIdentity8TailOffset(
+                    firstShelfOffset,
+                    persistedTailShelfOffset,
+                    shelfExtentSize,
+                    "local delete");
+                bool repairLegacyTail = persistedTailShelfOffset == 0;
+                if (!encodedIdentity.HasValue)
+                {
+                    long shelfOffset = firstShelfOffset;
+                    ulong previousLastIdentity = 0;
+                    bool hasPrevious = false;
+                    while (shelfOffset != 0)
+                    {
+                        byte[] shelfBytes = ReadTerminalIdentity8ShelfBytesCached(shelfOffset, shelfExtentSize);
+                        ValidateTerminalIdentity8Shelf(shelfBytes, shelfExtentSize);
+                        int count = TerminalIdentity8ShelfLayout.ReadItemCount(shelfBytes);
+                        if (count != 0)
+                        {
+                            ulong firstIdentity = TerminalIdentity8ShelfLayout.ReadIdentity(shelfBytes, 0);
+                            if (hasPrevious && firstIdentity <= previousLastIdentity)
+                            {
+                                throw new InvalidDataException("The terminal identity delete-all chain is not strictly ordered across its shelf boundary.");
+                            }
+
+                            previousLastIdentity = TerminalIdentity8ShelfLayout.ReadIdentity(shelfBytes, count - 1);
+                            hasPrevious = true;
+                            deleted = checked(deleted + count);
+                        }
+
+                        shelfOffset = TerminalIdentity8ShelfLayout.ReadNextShelfOffset(shelfBytes);
+                    }
+
+                    if (deleted == 0)
+                    {
+                        return true;
+                    }
+
+                    byte[] updatedRootBytes = rootBytes.AsSpan(0, TerminalIdentityRootLayout.Size).ToArray();
+                    TerminalIdentityRootLayout.WriteFirstShelfOffset(updatedRootBytes, 0);
+                    TerminalIdentityRootLayout.WriteTailShelfOffset(updatedRootBytes, 0);
+                    RawDataReservation rootRewrite = kernel.ReserveAt(rootOffset, TerminalIdentityRootLayout.Size);
+                    updatedRootBytes.CopyTo(rootRewrite.Span);
+                    ReleaseTerminalIdentity8ShelfChain(firstShelfOffset, shelfExtentSize);
+                    _ = CommitWithoutInvalidatingRouterReadCache();
+                    terminalIdentityRootReadCache[rootOffset] = updatedRootBytes;
+
+                    return true;
+                }
+
+                ulong targetIdentity = encodedIdentity.Value;
+                long previousOffset = 0;
+                ulong previousLast = 0;
+                long currentOffset = firstShelfOffset;
+                while (currentOffset != 0)
+                {
+                    byte[] currentBytes = ReadTerminalIdentity8ShelfBytesCached(currentOffset, shelfExtentSize)
+                        .AsSpan(0, shelfExtentSize)
+                        .ToArray();
+                    ValidateTerminalIdentity8Shelf(currentBytes, shelfExtentSize);
+                    int count = TerminalIdentity8ShelfLayout.ReadItemCount(currentBytes);
+                    long nextOffset = TerminalIdentity8ShelfLayout.ReadNextShelfOffset(currentBytes);
+                    if (count == 0)
+                    {
+                        previousOffset = currentOffset;
+                        currentOffset = nextOffset;
+                        continue;
+                    }
+
+                    ulong firstIdentity = TerminalIdentity8ShelfLayout.ReadIdentity(currentBytes, 0);
+                    ulong lastIdentity = TerminalIdentity8ShelfLayout.ReadIdentity(currentBytes, count - 1);
+                    if (previousOffset != 0 && firstIdentity <= previousLast)
+                    {
+                        throw new InvalidDataException("The terminal identity exact-delete chain is not strictly ordered across its shelf boundary.");
+                    }
+
+                    if (targetIdentity < firstIdentity)
+                    {
+                        return true;
+                    }
+
+                    if (targetIdentity > lastIdentity)
+                    {
+                        previousOffset = currentOffset;
+                        previousLast = lastIdentity;
+                        currentOffset = nextOffset;
+                        continue;
+                    }
+
+                    int low = 0;
+                    int high = count - 1;
+                    int deleteIndex = -1;
+                    while (low <= high)
+                    {
+                        int middle = low + ((high - low) >> 1);
+                        ulong currentIdentity = TerminalIdentity8ShelfLayout.ReadIdentity(currentBytes, middle);
+                        if (targetIdentity < currentIdentity)
+                        {
+                            high = middle - 1;
+                        }
+                        else if (targetIdentity > currentIdentity)
+                        {
+                            low = middle + 1;
+                        }
+                        else
+                        {
+                            deleteIndex = middle;
+                            break;
+                        }
+                    }
+
+                    if (deleteIndex < 0)
+                    {
+                        return true;
+                    }
+
+                    if (count > 1)
+                    {
+                        for (int i = deleteIndex + 1; i < count; i++)
+                        {
+                            TerminalIdentity8ShelfLayout.WriteIdentity(currentBytes, i - 1, TerminalIdentity8ShelfLayout.ReadIdentity(currentBytes, i));
+                        }
+
+                        TerminalIdentity8ShelfLayout.WriteIdentity(currentBytes, count - 1, 0);
+                        TerminalIdentity8ShelfLayout.WriteItemCount(currentBytes, count - 1);
+                        int identityRewriteOffset = checked(TerminalIdentity8ShelfLayout.IdentityBytesOffset + (deleteIndex * TerminalIdentity8ShelfLayout.IdentitySize));
+                        int identityRewriteLength = checked((count - deleteIndex) * TerminalIdentity8ShelfLayout.IdentitySize);
+                        RawDataReservation identityRewrite = kernel.ReserveAt(currentOffset + identityRewriteOffset, identityRewriteLength);
+                        currentBytes.AsSpan(identityRewriteOffset, identityRewriteLength).CopyTo(identityRewrite.Span);
+                        RawDataReservation countRewrite = kernel.ReserveAt(
+                            currentOffset + TerminalIdentity8ShelfLayout.ItemCountOffset,
+                            sizeof(int));
+                        BinaryPrimitives.WriteInt32LittleEndian(countRewrite.Span, count - 1);
+                        byte[]? repairedRootBytes = null;
+                        if (repairLegacyTail)
+                        {
+                            repairedRootBytes = rootBytes.AsSpan(0, TerminalIdentityRootLayout.Size).ToArray();
+                            TerminalIdentityRootLayout.WriteTailShelfOffset(repairedRootBytes, tailShelfOffset);
+                            RawDataReservation rootRewrite = kernel.ReserveAt(rootOffset, TerminalIdentityRootLayout.Size);
+                            repairedRootBytes.CopyTo(rootRewrite.Span);
+                        }
+
+                        _ = CommitWithoutInvalidatingRouterReadCache();
+                        if (repairedRootBytes is not null)
+                        {
+                            terminalIdentityRootReadCache[rootOffset] = repairedRootBytes;
+                        }
+
+                        terminalIdentity8ShelfReadCache[currentOffset] = currentBytes;
+                        deleted = 1;
+                        return true;
+                    }
+
+                    byte[]? updatedPreviousBytes = null;
+                    byte[]? updatedRootBytes = null;
+                    if (previousOffset == 0)
+                    {
+                        updatedRootBytes = rootBytes.AsSpan(0, TerminalIdentityRootLayout.Size).ToArray();
+                        TerminalIdentityRootLayout.WriteFirstShelfOffset(updatedRootBytes, nextOffset);
+                        TerminalIdentityRootLayout.WriteTailShelfOffset(
+                            updatedRootBytes,
+                            nextOffset == 0 ? 0 : tailShelfOffset);
+
+                        RawDataReservation rootRewrite = kernel.ReserveAt(rootOffset, TerminalIdentityRootLayout.Size);
+                        updatedRootBytes.CopyTo(rootRewrite.Span);
+                    }
+                    else
+                    {
+                        updatedPreviousBytes = ReadTerminalIdentity8ShelfBytesCached(previousOffset, shelfExtentSize)
+                            .AsSpan(0, shelfExtentSize)
+                            .ToArray();
+                        ValidateTerminalIdentity8Shelf(updatedPreviousBytes, shelfExtentSize);
+                        if (TerminalIdentity8ShelfLayout.ReadNextShelfOffset(updatedPreviousBytes) != currentOffset)
+                        {
+                            throw new InvalidDataException("The terminal identity predecessor changed before exact-delete unlink publication.");
+                        }
+
+                        TerminalIdentity8ShelfLayout.WriteNextShelfOffset(updatedPreviousBytes, nextOffset);
+                        RawDataReservation previousRewrite = kernel.ReserveAt(previousOffset, shelfExtentSize);
+                        updatedPreviousBytes.CopyTo(previousRewrite.Span);
+                        if (nextOffset == 0 || repairLegacyTail)
+                        {
+                            updatedRootBytes = rootBytes.AsSpan(0, TerminalIdentityRootLayout.Size).ToArray();
+                            TerminalIdentityRootLayout.WriteTailShelfOffset(
+                                updatedRootBytes,
+                                nextOffset == 0 ? previousOffset : tailShelfOffset);
+                            RawDataReservation rootRewrite = kernel.ReserveAt(rootOffset, TerminalIdentityRootLayout.Size);
+                            updatedRootBytes.CopyTo(rootRewrite.Span);
+                        }
+                    }
+
+                    kernel.StageExtentRetirement(currentOffset, shelfExtentSize);
+                    _ = CommitWithoutInvalidatingRouterReadCache();
+                    if (updatedRootBytes is not null)
+                    {
+                        terminalIdentityRootReadCache[rootOffset] = updatedRootBytes;
+                    }
+
+                    if (updatedPreviousBytes is not null)
+                    {
+                        terminalIdentity8ShelfReadCache[previousOffset] = updatedPreviousBytes;
+                    }
+
+                    terminalIdentity8ShelfReadCache.TryRemove(currentOffset, out _);
+
+                    deleted = 1;
+                    return true;
+                }
+
+                return true;
+            }
+            finally
+            {
+                kernel.ExitExclusiveStoragePublication();
+            }
+        }
+    }
+
+    /// <summary>
     /// Gets the backing store kind used by this session's DataKernel.<br/>
     /// This is exposed for outer API diagnostics and should not be used by shelf or router byte-format logic.<br/>
     /// </summary>
     internal DataKernelBackingKind BackingKind => kernel.BackingKind;
+
+    /// <summary>
+    /// Gets the current storage mutation version for generation-bound condition bookmarks.<br/>
+    /// Unlike catalog directory generations, this value advances when committed storage state changes during the active session.<br/>
+    /// </summary>
+    internal long MutationVersion => kernel.MutationVersion;
 
     /// <summary>
     /// Gets memory-backed DataKernel arena diagnostics for internal workbench tooling.<br/>
@@ -1924,6 +2653,41 @@ internal sealed partial class LibraDexFileSession : IDisposable
     internal DataKernelMemoryDiagnostics GetMemoryDiagnostics()
     {
         return kernel.GetMemoryDiagnostics();
+    }
+
+    /// <summary>
+    /// Forces committed file-backed catalog bytes through the operating-system durable flush boundary.<br/>
+    /// This is reserved for closed-file replacement workflows such as shadow catalog compaction; ordinary commits retain their configured flush policy.<br/>
+    /// </summary>
+    internal void FlushFileToDisk()
+    {
+        kernel.FlushFileToDisk();
+    }
+
+    /// <summary>
+    /// Creates an exact committed file image while excluding durability-batch admission and publication.<br/>
+    /// An already-active durability batch fails immediately because its staged shelf state is neither safely committed nor intentionally excluded by the caller.<br/>
+    /// Ordinary writers that already own the publication monitor finish first; later publication and reads wait behind the raw storage copy boundary.<br/>
+    /// </summary>
+    /// <param name="destinationPath">The new staging-file path that receives the committed image.<br/></param>
+    /// <param name="cancellationToken">A token observed before and between physical copy blocks.<br/></param>
+    /// <returns>The exact copied byte count and uppercase SHA-256 content hash.<br/></returns>
+    /// <exception cref="InvalidOperationException">Thrown for a memory-backed session or while a durability batch is active.<br/></exception>
+    internal (long Bytes, string ContentHash) CreateLiveBackupImage(
+        string destinationPath,
+        CancellationToken cancellationToken)
+    {
+        lock (writePublicationSync)
+        {
+            if (durabilityBatchActive)
+                throw new InvalidOperationException("A live LibraDex backup cannot start while a durability batch is active; commit or abort the batch, then retry the backup.");
+
+            return kernel.CopyCommittedFileImage(
+                destinationPath,
+                LiveBackupCopyEnteredForValidation,
+                LiveBackupCopyBlockCompletedForValidation,
+                cancellationToken);
+        }
     }
 
     /// <summary>
@@ -2088,6 +2852,51 @@ internal sealed partial class LibraDexFileSession : IDisposable
         }
 
         return new LibraDexWriteContext(operationToken);
+    }
+
+    /// <summary>
+    /// Acquires and retains the shared `VS8` topology read gate for one physical index root in a writer context.<br/>
+    /// A context touching the same root repeatedly acquires it once; publication or abort releases every retained root gate.<br/>
+    /// This prevents a topology or full-shelf fallback from mutating committed shelf bytes while the context still owns an older private shelf image.<br/>
+    /// </summary>
+    /// <param name="writeContext">Writer context retaining the read gate until completion.<br/></param>
+    /// <param name="rootRouterOffset">Physical `VS8` index root whose topology and routed shelf contents must remain stable.<br/></param>
+    internal void EnterVarKeyScalar8TopologyReadForWriteContext(
+        LibraDexWriteContext writeContext,
+        long rootRouterOffset)
+    {
+        ArgumentNullException.ThrowIfNull(writeContext);
+        if (writeContext.VarKeyScalar8TopologyReadSyncByRoot.ContainsKey(rootRouterOffset))
+        {
+            return;
+        }
+
+        ReaderWriterLockSlim topologySync = GetVarKeyScalar8TopologyMutationSync(rootRouterOffset);
+        topologySync.EnterReadLock();
+        try
+        {
+            writeContext.VarKeyScalar8TopologyReadSyncByRoot.Add(rootRouterOffset, topologySync);
+        }
+        catch
+        {
+            topologySync.ExitReadLock();
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Releases every shared `VS8` topology read gate retained by one writer context.<br/>
+    /// Gates are released only after staged shelf ownership has been consumed or abandoned so a waiting fallback cannot observe an unpublished context as drained.<br/>
+    /// </summary>
+    /// <param name="writeContext">Completed writer context whose retained topology gates should be released.<br/></param>
+    private static void ReleaseVarKeyScalar8TopologyReadsForWriteContext(LibraDexWriteContext writeContext)
+    {
+        foreach (ReaderWriterLockSlim topologySync in writeContext.VarKeyScalar8TopologyReadSyncByRoot.Values)
+        {
+            topologySync.ExitReadLock();
+        }
+
+        writeContext.VarKeyScalar8TopologyReadSyncByRoot.Clear();
     }
 
     /// <summary>
@@ -3323,6 +4132,32 @@ internal sealed partial class LibraDexFileSession : IDisposable
     }
 
     /// <summary>
+    /// Runs one complete narrow `SS8-8` topology decision under the per-root topology write gate.<br/>
+    /// Writer contexts retain the matching read gate until publish or abort, so entering this scope waits for every private shelf image selected from the old topology to be either published or abandoned before a cold-route, split, transform, or overflow publisher can mutate that topology.<br/>
+    /// The callback may still use narrower topology and shelf-domain owners internally; this outer gate closes the stale-private-image window without serializing ordinary shelf-local writer-context staging.<br/>
+    /// </summary>
+    /// <typeparam name="TResult">The callback result type returned to the queued-writer caller.<br/></typeparam>
+    /// <param name="rootRouterOffset">The root router offset that identifies the routed `SS8-8` index.<br/></param>
+    /// <param name="mutation">The complete narrow topology decision to execute after pre-existing writer contexts have drained.<br/></param>
+    /// <returns>The callback result produced while the root topology remained exclusively owned.<br/></returns>
+    internal TResult RunScalar8Scalar8NarrowTopologyMutation<TResult>(
+        long rootRouterOffset,
+        Func<TResult> mutation)
+    {
+        ArgumentNullException.ThrowIfNull(mutation);
+        ReaderWriterLockSlim topologySync = GetScalar8Scalar8TopologyMutationSync(rootRouterOffset);
+        topologySync.EnterWriteLock();
+        try
+        {
+            return mutation();
+        }
+        finally
+        {
+            topologySync.ExitWriteLock();
+        }
+    }
+
+    /// <summary>
     /// Attempts the narrow queued-writer cold-route path for one unset `SS8-8` root-prefix route.<br/>
     /// This path does not take the broad writer-operation gate because it publishes exactly one new shelf plus one direct root-router prefix update under the per-root topology gate and the storage publication lock.<br/>
     /// A false return means the route was no longer unset, so the caller should retry normal writer-context admission or use the broader topology fallback for the current route shape.<br/>
@@ -3603,6 +4438,15 @@ internal sealed partial class LibraDexFileSession : IDisposable
                 return false;
             }
 
+            if (existingReadOnly.ReadKeyHighAt(0) == encodedKeyHigh &&
+                existingReadOnly.ReadKeyLowAt(0) == encodedKeyLow &&
+                existingReadOnly.ReadKeyHighAt(existingReadOnly.ItemCount - 1) == encodedKeyHigh &&
+                existingReadOnly.ReadKeyLowAt(existingReadOnly.ItemCount - 1) == encodedKeyLow)
+            {
+                result = default;
+                return false;
+            }
+
             if (!TryBuildScalar16Scalar8TransformSplit(
                 existingShelfBytes,
                 GetScalar16Scalar8Prefix(encodedKeyHigh, encodedKeyLow, childRouterKeyDepth),
@@ -3652,6 +4496,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
                     RawDataReservation rightAppend = kernel.Reserve(profile.ShelfExtentSize);
                     build.RightShelfBytes.CopyTo(rightAppend.Span);
 
+                    Scalar16Scalar8ReadOnly stemShelf = new(build.LeftShelfBytes, profile);
+                    ulong stemKeyHigh = stemShelf.ReadKeyHighAt(0);
+                    ulong stemKeyLow = stemShelf.ReadKeyLowAt(0);
                     int appendedRouterCount = build.SplitKeyDepth - build.ChildRouterKeyDepth;
                     long nextRouterOffset = 0;
                     for (int i = appendedRouterCount - 1; i >= 0; i--)
@@ -3659,7 +4506,11 @@ internal sealed partial class LibraDexFileSession : IDisposable
                         ushort routerDepth = checked((ushort)(build.ChildRouterKeyDepth + i + 1));
                         long[] targets = routerDepth == build.SplitKeyDepth
                             ? CreateSplitScalar8Scalar8RouteTargets(leftAppend.Extent.Offset, rightAppend.Extent.Offset, build.SelectedRightPrefixByte)
-                            : CreateFilledScalar8Scalar8RouteTargets(nextRouterOffset);
+                            : CreateScalar8Scalar8IntermediateSplitRouteTargets(
+                                nextRouterOffset,
+                                leftAppend.Extent.Offset,
+                                rightAppend.Extent.Offset,
+                                GetScalar16Scalar8Prefix(stemKeyHigh, stemKeyLow, routerDepth));
                         RawDataReservation appendedRouter = kernel.Reserve(RouterLayout.Size);
                         RouterWriter appendedWriter = new(appendedRouter.Span);
                         appendedWriter.InitializeExpandedOneByte(routerDepth, build.AllocationClassId, targets);
@@ -3671,7 +4522,13 @@ internal sealed partial class LibraDexFileSession : IDisposable
                     childWriter.InitializeExpandedOneByte(
                         build.ChildRouterKeyDepth,
                         build.AllocationClassId,
-                        CreateUniformScalar8Scalar8RouteTargets(nextRouterOffset, leftAppend.Extent.Offset, rightAppend.Extent.Offset, build.SelectedRightPrefixByte));
+                        nextRouterOffset == 0
+                            ? CreateSplitScalar8Scalar8RouteTargets(leftAppend.Extent.Offset, rightAppend.Extent.Offset, build.SelectedRightPrefixByte)
+                            : CreateScalar8Scalar8IntermediateSplitRouteTargets(
+                                nextRouterOffset,
+                                leftAppend.Extent.Offset,
+                                rightAppend.Extent.Offset,
+                                GetScalar16Scalar8Prefix(stemKeyHigh, stemKeyLow, build.ChildRouterKeyDepth)));
                     childWriter.WriteArenaMetadata(
                         arenaBaseDelta: 0,
                         arenaLength: build.RouterArenaLength,
@@ -3812,6 +4669,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
                     }
 
                     RawDataReservation rightAppend = kernel.Reserve(profile.ShelfExtentSize);
+                    rightShelfBytes.CopyTo(rightAppend.Span);
                     byte[] updatedRouterBytes = new byte[RouterLayout.Size];
                     parentRouterBytes.CopyTo(updatedRouterBytes, 0);
                     RouterWriter parentWriter = new(updatedRouterBytes);
@@ -3829,7 +4687,6 @@ internal sealed partial class LibraDexFileSession : IDisposable
 
                     scalar16Scalar8CleanShelfCache.Remove(target.Offset);
                     kernel.StageWriteAt(target.Offset, leftShelfBytes);
-                    kernel.StageWriteAt(rightAppend.Extent.Offset, rightShelfBytes);
                     InvalidateRouterReadCacheForRouterRewrite(pathTarget.ParentRouterOffset);
                     kernel.StageWriteAt(pathTarget.ParentRouterOffset, updatedRouterBytes);
                     DataKernelCommitTelemetry telemetry = CommitAndDeferRouterReadCacheInvalidation();
@@ -4043,6 +4900,13 @@ internal sealed partial class LibraDexFileSession : IDisposable
                 return false;
             }
 
+            if (existingReadOnly.ReadKeyAt(0) == encodedKey &&
+                existingReadOnly.ReadKeyAt(existingReadOnly.ItemCount - 1) == encodedKey)
+            {
+                result = default;
+                return false;
+            }
+
             if (!TryBuildScalar8Scalar16TransformSplit(
                 existingShelfBytes,
                 GetScalar8Scalar8Prefix(encodedKey, childRouterKeyDepth),
@@ -4092,6 +4956,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
                     RawDataReservation rightAppend = kernel.Reserve(profile.ShelfExtentSize);
                     build.RightShelfBytes.CopyTo(rightAppend.Span);
 
+                    Scalar8Scalar16ReadOnly stemShelf = new(build.LeftShelfBytes, profile);
+                    ulong stemKey = stemShelf.ReadKeyAt(0);
                     int appendedRouterCount = build.SplitKeyDepth - build.ChildRouterKeyDepth;
                     long nextRouterOffset = 0;
                     for (int i = appendedRouterCount - 1; i >= 0; i--)
@@ -4099,7 +4965,11 @@ internal sealed partial class LibraDexFileSession : IDisposable
                         ushort routerDepth = checked((ushort)(build.ChildRouterKeyDepth + i + 1));
                         long[] targets = routerDepth == build.SplitKeyDepth
                             ? CreateSplitScalar8Scalar8RouteTargets(leftAppend.Extent.Offset, rightAppend.Extent.Offset, build.SelectedRightPrefixByte)
-                            : CreateFilledScalar8Scalar8RouteTargets(nextRouterOffset);
+                            : CreateScalar8Scalar8IntermediateSplitRouteTargets(
+                                nextRouterOffset,
+                                leftAppend.Extent.Offset,
+                                rightAppend.Extent.Offset,
+                                GetScalar8Scalar8Prefix(stemKey, routerDepth));
                         RawDataReservation appendedRouter = kernel.Reserve(RouterLayout.Size);
                         RouterWriter appendedWriter = new(appendedRouter.Span);
                         appendedWriter.InitializeExpandedOneByte(routerDepth, build.AllocationClassId, targets);
@@ -4117,7 +4987,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
                                 nextRouterOffset,
                                 leftAppend.Extent.Offset,
                                 rightAppend.Extent.Offset,
-                                build.ChildDepthFirstPrefixByte));
+                                GetScalar8Scalar8Prefix(stemKey, build.ChildRouterKeyDepth)));
                     childWriter.WriteArenaMetadata(
                         arenaBaseDelta: 0,
                         arenaLength: build.RouterArenaLength,
@@ -4258,6 +5128,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
                     }
 
                     RawDataReservation rightAppend = kernel.Reserve(profile.ShelfExtentSize);
+                    rightShelfBytes.CopyTo(rightAppend.Span);
                     byte[] updatedRouterBytes = new byte[RouterLayout.Size];
                     parentRouterBytes.CopyTo(updatedRouterBytes, 0);
                     RouterWriter parentWriter = new(updatedRouterBytes);
@@ -4275,7 +5146,6 @@ internal sealed partial class LibraDexFileSession : IDisposable
 
                     scalar8Scalar16CleanShelfCache.Remove(target.Offset);
                     kernel.StageWriteAt(target.Offset, leftShelfBytes);
-                    kernel.StageWriteAt(rightAppend.Extent.Offset, rightShelfBytes);
                     InvalidateRouterReadCacheForRouterRewrite(pathTarget.ParentRouterOffset);
                     kernel.StageWriteAt(pathTarget.ParentRouterOffset, updatedRouterBytes);
                     DataKernelCommitTelemetry telemetry = CommitAndDeferRouterReadCacheInvalidation();
@@ -4496,6 +5366,15 @@ internal sealed partial class LibraDexFileSession : IDisposable
                 return false;
             }
 
+            if (existingReadOnly.ReadKeyHighAt(0) == encodedKeyHigh &&
+                existingReadOnly.ReadKeyLowAt(0) == encodedKeyLow &&
+                existingReadOnly.ReadKeyHighAt(existingReadOnly.ItemCount - 1) == encodedKeyHigh &&
+                existingReadOnly.ReadKeyLowAt(existingReadOnly.ItemCount - 1) == encodedKeyLow)
+            {
+                result = default;
+                return false;
+            }
+
             if (!TryBuildScalar16Scalar16TransformSplit(
                 existingShelfBytes,
                 GetScalar16Scalar8Prefix(encodedKeyHigh, encodedKeyLow, childRouterKeyDepth),
@@ -4546,6 +5425,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
                     RawDataReservation rightAppend = kernel.Reserve(profile.ShelfExtentSize);
                     build.RightShelfBytes.CopyTo(rightAppend.Span);
 
+                    Scalar16Scalar16ReadOnly stemShelf = new(build.LeftShelfBytes, profile);
+                    ulong stemKeyHigh = stemShelf.ReadKeyHighAt(0);
+                    ulong stemKeyLow = stemShelf.ReadKeyLowAt(0);
                     int appendedRouterCount = build.SplitKeyDepth - build.ChildRouterKeyDepth;
                     long nextRouterOffset = 0;
                     for (int i = appendedRouterCount - 1; i >= 0; i--)
@@ -4553,7 +5435,11 @@ internal sealed partial class LibraDexFileSession : IDisposable
                         ushort routerDepth = checked((ushort)(build.ChildRouterKeyDepth + i + 1));
                         long[] targets = routerDepth == build.SplitKeyDepth
                             ? CreateSplitScalar8Scalar8RouteTargets(leftAppend.Extent.Offset, rightAppend.Extent.Offset, build.SelectedRightPrefixByte)
-                            : CreateFilledScalar8Scalar8RouteTargets(nextRouterOffset);
+                            : CreateScalar8Scalar8IntermediateSplitRouteTargets(
+                                nextRouterOffset,
+                                leftAppend.Extent.Offset,
+                                rightAppend.Extent.Offset,
+                                GetScalar16Scalar8Prefix(stemKeyHigh, stemKeyLow, routerDepth));
                         RawDataReservation appendedRouter = kernel.Reserve(RouterLayout.Size);
                         RouterWriter appendedWriter = new(appendedRouter.Span);
                         appendedWriter.InitializeExpandedOneByte(routerDepth, build.AllocationClassId, targets);
@@ -4565,7 +5451,13 @@ internal sealed partial class LibraDexFileSession : IDisposable
                     childWriter.InitializeExpandedOneByte(
                         build.ChildRouterKeyDepth,
                         build.AllocationClassId,
-                        CreateUniformScalar8Scalar8RouteTargets(nextRouterOffset, leftAppend.Extent.Offset, rightAppend.Extent.Offset, build.SelectedRightPrefixByte));
+                        nextRouterOffset == 0
+                            ? CreateSplitScalar8Scalar8RouteTargets(leftAppend.Extent.Offset, rightAppend.Extent.Offset, build.SelectedRightPrefixByte)
+                            : CreateScalar8Scalar8IntermediateSplitRouteTargets(
+                                nextRouterOffset,
+                                leftAppend.Extent.Offset,
+                                rightAppend.Extent.Offset,
+                                GetScalar16Scalar8Prefix(stemKeyHigh, stemKeyLow, build.ChildRouterKeyDepth)));
                     childWriter.WriteArenaMetadata(
                         arenaBaseDelta: 0,
                         arenaLength: build.RouterArenaLength,
@@ -4709,6 +5601,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
                     }
 
                     RawDataReservation rightAppend = kernel.Reserve(profile.ShelfExtentSize);
+                    rightShelfBytes.CopyTo(rightAppend.Span);
                     byte[] updatedRouterBytes = new byte[RouterLayout.Size];
                     parentRouterBytes.CopyTo(updatedRouterBytes, 0);
                     RouterWriter parentWriter = new(updatedRouterBytes);
@@ -4726,7 +5619,6 @@ internal sealed partial class LibraDexFileSession : IDisposable
 
                     scalar16Scalar16CleanShelfCache.Remove(target.Offset);
                     kernel.StageWriteAt(target.Offset, leftShelfBytes);
-                    kernel.StageWriteAt(rightAppend.Extent.Offset, rightShelfBytes);
                     InvalidateRouterReadCacheForRouterRewrite(pathTarget.ParentRouterOffset);
                     kernel.StageWriteAt(pathTarget.ParentRouterOffset, updatedRouterBytes);
                     DataKernelCommitTelemetry telemetry = CommitAndDeferRouterReadCacheInvalidation();
@@ -4955,6 +5847,13 @@ internal sealed partial class LibraDexFileSession : IDisposable
                 return false;
             }
 
+            if (Fixed32Scalar8ShelfKeyEquals(existingReadOnly, 0, key0, key1, key2, key3) &&
+                Fixed32Scalar8ShelfKeyEquals(existingReadOnly, existingReadOnly.ItemCount - 1, key0, key1, key2, key3))
+            {
+                result = default;
+                return false;
+            }
+
             if (!TryBuildFixed32Scalar8TransformSplit(
                 existingShelfBytes,
                 GetFixed32Scalar8Prefix(key0, key1, key2, key3, childRouterKeyDepth),
@@ -5006,6 +5905,11 @@ internal sealed partial class LibraDexFileSession : IDisposable
                     RawDataReservation rightAppend = kernel.Reserve(profile.ShelfExtentSize);
                     build.RightShelfBytes.CopyTo(rightAppend.Span);
 
+                    Fixed32Scalar8ReadOnly stemShelf = new(build.LeftShelfBytes, profile);
+                    ulong stemKey0 = stemShelf.ReadKeyPart0At(0);
+                    ulong stemKey1 = stemShelf.ReadKeyPart1At(0);
+                    ulong stemKey2 = stemShelf.ReadKeyPart2At(0);
+                    ulong stemKey3 = stemShelf.ReadKeyPart3At(0);
                     int appendedRouterCount = build.SplitKeyDepth - build.ChildRouterKeyDepth;
                     long nextRouterOffset = 0;
                     for (int i = appendedRouterCount - 1; i >= 0; i--)
@@ -5013,7 +5917,11 @@ internal sealed partial class LibraDexFileSession : IDisposable
                         ushort routerDepth = checked((ushort)(build.ChildRouterKeyDepth + i + 1));
                         long[] targets = routerDepth == build.SplitKeyDepth
                             ? CreateSplitScalar8Scalar8RouteTargets(leftAppend.Extent.Offset, rightAppend.Extent.Offset, build.SelectedRightPrefixByte)
-                            : CreateFilledScalar8Scalar8RouteTargets(nextRouterOffset);
+                            : CreateScalar8Scalar8IntermediateSplitRouteTargets(
+                                nextRouterOffset,
+                                leftAppend.Extent.Offset,
+                                rightAppend.Extent.Offset,
+                                GetFixed32Scalar8Prefix(stemKey0, stemKey1, stemKey2, stemKey3, routerDepth));
                         RawDataReservation appendedRouter = kernel.Reserve(RouterLayout.Size);
                         RouterWriter appendedWriter = new(appendedRouter.Span);
                         appendedWriter.InitializeExpandedOneByte(routerDepth, build.AllocationClassId, targets);
@@ -5025,7 +5933,13 @@ internal sealed partial class LibraDexFileSession : IDisposable
                     childWriter.InitializeExpandedOneByte(
                         build.ChildRouterKeyDepth,
                         build.AllocationClassId,
-                        CreateUniformScalar8Scalar8RouteTargets(nextRouterOffset, leftAppend.Extent.Offset, rightAppend.Extent.Offset, build.SelectedRightPrefixByte));
+                        nextRouterOffset == 0
+                            ? CreateSplitScalar8Scalar8RouteTargets(leftAppend.Extent.Offset, rightAppend.Extent.Offset, build.SelectedRightPrefixByte)
+                            : CreateScalar8Scalar8IntermediateSplitRouteTargets(
+                                nextRouterOffset,
+                                leftAppend.Extent.Offset,
+                                rightAppend.Extent.Offset,
+                                GetFixed32Scalar8Prefix(stemKey0, stemKey1, stemKey2, stemKey3, build.ChildRouterKeyDepth)));
                     childWriter.WriteArenaMetadata(
                         arenaBaseDelta: 0,
                         arenaLength: build.RouterArenaLength,
@@ -5172,6 +6086,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
                     }
 
                     RawDataReservation rightAppend = kernel.Reserve(profile.ShelfExtentSize);
+                    rightShelfBytes.CopyTo(rightAppend.Span);
                     byte[] updatedRouterBytes = new byte[RouterLayout.Size];
                     parentRouterBytes.CopyTo(updatedRouterBytes, 0);
                     RouterWriter parentWriter = new(updatedRouterBytes);
@@ -5189,7 +6104,6 @@ internal sealed partial class LibraDexFileSession : IDisposable
 
                     fixed32Scalar8CleanShelfCache.Remove(target.Offset);
                     kernel.StageWriteAt(target.Offset, leftShelfBytes);
-                    kernel.StageWriteAt(rightAppend.Extent.Offset, rightShelfBytes);
                     InvalidateRouterReadCacheForRouterRewrite(pathTarget.ParentRouterOffset);
                     kernel.StageWriteAt(pathTarget.ParentRouterOffset, updatedRouterBytes);
                     DataKernelCommitTelemetry telemetry = CommitAndDeferRouterReadCacheInvalidation();
@@ -5481,6 +6395,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
                     }
 
                     RawDataReservation rightAppend = kernel.Reserve(profile.ShelfExtentSize);
+                    rightShelfBytes.CopyTo(rightAppend.Span);
                     byte[] updatedRouterBytes = new byte[RouterLayout.Size];
                     parentRouterBytes.CopyTo(updatedRouterBytes, 0);
                     RouterWriter parentWriter = new(updatedRouterBytes);
@@ -5498,7 +6413,6 @@ internal sealed partial class LibraDexFileSession : IDisposable
 
                     fixed32Scalar16CleanShelfCache.Remove(target.Offset);
                     kernel.StageWriteAt(target.Offset, leftShelfBytes);
-                    kernel.StageWriteAt(rightAppend.Extent.Offset, rightShelfBytes);
                     InvalidateRouterReadCacheForRouterRewrite(pathTarget.ParentRouterOffset);
                     kernel.StageWriteAt(pathTarget.ParentRouterOffset, updatedRouterBytes);
                     DataKernelCommitTelemetry telemetry = CommitAndDeferRouterReadCacheInvalidation();
@@ -5583,6 +6497,13 @@ internal sealed partial class LibraDexFileSession : IDisposable
                 return false;
             }
 
+            if (Fixed32Scalar16ShelfKeyEquals(existingReadOnly, 0, key0, key1, key2, key3) &&
+                Fixed32Scalar16ShelfKeyEquals(existingReadOnly, existingReadOnly.ItemCount - 1, key0, key1, key2, key3))
+            {
+                result = default;
+                return false;
+            }
+
             if (!TryBuildFixed32Scalar16TransformSplit(
                 existingShelfBytes,
                 GetFixed32Scalar16Prefix(key0, key1, key2, key3, childRouterKeyDepth),
@@ -5635,6 +6556,11 @@ internal sealed partial class LibraDexFileSession : IDisposable
                     RawDataReservation rightAppend = kernel.Reserve(profile.ShelfExtentSize);
                     build.RightShelfBytes.CopyTo(rightAppend.Span);
 
+                    Fixed32Scalar16ReadOnly stemShelf = new(build.LeftShelfBytes, profile);
+                    ulong stemKey0 = stemShelf.ReadKeyPart0At(0);
+                    ulong stemKey1 = stemShelf.ReadKeyPart1At(0);
+                    ulong stemKey2 = stemShelf.ReadKeyPart2At(0);
+                    ulong stemKey3 = stemShelf.ReadKeyPart3At(0);
                     int appendedRouterCount = build.SplitKeyDepth - build.ChildRouterKeyDepth;
                     long nextRouterOffset = 0;
                     for (int i = appendedRouterCount - 1; i >= 0; i--)
@@ -5642,7 +6568,11 @@ internal sealed partial class LibraDexFileSession : IDisposable
                         ushort routerDepth = checked((ushort)(build.ChildRouterKeyDepth + i + 1));
                         long[] targets = routerDepth == build.SplitKeyDepth
                             ? CreateSplitScalar8Scalar8RouteTargets(leftAppend.Extent.Offset, rightAppend.Extent.Offset, build.SelectedRightPrefixByte)
-                            : CreateFilledScalar8Scalar8RouteTargets(nextRouterOffset);
+                            : CreateScalar8Scalar8IntermediateSplitRouteTargets(
+                                nextRouterOffset,
+                                leftAppend.Extent.Offset,
+                                rightAppend.Extent.Offset,
+                                GetFixed32Scalar16Prefix(stemKey0, stemKey1, stemKey2, stemKey3, routerDepth));
                         RawDataReservation appendedRouter = kernel.Reserve(RouterLayout.Size);
                         RouterWriter appendedWriter = new(appendedRouter.Span);
                         appendedWriter.InitializeExpandedOneByte(routerDepth, build.AllocationClassId, targets);
@@ -5654,7 +6584,13 @@ internal sealed partial class LibraDexFileSession : IDisposable
                     childWriter.InitializeExpandedOneByte(
                         build.ChildRouterKeyDepth,
                         build.AllocationClassId,
-                        CreateUniformScalar8Scalar8RouteTargets(nextRouterOffset, leftAppend.Extent.Offset, rightAppend.Extent.Offset, build.SelectedRightPrefixByte));
+                        nextRouterOffset == 0
+                            ? CreateSplitScalar8Scalar8RouteTargets(leftAppend.Extent.Offset, rightAppend.Extent.Offset, build.SelectedRightPrefixByte)
+                            : CreateScalar8Scalar8IntermediateSplitRouteTargets(
+                                nextRouterOffset,
+                                leftAppend.Extent.Offset,
+                                rightAppend.Extent.Offset,
+                                GetFixed32Scalar16Prefix(stemKey0, stemKey1, stemKey2, stemKey3, build.ChildRouterKeyDepth)));
                     childWriter.WriteArenaMetadata(
                         arenaBaseDelta: 0,
                         arenaLength: build.RouterArenaLength,
@@ -5791,8 +6727,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
                         }
 
                         RawDataReservation rightAppend = kernel.Reserve(profile.ShelfExtentSize);
+                        rightShelfBytes.CopyTo(rightAppend.Span);
                         kernel.StageWriteAt(fullShelfOffset, leftShelfBytes);
-                        kernel.StageWriteAt(rightAppend.Extent.Offset, rightShelfBytes);
                         byte[] updatedRouterBytes = new byte[RouterLayout.Size];
                         currentRouterBytes.CopyTo(updatedRouterBytes, 0);
                         RouterWriter writer = new(updatedRouterBytes);
@@ -5874,6 +6810,16 @@ internal sealed partial class LibraDexFileSession : IDisposable
             {
             byte[] existingShelfBytes = new byte[profile.ShelfExtentSize];
             kernel.Read(childRouterOffset, existingShelfBytes);
+            Scalar8Scalar8ReadOnly ownershipShelf = new(existingShelfBytes, profile);
+            if (!ownershipShelf.IsValid ||
+                ownershipShelf.ItemCount != profile.MaxItemCount ||
+                GetScalar8Scalar8RootPrefix(ownershipShelf.ReadKeyAt(0)) != rootPrefixByte ||
+                GetScalar8Scalar8RootPrefix(ownershipShelf.ReadKeyAt(ownershipShelf.ItemCount - 1)) != rootPrefixByte)
+            {
+                result = default;
+                return false;
+            }
+
             ushort childRouterKeyDepth = 1;
             byte rightPrefixByte = GetScalar8Scalar8Prefix(encodedKey, childRouterKeyDepth);
             if (!TryBuildScalar8Scalar8ShelfTransformSplit(
@@ -5934,17 +6880,11 @@ internal sealed partial class LibraDexFileSession : IDisposable
                         }
 
                         RawDataReservation leftAppend = kernel.Reserve(profile.ShelfExtentSize);
+                        build.LeftShelfBytes.CopyTo(leftAppend.Span);
                         RawDataReservation rightAppend = kernel.Reserve(profile.ShelfExtentSize);
+                        build.RightShelfBytes.CopyTo(rightAppend.Span);
                         long nextRouterOffset = 0;
                         int appendedRouterCount = build.SplitKeyDepth - childRouterKeyDepth;
-                        long[] appendedRouterOffsets = appendedRouterCount > 0 ? new long[appendedRouterCount] : [];
-                        for (int i = appendedRouterCount - 1; i >= 0; i--)
-                        {
-                            appendedRouterOffsets[i] = kernel.Reserve(RouterLayout.Size).Extent.Offset;
-                            nextRouterOffset = appendedRouterOffsets[i];
-                        }
-
-                        nextRouterOffset = 0;
                         for (int i = appendedRouterCount - 1; i >= 0; i--)
                         {
                             ushort routerDepth = checked((ushort)(childRouterKeyDepth + i + 1));
@@ -5955,11 +6895,10 @@ internal sealed partial class LibraDexFileSession : IDisposable
                                     leftAppend.Extent.Offset,
                                     rightAppend.Extent.Offset,
                                     GetScalar8Scalar8Prefix(build.FirstKey, routerDepth));
-                            byte[] appendedRouterBytes = new byte[RouterLayout.Size];
-                            RouterWriter appendedWriter = new(appendedRouterBytes);
+                            RawDataReservation appendedRouter = kernel.Reserve(RouterLayout.Size);
+                            RouterWriter appendedWriter = new(appendedRouter.Span);
                             appendedWriter.InitializeExpandedOneByte(routerDepth, currentRootReader.AllocationClassId, targets);
-                            kernel.StageWriteAt(appendedRouterOffsets[i], appendedRouterBytes);
-                            nextRouterOffset = appendedRouterOffsets[i];
+                            nextRouterOffset = appendedRouter.Extent.Offset;
                         }
 
                         byte[] childRouterBytes = new byte[RouterLayout.Size];
@@ -5983,10 +6922,25 @@ internal sealed partial class LibraDexFileSession : IDisposable
                             arenaFlags: 0);
 
                         DiscardScalar8Scalar8MutableBatchShelfBytes(childRouterOffset);
-                        kernel.StageWriteAt(leftAppend.Extent.Offset, build.LeftShelfBytes);
-                        kernel.StageWriteAt(rightAppend.Extent.Offset, build.RightShelfBytes);
                         kernel.StageWriteAt(childRouterOffset, childRouterBytes);
                         InvalidateRouterReadCacheForRouterRewrite(childRouterOffset);
+                        byte[]? rootRewriteBytes = null;
+                        for (int prefix = 0; prefix < RouterLayout.MaxOneByteRouteCount; prefix++)
+                        {
+                            if (prefix == rootPrefixByte || currentRootReader.FindTarget((byte)prefix) != childRouterOffset)
+                                continue;
+
+                            rootRewriteBytes ??= currentRootRouterBytes.ToArray();
+                            RouterWriter rootWriter = new(rootRewriteBytes);
+                            rootWriter.WriteRoute(prefix, (byte)prefix, (byte)prefix, targetOffset: 0);
+                        }
+
+                        if (rootRewriteBytes is not null)
+                        {
+                            kernel.StageWriteAt(rootRouterOffset, rootRewriteBytes);
+                            InvalidateRouterReadCacheForRouterRewrite(rootRouterOffset);
+                        }
+
                         DataKernelCommitTelemetry telemetry = CommitAndDeferRouterReadCacheInvalidation();
                         RouterArenaState arena = RegisterRouterArena(childRouterOffset, profile.ShelfExtentSize);
                         arena.MarkUsed(0);
@@ -6037,7 +6991,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
             rootRouterOffset,
             encodedKey,
             maxRouterHops,
-            Scalar8Scalar8RouteReadPolicy.Uncached);
+            Scalar8Scalar8RouteReadPolicy.PreferPromotedViews);
         object topologyOwner = GetScalar8Scalar8TopologyOwner(new Scalar8Scalar8TopologyOwnerKey(4, rootRouterOffset, pathTarget.ParentRouterOffset, -1));
         lock (topologyOwner)
         {
@@ -6045,7 +6999,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
                 rootRouterOffset,
                 encodedKey,
                 maxRouterHops,
-                Scalar8Scalar8RouteReadPolicy.Uncached);
+                Scalar8Scalar8RouteReadPolicy.PreferPromotedViews);
             Scalar8Scalar8RouteTarget target = pathTarget.Target;
             if (target.Kind != Scalar8Scalar8RouteTargetKind.Shelf)
             {
@@ -6136,6 +7090,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
                         }
 
                         RawDataReservation rightAppend = kernel.Reserve(profile.ShelfExtentSize);
+                        rightShelfBytes.CopyTo(rightAppend.Span);
                         byte[] updatedRouterBytes = new byte[RouterLayout.Size];
                         currentParentRouterBytes.CopyTo(updatedRouterBytes, 0);
                         RouterWriter parentWriter = new(updatedRouterBytes);
@@ -6153,7 +7108,6 @@ internal sealed partial class LibraDexFileSession : IDisposable
 
                         DiscardScalar8Scalar8MutableBatchShelfBytes(target.Offset);
                         kernel.StageWriteAt(target.Offset, leftShelfBytes);
-                        kernel.StageWriteAt(rightAppend.Extent.Offset, rightShelfBytes);
                         InvalidateRouterReadCacheForRouterRewrite(pathTarget.ParentRouterOffset);
                         kernel.StageWriteAt(pathTarget.ParentRouterOffset, updatedRouterBytes);
                         DataKernelCommitTelemetry telemetry = CommitAndDeferRouterReadCacheInvalidation();
@@ -6212,7 +7166,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
             rootRouterOffset,
             encodedKey,
             maxRouterHops,
-            Scalar8Scalar8RouteReadPolicy.Uncached);
+            Scalar8Scalar8RouteReadPolicy.PreferPromotedViews);
         object topologyOwner = GetScalar8Scalar8TopologyOwner(new Scalar8Scalar8TopologyOwnerKey(5, rootRouterOffset, pathTarget.ParentRouterOffset, -1));
         lock (topologyOwner)
         {
@@ -6220,7 +7174,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
                 rootRouterOffset,
                 encodedKey,
                 maxRouterHops,
-                Scalar8Scalar8RouteReadPolicy.Uncached);
+                Scalar8Scalar8RouteReadPolicy.PreferPromotedViews);
             Scalar8Scalar8RouteTarget target = pathTarget.Target;
             if (target.Kind != Scalar8Scalar8RouteTargetKind.Shelf)
             {
@@ -6273,7 +7227,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
                         encodedIdentity,
                         allowDuplicateKeys,
                         maxRouterHops,
-                        Scalar8Scalar8RouteReadPolicy.Uncached,
+                        Scalar8Scalar8RouteReadPolicy.PreferPromotedViews,
                         retryUnsetRouteChanges: false);
                     result = new Scalar8Scalar8EncodedInsertResult(
                         MapScalar8Scalar8InsertOutcome(routedResult.InsertResult),
@@ -6319,7 +7273,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
             rootRouterOffset,
             encodedKey,
             maxRouterHops,
-            Scalar8Scalar8RouteReadPolicy.Uncached);
+            Scalar8Scalar8RouteReadPolicy.PreferPromotedViews);
         object topologyOwner = GetScalar8Scalar8TopologyOwner(new Scalar8Scalar8TopologyOwnerKey(6, rootRouterOffset, pathTarget.Target.Offset, 0));
         lock (topologyOwner)
         {
@@ -6327,7 +7281,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
                 rootRouterOffset,
                 encodedKey,
                 maxRouterHops,
-                Scalar8Scalar8RouteReadPolicy.Uncached);
+                Scalar8Scalar8RouteReadPolicy.PreferPromotedViews);
             Scalar8Scalar8RouteTarget target = pathTarget.Target;
             if (target.Kind != Scalar8Scalar8RouteTargetKind.TerminalIdentityRoot)
             {
@@ -6393,7 +7347,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
             rootRouterOffset,
             encodedKey,
             maxRouterHops,
-            Scalar8Scalar8RouteReadPolicy.Uncached);
+            Scalar8Scalar8RouteReadPolicy.PreferPromotedViews);
         object topologyOwner = GetScalar8Scalar8TopologyOwner(new Scalar8Scalar8TopologyOwnerKey(7, rootRouterOffset, pathTarget.Target.Offset, 0));
         lock (topologyOwner)
         {
@@ -6401,7 +7355,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
                 rootRouterOffset,
                 encodedKey,
                 maxRouterHops,
-                Scalar8Scalar8RouteReadPolicy.Uncached);
+                Scalar8Scalar8RouteReadPolicy.PreferPromotedViews);
             Scalar8Scalar8RouteTarget target = pathTarget.Target;
             if (target.Kind != Scalar8Scalar8RouteTargetKind.Shelf)
             {
@@ -6457,6 +7411,26 @@ internal sealed partial class LibraDexFileSession : IDisposable
             {
                 topologySync = new ReaderWriterLockSlim(LockRecursionPolicy.SupportsRecursion);
                 scalar8Scalar8TopologyMutationSyncByRoot.Add(rootRouterOffset, topologySync);
+            }
+
+            return topologySync;
+        }
+    }
+
+    /// <summary>
+    /// Gets the session-shared topology reader/writer gate for one physical `VS8` index root.<br/>
+    /// Sharing by root rather than index-wrapper instance keeps independently opened handles inside the same session in one mutation domain.<br/>
+    /// </summary>
+    /// <param name="rootRouterOffset">Physical root router offset identifying the `VS8` index.<br/></param>
+    /// <returns>The stable reader/writer gate for the supplied root.<br/></returns>
+    internal ReaderWriterLockSlim GetVarKeyScalar8TopologyMutationSync(long rootRouterOffset)
+    {
+        lock (varKeyScalar8TopologyGateSync)
+        {
+            if (!varKeyScalar8TopologyMutationSyncByRoot.TryGetValue(rootRouterOffset, out ReaderWriterLockSlim? topologySync))
+            {
+                topologySync = new ReaderWriterLockSlim(LockRecursionPolicy.SupportsRecursion);
+                varKeyScalar8TopologyMutationSyncByRoot.Add(rootRouterOffset, topologySync);
             }
 
             return topologySync;
@@ -6841,6 +7815,13 @@ internal sealed partial class LibraDexFileSession : IDisposable
                     scalar16Scalar8CleanShelfCache.Remove(dirtyShelf.Key);
                 }
 
+                foreach (KeyValuePair<long, byte[]> dirtyShelf in writeContext.TerminalIdentity8MutableShelfBytes)
+                {
+                    ValidateTerminalIdentity8Shelf(dirtyShelf.Value, dirtyShelf.Value.Length);
+                    RewriteBatchShelfBytes(dirtyShelf.Key, dirtyShelf.Value);
+                    terminalIdentity8ShelfReadCache.TryRemove(dirtyShelf.Key, out _);
+                }
+
                 telemetry = kernel.Commit();
             }
             finally
@@ -6849,8 +7830,10 @@ internal sealed partial class LibraDexFileSession : IDisposable
             }
 
             ReleaseScalar16Scalar8ShelfOwnersForWriteContext(writeContext);
+            ReleaseTerminalIdentity8ShelfOwnersForWriteContext(writeContext);
             writeContext.Scalar16Scalar8MutableBatchShelfBytes.Clear();
             writeContext.Scalar16Scalar8RouteClaims.Clear();
+            writeContext.TerminalIdentity8MutableShelfBytes.Clear();
             return telemetry;
         }
     }
@@ -6864,7 +7847,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
     {
         ArgumentNullException.ThrowIfNull(writeContext);
         ReleaseScalar16Scalar8ShelfOwnersForWriteContext(writeContext);
+        ReleaseTerminalIdentity8ShelfOwnersForWriteContext(writeContext);
         writeContext.Scalar16Scalar8MutableBatchShelfBytes.Clear();
+        writeContext.TerminalIdentity8MutableShelfBytes.Clear();
         writeContext.Scalar16Scalar8RouteClaims.Clear();
     }
 
@@ -6998,6 +7983,13 @@ internal sealed partial class LibraDexFileSession : IDisposable
                     fixed32Scalar8ReadCache.Remove(dirtyShelf.Key);
                 }
 
+                foreach (KeyValuePair<long, byte[]> dirtyShelf in writeContext.TerminalIdentity8MutableShelfBytes)
+                {
+                    ValidateTerminalIdentity8Shelf(dirtyShelf.Value, dirtyShelf.Value.Length);
+                    RewriteBatchShelfBytes(dirtyShelf.Key, dirtyShelf.Value);
+                    terminalIdentity8ShelfReadCache.TryRemove(dirtyShelf.Key, out _);
+                }
+
                 telemetry = kernel.Commit();
             }
             finally
@@ -7006,8 +7998,10 @@ internal sealed partial class LibraDexFileSession : IDisposable
             }
 
             ReleaseFixed32Scalar8ShelfOwnersForWriteContext(writeContext);
+            ReleaseTerminalIdentity8ShelfOwnersForWriteContext(writeContext);
             writeContext.Fixed32Scalar8MutableBatchShelfBytes.Clear();
             writeContext.Fixed32Scalar8RouteClaims.Clear();
+            writeContext.TerminalIdentity8MutableShelfBytes.Clear();
             return telemetry;
         }
     }
@@ -7021,8 +8015,10 @@ internal sealed partial class LibraDexFileSession : IDisposable
     {
         ArgumentNullException.ThrowIfNull(writeContext);
         ReleaseFixed32Scalar8ShelfOwnersForWriteContext(writeContext);
+        ReleaseTerminalIdentity8ShelfOwnersForWriteContext(writeContext);
         writeContext.Fixed32Scalar8MutableBatchShelfBytes.Clear();
         writeContext.Fixed32Scalar8RouteClaims.Clear();
+        writeContext.TerminalIdentity8MutableShelfBytes.Clear();
     }
 
     /// <summary>
@@ -7622,6 +8618,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
 
     /// <summary>
     /// Reads one terminal identity shelf into a writer-local image for an isolated writer context.<br/>
+    /// Shelf ownership is acquired before committed bytes are copied so another writer cannot publish between this context's read and claim and leave a stale private image that later overwrites the newer shelf.<br/>
     /// Repeated reads from the same context reuse its staged bytes, allowing multiple appends to the same terminal shelf before publication while still excluding other contexts by ownership.<br/>
     /// </summary>
     /// <param name="writeContext">The isolated writer context that owns staged terminal shelf bytes until publish or abort.<br/></param>
@@ -7643,7 +8640,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
             return stagedShelfBytes;
         }
 
+        ClaimTerminalIdentity8ShelfForWriteContext(writeContext, shelfOffset);
         byte[] shelfBytes = new byte[shelfExtentSize];
+        writeContext.TerminalIdentity8MutableShelfBytes[shelfOffset] = shelfBytes;
         ReadTerminalIdentity8ShelfBytesCached(shelfOffset, shelfExtentSize).AsSpan(0, shelfExtentSize).CopyTo(shelfBytes);
         ValidateTerminalIdentity8Shelf(shelfBytes, shelfExtentSize);
         return shelfBytes;
@@ -8280,51 +9279,58 @@ internal sealed partial class LibraDexFileSession : IDisposable
         ArgumentNullException.ThrowIfNull(writeContext);
         lock (writePublicationSync)
         {
-            DataKernelCommitTelemetry telemetry;
-            kernel.EnterExclusiveStoragePublication();
             try
             {
-                ValidateVarKeyScalar8RouteClaimsForWriteContext(writeContext);
-                foreach (KeyValuePair<long, VarKeyScalar8MutableShelf> mutableShelf in writeContext.VarKeyScalar8MutableBatchShelves)
+                DataKernelCommitTelemetry telemetry;
+                kernel.EnterExclusiveStoragePublication();
+                try
                 {
-                    if (!mutableShelf.Value.IsDirty)
+                    ValidateVarKeyScalar8RouteClaimsForWriteContext(writeContext);
+                    foreach (KeyValuePair<long, VarKeyScalar8MutableShelf> mutableShelf in writeContext.VarKeyScalar8MutableBatchShelves)
                     {
-                        continue;
+                        if (!mutableShelf.Value.IsDirty)
+                        {
+                            continue;
+                        }
+
+                        int shelfExtentSize = mutableShelf.Value.Profile.ShelfExtentSize;
+                        PrepareVarKeyScalar8ShelfForPublication(mutableShelf.Value);
+                        RewriteBatchShelfBytes(mutableShelf.Key, mutableShelf.Value.Bytes.AsSpan(0, shelfExtentSize));
+                        varKeyScalar8ReadShelfCache.TryRemove(mutableShelf.Key, out _);
                     }
 
-                    int shelfExtentSize = mutableShelf.Value.Profile.ShelfExtentSize;
-                    PrepareVarKeyScalar8ShelfForPublication(mutableShelf.Value);
-                    RewriteBatchShelfBytes(mutableShelf.Key, mutableShelf.Value.Bytes.AsSpan(0, shelfExtentSize));
-                    varKeyScalar8ReadShelfCache.TryRemove(mutableShelf.Key, out _);
-                }
+                    foreach (KeyValuePair<long, byte[]> rawShelf in writeContext.VarKeyScalar8RawMutableShelfBytes)
+                    {
+                        RewriteBatchShelfBytes(rawShelf.Key, rawShelf.Value);
+                        varKeyScalar8ReadShelfCache.TryRemove(rawShelf.Key, out _);
+                    }
 
-                foreach (KeyValuePair<long, byte[]> rawShelf in writeContext.VarKeyScalar8RawMutableShelfBytes)
+                    foreach (KeyValuePair<long, byte[]> dirtyShelf in writeContext.TerminalIdentity8MutableShelfBytes)
+                    {
+                        ValidateTerminalIdentity8Shelf(dirtyShelf.Value, dirtyShelf.Value.Length);
+                        RewriteBatchShelfBytes(dirtyShelf.Key, dirtyShelf.Value);
+                        terminalIdentity8ShelfReadCache.TryRemove(dirtyShelf.Key, out _);
+                    }
+
+                    telemetry = kernel.Commit();
+                }
+                finally
                 {
-                    RewriteBatchShelfBytes(rawShelf.Key, rawShelf.Value);
-                    varKeyScalar8ReadShelfCache.TryRemove(rawShelf.Key, out _);
+                    kernel.ExitExclusiveStoragePublication();
                 }
 
-                foreach (KeyValuePair<long, byte[]> dirtyShelf in writeContext.TerminalIdentity8MutableShelfBytes)
-                {
-                    ValidateTerminalIdentity8Shelf(dirtyShelf.Value, dirtyShelf.Value.Length);
-                    RewriteBatchShelfBytes(dirtyShelf.Key, dirtyShelf.Value);
-                    terminalIdentity8ShelfReadCache.TryRemove(dirtyShelf.Key, out _);
-                }
-
-                telemetry = kernel.Commit();
+                return telemetry;
             }
             finally
             {
-                kernel.ExitExclusiveStoragePublication();
+                ReleaseVarKeyScalar8ShelfOwnersForWriteContext(writeContext);
+                ReleaseTerminalIdentity8ShelfOwnersForWriteContext(writeContext);
+                ReleaseVarKeyScalar8MutableShelvesForWriteContext(writeContext, clearShelfBytes: true);
+                writeContext.VarKeyScalar8RawMutableShelfBytes.Clear();
+                writeContext.VarKeyScalar8RouteClaims.Clear();
+                writeContext.TerminalIdentity8MutableShelfBytes.Clear();
+                ReleaseVarKeyScalar8TopologyReadsForWriteContext(writeContext);
             }
-
-            ReleaseVarKeyScalar8ShelfOwnersForWriteContext(writeContext);
-            ReleaseTerminalIdentity8ShelfOwnersForWriteContext(writeContext);
-            ReleaseVarKeyScalar8MutableShelvesForWriteContext(writeContext, clearShelfBytes: true);
-            writeContext.VarKeyScalar8RawMutableShelfBytes.Clear();
-            writeContext.VarKeyScalar8RouteClaims.Clear();
-            writeContext.TerminalIdentity8MutableShelfBytes.Clear();
-            return telemetry;
         }
     }
 
@@ -8342,6 +9348,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
         writeContext.VarKeyScalar8RawMutableShelfBytes.Clear();
         writeContext.VarKeyScalar8RouteClaims.Clear();
         writeContext.TerminalIdentity8MutableShelfBytes.Clear();
+        ReleaseVarKeyScalar8TopologyReadsForWriteContext(writeContext);
     }
 
     /// <summary>
@@ -8789,33 +9796,36 @@ internal sealed partial class LibraDexFileSession : IDisposable
     /// <exception cref="InvalidOperationException">Thrown when another durability batch is already active.<br/></exception>
     internal LibraDexFileSessionDurabilityBatch BeginDurabilityBatch(LibraDexWriteIntent writeIntent = default)
     {
-        long operationToken = ClaimDiagnosticWriteWindow();
-        if (durabilityBatchActive)
+        lock (writePublicationSync)
         {
-            ReleaseDiagnosticWriteWindow(operationToken);
-            throw new InvalidOperationException("A LibraDex session durability batch is already active.");
-        }
+            long operationToken = ClaimDiagnosticWriteWindow();
+            if (durabilityBatchActive)
+            {
+                ReleaseDiagnosticWriteWindow(operationToken);
+                throw new InvalidOperationException("A LibraDex session durability batch is already active.");
+            }
 
-        durabilityBatchActive = true;
-        LibraDexWriteContext writeContext = new(operationToken);
-        activeWriteContext = writeContext;
-        routerReadCacheInvalidationPending = false;
-        deferredDurabilityCommitRequests = 0;
-        currentWriteIntent = writeIntent;
-        scalar8Scalar8MutableBatchShelfBytes.Clear();
-        scalar16Scalar8MutableBatchShelfBytes.Clear();
-        scalar8Scalar16MutableBatchShelfBytes.Clear();
-        scalar16Scalar16MutableBatchShelfBytes.Clear();
-        fixed32Scalar8MutableBatchShelfBytes.Clear();
-        fixed32Scalar16MutableBatchShelfBytes.Clear();
-        fixed32Scalar8RetainedBatchShelfOffsets.Clear();
-        fixed32Scalar16RetainedBatchShelfOffsets.Clear();
-        ReleaseVarKeyScalar8MutableBatchShelves(clearShelfBytes: true);
-        ReleaseVarKeyScalar16MutableBatchShelves(clearShelfBytes: true);
-        ReleaseVarKeyVarIdentityMutableBatchShelves(clearShelfBytes: true);
-        scalar8VarIdentityMutableBatchShelves.Clear();
-        scalar16VarIdentityMutableBatchShelves.Clear();
-        return new LibraDexFileSessionDurabilityBatch(this, writeContext);
+            durabilityBatchActive = true;
+            LibraDexWriteContext writeContext = new(operationToken);
+            activeWriteContext = writeContext;
+            routerReadCacheInvalidationPending = false;
+            deferredDurabilityCommitRequests = 0;
+            currentWriteIntent = writeIntent;
+            scalar8Scalar8MutableBatchShelfBytes.Clear();
+            scalar16Scalar8MutableBatchShelfBytes.Clear();
+            scalar8Scalar16MutableBatchShelfBytes.Clear();
+            scalar16Scalar16MutableBatchShelfBytes.Clear();
+            fixed32Scalar8MutableBatchShelfBytes.Clear();
+            fixed32Scalar16MutableBatchShelfBytes.Clear();
+            fixed32Scalar8RetainedBatchShelfOffsets.Clear();
+            fixed32Scalar16RetainedBatchShelfOffsets.Clear();
+            ReleaseVarKeyScalar8MutableBatchShelves(clearShelfBytes: true);
+            ReleaseVarKeyScalar16MutableBatchShelves(clearShelfBytes: true);
+            ReleaseVarKeyVarIdentityMutableBatchShelves(clearShelfBytes: true);
+            scalar8VarIdentityMutableBatchShelves.Clear();
+            scalar16VarIdentityMutableBatchShelves.Clear();
+            return new LibraDexFileSessionDurabilityBatch(this, writeContext);
+        }
     }
 
     /// <summary>
@@ -8976,19 +9986,24 @@ internal sealed partial class LibraDexFileSession : IDisposable
         {
             RawDataReservation superblock = kernel.Reserve(SuperblockLayout.Size);
             RawDataReservation indexDirectory = kernel.Reserve(IndexDirectoryLayout.Size);
+            RawDataReservation allocationDirectory = kernel.Reserve(FileAllocationDirectoryLayout.Size);
 
             new SuperblockWriter(superblock.Span).Initialize(
                 options.ReservedPrefixBytes,
                 indexDirectory.Extent.Offset,
                 Guid.NewGuid(),
                 DateTimeOffset.UtcNow.UtcDateTime.Ticks,
-                developerMetadata);
+                developerMetadata,
+                allocationDirectory.Extent.Offset);
 
             new IndexDirectoryWriter(indexDirectory.Span).InitializeEmpty();
+            FileAllocationDirectoryLayout.Initialize(allocationDirectory.Span);
 
             SuperblockSnapshot superblockSnapshot = SuperblockSnapshot.FromReader(new SuperblockReader(superblock.Span));
             IndexDirectorySnapshot indexDirectorySnapshot = IndexDirectorySnapshot.FromBytes(indexDirectory.Span);
+            byte[] allocationDirectoryBytes = allocationDirectory.Span.ToArray();
             kernel.Commit();
+            kernel.ConfigureNewFileExtentAllocator(allocationDirectory.Extent.Offset, allocationDirectoryBytes);
 
             return new LibraDexFileSession(
                 kernel,
@@ -9068,9 +10083,33 @@ internal sealed partial class LibraDexFileSession : IDisposable
             byte[] indexDirectoryBytes = new byte[superblockReader.IndexDirectoryLength];
             kernel.Read(superblockReader.IndexDirectoryOffset, indexDirectoryBytes);
 
+            SuperblockSnapshot superblockSnapshot = SuperblockSnapshot.FromReader(superblockReader);
+            if (superblockSnapshot.AllocationDirectoryOffset == 0)
+            {
+                RawDataReservation allocationDirectory = kernel.Reserve(FileAllocationDirectoryLayout.Size);
+                FileAllocationDirectoryLayout.Initialize(allocationDirectory.Span);
+                byte[] allocationDirectoryBytes = allocationDirectory.Span.ToArray();
+
+                RawDataReservation superblockRewrite = kernel.ReserveAt(0, SuperblockLayout.Size);
+                new SuperblockWriter(superblockRewrite.Span).Initialize(
+                    superblockSnapshot.ReservedPrefixBytes,
+                    superblockSnapshot.IndexDirectoryOffset,
+                    superblockSnapshot.FileGuid,
+                    superblockSnapshot.CreatedUtcTicks,
+                    superblockSnapshot.DeveloperMetadata,
+                    allocationDirectory.Extent.Offset);
+                superblockSnapshot = SuperblockSnapshot.FromReader(new SuperblockReader(superblockRewrite.Span));
+                kernel.Commit();
+                kernel.ConfigureNewFileExtentAllocator(allocationDirectory.Extent.Offset, allocationDirectoryBytes);
+            }
+            else
+            {
+                kernel.ConfigureFileExtentAllocator(superblockSnapshot.AllocationDirectoryOffset);
+            }
+
             return new LibraDexFileSession(
                 kernel,
-                SuperblockSnapshot.FromReader(superblockReader),
+                superblockSnapshot,
                 IndexDirectorySnapshot.FromBytes(indexDirectoryBytes),
                 telemetryOptions.Level);
         }
@@ -9096,7 +10135,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
             Superblock.IndexDirectoryOffset,
             Superblock.FileGuid,
             Superblock.CreatedUtcTicks,
-            developerMetadata);
+            developerMetadata,
+            Superblock.AllocationDirectoryOffset);
 
         SuperblockSnapshot updated = SuperblockSnapshot.FromReader(new SuperblockReader(superblock.Span));
         DataKernelCommitTelemetry telemetry = CommitAndInvalidateRouterReadCache();
@@ -9144,6 +10184,70 @@ internal sealed partial class LibraDexFileSession : IDisposable
         DataKernelCommitTelemetry telemetry = CommitAndInvalidateRouterReadCache();
         IndexDirectory = updated;
         return telemetry;
+    }
+
+    /// <summary>
+    /// Deactivates a caller-selected set of index-directory slots in one durable full-directory rewrite and retires every allocator-owned extent proven reachable from those slots.<br/>
+    /// Commit phase ordering publishes the directory without the retired roots before allocator occupancy bits become reusable; interruption can therefore leak capacity but cannot expose a live route to reused bytes.<br/>
+    /// Legacy, append-fallback, unsupported, or conservatively unclassified extents remain unreachable for later catalog compaction instead of being guessed into a reusable allocation class.<br/>
+    /// Duplicate, negative, and already inactive slot identifiers are ignored so a logical owner can pass optional projection slots directly.<br/>
+    /// </summary>
+    /// <param name="slotIndexes">Logical-owner and companion slot identifiers to deactivate together.<br/></param>
+    /// <returns>The DataKernel commit telemetry for the atomic directory rewrite.<br/></returns>
+    internal DataKernelCommitTelemetry DeactivateIndexDirectorySlots(ReadOnlySpan<int> slotIndexes)
+    {
+        lock (writePublicationSync)
+        {
+            bool[] deactivate = new bool[IndexDirectoryLayout.SlotCount];
+            for (int i = 0; i < slotIndexes.Length; i++)
+            {
+                int slotIndex = slotIndexes[i];
+                if ((uint)slotIndex < IndexDirectoryLayout.SlotCount)
+                    deactivate[slotIndex] = true;
+            }
+
+            HashSet<long> retirementOffsets = [];
+            ReadOnlySpan<IndexDirectorySlotSnapshot> activeSlots = IndexDirectory.ActiveSlots;
+            Dictionary<int, int> inferredVarKeyScalar8Companions = [];
+            for (int i = 0; i < activeSlots.Length; i++)
+            {
+                IndexDirectorySlotSnapshot existing = activeSlots[i];
+                if (deactivate[existing.SlotIndex] &&
+                    TryReadCatalogIndexMetadata(existing, out CatalogIndexMetadata metadata))
+                {
+                    AddOwnedVarKeyScalar8CompanionRetirementShapes(metadata, deactivate, inferredVarKeyScalar8Companions);
+                }
+            }
+
+            for (int i = 0; i < activeSlots.Length; i++)
+            {
+                IndexDirectorySlotSnapshot existing = activeSlots[i];
+                if (deactivate[existing.SlotIndex])
+                {
+                    int inferredMaxKeyLength = inferredVarKeyScalar8Companions.TryGetValue(existing.SlotIndex, out int maxKeyLength)
+                        ? maxKeyLength
+                        : 0;
+                    CollectAllocatorRetirementOffsets(existing, retirementOffsets, inferredMaxKeyLength);
+                }
+            }
+
+            RawDataReservation directory = kernel.ReserveAt(Superblock.IndexDirectoryOffset, Superblock.IndexDirectoryLength);
+            IndexDirectoryWriter writer = new(directory.Span);
+            writer.InitializeEmpty();
+
+            for (int i = 0; i < activeSlots.Length; i++)
+            {
+                IndexDirectorySlotSnapshot existing = activeSlots[i];
+                if (!deactivate[existing.SlotIndex])
+                    writer.WriteSlot(existing);
+            }
+
+            IndexDirectorySnapshot updated = IndexDirectorySnapshot.FromBytes(directory.Span);
+            kernel.RetireFileExtents(retirementOffsets.ToArray());
+            DataKernelCommitTelemetry telemetry = CommitAndInvalidateRouterReadCache();
+            IndexDirectory = updated;
+            return telemetry;
+        }
     }
 
     /// <summary>
@@ -9338,6 +10442,29 @@ internal sealed partial class LibraDexFileSession : IDisposable
         int metadataLength = CatalogIndexMetadataCodec.GetEncodedSize(updatedMetadata);
         RawDataReservation metadataReservation = kernel.Reserve(metadataLength);
         CatalogIndexMetadataCodec.Write(metadataReservation.Span, updatedMetadata);
+        return UpsertIndexDirectorySlot(slot with
+        {
+            MetadataOffset = metadataReservation.Extent.Offset,
+            Generation = slot.Generation + 1
+        });
+    }
+
+    /// <summary>
+    /// Appends replacement catalog metadata for one active logical index, then publishes the new metadata offset through its fixed directory slot.<br/>
+    /// The caller supplies a complete replacement so catalog-specific lifecycle code can publish an expanded owned-projection contract only after its physical companion is fully populated.<br/>
+    /// </summary>
+    /// <param name="slotIndex">The fixed directory slot that owns the logical index metadata.<br/></param>
+    /// <param name="metadata">The complete replacement metadata to publish.<br/></param>
+    /// <returns>The DataKernel commit telemetry for the metadata append and directory update.<br/></returns>
+    /// <exception cref="InvalidDataException">Thrown when the requested slot is inactive.<br/></exception>
+    internal DataKernelCommitTelemetry UpdateCatalogIndexMetadata(int slotIndex, CatalogIndexMetadata metadata)
+    {
+        if (!TryFindIndexDirectorySlot(slotIndex, out IndexDirectorySlotSnapshot slot))
+            throw new InvalidDataException("The requested index slot is not active.");
+
+        int metadataLength = CatalogIndexMetadataCodec.GetEncodedSize(metadata);
+        RawDataReservation metadataReservation = kernel.Reserve(metadataLength);
+        CatalogIndexMetadataCodec.Write(metadataReservation.Span, metadata);
         return UpsertIndexDirectorySlot(slot with
         {
             MetadataOffset = metadataReservation.Extent.Offset,
@@ -10313,7 +11440,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
         long routerOffset = handle.RootOffset;
         for (int hop = 0; hop < handle.Profile.KeySize; hop++)
         {
-            kernel.Read(routerOffset, routerBytes);
+            ReadRouterPageUsingArenaCache(routerOffset, routerBytes);
             RouterReader routerReader = new(routerBytes);
             if (!routerReader.IsValid || !routerReader.HasDirectIndex)
             {
@@ -10348,6 +11475,29 @@ internal sealed partial class LibraDexFileSession : IDisposable
                 continue;
             }
 
+            if (TryReadFixedNTerminalRoot(
+                targetOffset,
+                TerminalIdentityRootLayout.ShapeFixedKeyScalar16Identity,
+                key,
+                handle.Profile.ShelfExtentSize,
+                out _))
+            {
+                (Scalar8VarIdentityInsertResult terminalResult, DataKernelCommitTelemetry terminalCommit) = InsertFixedNVarTerminalIdentity(
+                    targetOffset,
+                    TerminalIdentityRootLayout.ShapeFixedKeyScalar16Identity,
+                    key,
+                    handle.Profile.ShelfExtentSize,
+                    encodedIdentity,
+                    allowDuplicateKeys);
+                return (terminalResult switch
+                {
+                    Scalar8VarIdentityInsertResult.Inserted => FixedNScalarInsertResult.Inserted,
+                    Scalar8VarIdentityInsertResult.AlreadyPresent => FixedNScalarInsertResult.AlreadyPresent,
+                    Scalar8VarIdentityInsertResult.KeyConflict => FixedNScalarInsertResult.KeyConflict,
+                    _ => FixedNScalarInsertResult.Full
+                }, terminalCommit);
+            }
+
             byte[] shelfBytes = ReadFixedNScalar16ShelfBytes(targetOffset, handle.Profile);
             FixedNScalar16 existingShelf = new(shelfBytes, handle.Profile);
             FixedNScalarInsertResult insertResult = existingShelf.Insert(key, encodedIdentity, allowDuplicateKeys);
@@ -10355,13 +11505,29 @@ internal sealed partial class LibraDexFileSession : IDisposable
             {
                 if (insertResult == FixedNScalarInsertResult.Full)
                 {
+                    int parentRangeStart = prefix;
+                    int parentRangeEnd = prefix;
+                    int parentAliasCount = 0;
+                    for (int candidatePrefix = byte.MinValue; candidatePrefix <= byte.MaxValue; candidatePrefix++)
+                    {
+                        if (routerReader.FindTarget((byte)candidatePrefix) != targetOffset)
+                            continue;
+                        parentRangeStart = Math.Min(parentRangeStart, candidatePrefix);
+                        parentRangeEnd = Math.Max(parentRangeEnd, candidatePrefix);
+                        parentAliasCount++;
+                    }
                     return SplitRoutedFixedNScalar16ByShelfTransform(
                         slotIndex,
                         slot,
                         handle,
+                        routerOffset,
+                        parentRangeStart,
+                        parentRangeEnd,
                         targetOffset,
                         shelfBytes,
-                        checked((ushort)(routerReader.KeyDepth + 1)),
+                        parentAliasCount > 1
+                            ? routerReader.KeyDepth
+                            : checked((ushort)(routerReader.KeyDepth + 1)),
                         key,
                         encodedIdentity,
                         allowDuplicateKeys);
@@ -10419,7 +11585,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
         long routerOffset = handle.RootOffset;
         for (int hop = 0; hop < handle.Profile.KeySize; hop++)
         {
-            kernel.Read(routerOffset, routerBytes);
+            ReadRouterPageUsingArenaCache(routerOffset, routerBytes);
             RouterReader routerReader = new(routerBytes);
             if (!routerReader.IsValid || !routerReader.HasDirectIndex)
             {
@@ -10436,6 +11602,22 @@ internal sealed partial class LibraDexFileSession : IDisposable
             {
                 routerOffset = targetOffset;
                 continue;
+            }
+
+            if (TryReadFixedNTerminalRoot(
+                targetOffset,
+                TerminalIdentityRootLayout.ShapeFixedKeyScalar16Identity,
+                key,
+                handle.Profile.ShelfExtentSize,
+                out _))
+            {
+                int deleted = DeleteFixedScalar16TerminalIdentity(
+                    targetOffset,
+                    key,
+                    handle.Profile.ShelfExtentSize,
+                    BinaryPrimitives.ReadUInt64BigEndian(encodedIdentity),
+                    BinaryPrimitives.ReadUInt64BigEndian(encodedIdentity.Slice(sizeof(ulong))));
+                return (deleted != 0, default);
             }
 
             byte[] shelfBytes = ReadFixedNScalar16ShelfBytes(targetOffset, handle.Profile);
@@ -10495,7 +11677,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
             long routerOffset = handle.RootOffset;
             for (int hop = 0; hop < handle.Profile.KeySize; hop++)
             {
-                kernel.Read(routerOffset, routerBytes);
+                ReadRouterPageUsingArenaCache(routerOffset, routerBytes);
                 RouterReader routerReader = new(routerBytes);
                 if (!routerReader.IsValid || !routerReader.HasDirectIndex)
                 {
@@ -10513,6 +11695,16 @@ internal sealed partial class LibraDexFileSession : IDisposable
                 {
                     routerOffset = targetOffset;
                     continue;
+                }
+
+                if (TryReadFixedNTerminalRoot(
+                    targetOffset,
+                    TerminalIdentityRootLayout.ShapeFixedKeyScalar16Identity,
+                    key,
+                    handle.Profile.ShelfExtentSize,
+                    out _))
+                {
+                    return (false, default);
                 }
 
                 RecordFixedNScalar16RouteClaimForWriteContext(
@@ -10584,7 +11776,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
             long routerOffset = handle.RootOffset;
             for (int hop = 0; hop < handle.Profile.KeySize; hop++)
             {
-                kernel.Read(routerOffset, routerBytes);
+                ReadRouterPageUsingArenaCache(routerOffset, routerBytes);
                 RouterReader routerReader = new(routerBytes);
                 if (!routerReader.IsValid || !routerReader.HasDirectIndex)
                 {
@@ -10602,6 +11794,16 @@ internal sealed partial class LibraDexFileSession : IDisposable
                 {
                     routerOffset = targetOffset;
                     continue;
+                }
+
+                if (TryReadFixedNTerminalRoot(
+                    targetOffset,
+                    TerminalIdentityRootLayout.ShapeFixedKeyScalar16Identity,
+                    key,
+                    handle.Profile.ShelfExtentSize,
+                    out _))
+                {
+                    throw new InvalidOperationException("The FSN-16 writer-context delete requires the serialized terminal-identity mutation path.");
                 }
 
                 RecordFixedNScalar16RouteClaimForWriteContext(
@@ -10631,16 +11833,16 @@ internal sealed partial class LibraDexFileSession : IDisposable
 
     private bool IsFixedNScalar16Router(long offset)
     {
-        Span<byte> routerBytes = stackalloc byte[RouterLayout.Size];
-        kernel.Read(offset, routerBytes);
-        RouterReader reader = new(routerBytes);
-        return reader.IsValid;
+        return IsFixedNRouterPage(offset);
     }
 
     private (FixedNScalarInsertResult Result, DataKernelCommitTelemetry Commit) SplitRoutedFixedNScalar16ByShelfTransform(
         int slotIndex,
         IndexDirectorySlotSnapshot slot,
         FixedNScalar16IndexHandle handle,
+        long parentRouterOffset,
+        int parentRangeStart,
+        int parentRangeEnd,
         long fullShelfOffset,
         byte[] existingShelfBytes,
         ushort firstKeyDepth,
@@ -10697,7 +11899,13 @@ internal sealed partial class LibraDexFileSession : IDisposable
 
         if (!TryChooseFixedNScalar16Split(keys, firstKeyDepth, out ushort splitKeyDepth, out byte rightPrefixByte))
         {
-            throw new InvalidDataException("The full FSN-16 shelf could not be split because all keys share every fixed-key byte.");
+            DataKernelCommitTelemetry terminalCommit = RewriteFixedNVarIdentityTerminalRoute(
+                fullShelfOffset,
+                TerminalIdentityRootLayout.ShapeFixedKeyScalar16Identity,
+                keys[0],
+                handle.Profile.ShelfExtentSize,
+                identities);
+            return (FixedNScalarInsertResult.Inserted, terminalCommit);
         }
 
         byte[] leftShelfBytes = new byte[handle.Profile.ShelfExtentSize];
@@ -10718,6 +11926,45 @@ internal sealed partial class LibraDexFileSession : IDisposable
             }
         }
 
+        if (parentRangeStart < parentRangeEnd && splitKeyDepth == firstKeyDepth)
+        {
+            if (rightPrefixByte <= parentRangeStart || rightPrefixByte > parentRangeEnd)
+            {
+                throw new InvalidDataException(
+                    $"The FSN-16 same-depth split boundary {rightPrefixByte} is outside owning parent range {parentRangeStart}-{parentRangeEnd} at depth {firstKeyDepth}.");
+            }
+
+            RawDataReservation leftRewrite = kernel.ReserveAt(fullShelfOffset, handle.Profile.ShelfExtentSize);
+            leftShelfBytes.CopyTo(leftRewrite.Span);
+            RawDataReservation sameDepthRightAppend = kernel.Reserve(handle.Profile.ShelfExtentSize);
+            rightShelfBytes.CopyTo(sameDepthRightAppend.Span);
+
+            byte[] parentRouterBytes = new byte[RouterLayout.Size];
+            kernel.Read(parentRouterOffset, parentRouterBytes);
+            RouterReader currentParent = new(parentRouterBytes);
+            if (!currentParent.IsValid || !currentParent.HasDirectIndex || currentParent.KeyDepth != firstKeyDepth)
+                throw new InvalidDataException("The FSN-16 same-depth split parent router changed shape before publication.");
+            if (currentParent.FindTarget((byte)parentRangeStart) != fullShelfOffset ||
+                currentParent.FindTarget((byte)parentRangeEnd) != fullShelfOffset)
+                throw new InvalidDataException("The FSN-16 same-depth split parent aliases changed target before publication.");
+
+            RawDataReservation parentRewrite = kernel.ReserveAt(parentRouterOffset, RouterLayout.Size);
+            parentRouterBytes.CopyTo(parentRewrite.Span);
+            RouterWriter parentWriter = new(parentRewrite.Span);
+            for (int prefix = parentRangeStart; prefix <= parentRangeEnd; prefix++)
+            {
+                if (currentParent.FindTarget((byte)prefix) != fullShelfOffset)
+                    continue;
+                parentWriter.WriteRouteTarget(
+                    (byte)prefix,
+                    prefix < rightPrefixByte ? fullShelfOffset : sameDepthRightAppend.Extent.Offset);
+            }
+
+            InvalidateRouterReadCacheForRouterRewrite(parentRouterOffset);
+            DataKernelCommitTelemetry sameDepthCommit = CommitAndDeferRouterReadCacheInvalidation();
+            return (FixedNScalarInsertResult.Inserted, sameDepthCommit);
+        }
+
         RawDataReservation leftAppend = kernel.Reserve(handle.Profile.ShelfExtentSize);
         leftShelfBytes.CopyTo(leftAppend.Span);
         RawDataReservation rightAppend = kernel.Reserve(handle.Profile.ShelfExtentSize);
@@ -10725,11 +11972,11 @@ internal sealed partial class LibraDexFileSession : IDisposable
 
         int appendedRouterCount = splitKeyDepth - firstKeyDepth;
         long nextRouterOffset = 0;
-        long[] appendedRouterOffsets = appendedRouterCount > 0 ? new long[appendedRouterCount] : [];
-        for (int i = appendedRouterCount - 1; i >= 0; i--)
-        {
-            appendedRouterOffsets[i] = kernel.Reserve(RouterLayout.Size).Extent.Offset;
-        }
+        long[] appendedRouterOffsets = ReserveFixedNTransformRouterOffsets(
+            fullShelfOffset,
+            handle.Profile.ShelfExtentSize,
+            appendedRouterCount,
+            out int localRouterCount);
 
         for (int i = appendedRouterCount - 1; i >= 0; i--)
         {
@@ -10740,6 +11987,11 @@ internal sealed partial class LibraDexFileSession : IDisposable
             RawDataReservation routerReservation = kernel.ReserveAt(appendedRouterOffsets[i], RouterLayout.Size);
             RouterWriter writer = new(routerReservation.Span);
             writer.InitializeExpandedOneByte(routerDepth, slot.AllocationClassId, targets);
+            WriteFixedNTransformRouterArenaMetadata(
+                writer,
+                appendedRouterOffsets[i],
+                fullShelfOffset,
+                handle.Profile.ShelfExtentSize);
             nextRouterOffset = appendedRouterOffsets[i];
         }
 
@@ -10750,9 +12002,20 @@ internal sealed partial class LibraDexFileSession : IDisposable
         RawDataReservation transformedRouter = kernel.ReserveAt(fullShelfOffset, RouterLayout.Size);
         RouterWriter transformedWriter = new(transformedRouter.Span);
         transformedWriter.InitializeExpandedOneByte(firstKeyDepth, slot.AllocationClassId, firstTargets);
+        transformedWriter.WriteArenaMetadata(
+            arenaBaseDelta: 0,
+            arenaLength: handle.Profile.ShelfExtentSize,
+            routerPageSize: checked((ushort)RouterLayout.Size),
+            routerPageIndex: 0,
+            routerPageCount: checked((ushort)(handle.Profile.ShelfExtentSize / RouterLayout.Size)),
+            arenaFlags: 0);
 
         InvalidateRouterReadCacheForRouterRewrite(fullShelfOffset);
         DataKernelCommitTelemetry commit = CommitAndDeferRouterReadCacheInvalidation();
+        RouterArenaState arena = RegisterRouterArena(fullShelfOffset, handle.Profile.ShelfExtentSize);
+        arena.MarkUsed(0);
+        for (int i = 0; i < localRouterCount; i++)
+            arena.MarkUsed(i + 1);
         return (FixedNScalarInsertResult.Inserted, commit);
     }
 
@@ -10910,7 +12173,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
         }
 
         byte[] routerBytes = new byte[RouterLayout.Size];
-        kernel.Read(routerOffset, routerBytes);
+        ReadRouterPageUsingArenaCache(routerOffset, routerBytes);
         RouterReader routerReader = new(routerBytes);
         if (!routerReader.IsValid || !routerReader.HasDirectIndex)
         {
@@ -10929,6 +12192,18 @@ internal sealed partial class LibraDexFileSession : IDisposable
             if (IsFixedNScalar16Router(targetOffset))
             {
                 count += CountRoutedFixedNScalar16IdentitiesFromRouter(targetOffset, profile, visitedShelves, visitedRouters);
+                continue;
+            }
+
+            if (TryReadFixedNTerminalRoot(
+                targetOffset,
+                TerminalIdentityRootLayout.ShapeFixedKeyScalar16Identity,
+                profile.KeySize,
+                profile.ShelfExtentSize,
+                out _))
+            {
+                if (visitedShelves.Add(targetOffset))
+                    count += CountFixedNTerminalRoot(targetOffset, TerminalIdentityRootLayout.ShapeFixedKeyScalar16Identity);
                 continue;
             }
 
@@ -10959,7 +12234,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
         }
 
         byte[] routerBytes = new byte[RouterLayout.Size];
-        kernel.Read(routerOffset, routerBytes);
+        ReadRouterPageUsingArenaCache(routerOffset, routerBytes);
         RouterReader routerReader = new(routerBytes);
         if (!routerReader.IsValid || !routerReader.HasDirectIndex)
         {
@@ -10997,6 +12272,21 @@ internal sealed partial class LibraDexFileSession : IDisposable
                 count += childLowerEdge || childUpperEdge
                     ? CountRoutedFixedNScalar16IdentityRangeFromRouter(targetOffset, profile, lowerKey, upperKey, childLowerEdge, childUpperEdge, visitedShelves, visitedRouters)
                     : CountRoutedFixedNScalar16IdentitiesFromRouter(targetOffset, profile, visitedShelves, visitedRouters);
+                continue;
+            }
+
+            if (TryReadFixedNTerminalRoot(
+                targetOffset,
+                TerminalIdentityRootLayout.ShapeFixedKeyScalar16Identity,
+                profile.KeySize,
+                profile.ShelfExtentSize,
+                out byte[] terminalRoot))
+            {
+                if (visitedShelves.Add(targetOffset) &&
+                    (!childLowerEdge && !childUpperEdge || IsFixedNTerminalKeyInRange(terminalRoot, lowerKey, upperKey)))
+                {
+                    count += CountFixedNTerminalRoot(targetOffset, TerminalIdentityRootLayout.ShapeFixedKeyScalar16Identity);
+                }
                 continue;
             }
 
@@ -11050,6 +12340,18 @@ internal sealed partial class LibraDexFileSession : IDisposable
                     upperEdge: true,
                     visitedShelves,
                     visitedRouters);
+                continue;
+            }
+
+            if (TryReadFixedNTerminalRoot(
+                targetOffset,
+                TerminalIdentityRootLayout.ShapeFixedKeyScalar16Identity,
+                profile.KeySize,
+                profile.ShelfExtentSize,
+                out byte[] terminalRoot))
+            {
+                if (visitedShelves.Add(targetOffset) && IsFixedNTerminalKeyInRange(terminalRoot, lowerKey, upperKey))
+                    count += CountFixedNTerminalRoot(targetOffset, TerminalIdentityRootLayout.ShapeFixedKeyScalar16Identity);
                 continue;
             }
 
@@ -11116,7 +12418,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
         }
 
         byte[] routerBytes = new byte[RouterLayout.Size];
-        kernel.Read(routerOffset, routerBytes);
+        ReadRouterPageUsingArenaCache(routerOffset, routerBytes);
         RouterReader routerReader = new(routerBytes);
         if (!routerReader.IsValid || !routerReader.HasDirectIndex)
         {
@@ -11137,6 +12439,18 @@ internal sealed partial class LibraDexFileSession : IDisposable
             if (IsFixedNScalar16Router(targetOffset))
             {
                 ReadRoutedFixedNScalar16IdentityRangeFromRouter(targetOffset, profile, lowerKey, upperKey, identities, visitedShelves, visitedRouters);
+                continue;
+            }
+
+            if (TryReadFixedNTerminalRoot(
+                targetOffset,
+                TerminalIdentityRootLayout.ShapeFixedKeyScalar16Identity,
+                profile.KeySize,
+                profile.ShelfExtentSize,
+                out byte[] terminalRoot))
+            {
+                if (visitedShelves.Add(targetOffset) && IsFixedNTerminalKeyInRange(terminalRoot, lowerKey, upperKey))
+                    AppendFixedNVarTerminalIdentities(targetOffset, terminalRoot, profile.ShelfExtentSize, identities);
                 continue;
             }
 
@@ -11229,7 +12543,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
         byte prefix;
         for (int hop = 0; hop < handle.Profile.KeySize; hop++)
         {
-            kernel.Read(routerOffset, routerBytes);
+            ReadRouterPageUsingArenaCache(routerOffset, routerBytes);
             RouterReader routerReader = new(routerBytes);
             if (!routerReader.IsValid || !routerReader.HasDirectIndex)
             {
@@ -11264,6 +12578,21 @@ internal sealed partial class LibraDexFileSession : IDisposable
                 continue;
             }
 
+            if (TryReadFixedNTerminalRoot(
+                targetOffset,
+                TerminalIdentityRootLayout.ShapeFixedKeyScalar8Identity,
+                key,
+                handle.Profile.ShelfExtentSize,
+                out _))
+            {
+                return InsertFixedNScalar8TerminalIdentity(
+                    targetOffset,
+                    key,
+                    handle.Profile.ShelfExtentSize,
+                    encodedIdentity,
+                    allowDuplicateKeys);
+            }
+
             byte[] shelfBytes = ReadFixedNScalar8ShelfBytes(targetOffset, handle.Profile);
             FixedNScalar8 existingShelf = new(shelfBytes, handle.Profile);
             FixedNScalarInsertResult insertResult = existingShelf.Insert(key, encodedIdentity, allowDuplicateKeys);
@@ -11271,13 +12600,29 @@ internal sealed partial class LibraDexFileSession : IDisposable
             {
                 if (insertResult == FixedNScalarInsertResult.Full)
                 {
+                    int parentRangeStart = prefix;
+                    int parentRangeEnd = prefix;
+                    int parentAliasCount = 0;
+                    for (int candidatePrefix = byte.MinValue; candidatePrefix <= byte.MaxValue; candidatePrefix++)
+                    {
+                        if (routerReader.FindTarget((byte)candidatePrefix) != targetOffset)
+                            continue;
+                        parentRangeStart = Math.Min(parentRangeStart, candidatePrefix);
+                        parentRangeEnd = Math.Max(parentRangeEnd, candidatePrefix);
+                        parentAliasCount++;
+                    }
                     return SplitRoutedFixedNScalar8ByShelfTransform(
                         slotIndex,
                         slot,
                         handle,
+                        routerOffset,
+                        parentRangeStart,
+                        parentRangeEnd,
                         targetOffset,
                         shelfBytes,
-                        checked((ushort)(routerReader.KeyDepth + 1)),
+                        parentAliasCount > 1
+                            ? routerReader.KeyDepth
+                            : checked((ushort)(routerReader.KeyDepth + 1)),
                         key,
                         encodedIdentity,
                         allowDuplicateKeys);
@@ -11330,7 +12675,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
         long routerOffset = handle.RootOffset;
         for (int hop = 0; hop < handle.Profile.KeySize; hop++)
         {
-            kernel.Read(routerOffset, routerBytes);
+            ReadRouterPageUsingArenaCache(routerOffset, routerBytes);
             RouterReader routerReader = new(routerBytes);
             if (!routerReader.IsValid || !routerReader.HasDirectIndex)
             {
@@ -11347,6 +12692,21 @@ internal sealed partial class LibraDexFileSession : IDisposable
             {
                 routerOffset = targetOffset;
                 continue;
+            }
+
+            if (TryReadFixedNTerminalRoot(
+                targetOffset,
+                TerminalIdentityRootLayout.ShapeFixedKeyScalar8Identity,
+                key,
+                handle.Profile.ShelfExtentSize,
+                out _))
+            {
+                int deleted = DeleteFixedScalar8TerminalIdentity(
+                    targetOffset,
+                    key,
+                    handle.Profile.ShelfExtentSize,
+                    encodedIdentity);
+                return (deleted != 0, default);
             }
 
             byte[] shelfBytes = ReadFixedNScalar8ShelfBytes(targetOffset, handle.Profile);
@@ -11401,7 +12761,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
             long routerOffset = handle.RootOffset;
             for (int hop = 0; hop < handle.Profile.KeySize; hop++)
             {
-                kernel.Read(routerOffset, routerBytes);
+                ReadRouterPageUsingArenaCache(routerOffset, routerBytes);
                 RouterReader routerReader = new(routerBytes);
                 if (!routerReader.IsValid || !routerReader.HasDirectIndex)
                 {
@@ -11419,6 +12779,16 @@ internal sealed partial class LibraDexFileSession : IDisposable
                 {
                     routerOffset = targetOffset;
                     continue;
+                }
+
+                if (TryReadFixedNTerminalRoot(
+                    targetOffset,
+                    TerminalIdentityRootLayout.ShapeFixedKeyScalar8Identity,
+                    key,
+                    handle.Profile.ShelfExtentSize,
+                    out _))
+                {
+                    return (false, default);
                 }
 
                 RecordFixedNScalar8RouteClaimForWriteContext(
@@ -11485,7 +12855,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
             long routerOffset = handle.RootOffset;
             for (int hop = 0; hop < handle.Profile.KeySize; hop++)
             {
-                kernel.Read(routerOffset, routerBytes);
+                ReadRouterPageUsingArenaCache(routerOffset, routerBytes);
                 RouterReader routerReader = new(routerBytes);
                 if (!routerReader.IsValid || !routerReader.HasDirectIndex)
                 {
@@ -11503,6 +12873,16 @@ internal sealed partial class LibraDexFileSession : IDisposable
                 {
                     routerOffset = targetOffset;
                     continue;
+                }
+
+                if (TryReadFixedNTerminalRoot(
+                    targetOffset,
+                    TerminalIdentityRootLayout.ShapeFixedKeyScalar8Identity,
+                    key,
+                    handle.Profile.ShelfExtentSize,
+                    out _))
+                {
+                    throw new InvalidOperationException("The FSN-8 writer-context delete requires the serialized terminal-identity mutation path.");
                 }
 
                 RecordFixedNScalar8RouteClaimForWriteContext(
@@ -11567,7 +12947,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
         long routerOffset = handle.RootOffset;
         for (int hop = 0; hop < handle.Profile.KeySize; hop++)
         {
-            kernel.Read(routerOffset, routerBytes);
+            ReadRouterPageUsingArenaCache(routerOffset, routerBytes);
             RouterReader routerReader = new(routerBytes);
             if (!routerReader.IsValid || !routerReader.HasDirectIndex)
             {
@@ -11602,18 +12982,57 @@ internal sealed partial class LibraDexFileSession : IDisposable
                 continue;
             }
 
+            if (TryReadFixedNTerminalRoot(
+                targetOffset,
+                TerminalIdentityRootLayout.ShapeFixedKeyVarIdentity,
+                key,
+                handle.Profile.ShelfExtentSize,
+                out _))
+            {
+                (Scalar8VarIdentityInsertResult terminalResult, DataKernelCommitTelemetry terminalCommit) = InsertFixedNVarTerminalIdentity(
+                    targetOffset,
+                    TerminalIdentityRootLayout.ShapeFixedKeyVarIdentity,
+                    key,
+                    handle.Profile.ShelfExtentSize,
+                    identity,
+                    allowDuplicateKeys);
+                return (terminalResult switch
+                {
+                    Scalar8VarIdentityInsertResult.Inserted => FixedNVarIdentityInsertResult.Inserted,
+                    Scalar8VarIdentityInsertResult.AlreadyPresent => FixedNVarIdentityInsertResult.AlreadyPresent,
+                    Scalar8VarIdentityInsertResult.KeyConflict => FixedNVarIdentityInsertResult.KeyConflict,
+                    _ => FixedNVarIdentityInsertResult.Full
+                }, terminalCommit);
+            }
+
             byte[] existingShelfBytes = ReadFixedNVarIdentityShelfBytes(targetOffset, handle.Profile);
             FixedNVarIdentityInsertResult insertResult = LibraDex.Views.FixedNVarIdentity.InsertInPlace(existingShelfBytes, handle.Profile, key, identity, allowDuplicateKeys, out existingShelfBytes);
             if (insertResult != FixedNVarIdentityInsertResult.Inserted)
             {
                 if (insertResult == FixedNVarIdentityInsertResult.Full)
                 {
+                    int parentRangeStart = prefix;
+                    int parentRangeEnd = prefix;
+                    int parentAliasCount = 0;
+                    for (int candidatePrefix = byte.MinValue; candidatePrefix <= byte.MaxValue; candidatePrefix++)
+                    {
+                        if (routerReader.FindTarget((byte)candidatePrefix) != targetOffset)
+                            continue;
+                        parentRangeStart = Math.Min(parentRangeStart, candidatePrefix);
+                        parentRangeEnd = Math.Max(parentRangeEnd, candidatePrefix);
+                        parentAliasCount++;
+                    }
                     return SplitRoutedFixedNVarIdentityByShelfTransform(
                         slot,
                         handle,
+                        routerOffset,
+                        parentRangeStart,
+                        parentRangeEnd,
                         targetOffset,
                         existingShelfBytes,
-                        checked((ushort)(routerReader.KeyDepth + 1)),
+                        parentAliasCount > 1
+                            ? routerReader.KeyDepth
+                            : checked((ushort)(routerReader.KeyDepth + 1)),
                         key,
                         identity,
                         allowDuplicateKeys);
@@ -11634,6 +13053,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
     private (FixedNVarIdentityInsertResult Result, DataKernelCommitTelemetry Commit) SplitRoutedFixedNVarIdentityByShelfTransform(
         IndexDirectorySlotSnapshot slot,
         FixedNVarIdentityIndexHandle handle,
+        long parentRouterOffset,
+        int parentRangeStart,
+        int parentRangeEnd,
         long fullShelfOffset,
         byte[] existingShelfBytes,
         ushort firstKeyDepth,
@@ -11687,7 +13109,13 @@ internal sealed partial class LibraDexFileSession : IDisposable
 
         if (!TryChooseFixedNVarIdentitySplit(keys, firstKeyDepth, out ushort splitKeyDepth, out byte rightPrefixByte))
         {
-            throw new InvalidDataException("The full FV shelf could not be split because all keys share every fixed-key byte.");
+            DataKernelCommitTelemetry terminalCommit = RewriteFixedNVarIdentityTerminalRoute(
+                fullShelfOffset,
+                TerminalIdentityRootLayout.ShapeFixedKeyVarIdentity,
+                keys[0],
+                handle.Profile.ShelfExtentSize,
+                identities);
+            return (FixedNVarIdentityInsertResult.Inserted, terminalCommit);
         }
 
         byte[] leftShelfBytes = LibraDex.Views.FixedNVarIdentity.CreateEmpty(handle.Profile);
@@ -11704,6 +13132,45 @@ internal sealed partial class LibraDexFileSession : IDisposable
             }
         }
 
+        if (parentRangeStart < parentRangeEnd && splitKeyDepth == firstKeyDepth)
+        {
+            if (rightPrefixByte <= parentRangeStart || rightPrefixByte > parentRangeEnd)
+            {
+                throw new InvalidDataException(
+                    $"The FV same-depth split boundary {rightPrefixByte} is outside owning parent range {parentRangeStart}-{parentRangeEnd} at depth {firstKeyDepth}.");
+            }
+
+            RawDataReservation leftRewrite = kernel.ReserveAt(fullShelfOffset, handle.Profile.ShelfExtentSize);
+            leftShelfBytes.CopyTo(leftRewrite.Span);
+            RawDataReservation sameDepthRightAppend = kernel.Reserve(handle.Profile.ShelfExtentSize);
+            rightShelfBytes.CopyTo(sameDepthRightAppend.Span);
+
+            byte[] parentRouterBytes = new byte[RouterLayout.Size];
+            kernel.Read(parentRouterOffset, parentRouterBytes);
+            RouterReader currentParent = new(parentRouterBytes);
+            if (!currentParent.IsValid || !currentParent.HasDirectIndex || currentParent.KeyDepth != firstKeyDepth)
+                throw new InvalidDataException("The FV same-depth split parent router changed shape before publication.");
+            if (currentParent.FindTarget((byte)parentRangeStart) != fullShelfOffset ||
+                currentParent.FindTarget((byte)parentRangeEnd) != fullShelfOffset)
+                throw new InvalidDataException("The FV same-depth split parent aliases changed target before publication.");
+
+            RawDataReservation parentRewrite = kernel.ReserveAt(parentRouterOffset, RouterLayout.Size);
+            parentRouterBytes.CopyTo(parentRewrite.Span);
+            RouterWriter parentWriter = new(parentRewrite.Span);
+            for (int prefix = parentRangeStart; prefix <= parentRangeEnd; prefix++)
+            {
+                if (currentParent.FindTarget((byte)prefix) != fullShelfOffset)
+                    continue;
+                parentWriter.WriteRouteTarget(
+                    (byte)prefix,
+                    prefix < rightPrefixByte ? fullShelfOffset : sameDepthRightAppend.Extent.Offset);
+            }
+
+            InvalidateRouterReadCacheForRouterRewrite(parentRouterOffset);
+            DataKernelCommitTelemetry sameDepthCommit = CommitAndDeferRouterReadCacheInvalidation();
+            return (FixedNVarIdentityInsertResult.Inserted, sameDepthCommit);
+        }
+
         RawDataReservation leftAppend = kernel.Reserve(handle.Profile.ShelfExtentSize);
         leftShelfBytes.CopyTo(leftAppend.Span);
         RawDataReservation rightAppend = kernel.Reserve(handle.Profile.ShelfExtentSize);
@@ -11711,11 +13178,11 @@ internal sealed partial class LibraDexFileSession : IDisposable
 
         int appendedRouterCount = splitKeyDepth - firstKeyDepth;
         long nextRouterOffset = 0;
-        long[] appendedRouterOffsets = appendedRouterCount > 0 ? new long[appendedRouterCount] : [];
-        for (int i = appendedRouterCount - 1; i >= 0; i--)
-        {
-            appendedRouterOffsets[i] = kernel.Reserve(RouterLayout.Size).Extent.Offset;
-        }
+        long[] appendedRouterOffsets = ReserveFixedNTransformRouterOffsets(
+            fullShelfOffset,
+            handle.Profile.ShelfExtentSize,
+            appendedRouterCount,
+            out int localRouterCount);
 
         for (int i = appendedRouterCount - 1; i >= 0; i--)
         {
@@ -11726,6 +13193,11 @@ internal sealed partial class LibraDexFileSession : IDisposable
             RawDataReservation routerReservation = kernel.ReserveAt(appendedRouterOffsets[i], RouterLayout.Size);
             RouterWriter writer = new(routerReservation.Span);
             writer.InitializeExpandedOneByte(routerDepth, slot.AllocationClassId, targets);
+            WriteFixedNTransformRouterArenaMetadata(
+                writer,
+                appendedRouterOffsets[i],
+                fullShelfOffset,
+                handle.Profile.ShelfExtentSize);
             nextRouterOffset = appendedRouterOffsets[i];
         }
 
@@ -11736,9 +13208,20 @@ internal sealed partial class LibraDexFileSession : IDisposable
         RawDataReservation transformedRouter = kernel.ReserveAt(fullShelfOffset, RouterLayout.Size);
         RouterWriter transformedWriter = new(transformedRouter.Span);
         transformedWriter.InitializeExpandedOneByte(firstKeyDepth, slot.AllocationClassId, firstTargets);
+        transformedWriter.WriteArenaMetadata(
+            arenaBaseDelta: 0,
+            arenaLength: handle.Profile.ShelfExtentSize,
+            routerPageSize: checked((ushort)RouterLayout.Size),
+            routerPageIndex: 0,
+            routerPageCount: checked((ushort)(handle.Profile.ShelfExtentSize / RouterLayout.Size)),
+            arenaFlags: 0);
 
         InvalidateRouterReadCacheForRouterRewrite(fullShelfOffset);
         DataKernelCommitTelemetry commit = CommitAndDeferRouterReadCacheInvalidation();
+        RouterArenaState arena = RegisterRouterArena(fullShelfOffset, handle.Profile.ShelfExtentSize);
+        arena.MarkUsed(0);
+        for (int i = 0; i < localRouterCount; i++)
+            arena.MarkUsed(i + 1);
         return (FixedNVarIdentityInsertResult.Inserted, commit);
     }
 
@@ -11783,24 +13266,21 @@ internal sealed partial class LibraDexFileSession : IDisposable
 
     private bool IsFixedNVarIdentityRouter(long offset)
     {
-        byte[] routerBytes = new byte[RouterLayout.Size];
-        kernel.Read(offset, routerBytes);
-        RouterReader reader = new(routerBytes);
-        return reader.IsValid;
+        return IsFixedNRouterPage(offset);
     }
 
     private bool IsFixedNScalar8Router(long offset)
     {
-        byte[] routerBytes = new byte[RouterLayout.Size];
-        kernel.Read(offset, routerBytes);
-        RouterReader reader = new(routerBytes);
-        return reader.IsValid;
+        return IsFixedNRouterPage(offset);
     }
 
     private (FixedNScalarInsertResult Result, DataKernelCommitTelemetry Commit) SplitRoutedFixedNScalar8ByShelfTransform(
         int slotIndex,
         IndexDirectorySlotSnapshot slot,
         FixedNScalar8IndexHandle handle,
+        long parentRouterOffset,
+        int parentRangeStart,
+        int parentRangeEnd,
         long fullShelfOffset,
         byte[] existingShelfBytes,
         ushort firstKeyDepth,
@@ -11856,7 +13336,11 @@ internal sealed partial class LibraDexFileSession : IDisposable
 
         if (!TryChooseFixedNScalar8Split(keys, firstKeyDepth, out ushort splitKeyDepth, out byte rightPrefixByte))
         {
-            throw new InvalidDataException("The full FSN-8 shelf could not be split because all keys share every fixed-key byte.");
+            return RewriteFixedNScalar8TerminalRoute(
+                fullShelfOffset,
+                keys[0],
+                handle.Profile.ShelfExtentSize,
+                identities);
         }
 
         byte[] leftShelfBytes = new byte[handle.Profile.ShelfExtentSize];
@@ -11877,6 +13361,45 @@ internal sealed partial class LibraDexFileSession : IDisposable
             }
         }
 
+        if (parentRangeStart < parentRangeEnd && splitKeyDepth == firstKeyDepth)
+        {
+            if (rightPrefixByte <= parentRangeStart || rightPrefixByte > parentRangeEnd)
+            {
+                throw new InvalidDataException(
+                    $"The FSN same-depth split boundary {rightPrefixByte} is outside owning parent range {parentRangeStart}-{parentRangeEnd} at depth {firstKeyDepth}.");
+            }
+
+            RawDataReservation leftRewrite = kernel.ReserveAt(fullShelfOffset, handle.Profile.ShelfExtentSize);
+            leftShelfBytes.CopyTo(leftRewrite.Span);
+            RawDataReservation sameDepthRightAppend = kernel.Reserve(handle.Profile.ShelfExtentSize);
+            rightShelfBytes.CopyTo(sameDepthRightAppend.Span);
+
+            byte[] parentRouterBytes = new byte[RouterLayout.Size];
+            kernel.Read(parentRouterOffset, parentRouterBytes);
+            RouterReader currentParent = new(parentRouterBytes);
+            if (!currentParent.IsValid || !currentParent.HasDirectIndex || currentParent.KeyDepth != firstKeyDepth)
+                throw new InvalidDataException("The FSN same-depth split parent router changed shape before publication.");
+            if (currentParent.FindTarget((byte)parentRangeStart) != fullShelfOffset ||
+                currentParent.FindTarget((byte)parentRangeEnd) != fullShelfOffset)
+                throw new InvalidDataException("The FSN same-depth split parent aliases changed target before publication.");
+
+            RawDataReservation parentRewrite = kernel.ReserveAt(parentRouterOffset, RouterLayout.Size);
+            parentRouterBytes.CopyTo(parentRewrite.Span);
+            RouterWriter parentWriter = new(parentRewrite.Span);
+            for (int prefix = parentRangeStart; prefix <= parentRangeEnd; prefix++)
+            {
+                if (currentParent.FindTarget((byte)prefix) != fullShelfOffset)
+                    continue;
+                parentWriter.WriteRouteTarget(
+                    (byte)prefix,
+                    prefix < rightPrefixByte ? fullShelfOffset : sameDepthRightAppend.Extent.Offset);
+            }
+
+            InvalidateRouterReadCacheForRouterRewrite(parentRouterOffset);
+            DataKernelCommitTelemetry sameDepthCommit = CommitAndDeferRouterReadCacheInvalidation();
+            return (FixedNScalarInsertResult.Inserted, sameDepthCommit);
+        }
+
         RawDataReservation leftAppend = kernel.Reserve(handle.Profile.ShelfExtentSize);
         leftShelfBytes.CopyTo(leftAppend.Span);
         RawDataReservation rightAppend = kernel.Reserve(handle.Profile.ShelfExtentSize);
@@ -11884,11 +13407,11 @@ internal sealed partial class LibraDexFileSession : IDisposable
 
         int appendedRouterCount = splitKeyDepth - firstKeyDepth;
         long nextRouterOffset = 0;
-        long[] appendedRouterOffsets = appendedRouterCount > 0 ? new long[appendedRouterCount] : [];
-        for (int i = appendedRouterCount - 1; i >= 0; i--)
-        {
-            appendedRouterOffsets[i] = kernel.Reserve(RouterLayout.Size).Extent.Offset;
-        }
+        long[] appendedRouterOffsets = ReserveFixedNTransformRouterOffsets(
+            fullShelfOffset,
+            handle.Profile.ShelfExtentSize,
+            appendedRouterCount,
+            out int localRouterCount);
 
         for (int i = appendedRouterCount - 1; i >= 0; i--)
         {
@@ -11899,6 +13422,11 @@ internal sealed partial class LibraDexFileSession : IDisposable
             RawDataReservation routerReservation = kernel.ReserveAt(appendedRouterOffsets[i], RouterLayout.Size);
             RouterWriter writer = new(routerReservation.Span);
             writer.InitializeExpandedOneByte(routerDepth, slot.AllocationClassId, targets);
+            WriteFixedNTransformRouterArenaMetadata(
+                writer,
+                appendedRouterOffsets[i],
+                fullShelfOffset,
+                handle.Profile.ShelfExtentSize);
             nextRouterOffset = appendedRouterOffsets[i];
         }
 
@@ -11909,9 +13437,20 @@ internal sealed partial class LibraDexFileSession : IDisposable
         RawDataReservation transformedRouter = kernel.ReserveAt(fullShelfOffset, RouterLayout.Size);
         RouterWriter transformedWriter = new(transformedRouter.Span);
         transformedWriter.InitializeExpandedOneByte(firstKeyDepth, slot.AllocationClassId, firstTargets);
+        transformedWriter.WriteArenaMetadata(
+            arenaBaseDelta: 0,
+            arenaLength: handle.Profile.ShelfExtentSize,
+            routerPageSize: checked((ushort)RouterLayout.Size),
+            routerPageIndex: 0,
+            routerPageCount: checked((ushort)(handle.Profile.ShelfExtentSize / RouterLayout.Size)),
+            arenaFlags: 0);
 
         InvalidateRouterReadCacheForRouterRewrite(fullShelfOffset);
         DataKernelCommitTelemetry commit = CommitAndDeferRouterReadCacheInvalidation();
+        RouterArenaState arena = RegisterRouterArena(fullShelfOffset, handle.Profile.ShelfExtentSize);
+        arena.MarkUsed(0);
+        for (int i = 0; i < localRouterCount; i++)
+            arena.MarkUsed(i + 1);
         return (FixedNScalarInsertResult.Inserted, commit);
     }
 
@@ -11952,27 +13491,50 @@ internal sealed partial class LibraDexFileSession : IDisposable
             return false;
         }
 
-        int midpoint = sortedKeys.Count / 2;
-        for (ushort keyDepth = firstKeyDepth; keyDepth < sortedKeys[0].Length; keyDepth++)
+        int keyLength = sortedKeys[0].Length;
+        for (int i = 1; i < sortedKeys.Count; i++)
         {
-            for (int delta = 0; delta < sortedKeys.Count; delta++)
+            if (sortedKeys[i].Length != keyLength)
             {
-                int left = midpoint - 1 - delta;
-                if (left >= 0 && sortedKeys[left][keyDepth] != sortedKeys[left + 1][keyDepth])
-                {
-                    splitKeyDepth = keyDepth;
-                    rightPrefixByte = sortedKeys[left + 1][keyDepth];
-                    return true;
-                }
+                throw new InvalidDataException("The FSN split planner requires one fixed key width across the complete sorted source.");
+            }
+        }
 
-                int right = midpoint + delta;
-                if (right > 0 && right < sortedKeys.Count && sortedKeys[right - 1][keyDepth] != sortedKeys[right][keyDepth])
+        int firstDifferentDepth = 0;
+        while (firstDifferentDepth < keyLength && sortedKeys[0][firstDifferentDepth] == sortedKeys[sortedKeys.Count - 1][firstDifferentDepth])
+            firstDifferentDepth++;
+        if (firstDifferentDepth < firstKeyDepth)
+        {
+            throw new InvalidDataException($"The FSN transform source violates its routed prefix stem. FirstDifferentDepth={firstDifferentDepth}; FirstOwnedDepth={firstKeyDepth}; Count={sortedKeys.Count}; KeyLength={keyLength}.");
+        }
+        if (firstDifferentDepth >= keyLength)
+            return false;
+
+        byte priorPrefix = sortedKeys[0][firstDifferentDepth];
+        int bestBoundaryIndex = -1;
+        int bestBalanceDistance = int.MaxValue;
+        for (int i = 1; i < sortedKeys.Count; i++)
+        {
+            byte currentPrefix = sortedKeys[i][firstDifferentDepth];
+            if (currentPrefix < priorPrefix)
+                throw new InvalidDataException($"The FSN transform source is not globally nondecreasing at split depth {firstDifferentDepth}.");
+            if (currentPrefix > priorPrefix)
+            {
+                int balanceDistance = Math.Abs(i - (sortedKeys.Count - i));
+                if (balanceDistance < bestBalanceDistance)
                 {
-                    splitKeyDepth = keyDepth;
-                    rightPrefixByte = sortedKeys[right][keyDepth];
-                    return true;
+                    bestBoundaryIndex = i;
+                    bestBalanceDistance = balanceDistance;
                 }
             }
+            priorPrefix = currentPrefix;
+        }
+
+        if (bestBoundaryIndex >= 0)
+        {
+            splitKeyDepth = checked((ushort)firstDifferentDepth);
+            rightPrefixByte = sortedKeys[bestBoundaryIndex][firstDifferentDepth];
+            return true;
         }
 
         return false;
@@ -12103,7 +13665,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
         }
 
         byte[] routerBytes = new byte[RouterLayout.Size];
-        kernel.Read(routerOffset, routerBytes);
+        ReadRouterPageUsingArenaCache(routerOffset, routerBytes);
         RouterReader routerReader = new(routerBytes);
         if (!routerReader.IsValid || !routerReader.HasDirectIndex)
         {
@@ -12122,6 +13684,18 @@ internal sealed partial class LibraDexFileSession : IDisposable
             if (IsFixedNScalar8Router(targetOffset))
             {
                 count += CountRoutedFixedNScalar8IdentitiesFromRouter(targetOffset, profile, visitedShelves, visitedRouters);
+                continue;
+            }
+
+            if (TryReadFixedNTerminalRoot(
+                targetOffset,
+                TerminalIdentityRootLayout.ShapeFixedKeyScalar8Identity,
+                profile.KeySize,
+                profile.ShelfExtentSize,
+                out _))
+            {
+                if (visitedShelves.Add(targetOffset))
+                    count += CountFixedNTerminalRoot(targetOffset, TerminalIdentityRootLayout.ShapeFixedKeyScalar8Identity);
                 continue;
             }
 
@@ -12152,7 +13726,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
         }
 
         byte[] routerBytes = new byte[RouterLayout.Size];
-        kernel.Read(routerOffset, routerBytes);
+        ReadRouterPageUsingArenaCache(routerOffset, routerBytes);
         RouterReader routerReader = new(routerBytes);
         if (!routerReader.IsValid || !routerReader.HasDirectIndex)
         {
@@ -12190,6 +13764,21 @@ internal sealed partial class LibraDexFileSession : IDisposable
                 count += childLowerEdge || childUpperEdge
                     ? CountRoutedFixedNScalar8IdentityRangeFromRouter(targetOffset, profile, lowerKey, upperKey, childLowerEdge, childUpperEdge, visitedShelves, visitedRouters)
                     : CountRoutedFixedNScalar8IdentitiesFromRouter(targetOffset, profile, visitedShelves, visitedRouters);
+                continue;
+            }
+
+            if (TryReadFixedNTerminalRoot(
+                targetOffset,
+                TerminalIdentityRootLayout.ShapeFixedKeyScalar8Identity,
+                profile.KeySize,
+                profile.ShelfExtentSize,
+                out byte[] terminalRoot))
+            {
+                if (visitedShelves.Add(targetOffset) &&
+                    (!childLowerEdge && !childUpperEdge || IsFixedNTerminalKeyInRange(terminalRoot, lowerKey, upperKey)))
+                {
+                    count += CountFixedNTerminalRoot(targetOffset, TerminalIdentityRootLayout.ShapeFixedKeyScalar8Identity);
+                }
                 continue;
             }
 
@@ -12243,6 +13832,18 @@ internal sealed partial class LibraDexFileSession : IDisposable
                     upperEdge: true,
                     visitedShelves,
                     visitedRouters);
+                continue;
+            }
+
+            if (TryReadFixedNTerminalRoot(
+                targetOffset,
+                TerminalIdentityRootLayout.ShapeFixedKeyScalar8Identity,
+                profile.KeySize,
+                profile.ShelfExtentSize,
+                out byte[] terminalRoot))
+            {
+                if (visitedShelves.Add(targetOffset) && IsFixedNTerminalKeyInRange(terminalRoot, lowerKey, upperKey))
+                    count += CountFixedNTerminalRoot(targetOffset, TerminalIdentityRootLayout.ShapeFixedKeyScalar8Identity);
                 continue;
             }
 
@@ -12403,7 +14004,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
         }
 
         byte[] routerBytes = new byte[RouterLayout.Size];
-        kernel.Read(routerOffset, routerBytes);
+        ReadRouterPageUsingArenaCache(routerOffset, routerBytes);
         RouterReader routerReader = new(routerBytes);
         if (!routerReader.IsValid || !routerReader.HasDirectIndex)
         {
@@ -12422,6 +14023,18 @@ internal sealed partial class LibraDexFileSession : IDisposable
             if (IsFixedNVarIdentityRouter(targetOffset))
             {
                 count += CountRoutedFixedNVarIdentityIdentitiesFromRouter(targetOffset, profile, visitedShelves, visitedRouters);
+                continue;
+            }
+
+            if (TryReadFixedNTerminalRoot(
+                targetOffset,
+                TerminalIdentityRootLayout.ShapeFixedKeyVarIdentity,
+                profile.KeySize,
+                profile.ShelfExtentSize,
+                out _))
+            {
+                if (visitedShelves.Add(targetOffset))
+                    count += CountFixedNTerminalRoot(targetOffset, TerminalIdentityRootLayout.ShapeFixedKeyVarIdentity);
                 continue;
             }
 
@@ -12452,7 +14065,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
         }
 
         byte[] routerBytes = new byte[RouterLayout.Size];
-        kernel.Read(routerOffset, routerBytes);
+        ReadRouterPageUsingArenaCache(routerOffset, routerBytes);
         RouterReader routerReader = new(routerBytes);
         if (!routerReader.IsValid || !routerReader.HasDirectIndex)
         {
@@ -12490,6 +14103,21 @@ internal sealed partial class LibraDexFileSession : IDisposable
                 count += childLowerEdge || childUpperEdge
                     ? CountRoutedFixedNVarIdentityRangeFromRouter(targetOffset, profile, lowerKey, upperKey, childLowerEdge, childUpperEdge, visitedShelves, visitedRouters)
                     : CountRoutedFixedNVarIdentityIdentitiesFromRouter(targetOffset, profile, visitedShelves, visitedRouters);
+                continue;
+            }
+
+            if (TryReadFixedNTerminalRoot(
+                targetOffset,
+                TerminalIdentityRootLayout.ShapeFixedKeyVarIdentity,
+                profile.KeySize,
+                profile.ShelfExtentSize,
+                out byte[] terminalRoot))
+            {
+                if (visitedShelves.Add(targetOffset) &&
+                    (!childLowerEdge && !childUpperEdge || IsFixedNTerminalKeyInRange(terminalRoot, lowerKey, upperKey)))
+                {
+                    count += CountFixedNTerminalRoot(targetOffset, TerminalIdentityRootLayout.ShapeFixedKeyVarIdentity);
+                }
                 continue;
             }
 
@@ -12551,6 +14179,18 @@ internal sealed partial class LibraDexFileSession : IDisposable
                 continue;
             }
 
+            if (TryReadFixedNTerminalRoot(
+                targetOffset,
+                TerminalIdentityRootLayout.ShapeFixedKeyVarIdentity,
+                profile.KeySize,
+                profile.ShelfExtentSize,
+                out byte[] terminalRoot))
+            {
+                if (visitedShelves.Add(targetOffset) && IsFixedNTerminalKeyInRange(terminalRoot, lowerKey, upperKey))
+                    count += CountFixedNTerminalRoot(targetOffset, TerminalIdentityRootLayout.ShapeFixedKeyVarIdentity);
+                continue;
+            }
+
             if (!visitedShelves.Add(targetOffset))
             {
                 continue;
@@ -12597,7 +14237,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
         }
 
         byte[] routerBytes = new byte[RouterLayout.Size];
-        kernel.Read(routerOffset, routerBytes);
+        ReadRouterPageUsingArenaCache(routerOffset, routerBytes);
         RouterReader routerReader = new(routerBytes);
         if (!routerReader.IsValid || !routerReader.HasDirectIndex)
         {
@@ -12618,6 +14258,18 @@ internal sealed partial class LibraDexFileSession : IDisposable
             if (IsFixedNVarIdentityRouter(targetOffset))
             {
                 ReadRoutedFixedNVarIdentityRangeFromRouter(targetOffset, profile, lowerKey, upperKey, identities, visitedShelves, visitedRouters);
+                continue;
+            }
+
+            if (TryReadFixedNTerminalRoot(
+                targetOffset,
+                TerminalIdentityRootLayout.ShapeFixedKeyVarIdentity,
+                profile.KeySize,
+                profile.ShelfExtentSize,
+                out byte[] terminalRoot))
+            {
+                if (visitedShelves.Add(targetOffset) && IsFixedNTerminalKeyInRange(terminalRoot, lowerKey, upperKey))
+                    AppendFixedNVarTerminalIdentities(targetOffset, terminalRoot, profile.ShelfExtentSize, identities);
                 continue;
             }
 
@@ -12647,7 +14299,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
         }
 
         byte[] routerBytes = new byte[RouterLayout.Size];
-        kernel.Read(routerOffset, routerBytes);
+        ReadRouterPageUsingArenaCache(routerOffset, routerBytes);
         RouterReader routerReader = new(routerBytes);
         if (!routerReader.IsValid || !routerReader.HasDirectIndex)
         {
@@ -12668,6 +14320,18 @@ internal sealed partial class LibraDexFileSession : IDisposable
             if (IsFixedNScalar8Router(targetOffset))
             {
                 ReadRoutedFixedNScalar8IdentityRangeFromRouter(targetOffset, profile, lowerKey, upperKey, identities, visitedShelves, visitedRouters);
+                continue;
+            }
+
+            if (TryReadFixedNTerminalRoot(
+                targetOffset,
+                TerminalIdentityRootLayout.ShapeFixedKeyScalar8Identity,
+                profile.KeySize,
+                profile.ShelfExtentSize,
+                out byte[] terminalRoot))
+            {
+                if (visitedShelves.Add(targetOffset) && IsFixedNTerminalKeyInRange(terminalRoot, lowerKey, upperKey))
+                    AppendFixedNScalar8TerminalIdentities(targetOffset, terminalRoot, profile.ShelfExtentSize, identities);
                 continue;
             }
 
@@ -12952,6 +14616,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
         if (preferredArenaBaseOffset != 0)
         {
             arena = FindRouterArena(preferredArenaBaseOffset);
+            arena ??= TryRecoverPersistedRouterArena(preferredArenaBaseOffset);
             if (arena is not null && arena.TryFindFreePage(out _))
             {
                 kind = RouterArenaAllocationKind.LocalArena;
@@ -13305,11 +14970,11 @@ internal sealed partial class LibraDexFileSession : IDisposable
             publishedTargets);
 
         InvalidateRouterReadCacheForRouterRewrite(routerOffset);
-        telemetry = CommitAndDeferRouterReadCacheInvalidation();
         if (!oldTargetStillReferenced)
         {
-            kernel.ReleaseMemoryExtent(expectedTargetOffset, obsoleteTargetLength);
+            kernel.StageExtentRetirement(expectedTargetOffset, obsoleteTargetLength);
         }
+        telemetry = CommitAndDeferRouterReadCacheInvalidation();
 
         return true;
     }
@@ -13493,11 +15158,11 @@ internal sealed partial class LibraDexFileSession : IDisposable
             publishedTargets);
 
         InvalidateRouterReadCacheForRouterRewrite(routerOffset);
-        telemetry = CommitAndDeferRouterReadCacheInvalidation();
         if (expectedTargetOffset != 0 && obsoleteTargetLength > 0)
         {
-            kernel.ReleaseMemoryExtent(expectedTargetOffset, obsoleteTargetLength);
+            kernel.StageExtentRetirement(expectedTargetOffset, obsoleteTargetLength);
         }
+        telemetry = CommitAndDeferRouterReadCacheInvalidation();
 
         return true;
     }
@@ -14837,6 +16502,30 @@ internal sealed partial class LibraDexFileSession : IDisposable
         if (magic == RouterLayout.Magic)
         {
             return CountOrdinaryFixedScalarIdentitiesFromRouter(targetOffset, maxItemCount, slotRegionOffset, shelfMagic, shapeName, visitedTargets, visitedRouters);
+        }
+
+        if (magic == TerminalIdentityRootLayout.Magic)
+        {
+            int expectedKeyLength = shapeName switch
+            {
+                "SS16-8" => Scalar16Scalar8Layout.KeySize,
+                "FS32-8" => Fixed32Scalar8Layout.KeySize,
+                _ => 0
+            };
+            byte[] rootBytes = ReadTerminalIdentityRootBytes(targetOffset);
+            if (expectedKeyLength == 0 ||
+                TerminalIdentityRootLayout.ReadShape(rootBytes) != TerminalIdentityRootLayout.ShapeFixedKeyScalar8Identity ||
+                TerminalIdentityRootLayout.ReadKeyLength(rootBytes) != expectedKeyLength)
+            {
+                throw new InvalidDataException($"{shapeName} count target at offset {targetOffset} contains an unsupported terminal identity root.");
+            }
+
+            if (!visitedTargets.Add(targetOffset))
+            {
+                return 0;
+            }
+
+            return CountTerminalIdentity8RootNarrow(targetOffset);
         }
 
         if (magic != shelfMagic)
@@ -16380,6 +18069,17 @@ internal sealed partial class LibraDexFileSession : IDisposable
             return true;
         }
 
+        if (kind == VarKeyScalar16RouteTargetKind.TerminalIdentityRoot)
+        {
+            if (!visitedTargets.Add(targetOffset))
+            {
+                return true;
+            }
+
+            count = CountVarKeyScalar16TerminalIdentityRootInRange(targetOffset, lowerKey, upperKey);
+            return true;
+        }
+
         throw new InvalidDataException("The routed VS16 prefix-count target is not a shelf or router.");
     }
 
@@ -16442,6 +18142,17 @@ internal sealed partial class LibraDexFileSession : IDisposable
             }
 
             count = CountVarKeyScalar16ShelfKeyRangeNarrow(targetOffset, maxKeyLength, lowerKey, upperKey);
+            return true;
+        }
+
+        if (kind == VarKeyScalar16RouteTargetKind.TerminalIdentityRoot)
+        {
+            if (!visitedTargets.Add(targetOffset))
+            {
+                return true;
+            }
+
+            count = CountVarKeyScalar16TerminalIdentityRootInRange(targetOffset, lowerKey, upperKey);
             return true;
         }
 
@@ -16681,7 +18392,17 @@ internal sealed partial class LibraDexFileSession : IDisposable
 
         if (kind != VarKeyScalar16RouteTargetKind.Shelf)
         {
-            throw new InvalidDataException("The routed VS16 count target is not a shelf or router.");
+            if (kind == VarKeyScalar16RouteTargetKind.TerminalIdentityRoot)
+            {
+                if (!visitedTargets.Add(targetOffset))
+                {
+                    return 0;
+                }
+
+                return CountTerminalVarIdentityRootNarrow(targetOffset, TerminalIdentityRootLayout.ShapeVarKeyScalar16Identity);
+            }
+
+            throw new InvalidDataException("The routed VS16 count target is not a shelf, terminal root, or router.");
         }
 
         if (!visitedTargets.Add(targetOffset))
@@ -17050,6 +18771,19 @@ internal sealed partial class LibraDexFileSession : IDisposable
             return VarKeyScalar16RouteTargetKind.Shelf;
         }
 
+        if (magic == TerminalIdentityRootLayout.Magic)
+        {
+            Span<byte> rootHeader = stackalloc byte[TerminalIdentityRootLayout.HeaderSize];
+            kernel.Read(targetOffset, rootHeader);
+            if (TerminalIdentityRootLayout.ReadFormatVersion(rootHeader) == TerminalIdentityRootLayout.FormatVersion &&
+                TerminalIdentityRootLayout.ReadHeaderSize(rootHeader) == TerminalIdentityRootLayout.HeaderSize &&
+                TerminalIdentityRootLayout.ReadShape(rootHeader) == TerminalIdentityRootLayout.ShapeVarKeyScalar16Identity)
+            {
+                targetKindCache.Set(targetOffset, (int)VarKeyScalar16RouteTargetKind.TerminalIdentityRoot);
+                return VarKeyScalar16RouteTargetKind.TerminalIdentityRoot;
+            }
+        }
+
         throw new InvalidDataException($"VS16 route target at offset {targetOffset} does not contain a recognized LibraDex structure.");
     }
 
@@ -17138,7 +18872,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
 
     /// <summary>
     /// Walks direct one-byte routers for an encoded `SS8-8` key using the requested route-read policy.<br/>
-    /// This overload is the first explicit policy gate for arena-aware route reads; the default uncached policy preserves the established classified walker behavior.<br/>
+    /// This overload is the explicit policy gate for raw-file, promoted-view, and arena-aware route reads.<br/>
     /// </summary>
     /// <param name="rootRouterOffset">The file offset where the root router starts.</param>
     /// <param name="encodedKey">The encoded scalar key whose prefix bytes drive routing.</param>
@@ -17154,7 +18888,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
     {
         return readPolicy switch
         {
-            Scalar8Scalar8RouteReadPolicy.Uncached => WalkScalar8Scalar8RouteTarget(rootRouterOffset, encodedKey, maxRouterHops),
+            Scalar8Scalar8RouteReadPolicy.RawFile => WalkScalar8Scalar8RouteTargetRawFile(rootRouterOffset, encodedKey, maxRouterHops),
+            Scalar8Scalar8RouteReadPolicy.PreferPromotedViews => WalkScalar8Scalar8RouteTarget(rootRouterOffset, encodedKey, maxRouterHops),
             Scalar8Scalar8RouteReadPolicy.PreferArenaCache => WalkScalar8Scalar8RouteTargetUsingArenaCache(rootRouterOffset, encodedKey, maxRouterHops),
             _ => throw new InvalidDataException($"Unsupported SS8-8 route read policy {readPolicy}.")
         };
@@ -17186,6 +18921,11 @@ internal sealed partial class LibraDexFileSession : IDisposable
         if (magic == Scalar16Scalar8Layout.Magic)
         {
             return Scalar16Scalar8RouteTargetKind.Shelf;
+        }
+
+        if (magic == TerminalIdentityRootLayout.Magic)
+        {
+            return Scalar16Scalar8RouteTargetKind.TerminalIdentityRoot;
         }
 
         throw new InvalidDataException($"SS16-8 route target at offset {targetOffset} does not contain a recognized LibraDex structure.");
@@ -17253,7 +18993,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
             }
 
             Scalar16Scalar8RouteTargetKind kind = ClassifyScalar16Scalar8RouteTarget(targetOffset);
-            if (kind == Scalar16Scalar8RouteTargetKind.Shelf)
+            if (kind == Scalar16Scalar8RouteTargetKind.Shelf ||
+                kind == Scalar16Scalar8RouteTargetKind.TerminalIdentityRoot)
             {
                 return new Scalar16Scalar8RoutePathTarget(
                     new Scalar16Scalar8RouteTarget(kind, targetOffset, reader.KeyDepth, reader.AllocationClassId),
@@ -17304,6 +19045,11 @@ internal sealed partial class LibraDexFileSession : IDisposable
             return Fixed32Scalar8RouteTargetKind.Shelf;
         }
 
+        if (magic == TerminalIdentityRootLayout.Magic)
+        {
+            return Fixed32Scalar8RouteTargetKind.TerminalIdentityRoot;
+        }
+
         throw new InvalidDataException($"FS32-8 route target at offset {targetOffset} does not contain a recognized LibraDex structure.");
     }
 
@@ -17343,6 +19089,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
     /// <param name="key3">The encoded fixed key part 3 whose prefix bytes drive routing.</param>
     /// <param name="maxRouterHops">The maximum number of router pages to follow before treating the route graph as invalid.</param>
     /// <param name="routerOffsetsByDepth">Optional caller-owned frontier storage populated with each visited router offset at its encoded key depth.<br/></param>
+    /// <param name="returnDefaultWhenUnset">Whether an intentionally absent exact-stem route returns the default path target instead of throwing.<br/></param>
     /// <returns>The classified route target and parent router route metadata.</returns>
     /// <exception cref="ArgumentOutOfRangeException">Thrown when <paramref name="maxRouterHops"/> is not positive.</exception>
     /// <exception cref="InvalidDataException">Thrown when a route is unset, a router is invalid, or routing does not terminate at a shelf.</exception>
@@ -17353,7 +19100,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
         ulong key2,
         ulong key3,
         int maxRouterHops,
-        Span<long> routerOffsetsByDepth = default)
+        Span<long> routerOffsetsByDepth = default,
+        bool returnDefaultWhenUnset = false)
     {
         if (maxRouterHops <= 0)
         {
@@ -17378,6 +19126,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
                 long directTargetOffset = directView.GetTarget(directPrefixByte);
                 if (directTargetOffset == 0)
                 {
+                    if (returnDefaultWhenUnset)
+                        return default;
                     throw new InvalidDataException("The routed FS32-8 target is unset.");
                 }
 
@@ -17388,7 +19138,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
                     directView.SetTargetKind(directPrefixByte, (Scalar8Scalar8RouteTargetKind)directKind);
                 }
 
-                if (directKind == Fixed32Scalar8RouteTargetKind.Shelf)
+                if (directKind == Fixed32Scalar8RouteTargetKind.Shelf ||
+                    directKind == Fixed32Scalar8RouteTargetKind.TerminalIdentityRoot)
                 {
                     return new Fixed32Scalar8RoutePathTarget(
                         new Fixed32Scalar8RouteTarget(directKind, directTargetOffset, directView.KeyDepth, directView.AllocationClassId),
@@ -17419,11 +19170,14 @@ internal sealed partial class LibraDexFileSession : IDisposable
             long targetOffset = reader.FindTarget(prefixByte);
             if (targetOffset == 0)
             {
+                if (returnDefaultWhenUnset)
+                    return default;
                 throw new InvalidDataException("The routed FS32-8 target is unset.");
             }
 
             Fixed32Scalar8RouteTargetKind kind = ClassifyFixed32Scalar8RouteTarget(targetOffset);
-            if (kind == Fixed32Scalar8RouteTargetKind.Shelf)
+            if (kind == Fixed32Scalar8RouteTargetKind.Shelf ||
+                kind == Fixed32Scalar8RouteTargetKind.TerminalIdentityRoot)
             {
                 return new Fixed32Scalar8RoutePathTarget(
                     new Fixed32Scalar8RouteTarget(kind, targetOffset, reader.KeyDepth, reader.AllocationClassId),
@@ -17469,6 +19223,11 @@ internal sealed partial class LibraDexFileSession : IDisposable
         if (magic == Scalar8Scalar16Layout.Magic)
         {
             return Scalar8Scalar16RouteTargetKind.Shelf;
+        }
+
+        if (magic == TerminalIdentityRootLayout.Magic)
+        {
+            return Scalar8Scalar16RouteTargetKind.TerminalIdentityRoot;
         }
 
         throw new InvalidDataException($"SS8-16 route target at offset {targetOffset} does not contain a recognized LibraDex structure.");
@@ -17533,7 +19292,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
                     directView.SetTargetKind(directPrefixByte, (Scalar8Scalar8RouteTargetKind)directKind);
                 }
 
-                if (directKind == Scalar8Scalar16RouteTargetKind.Shelf)
+                if (directKind == Scalar8Scalar16RouteTargetKind.Shelf ||
+                    directKind == Scalar8Scalar16RouteTargetKind.TerminalIdentityRoot)
                 {
                     return new Scalar8Scalar16RoutePathTarget(
                         new Scalar8Scalar16RouteTarget(directKind, directTargetOffset, directView.KeyDepth, directView.AllocationClassId),
@@ -17565,7 +19325,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
             }
 
             Scalar8Scalar16RouteTargetKind kind = ClassifyScalar8Scalar16RouteTarget(targetOffset);
-            if (kind == Scalar8Scalar16RouteTargetKind.Shelf)
+            if (kind == Scalar8Scalar16RouteTargetKind.Shelf ||
+                kind == Scalar8Scalar16RouteTargetKind.TerminalIdentityRoot)
             {
                 return new Scalar8Scalar16RoutePathTarget(
                     new Scalar8Scalar16RouteTarget(kind, targetOffset, reader.KeyDepth, reader.AllocationClassId),
@@ -17611,6 +19372,11 @@ internal sealed partial class LibraDexFileSession : IDisposable
         if (magic == Scalar16Scalar16Layout.Magic)
         {
             return Scalar16Scalar16RouteTargetKind.Shelf;
+        }
+
+        if (magic == TerminalIdentityRootLayout.Magic)
+        {
+            return Scalar16Scalar16RouteTargetKind.TerminalIdentityRoot;
         }
 
         throw new InvalidDataException($"SS16-16 route target at offset {targetOffset} does not contain a recognized LibraDex structure.");
@@ -17679,7 +19445,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
                     directView.SetTargetKind(directPrefixByte, (Scalar8Scalar8RouteTargetKind)directKind);
                 }
 
-                if (directKind == Scalar16Scalar16RouteTargetKind.Shelf)
+                if (directKind == Scalar16Scalar16RouteTargetKind.Shelf ||
+                    directKind == Scalar16Scalar16RouteTargetKind.TerminalIdentityRoot)
                 {
                     return new Scalar16Scalar16RoutePathTarget(
                         new Scalar16Scalar16RouteTarget(directKind, directTargetOffset, directView.KeyDepth, directView.AllocationClassId),
@@ -17711,7 +19478,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
             }
 
             Scalar16Scalar16RouteTargetKind kind = ClassifyScalar16Scalar16RouteTarget(targetOffset);
-            if (kind == Scalar16Scalar16RouteTargetKind.Shelf)
+            if (kind == Scalar16Scalar16RouteTargetKind.Shelf ||
+                kind == Scalar16Scalar16RouteTargetKind.TerminalIdentityRoot)
             {
                 return new Scalar16Scalar16RoutePathTarget(
                     new Scalar16Scalar16RouteTarget(kind, targetOffset, reader.KeyDepth, reader.AllocationClassId),
@@ -17935,7 +19703,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
                     directView.SetTargetKind(directPrefixByte, ToDirectRouterTargetKind(directKind));
                 }
 
-                if (directKind == VarKeyScalar16RouteTargetKind.Shelf)
+                if (directKind == VarKeyScalar16RouteTargetKind.Shelf ||
+                    directKind == VarKeyScalar16RouteTargetKind.TerminalIdentityRoot)
                 {
                     return new VarKeyScalar16RoutePathTarget(
                         new VarKeyScalar16RouteTarget(directKind, directTargetOffset, directView.KeyDepth, directView.AllocationClassId),
@@ -17974,7 +19743,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
                 }
 
                 byte multiBytePrefixByte = GetVarKeyScalar16Prefix(key, multiByteView.KeyDepth);
-                if (multiByteKind == VarKeyScalar16RouteTargetKind.Shelf)
+                if (multiByteKind == VarKeyScalar16RouteTargetKind.Shelf ||
+                    multiByteKind == VarKeyScalar16RouteTargetKind.TerminalIdentityRoot)
                 {
                     return new VarKeyScalar16RoutePathTarget(
                         new VarKeyScalar16RouteTarget(multiByteKind, multiByteTargetOffset, multiByteView.KeyDepth, multiByteView.AllocationClassId),
@@ -18013,7 +19783,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
             }
 
             VarKeyScalar16RouteTargetKind kind = ClassifyVarKeyScalar16RouteTarget(targetOffset);
-            if (kind == VarKeyScalar16RouteTargetKind.Shelf)
+            if (kind == VarKeyScalar16RouteTargetKind.Shelf ||
+                kind == VarKeyScalar16RouteTargetKind.TerminalIdentityRoot)
             {
                 return new VarKeyScalar16RoutePathTarget(
                     new VarKeyScalar16RouteTarget(kind, targetOffset, reader.KeyDepth, reader.AllocationClassId),
@@ -18058,6 +19829,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
         {
             VarKeyScalar16RouteTargetKind.Shelf => PromotedRouteTargetKind.Shelf,
             VarKeyScalar16RouteTargetKind.Router => PromotedRouteTargetKind.Router,
+            VarKeyScalar16RouteTargetKind.TerminalIdentityRoot => PromotedRouteTargetKind.TerminalIdentityRoot,
             _ => PromotedRouteTargetKind.None
         };
     }
@@ -18091,6 +19863,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
         {
             VarKeyScalar16RouteTargetKind.Shelf => Scalar8Scalar8RouteTargetKind.Shelf,
             VarKeyScalar16RouteTargetKind.Router => Scalar8Scalar8RouteTargetKind.Router,
+            VarKeyScalar16RouteTargetKind.TerminalIdentityRoot => Scalar8Scalar8RouteTargetKind.TerminalIdentityRoot,
             _ => Scalar8Scalar8RouteTargetKind.None
         };
     }
@@ -18135,6 +19908,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
         {
             Scalar8Scalar8RouteTargetKind.Shelf => VarKeyScalar16RouteTargetKind.Shelf,
             Scalar8Scalar8RouteTargetKind.Router => VarKeyScalar16RouteTargetKind.Router,
+            Scalar8Scalar8RouteTargetKind.TerminalIdentityRoot => VarKeyScalar16RouteTargetKind.TerminalIdentityRoot,
             _ => VarKeyScalar16RouteTargetKind.None
         };
     }
@@ -18145,6 +19919,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
         {
             PromotedRouteTargetKind.Shelf => VarKeyScalar16RouteTargetKind.Shelf,
             PromotedRouteTargetKind.Router => VarKeyScalar16RouteTargetKind.Router,
+            PromotedRouteTargetKind.TerminalIdentityRoot => VarKeyScalar16RouteTargetKind.TerminalIdentityRoot,
             _ => VarKeyScalar16RouteTargetKind.None
         };
     }
@@ -18843,6 +20618,11 @@ internal sealed partial class LibraDexFileSession : IDisposable
         int maxRouterHops,
         Scalar8Scalar8RouteReadPolicy readPolicy)
     {
+        if (readPolicy == Scalar8Scalar8RouteReadPolicy.RawFile)
+        {
+            return WalkScalar8Scalar8RoutePathTargetRawFile(rootRouterOffset, encodedKey, maxRouterHops);
+        }
+
         if (maxRouterHops <= 0)
         {
             throw new ArgumentOutOfRangeException(nameof(maxRouterHops), maxRouterHops, "The maximum router hop count must be positive.");
@@ -18943,6 +20723,11 @@ internal sealed partial class LibraDexFileSession : IDisposable
         Scalar8Scalar8RouteReadPolicy readPolicy,
         ref Scalar8Scalar8RouteWalkAttributionTelemetry telemetry)
     {
+        if (readPolicy == Scalar8Scalar8RouteReadPolicy.RawFile)
+        {
+            return WalkScalar8Scalar8RoutePathTargetRawFile(rootRouterOffset, encodedKey, maxRouterHops);
+        }
+
         if (maxRouterHops <= 0)
         {
             throw new ArgumentOutOfRangeException(nameof(maxRouterHops), maxRouterHops, "The maximum router hop count must be positive.");
@@ -21739,7 +23524,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
     {
         switch (readPolicy)
         {
-            case Scalar8Scalar8RouteReadPolicy.Uncached:
+            case Scalar8Scalar8RouteReadPolicy.RawFile:
+            case Scalar8Scalar8RouteReadPolicy.PreferPromotedViews:
                 kernel.Read(routerOffset, destination);
                 break;
             case Scalar8Scalar8RouteReadPolicy.PreferArenaCache:
@@ -21764,7 +23550,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
     {
         return readPolicy switch
         {
-            Scalar8Scalar8RouteReadPolicy.Uncached => ClassifyScalar8Scalar8RouteTarget(targetOffset),
+            Scalar8Scalar8RouteReadPolicy.RawFile => ClassifyScalar8Scalar8RouteTargetRawFile(targetOffset),
+            Scalar8Scalar8RouteReadPolicy.PreferPromotedViews => ClassifyScalar8Scalar8RouteTarget(targetOffset),
             Scalar8Scalar8RouteReadPolicy.PreferArenaCache => ClassifyScalar8Scalar8RouteTargetUsingArenaCache(targetOffset),
             _ => throw new InvalidDataException($"Unsupported SS8-8 route read policy {readPolicy}.")
         };
@@ -22313,29 +24100,23 @@ internal sealed partial class LibraDexFileSession : IDisposable
                 kernel.EnterExclusiveStoragePublication();
                 try
                 {
-                    byte[] parentRouterBytes = new byte[RouterLayout.Size];
-                    kernel.Read(parentRouterOffset, parentRouterBytes);
-                    RouterReader parentReader = new(parentRouterBytes);
-                    if (!parentReader.IsValid)
-                    {
-                        throw new InvalidDataException("The VS8 growth parent router is invalid.");
-                    }
-
-                    if (parentReader.GetRouteTargetAt(routeIndex) != oldShelfOffset)
+                    Dictionary<long, List<int>> parentReferences = CollectVarKeyScalar8ShelfParentReferences(
+                        rootRouterOffset,
+                        oldShelfOffset);
+                    if (!parentReferences.TryGetValue(parentRouterOffset, out List<int>? expectedParentRoutes) ||
+                        !expectedParentRoutes.Contains(routeIndex))
                     {
                         return false;
                     }
 
                     RawDataReservation grownReservation = kernel.Reserve(grownProfile.ShelfExtentSize);
                     grownShelf.CopyTo(grownReservation.Span);
-                    RawDataReservation parentRouterRewrite = kernel.ReserveAt(parentRouterOffset, RouterLayout.Size);
-                    parentRouterBytes.CopyTo(parentRouterRewrite.Span);
-                    RouterWriter parentWriter = new(parentRouterRewrite.Span);
-                    parentWriter.WriteRouteTarget(routeIndex, grownReservation.Extent.Offset);
-
-                    InvalidateRouterReadCacheForRouterRewrite(parentRouterOffset);
+                    RewriteVarKeyScalar8ShelfParentReferences(
+                        parentReferences,
+                        oldShelfOffset,
+                        grownReservation.Extent.Offset);
+                    kernel.StageExtentRetirement(oldShelfOffset, oldProfile.ShelfExtentSize);
                     telemetry = CommitAndDeferRouterReadCacheInvalidation();
-                    kernel.ReleaseMemoryExtent(oldShelfOffset, oldProfile.ShelfExtentSize);
                     newShelfOffset = grownReservation.Extent.Offset;
                     return true;
                 }
@@ -22369,6 +24150,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
     /// <param name="profile">The `VS8` shelf profile used by the replacement shelves.<br/></param>
     /// <param name="leftShelfBytes">The populated left replacement shelf image.<br/></param>
     /// <param name="rightShelfBytes">The populated right replacement shelf image.<br/></param>
+    /// <param name="requiresOwnerSetReplacement">Receives whether the shelf has reachable physical owners beyond the walked parent range and therefore requires the root-owner-set replacement path.<br/></param>
     /// <param name="telemetry">Receives commit telemetry when the transform is published.<br/></param>
     /// <param name="leftShelfOffset">Receives the appended left replacement shelf offset.<br/></param>
     /// <param name="rightShelfOffset">Receives the appended right replacement shelf offset.<br/></param>
@@ -22391,10 +24173,12 @@ internal sealed partial class LibraDexFileSession : IDisposable
         VarKeyScalar8Profile profile,
         ReadOnlySpan<byte> leftShelfBytes,
         ReadOnlySpan<byte> rightShelfBytes,
+        out bool requiresOwnerSetReplacement,
         out DataKernelCommitTelemetry telemetry,
         out long leftShelfOffset,
         out long rightShelfOffset)
     {
+        requiresOwnerSetReplacement = false;
         telemetry = default;
         leftShelfOffset = 0;
         rightShelfOffset = 0;
@@ -22414,20 +24198,60 @@ internal sealed partial class LibraDexFileSession : IDisposable
                         throw new InvalidDataException("The VS8 transform parent router is invalid.");
                     }
 
-                    if (!TryGetVarKeyParentTargetRange(
-                        parentReader,
-                        routeIndex,
-                        childRouterOffset,
-                        out bool currentParentHasDirectIndex,
-                        out int currentParentRangeStart,
-                        out int currentParentRangeEnd,
-                        out ushort currentParentFinalKeyDepth) ||
+                    bool currentRangeResolved;
+                    bool currentParentHasDirectIndex;
+                    int currentParentRangeStart;
+                    int currentParentRangeEnd;
+                    ushort currentParentFinalKeyDepth;
+                    try
+                    {
+                        currentRangeResolved = TryGetVarKeyParentTargetRange(
+                            parentReader,
+                            routeIndex,
+                            childRouterOffset,
+                            out currentParentHasDirectIndex,
+                            out currentParentRangeStart,
+                            out currentParentRangeEnd,
+                            out currentParentFinalKeyDepth);
+                    }
+                    catch (InvalidDataException exception) when (exception.Message.Contains("noncontiguous target alias", StringComparison.Ordinal))
+                    {
+                        requiresOwnerSetReplacement = true;
+                        return false;
+                    }
+
+                    if (!currentRangeResolved ||
                         currentParentHasDirectIndex != parentHasDirectIndex ||
                         currentParentRangeStart != parentRangeStart ||
                         currentParentRangeEnd != parentRangeEnd ||
                         currentParentFinalKeyDepth != parentFinalKeyDepth)
                     {
                         return false;
+                    }
+
+                    Dictionary<long, List<int>> parentReferences = CollectVarKeyScalar8ShelfParentReferences(
+                        rootRouterOffset,
+                        childRouterOffset);
+                    int expectedCurrentParentReferenceCount = currentParentHasDirectIndex
+                        ? currentParentRangeEnd - currentParentRangeStart + 1
+                        : 1;
+                    if (parentReferences.Count != 1 ||
+                        !parentReferences.TryGetValue(parentRouterOffset, out List<int>? currentParentReferences) ||
+                        currentParentReferences.Count != expectedCurrentParentReferenceCount)
+                    {
+                        requiresOwnerSetReplacement = true;
+                        return false;
+                    }
+                    for (int referenceIndex = 0; referenceIndex < currentParentReferences.Count; referenceIndex++)
+                    {
+                        int expectedRouteIndex = currentParentHasDirectIndex
+                            ? currentParentRangeStart + referenceIndex
+                            : routeIndex;
+                        if (currentParentReferences[referenceIndex] != expectedRouteIndex)
+                        {
+                            requiresOwnerSetReplacement = true;
+                            return false;
+                        }
                     }
 
                     if (parentHasDirectIndex &&
@@ -22475,7 +24299,11 @@ internal sealed partial class LibraDexFileSession : IDisposable
                     if (routerPlan.Kind == VarKeyScalar8TransformRouterKind.ExpandedOneByte)
                     {
                         long[] directTargets = CreateUniformScalar8Scalar8RouteTargets(0, leftAppend.Extent.Offset, rightAppend.Extent.Offset, selectedRightPrefixByte);
-                        if (childRouterKeyDepth == parentFinalKeyDepth && parentRangeStart < parentRangeEnd)
+                        // A compressed parent can select this shelf by nearest-route fallback outside its persisted final-byte interval.
+                        // Only a direct parent's contiguous slot run is an exhaustive ownership boundary that can safely trim the reconsumed child depth.
+                        if (parentHasDirectIndex &&
+                            childRouterKeyDepth == parentFinalKeyDepth &&
+                            parentRangeStart < parentRangeEnd)
                         {
                             directTargets.AsSpan(0, parentRangeStart).Clear();
                             directTargets.AsSpan(parentRangeEnd + 1).Clear();
@@ -22525,7 +24353,10 @@ internal sealed partial class LibraDexFileSession : IDisposable
                             leftAppend.Extent.Offset,
                             rightAppend.Extent.Offset,
                             selectedPrefixStem[0]);
-                        if (childRouterKeyDepth == parentFinalKeyDepth && parentRangeStart < parentRangeEnd)
+                        // Preserve nearest-route ownership for compressed parents; their stored byte interval is not a complete lower/upper keyspace bound.
+                        if (parentHasDirectIndex &&
+                            childRouterKeyDepth == parentFinalKeyDepth &&
+                            parentRangeStart < parentRangeEnd)
                         {
                             childTargets.AsSpan(0, parentRangeStart).Clear();
                             childTargets.AsSpan(parentRangeEnd + 1).Clear();
@@ -22556,6 +24387,217 @@ internal sealed partial class LibraDexFileSession : IDisposable
                     kernel.ExitExclusiveStoragePublication();
                 }
             }
+        }
+    }
+
+    /// <summary>
+    /// Replaces one still-current full `VS8` shelf with a bounded recursive optimizer-planned subtree and atomically redirects only the owning parent route range.<br/>
+    /// Child routers and shelves are constructed while the session publication seam is held and remain unreachable until the parent rewrite is committed; a stale parent returns <see langword="false"/> before allocating replacement storage.<br/>
+    /// This path handles valid skewed-prefix distributions that cannot be represented by the ordinary two-shelf transform without changing the persisted router or shelf formats.<br/>
+    /// </summary>
+    /// <param name="rootRouterOffset">The stable root router identifying the physical `VS8` index.<br/></param>
+    /// <param name="parentRouterOffset">The parent router currently owning the full shelf target.<br/></param>
+    /// <param name="routeIndex">The selected physical route index in the parent router.<br/></param>
+    /// <param name="obsoleteShelfOffset">The full shelf offset expected at the owning route.<br/></param>
+    /// <param name="parentHasDirectIndex">Whether the planned parent uses the expanded direct-index representation.<br/></param>
+    /// <param name="parentRangeStart">The inclusive planned prefix start of the owning route range.<br/></param>
+    /// <param name="parentRangeEnd">The inclusive planned prefix end of the owning route range.<br/></param>
+    /// <param name="parentFinalKeyDepth">The final encoded-key byte depth consumed by the planned parent route.<br/></param>
+    /// <param name="replacementKeyDepth">The first encoded-key byte depth the replacement subtree must discriminate.<br/></param>
+    /// <param name="maxKeyLength">The maximum encoded key length supported by the target index.<br/></param>
+    /// <param name="requestedRouteCount">The preferred compressed-router fanout cap.<br/></param>
+    /// <param name="tuples">The complete canonical tuple set from the full shelf plus incoming tuple.<br/></param>
+    /// <param name="telemetry">Receives durability telemetry when the replacement is published.<br/></param>
+    /// <param name="replacementTargetOffset">Receives the appended replacement subtree target offset.<br/></param>
+    /// <returns><see langword="true"/> when the expected parent route was still current and the replacement was published; otherwise <see langword="false"/>.<br/></returns>
+    private bool TryPublishVarKeyScalar8RecursiveShelfReplacement(
+        long rootRouterOffset,
+        long parentRouterOffset,
+        int routeIndex,
+        long obsoleteShelfOffset,
+        bool parentHasDirectIndex,
+        int parentRangeStart,
+        int parentRangeEnd,
+        ushort parentFinalKeyDepth,
+        ushort replacementKeyDepth,
+        int maxKeyLength,
+        int requestedRouteCount,
+        ReadOnlySpan<VarKeyScalar8SortedTuple> tuples,
+        out DataKernelCommitTelemetry telemetry,
+        out long replacementTargetOffset)
+    {
+        telemetry = default;
+        replacementTargetOffset = 0;
+        object topologyOwner = GetPrimitiveTopologyOwner(new PrimitiveTopologyOwnerKey(6, 4, rootRouterOffset, obsoleteShelfOffset, parentRangeStart));
+        lock (topologyOwner)
+        {
+            lock (writePublicationSync)
+            {
+                kernel.EnterExclusiveStoragePublication();
+                try
+                {
+                    byte[] parentRouterBytes = new byte[RouterLayout.Size];
+                    kernel.Read(parentRouterOffset, parentRouterBytes);
+                    RouterReader parentReader = new(parentRouterBytes);
+                    if (!parentReader.IsValid)
+                    {
+                        throw new InvalidDataException("The recursive VS8 replacement parent router is invalid.");
+                    }
+
+                    if (!TryGetVarKeyParentTargetRange(
+                        parentReader,
+                        routeIndex,
+                        obsoleteShelfOffset,
+                        out bool currentParentHasDirectIndex,
+                        out int currentParentRangeStart,
+                        out int currentParentRangeEnd,
+                        out ushort currentParentFinalKeyDepth) ||
+                        currentParentHasDirectIndex != parentHasDirectIndex ||
+                        currentParentRangeStart != parentRangeStart ||
+                        currentParentRangeEnd != parentRangeEnd ||
+                        currentParentFinalKeyDepth != parentFinalKeyDepth)
+                    {
+                        return false;
+                    }
+
+                    Dictionary<long, List<int>> parentReferences = CollectVarKeyScalar8ShelfParentReferences(
+                        rootRouterOffset,
+                        obsoleteShelfOffset);
+                    if (!parentReferences.TryGetValue(parentRouterOffset, out List<int>? expectedParentRoutes) ||
+                        !expectedParentRoutes.Contains(routeIndex))
+                    {
+                        return false;
+                    }
+
+                    (long targetOffset, _) = CreateVarKeyScalar8OptimizerReplacementTargetFromSorted(
+                        tuples,
+                        replacementKeyDepth,
+                        maxKeyLength,
+                        requestedRouteCount);
+
+                    RewriteVarKeyScalar8ShelfParentReferences(
+                        parentReferences,
+                        obsoleteShelfOffset,
+                        targetOffset);
+
+                    varKeyScalar8ReadShelfCache.TryRemove(obsoleteShelfOffset, out _);
+                    telemetry = CommitAndDeferRouterReadCacheInvalidation();
+                    replacementTargetOffset = targetOffset;
+                    return true;
+                }
+                finally
+                {
+                    kernel.ExitExclusiveStoragePublication();
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Finds every reachable router slot in one `VS8` topology that still points directly at the same shared shelf.<br/>
+    /// Online split paths may deliberately converge several earlier prefix branches onto one physical shelf; replacing only the incoming key's immediate parent would leave the obsolete shelf reachable and duplicate authoritative tuples during complete traversal.<br/>
+    /// The scan is reserved for full-shelf copy/replacement paths, uses absolute offsets with a visited-router set, and does not materialize keys or record payloads.<br/>
+    /// </summary>
+    /// <param name="rootRouterOffset">The stable root router of the `VS8` index.<br/></param>
+    /// <param name="shelfOffset">The full shelf whose complete reachable parent-reference set is required.<br/></param>
+    /// <returns>A map from each reachable parent router offset to every physical route index that targets <paramref name="shelfOffset"/>.<br/></returns>
+    private Dictionary<long, List<int>> CollectVarKeyScalar8ShelfParentReferences(
+        long rootRouterOffset,
+        long shelfOffset)
+    {
+        const int maxReachableRouters = 1_000_000;
+        Dictionary<long, List<int>> references = new();
+        HashSet<long> visitedRouters = new();
+        Stack<long> pendingRouters = new();
+        pendingRouters.Push(rootRouterOffset);
+        while (pendingRouters.Count != 0)
+        {
+            long routerOffset = pendingRouters.Pop();
+            if (!visitedRouters.Add(routerOffset))
+            {
+                continue;
+            }
+            if (visitedRouters.Count > maxReachableRouters)
+            {
+                throw new InvalidDataException($"The recursive VS8 parent-reference scan exceeded {maxReachableRouters:N0} reachable routers.");
+            }
+
+            byte[] routerBytes = new byte[RouterLayout.Size];
+            kernel.Read(routerOffset, routerBytes);
+            RouterReader router = new(routerBytes);
+            if (!router.IsValid)
+            {
+                throw new InvalidDataException($"The recursive VS8 parent-reference scan found an invalid router at offset {routerOffset:N0}.");
+            }
+
+            int routeCount = router.HasDirectIndex ? RouterLayout.MaxOneByteRouteCount : router.RouteCount;
+            for (int routeIndex = 0; routeIndex < routeCount; routeIndex++)
+            {
+                long targetOffset = router.GetRouteTargetAt(routeIndex);
+                if (targetOffset == 0)
+                {
+                    continue;
+                }
+                if (targetOffset == shelfOffset)
+                {
+                    if (!references.TryGetValue(routerOffset, out List<int>? routeIndexes))
+                    {
+                        routeIndexes = new List<int>();
+                        references.Add(routerOffset, routeIndexes);
+                    }
+
+                    routeIndexes.Add(routeIndex);
+                    continue;
+                }
+                if (ClassifyVarKeyScalar8RouteTarget(targetOffset) == VarKeyScalar8RouteTargetKind.Router)
+                {
+                    pendingRouters.Push(targetOffset);
+                }
+            }
+        }
+
+        return references;
+    }
+
+    /// <summary>
+    /// Repoints every validated `VS8` router owner of one copied shelf to the same replacement target.<br/>
+    /// Copy-growth and recursive replacement must detach the old shelf from the entire reachable owner set; changing only the walked route would leave both old and copied tuples reachable through different physical offsets.<br/>
+    /// The caller must hold exclusive storage publication from collection through this rewrite so every route can be revalidated and published as one durability unit.<br/>
+    /// </summary>
+    /// <param name="parentReferences">The complete reachable router and route-index owner set collected for the old shelf.<br/></param>
+    /// <param name="obsoleteShelfOffset">The shelf offset every supplied owner route must still target.<br/></param>
+    /// <param name="replacementTargetOffset">The new shelf or subtree target that replaces the obsolete shelf for every owner.<br/></param>
+    private void RewriteVarKeyScalar8ShelfParentReferences(
+        Dictionary<long, List<int>> parentReferences,
+        long obsoleteShelfOffset,
+        long replacementTargetOffset)
+    {
+        foreach ((long ownerRouterOffset, List<int> ownerRouteIndexes) in parentReferences)
+        {
+            byte[] ownerRouterBytes = new byte[RouterLayout.Size];
+            kernel.Read(ownerRouterOffset, ownerRouterBytes);
+            RouterReader ownerReader = new(ownerRouterBytes);
+            if (!ownerReader.IsValid)
+            {
+                throw new InvalidDataException($"The VS8 shared-shelf replacement found an invalid parent router at offset {ownerRouterOffset:N0}.");
+            }
+            foreach (int ownerRouteIndex in ownerRouteIndexes)
+            {
+                if (ownerReader.GetRouteTargetAt(ownerRouteIndex) != obsoleteShelfOffset)
+                {
+                    throw new InvalidDataException($"The VS8 shared-shelf owner route changed during exclusive publication. RouterOffset={ownerRouterOffset:N0}; RouteIndex={ownerRouteIndex:N0}.");
+                }
+            }
+
+            RawDataReservation ownerRewrite = kernel.ReserveAt(ownerRouterOffset, RouterLayout.Size);
+            ownerRouterBytes.CopyTo(ownerRewrite.Span);
+            RouterWriter ownerWriter = new(ownerRewrite.Span);
+            foreach (int ownerRouteIndex in ownerRouteIndexes)
+            {
+                ownerWriter.WriteRouteTarget(ownerRouteIndex, replacementTargetOffset);
+            }
+
+            InvalidateRouterReadCacheForRouterRewrite(ownerRouterOffset);
         }
     }
 
@@ -24058,7 +26100,11 @@ internal sealed partial class LibraDexFileSession : IDisposable
             ushort routerDepth = checked((ushort)(childRouterKeyDepth + i + 1));
             long[] targets = routerDepth == splitKeyDepth
                 ? CreateSplitScalar8Scalar8RouteTargets(leftAppend.Extent.Offset, rightAppend.Extent.Offset, selectedRightPrefixByte)
-                : CreateFilledScalar8Scalar8RouteTargets(nextRouterOffset);
+                : CreateScalar8Scalar8IntermediateSplitRouteTargets(
+                    nextRouterOffset,
+                    leftAppend.Extent.Offset,
+                    rightAppend.Extent.Offset,
+                    GetScalar8Scalar8Prefix(keys[0], routerDepth));
             RawDataReservation appendedRouter = kernel.Reserve(RouterLayout.Size);
             RouterWriter appendedWriter = new(appendedRouter.Span);
             appendedWriter.InitializeExpandedOneByte(routerDepth, allocationClassId, targets);
@@ -24818,7 +26864,11 @@ internal sealed partial class LibraDexFileSession : IDisposable
             ushort routerDepth = checked((ushort)(childRouterKeyDepth + i + 1));
             long[] targets = routerDepth == splitKeyDepth
                 ? CreateSplitScalar8Scalar8RouteTargets(leftAppend.Extent.Offset, rightAppend.Extent.Offset, selectedRightPrefixByte)
-                : CreateFilledScalar8Scalar8RouteTargets(nextRouterOffset);
+                : CreateScalar8Scalar8IntermediateSplitRouteTargets(
+                    nextRouterOffset,
+                    leftAppend.Extent.Offset,
+                    rightAppend.Extent.Offset,
+                    GetScalar16Scalar8Prefix(keyHighs[0], keyLows[0], routerDepth));
             RawDataReservation appendedRouter = kernel.Reserve(RouterLayout.Size);
             RouterWriter appendedWriter = new(appendedRouter.Span);
             appendedWriter.InitializeExpandedOneByte(routerDepth, allocationClassId, targets);
@@ -24830,7 +26880,13 @@ internal sealed partial class LibraDexFileSession : IDisposable
         childWriter.InitializeExpandedOneByte(
             childRouterKeyDepth,
             allocationClassId,
-            CreateUniformScalar8Scalar8RouteTargets(nextRouterOffset, leftAppend.Extent.Offset, rightAppend.Extent.Offset, selectedRightPrefixByte));
+            nextRouterOffset == 0
+                ? CreateSplitScalar8Scalar8RouteTargets(leftAppend.Extent.Offset, rightAppend.Extent.Offset, selectedRightPrefixByte)
+                : CreateScalar8Scalar8IntermediateSplitRouteTargets(
+                    nextRouterOffset,
+                    leftAppend.Extent.Offset,
+                    rightAppend.Extent.Offset,
+                    GetScalar16Scalar8Prefix(keyHighs[0], keyLows[0], childRouterKeyDepth)));
         int routerArenaLength = Math.Min(profile.ShelfExtentSize, 64 * 1024);
         childWriter.WriteArenaMetadata(
             arenaBaseDelta: 0,
@@ -25227,16 +27283,30 @@ internal sealed partial class LibraDexFileSession : IDisposable
                 if (routerDepth == splitKeyDepth)
                     appendedWriter.InitializeExpandedOneByteSplit(routerDepth, allocationClassId, leftAppend.Extent.Offset, rightAppend.Extent.Offset, selectedRightPrefixByte);
                 else
-                    appendedWriter.InitializeExpandedOneByteUniform(routerDepth, allocationClassId, nextRouterOffset);
+                    appendedWriter.InitializeExpandedOneByte(
+                        routerDepth,
+                        allocationClassId,
+                        CreateScalar8Scalar8IntermediateSplitRouteTargets(
+                            nextRouterOffset,
+                            leftAppend.Extent.Offset,
+                            rightAppend.Extent.Offset,
+                            GetFixed32Scalar8Prefix(key0s[0], key1s[0], key2s[0], key3s[0], routerDepth)));
                 nextRouterOffset = appendedRouter.Extent.Offset;
             }
 
             RawDataReservation childRouterRewrite = kernel.ReserveAt(childRouterOffset, RouterLayout.Size);
             RouterWriter childWriter = new(childRouterRewrite.Span);
-            if (nextRouterOffset != 0)
-                childWriter.InitializeExpandedOneByteUniform(childRouterKeyDepth, allocationClassId, nextRouterOffset);
-            else
+            if (nextRouterOffset == 0)
                 childWriter.InitializeExpandedOneByteSplit(childRouterKeyDepth, allocationClassId, leftAppend.Extent.Offset, rightAppend.Extent.Offset, selectedRightPrefixByte);
+            else
+                childWriter.InitializeExpandedOneByte(
+                    childRouterKeyDepth,
+                    allocationClassId,
+                    CreateScalar8Scalar8IntermediateSplitRouteTargets(
+                        nextRouterOffset,
+                        leftAppend.Extent.Offset,
+                        rightAppend.Extent.Offset,
+                        GetFixed32Scalar8Prefix(key0s[0], key1s[0], key2s[0], key3s[0], childRouterKeyDepth)));
             int routerArenaLength = Math.Min(profile.ShelfExtentSize, 64 * 1024);
             childWriter.WriteArenaMetadata(
                 arenaBaseDelta: 0,
@@ -25597,7 +27667,11 @@ internal sealed partial class LibraDexFileSession : IDisposable
             ushort routerDepth = checked((ushort)(childRouterKeyDepth + i + 1));
             long[] targets = routerDepth == splitKeyDepth
                 ? CreateSplitScalar8Scalar8RouteTargets(leftAppend.Extent.Offset, rightAppend.Extent.Offset, selectedRightPrefixByte)
-                : CreateFilledScalar8Scalar8RouteTargets(nextRouterOffset);
+                : CreateScalar8Scalar8IntermediateSplitRouteTargets(
+                    nextRouterOffset,
+                    leftAppend.Extent.Offset,
+                    rightAppend.Extent.Offset,
+                    GetScalar16Scalar8Prefix(keyHighs[0], keyLows[0], routerDepth));
             RawDataReservation appendedRouter = kernel.Reserve(RouterLayout.Size);
             RouterWriter appendedWriter = new(appendedRouter.Span);
             appendedWriter.InitializeExpandedOneByte(routerDepth, allocationClassId, targets);
@@ -25609,7 +27683,13 @@ internal sealed partial class LibraDexFileSession : IDisposable
         childWriter.InitializeExpandedOneByte(
             childRouterKeyDepth,
             allocationClassId,
-            CreateUniformScalar8Scalar8RouteTargets(nextRouterOffset, leftAppend.Extent.Offset, rightAppend.Extent.Offset, selectedRightPrefixByte));
+            nextRouterOffset == 0
+                ? CreateSplitScalar8Scalar8RouteTargets(leftAppend.Extent.Offset, rightAppend.Extent.Offset, selectedRightPrefixByte)
+                : CreateScalar8Scalar8IntermediateSplitRouteTargets(
+                    nextRouterOffset,
+                    leftAppend.Extent.Offset,
+                    rightAppend.Extent.Offset,
+                    GetScalar16Scalar8Prefix(keyHighs[0], keyLows[0], childRouterKeyDepth)));
         childWriter.WriteArenaMetadata(
             arenaBaseDelta: 0,
             arenaLength: profile.ShelfExtentSize,
@@ -25759,7 +27839,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
                 encodedKey,
                 encodedIdentity,
                 rootReader.AllocationClassId,
-                childRouterKeyDepth: 1);
+                childRouterKeyDepth: 1,
+                parentRouterOffset: rootRouterOffset,
+                parentRoutePrefixByte: rootPrefixByte);
 
         Scalar8Scalar8RoutedInsertKind transformKind = transformResult == Scalar8Scalar8InsertResult.Inserted
             ? Scalar8Scalar8RoutedInsertKind.ShelfTransformSplit
@@ -26623,7 +28705,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
             encodedKey,
             encodedIdentity,
             allocationClassId,
-            childRouterKeyDepth: 1);
+            childRouterKeyDepth: 1,
+            parentRouterOffset: rootRouterOffset,
+            parentRoutePrefixByte: rootPrefixByte);
     }
 
     /// <summary>
@@ -26638,6 +28722,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
     /// <param name="encodedIdentity">The encoded scalar identity to insert during the split.</param>
     /// <param name="allocationClassId">The allocation class identifier to persist in the transformed child router.</param>
     /// <param name="childRouterKeyDepth">The key byte depth where the transformed router begins.</param>
+    /// <param name="parentRouterOffset">The direct parent router whose selected route currently targets <paramref name="childRouterOffset"/>.<br/></param>
+    /// <param name="parentRoutePrefixByte">The exact parent prefix selected by the inserted key.<br/></param>
     /// <returns>The child router offset, left/right shelf offsets, left/right item counts, insert result, and commit telemetry.</returns>
     /// <exception cref="ArgumentException">Thrown when supplied shelf bytes do not match the profiled extent size.</exception>
     /// <exception cref="InvalidDataException">Thrown when shelf validity or split partitioning is invalid.</exception>
@@ -26656,7 +28742,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
         ulong encodedKey,
         ulong encodedIdentity,
         ushort allocationClassId,
-        ushort childRouterKeyDepth)
+        ushort childRouterKeyDepth,
+        long parentRouterOffset,
+        byte parentRoutePrefixByte)
     {
         if (existingShelfBytes.Length != profile.ShelfExtentSize)
         {
@@ -26703,6 +28791,63 @@ internal sealed partial class LibraDexFileSession : IDisposable
         }
 
         (ushort splitKeyDepth, byte selectedRightPrefixByte) = ChooseScalar8Scalar8TransformSplitPlan(keys, childRouterKeyDepth, rightPrefixByte);
+        byte[]? parentRouterBytes = null;
+        ushort parentKeyDepth;
+        bool clearParentAliases = false;
+        if (TryGetDirectRouterView(parentRouterOffset, out DirectRouterView? parentView))
+        {
+            parentKeyDepth = parentView!.KeyDepth;
+            if (parentView.GetTarget(parentRoutePrefixByte) != childRouterOffset)
+            {
+                throw new InvalidDataException(
+                    $"The SS8-8 shelf transform parent route changed before publication. ParentDepth={parentKeyDepth}; Prefix=0x{parentRoutePrefixByte:X2}; ParentOffset={parentRouterOffset}; ExpectedChild={childRouterOffset}; ActualChild={parentView.GetTarget(parentRoutePrefixByte)}.");
+            }
+            for (int prefix = 0; prefix < RouterLayout.MaxOneByteRouteCount; prefix++)
+            {
+                if (prefix != parentRoutePrefixByte && parentView.GetTarget((byte)prefix) == childRouterOffset)
+                {
+                    clearParentAliases = true;
+                    break;
+                }
+            }
+        }
+        else
+        {
+            parentRouterBytes = new byte[RouterLayout.Size];
+            kernel.Read(parentRouterOffset, parentRouterBytes);
+            RouterReader parentReader = new(parentRouterBytes);
+            if (!parentReader.IsValid || !parentReader.HasDirectIndex)
+                throw new InvalidDataException("The SS8-8 shelf transform requires a valid direct parent router.");
+
+            parentKeyDepth = parentReader.KeyDepth;
+            if (parentReader.GetDirectTarget(parentRoutePrefixByte) != childRouterOffset)
+            {
+                throw new InvalidDataException(
+                    $"The SS8-8 shelf transform parent route changed before publication. ParentDepth={parentKeyDepth}; Prefix=0x{parentRoutePrefixByte:X2}; ParentOffset={parentRouterOffset}; ExpectedChild={childRouterOffset}; ActualChild={parentReader.GetDirectTarget(parentRoutePrefixByte)}.");
+            }
+            for (int prefix = 0; prefix < RouterLayout.MaxOneByteRouteCount; prefix++)
+            {
+                if (prefix != parentRoutePrefixByte && parentReader.GetDirectTarget((byte)prefix) == childRouterOffset)
+                {
+                    clearParentAliases = true;
+                    break;
+                }
+            }
+        }
+
+        if (parentKeyDepth + 1 != childRouterKeyDepth)
+        {
+            throw new InvalidDataException(
+                $"The SS8-8 shelf transform parent depth does not immediately precede the child depth. ParentDepth={parentKeyDepth}; ChildDepth={childRouterKeyDepth}; ParentOffset={parentRouterOffset}; ChildOffset={childRouterOffset}.");
+        }
+
+        byte ownedParentPrefix = GetScalar8Scalar8Prefix(keys[0], parentKeyDepth);
+        if (ownedParentPrefix != parentRoutePrefixByte ||
+            GetScalar8Scalar8Prefix(keys[^1], parentKeyDepth) != ownedParentPrefix)
+        {
+            throw new InvalidDataException(
+                $"The SS8-8 shelf transform source does not have one exact parent-prefix owner. ParentDepth={parentKeyDepth}; SelectedPrefix=0x{parentRoutePrefixByte:X2}; FirstPrefix=0x{ownedParentPrefix:X2}; LastPrefix=0x{GetScalar8Scalar8Prefix(keys[^1], parentKeyDepth):X2}; ParentOffset={parentRouterOffset}; ChildOffset={childRouterOffset}.");
+        }
         byte[] leftShelfBytes = new byte[profile.ShelfExtentSize];
         byte[] rightShelfBytes = new byte[profile.ShelfExtentSize];
         Scalar8Scalar8 leftShelf = new(leftShelfBytes, profile);
@@ -26770,6 +28915,29 @@ internal sealed partial class LibraDexFileSession : IDisposable
             routerPageIndex: 0,
             routerPageCount: checked((ushort)(profile.ShelfExtentSize / RouterLayout.Size)),
             arenaFlags: 0);
+
+        if (clearParentAliases)
+        {
+            parentRouterBytes ??= new byte[RouterLayout.Size];
+            kernel.Read(parentRouterOffset, parentRouterBytes);
+            RouterReader currentParent = new(parentRouterBytes);
+            if (!currentParent.IsValid || !currentParent.HasDirectIndex ||
+                currentParent.KeyDepth != parentKeyDepth ||
+                currentParent.GetDirectTarget(ownedParentPrefix) != childRouterOffset)
+            {
+                throw new InvalidDataException("The SS8-8 shelf transform parent aliases changed before publication.");
+            }
+
+            RawDataReservation parentRewrite = kernel.ReserveAt(parentRouterOffset, RouterLayout.Size);
+            parentRouterBytes.CopyTo(parentRewrite.Span);
+            RouterWriter parentWriter = new(parentRewrite.Span);
+            for (int prefix = 0; prefix < RouterLayout.MaxOneByteRouteCount; prefix++)
+            {
+                byte prefixByte = (byte)prefix;
+                if (prefixByte != ownedParentPrefix && currentParent.GetDirectTarget(prefixByte) == childRouterOffset)
+                    parentWriter.WriteRouteTarget(prefixByte, 0);
+            }
+        }
 
         DataKernelCommitTelemetry telemetry = CommitAndInvalidateRouterReadCache();
         RouterArenaState arena = RegisterRouterArena(childRouterOffset, profile.ShelfExtentSize);
@@ -26959,15 +29127,33 @@ internal sealed partial class LibraDexFileSession : IDisposable
             throw new InvalidDataException("The transform split boundary requires at least two keys.");
         }
 
-        for (ushort keyDepth = firstKeyDepth; keyDepth < Scalar8Scalar8Layout.KeySize; keyDepth++)
+        ushort splitKeyDepth = 0;
+        ulong firstKey = sortedKeys[0];
+        ulong lastKey = sortedKeys[^1];
+        while (splitKeyDepth < Scalar8Scalar8Layout.KeySize &&
+               GetScalar8Scalar8Prefix(firstKey, splitKeyDepth) == GetScalar8Scalar8Prefix(lastKey, splitKeyDepth))
         {
-            if (TryChooseScalar8Scalar8TransformSplitRightPrefix(sortedKeys, keyDepth, hintRightPrefixByte, out byte rightPrefixByte))
-            {
-                return (keyDepth, rightPrefixByte);
-            }
+            splitKeyDepth++;
         }
 
-        throw new InvalidDataException("The transform split path requires at least two distinct prefixes in the remaining encoded key bytes.");
+        if (splitKeyDepth < firstKeyDepth)
+        {
+            throw new InvalidDataException(
+                $"The SS8 transform source violates its routed prefix stem. " +
+                $"FirstDifferentDepth={splitKeyDepth}; FirstOwnedDepth={firstKeyDepth}; Count={sortedKeys.Length}; " +
+                $"FirstKey=0x{firstKey:X16}; LastKey=0x{lastKey:X16}.");
+        }
+
+        if (splitKeyDepth >= Scalar8Scalar8Layout.KeySize ||
+            !TryChooseScalar8Scalar8TransformSplitRightPrefix(sortedKeys, splitKeyDepth, hintRightPrefixByte, out byte rightPrefixByte))
+        {
+            throw new InvalidDataException(
+                $"The transform split path requires one globally ordered prefix transition after its owned stem. " +
+                $"FirstKeyDepth={firstKeyDepth}; SplitKeyDepth={splitKeyDepth}; HintRightPrefix=0x{hintRightPrefixByte:X2}; Count={sortedKeys.Length}; " +
+                $"FirstKey=0x{firstKey:X16}; MiddleKey=0x{sortedKeys[sortedKeys.Length / 2]:X16}; LastKey=0x{lastKey:X16}.");
+        }
+
+        return (splitKeyDepth, rightPrefixByte);
     }
 
     /// <summary>
@@ -27591,8 +29777,10 @@ internal sealed partial class LibraDexFileSession : IDisposable
 
     /// <summary>
     /// Tries to choose the right-side prefix boundary for an `SS8-8` transform split at one encoded key depth.<br/>
-    /// The chosen boundary is the nearest usable prefix transition around the median of the full shelf plus incoming tuple set.<br/>
-    /// Returning false means all tuples share the same prefix at this byte depth and the caller must try a deeper router byte.<br/>
+    /// The first and last full keys must share every prefix byte before the requested depth, proving that the current router can own the complete tuple set.<br/>
+    /// The selected byte sequence must be globally nondecreasing in full-key order; any decrease proves that the requested depth is below an already-divergent prefix and cannot own this split safely.<br/>
+    /// Among actual adjacent prefix transitions, the method favors the most balanced tuple counts and uses proximity to the incoming-key hint only as a deterministic tie breaker.<br/>
+    /// Returning false means the byte depth has no globally safe split boundary and the caller must reject or repair the route topology.<br/>
     /// </summary>
     /// <param name="sortedKeys">The complete sorted key set for the full shelf plus the incoming tuple.</param>
     /// <param name="keyDepth">The encoded key byte depth being evaluated.</param>
@@ -27605,39 +29793,50 @@ internal sealed partial class LibraDexFileSession : IDisposable
         byte hintRightPrefixByte,
         out byte rightPrefixByte)
     {
-        int desiredRightStart = sortedKeys.Length / 2;
-        for (int i = desiredRightStart; i < sortedKeys.Length; i++)
+        ulong firstKey = sortedKeys[0];
+        ulong lastKey = sortedKeys[^1];
+        for (ushort ownedDepth = 0; ownedDepth < keyDepth; ownedDepth++)
         {
-            byte leftPrefix = GetScalar8Scalar8Prefix(sortedKeys[i - 1], keyDepth);
-            byte rightPrefix = GetScalar8Scalar8Prefix(sortedKeys[i], keyDepth);
-            if (rightPrefix > leftPrefix)
+            if (GetScalar8Scalar8Prefix(firstKey, ownedDepth) != GetScalar8Scalar8Prefix(lastKey, ownedDepth))
             {
-                rightPrefixByte = rightPrefix;
-                return true;
+                rightPrefixByte = 0;
+                return false;
             }
         }
 
-        for (int i = desiredRightStart - 1; i > 0; i--)
+        int bestRightStart = -1;
+        byte bestBoundary = 0;
+        int bestBalanceDistance = int.MaxValue;
+        int bestHintDistance = int.MaxValue;
+        byte priorPrefix = GetScalar8Scalar8Prefix(sortedKeys[0], keyDepth);
+        for (int i = 1; i < sortedKeys.Length; i++)
         {
-            byte leftPrefix = GetScalar8Scalar8Prefix(sortedKeys[i - 1], keyDepth);
-            byte rightPrefix = GetScalar8Scalar8Prefix(sortedKeys[i], keyDepth);
-            if (rightPrefix > leftPrefix)
+            byte currentPrefix = GetScalar8Scalar8Prefix(sortedKeys[i], keyDepth);
+            if (currentPrefix < priorPrefix)
             {
-                rightPrefixByte = rightPrefix;
-                return true;
+                rightPrefixByte = 0;
+                return false;
             }
+
+            if (currentPrefix == priorPrefix)
+                continue;
+
+            int balanceDistance = Math.Abs(i - (sortedKeys.Length - i));
+            int hintDistance = Math.Abs(currentPrefix - hintRightPrefixByte);
+            if (balanceDistance < bestBalanceDistance ||
+                (balanceDistance == bestBalanceDistance && hintDistance < bestHintDistance))
+            {
+                bestRightStart = i;
+                bestBoundary = currentPrefix;
+                bestBalanceDistance = balanceDistance;
+                bestHintDistance = hintDistance;
+            }
+
+            priorPrefix = currentPrefix;
         }
 
-        byte firstPrefix = GetScalar8Scalar8Prefix(sortedKeys[0], keyDepth);
-        byte lastPrefix = GetScalar8Scalar8Prefix(sortedKeys[^1], keyDepth);
-        if (hintRightPrefixByte > firstPrefix && hintRightPrefixByte <= lastPrefix)
-        {
-            rightPrefixByte = hintRightPrefixByte;
-            return true;
-        }
-
-        rightPrefixByte = 0;
-        return false;
+        rightPrefixByte = bestBoundary;
+        return bestRightStart >= 0;
     }
 
     /// <summary>
@@ -27667,15 +29866,21 @@ internal sealed partial class LibraDexFileSession : IDisposable
             throw new InvalidDataException("The SS16-8 transform split boundary requires at least two keys.");
         }
 
-        for (ushort keyDepth = firstKeyDepth; keyDepth < Scalar16Scalar8Layout.KeySize; keyDepth++)
+        ushort splitKeyDepth = 0;
+        while (splitKeyDepth < Scalar16Scalar8Layout.KeySize &&
+               GetScalar16Scalar8Prefix(sortedKeyHighs[0], sortedKeyLows[0], splitKeyDepth) ==
+               GetScalar16Scalar8Prefix(sortedKeyHighs[^1], sortedKeyLows[^1], splitKeyDepth))
         {
-            if (TryChooseScalar16Scalar8TransformSplitRightPrefix(sortedKeyHighs, sortedKeyLows, keyDepth, hintRightPrefixByte, out byte rightPrefixByte))
-            {
-                return (keyDepth, rightPrefixByte);
-            }
+            splitKeyDepth++;
         }
 
-        throw new InvalidDataException("The SS16-8 transform split path requires at least two distinct prefixes in the remaining encoded key bytes.");
+        if (splitKeyDepth < firstKeyDepth)
+            throw new InvalidDataException($"The SS16 transform source violates its routed prefix stem. FirstDifferentDepth={splitKeyDepth}; FirstOwnedDepth={firstKeyDepth}; Count={sortedKeyHighs.Length}.");
+        if (splitKeyDepth >= Scalar16Scalar8Layout.KeySize ||
+            !TryChooseScalar16Scalar8TransformSplitRightPrefix(sortedKeyHighs, sortedKeyLows, splitKeyDepth, hintRightPrefixByte, out byte rightPrefixByte))
+            throw new InvalidDataException("The SS16 transform split path requires one globally ordered prefix transition after its owned stem.");
+
+        return (splitKeyDepth, rightPrefixByte);
     }
 
     /// <summary>
@@ -27696,39 +29901,47 @@ internal sealed partial class LibraDexFileSession : IDisposable
         byte hintRightPrefixByte,
         out byte rightPrefixByte)
     {
-        int desiredRightStart = sortedKeyHighs.Length / 2;
-        for (int i = desiredRightStart; i < sortedKeyHighs.Length; i++)
+        for (ushort ownedDepth = 0; ownedDepth < keyDepth; ownedDepth++)
         {
-            byte leftPrefix = GetScalar16Scalar8Prefix(sortedKeyHighs[i - 1], sortedKeyLows[i - 1], keyDepth);
-            byte rightPrefix = GetScalar16Scalar8Prefix(sortedKeyHighs[i], sortedKeyLows[i], keyDepth);
-            if (rightPrefix > leftPrefix)
+            if (GetScalar16Scalar8Prefix(sortedKeyHighs[0], sortedKeyLows[0], ownedDepth) !=
+                GetScalar16Scalar8Prefix(sortedKeyHighs[^1], sortedKeyLows[^1], ownedDepth))
             {
-                rightPrefixByte = rightPrefix;
-                return true;
+                rightPrefixByte = 0;
+                return false;
             }
         }
 
-        for (int i = desiredRightStart - 1; i > 0; i--)
+        int bestRightStart = -1;
+        byte bestBoundary = 0;
+        int bestBalanceDistance = int.MaxValue;
+        int bestHintDistance = int.MaxValue;
+        byte priorPrefix = GetScalar16Scalar8Prefix(sortedKeyHighs[0], sortedKeyLows[0], keyDepth);
+        for (int i = 1; i < sortedKeyHighs.Length; i++)
         {
-            byte leftPrefix = GetScalar16Scalar8Prefix(sortedKeyHighs[i - 1], sortedKeyLows[i - 1], keyDepth);
-            byte rightPrefix = GetScalar16Scalar8Prefix(sortedKeyHighs[i], sortedKeyLows[i], keyDepth);
-            if (rightPrefix > leftPrefix)
+            byte currentPrefix = GetScalar16Scalar8Prefix(sortedKeyHighs[i], sortedKeyLows[i], keyDepth);
+            if (currentPrefix < priorPrefix)
             {
-                rightPrefixByte = rightPrefix;
-                return true;
+                rightPrefixByte = 0;
+                return false;
             }
+            if (currentPrefix > priorPrefix)
+            {
+                int balanceDistance = Math.Abs(i - (sortedKeyHighs.Length - i));
+                int hintDistance = Math.Abs(currentPrefix - hintRightPrefixByte);
+                if (balanceDistance < bestBalanceDistance ||
+                    (balanceDistance == bestBalanceDistance && hintDistance < bestHintDistance))
+                {
+                    bestRightStart = i;
+                    bestBoundary = currentPrefix;
+                    bestBalanceDistance = balanceDistance;
+                    bestHintDistance = hintDistance;
+                }
+            }
+            priorPrefix = currentPrefix;
         }
 
-        byte firstPrefix = GetScalar16Scalar8Prefix(sortedKeyHighs[0], sortedKeyLows[0], keyDepth);
-        byte lastPrefix = GetScalar16Scalar8Prefix(sortedKeyHighs[^1], sortedKeyLows[^1], keyDepth);
-        if (hintRightPrefixByte > firstPrefix && hintRightPrefixByte <= lastPrefix)
-        {
-            rightPrefixByte = hintRightPrefixByte;
-            return true;
-        }
-
-        rightPrefixByte = 0;
-        return false;
+        rightPrefixByte = bestBoundary;
+        return bestRightStart >= 0;
     }
 
     /// <summary>
@@ -27763,15 +29976,21 @@ internal sealed partial class LibraDexFileSession : IDisposable
             throw new InvalidDataException("The FS32-8 transform split boundary requires at least two keys.");
         }
 
-        for (ushort keyDepth = firstKeyDepth; keyDepth < Fixed32Scalar8Layout.KeySize; keyDepth++)
+        ushort splitKeyDepth = 0;
+        while (splitKeyDepth < Fixed32Scalar8Layout.KeySize &&
+               GetFixed32Scalar8Prefix(sortedKey0s[0], sortedKey1s[0], sortedKey2s[0], sortedKey3s[0], splitKeyDepth) ==
+               GetFixed32Scalar8Prefix(sortedKey0s[^1], sortedKey1s[^1], sortedKey2s[^1], sortedKey3s[^1], splitKeyDepth))
         {
-            if (TryChooseFixed32Scalar8TransformSplitRightPrefix(sortedKey0s, sortedKey1s, sortedKey2s, sortedKey3s, keyDepth, hintRightPrefixByte, out byte rightPrefixByte))
-            {
-                return (keyDepth, rightPrefixByte);
-            }
+            splitKeyDepth++;
         }
 
-        throw new InvalidDataException("The FS32-8 transform split path requires at least two distinct prefixes in the remaining encoded key bytes.");
+        if (splitKeyDepth < firstKeyDepth)
+            throw new InvalidDataException($"The FS32-8 transform source violates its routed prefix stem. FirstDifferentDepth={splitKeyDepth}; FirstOwnedDepth={firstKeyDepth}; Count={sortedKey0s.Length}.");
+        if (splitKeyDepth >= Fixed32Scalar8Layout.KeySize ||
+            !TryChooseFixed32Scalar8TransformSplitRightPrefix(sortedKey0s, sortedKey1s, sortedKey2s, sortedKey3s, splitKeyDepth, hintRightPrefixByte, out byte rightPrefixByte))
+            throw new InvalidDataException("The FS32-8 transform split path requires one globally ordered prefix transition after its owned stem.");
+
+        return (splitKeyDepth, rightPrefixByte);
     }
 
     /// <summary>
@@ -27796,39 +30015,47 @@ internal sealed partial class LibraDexFileSession : IDisposable
         byte hintRightPrefixByte,
         out byte rightPrefixByte)
     {
-        int desiredRightStart = sortedKey0s.Length / 2;
-        for (int i = desiredRightStart; i < sortedKey0s.Length; i++)
+        for (ushort ownedDepth = 0; ownedDepth < keyDepth; ownedDepth++)
         {
-            byte leftPrefix = GetFixed32Scalar8Prefix(sortedKey0s[i - 1], sortedKey1s[i - 1], sortedKey2s[i - 1], sortedKey3s[i - 1], keyDepth);
-            byte rightPrefix = GetFixed32Scalar8Prefix(sortedKey0s[i], sortedKey1s[i], sortedKey2s[i], sortedKey3s[i], keyDepth);
-            if (rightPrefix > leftPrefix)
+            if (GetFixed32Scalar8Prefix(sortedKey0s[0], sortedKey1s[0], sortedKey2s[0], sortedKey3s[0], ownedDepth) !=
+                GetFixed32Scalar8Prefix(sortedKey0s[^1], sortedKey1s[^1], sortedKey2s[^1], sortedKey3s[^1], ownedDepth))
             {
-                rightPrefixByte = rightPrefix;
-                return true;
+                rightPrefixByte = 0;
+                return false;
             }
         }
 
-        for (int i = desiredRightStart - 1; i > 0; i--)
+        int bestRightStart = -1;
+        byte bestBoundary = 0;
+        int bestBalanceDistance = int.MaxValue;
+        int bestHintDistance = int.MaxValue;
+        byte priorPrefix = GetFixed32Scalar8Prefix(sortedKey0s[0], sortedKey1s[0], sortedKey2s[0], sortedKey3s[0], keyDepth);
+        for (int i = 1; i < sortedKey0s.Length; i++)
         {
-            byte leftPrefix = GetFixed32Scalar8Prefix(sortedKey0s[i - 1], sortedKey1s[i - 1], sortedKey2s[i - 1], sortedKey3s[i - 1], keyDepth);
-            byte rightPrefix = GetFixed32Scalar8Prefix(sortedKey0s[i], sortedKey1s[i], sortedKey2s[i], sortedKey3s[i], keyDepth);
-            if (rightPrefix > leftPrefix)
+            byte currentPrefix = GetFixed32Scalar8Prefix(sortedKey0s[i], sortedKey1s[i], sortedKey2s[i], sortedKey3s[i], keyDepth);
+            if (currentPrefix < priorPrefix)
             {
-                rightPrefixByte = rightPrefix;
-                return true;
+                rightPrefixByte = 0;
+                return false;
             }
+            if (currentPrefix > priorPrefix)
+            {
+                int balanceDistance = Math.Abs(i - (sortedKey0s.Length - i));
+                int hintDistance = Math.Abs(currentPrefix - hintRightPrefixByte);
+                if (balanceDistance < bestBalanceDistance ||
+                    (balanceDistance == bestBalanceDistance && hintDistance < bestHintDistance))
+                {
+                    bestRightStart = i;
+                    bestBoundary = currentPrefix;
+                    bestBalanceDistance = balanceDistance;
+                    bestHintDistance = hintDistance;
+                }
+            }
+            priorPrefix = currentPrefix;
         }
 
-        byte firstPrefix = GetFixed32Scalar8Prefix(sortedKey0s[0], sortedKey1s[0], sortedKey2s[0], sortedKey3s[0], keyDepth);
-        byte lastPrefix = GetFixed32Scalar8Prefix(sortedKey0s[^1], sortedKey1s[^1], sortedKey2s[^1], sortedKey3s[^1], keyDepth);
-        if (hintRightPrefixByte > firstPrefix && hintRightPrefixByte <= lastPrefix)
-        {
-            rightPrefixByte = hintRightPrefixByte;
-            return true;
-        }
-
-        rightPrefixByte = 0;
-        return false;
+        rightPrefixByte = bestBoundary;
+        return bestRightStart >= 0;
     }
 
     /// <summary>
@@ -27900,13 +30127,13 @@ internal sealed partial class LibraDexFileSession : IDisposable
     }
 
     /// <summary>
-    /// Creates expanded one-byte `SS8-8` intermediate-router targets for a deeper transform split.<br/>
-    /// Prefixes below the shared scalar-key stem route left, the exact stem byte continues deeper, and prefixes above the stem route right.<br/>
-    /// This keeps long shared-prefix scalar clusters from routing unrelated sibling prefixes into the exact-stem subtree.<br/>
+    /// Creates expanded one-byte scalar-key intermediate-router targets for a deeper transform split.<br/>
+    /// Only the exact observed stem byte continues deeper because every tuple moved beneath the router owns that stem byte; sibling prefixes remain unset and receive independent shelves on their first insertion.<br/>
+    /// Routing sibling prefixes directly to the boundary shelves would let a later shelf-to-router transform place keys that differ at this earlier byte beneath a deeper router, violating global traversal order.<br/>
     /// </summary>
     /// <param name="nextRouterOffset">The next router in the exact shared-stem chain.</param>
-    /// <param name="leftShelfOffset">The left replacement shelf offset for future keys below the shared stem.</param>
-    /// <param name="rightShelfOffset">The right replacement shelf offset for future keys above the shared stem.</param>
+    /// <param name="leftShelfOffset">Unused compatibility argument retained while scalar transform call sites share the existing compact signature.</param>
+    /// <param name="rightShelfOffset">Unused compatibility argument retained while scalar transform call sites share the existing compact signature.</param>
     /// <param name="stemPrefixByte">The shared prefix byte that should continue to <paramref name="nextRouterOffset"/>.</param>
     /// <returns>A 256-entry route target array.</returns>
     private static long[] CreateScalar8Scalar8IntermediateSplitRouteTargets(
@@ -27916,17 +30143,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
         byte stemPrefixByte)
     {
         long[] targets = new long[RouterLayout.MaxOneByteRouteCount];
-        for (int i = 0; i < stemPrefixByte; i++)
-        {
-            targets[i] = leftShelfOffset;
-        }
-
         targets[stemPrefixByte] = nextRouterOffset;
-        for (int i = stemPrefixByte + 1; i < targets.Length; i++)
-        {
-            targets[i] = rightShelfOffset;
-        }
-
+        _ = leftShelfOffset;
+        _ = rightShelfOffset;
         return targets;
     }
 
@@ -28796,6 +31015,11 @@ internal sealed partial class LibraDexFileSession : IDisposable
     {
         Scalar16Scalar16RoutePathTarget pathTarget = WalkScalar16Scalar16RoutePathTarget(rootRouterOffset, encodedKeyHigh, encodedKeyLow, maxRouterHops);
         Scalar16Scalar16RouteTarget target = pathTarget.Target;
+        if (target.Kind == Scalar16Scalar16RouteTargetKind.TerminalIdentityRoot)
+        {
+            return InsertIntoScalar16Scalar16TerminalIdentityRoute(pathTarget, profile, encodedKeyHigh, encodedKeyLow, encodedIdentityHigh, encodedIdentityLow, allowDuplicateKeys);
+        }
+
         if (target.Kind != Scalar16Scalar16RouteTargetKind.Shelf)
         {
             throw new InvalidDataException("The classified route walker did not terminate at an SS16-16 shelf.");
@@ -28853,6 +31077,20 @@ internal sealed partial class LibraDexFileSession : IDisposable
         if (insertResult != Scalar16Scalar16InsertResult.Full)
         {
             throw new InvalidDataException($"Unsupported SS16-16 walked insert result {insertResult}.");
+        }
+
+        if (TryConvertScalar16Scalar16SameKeyShelfToTerminal(
+            pathTarget,
+            existingShelf,
+            profile,
+            encodedKeyHigh,
+            encodedKeyLow,
+            encodedIdentityHigh,
+            encodedIdentityLow,
+            allowDuplicateKeys,
+            out Scalar16Scalar16RoutedInsertResult terminalResult))
+        {
+            return terminalResult;
         }
 
         if (TrySplitRoutedScalar16Scalar16ByParentRoute(
@@ -28950,6 +31188,18 @@ internal sealed partial class LibraDexFileSession : IDisposable
 
         Scalar16Scalar16RoutePathTarget pathTarget = WalkScalar16Scalar16RoutePathTarget(rootRouterOffset, encodedKeyHigh, encodedKeyLow, maxRouterHops);
         Scalar16Scalar16RouteTarget target = pathTarget.Target;
+        if (target.Kind == Scalar16Scalar16RouteTargetKind.TerminalIdentityRoot)
+        {
+            return InsertIntoScalar16Scalar16TerminalIdentityRoute(
+                pathTarget,
+                profile,
+                encodedKeyHigh,
+                encodedKeyLow,
+                encodedIdentityHigh,
+                encodedIdentityLow,
+                allowDuplicateKeys);
+        }
+
         if (target.Kind != Scalar16Scalar16RouteTargetKind.Shelf || target.Offset != fullShelfOffset)
             throw new InvalidDataException("The classified SS16-16 route no longer resolves to the supplied full shelf image.");
 
@@ -28976,6 +31226,20 @@ internal sealed partial class LibraDexFileSession : IDisposable
 
         if (insertResult != Scalar16Scalar16InsertResult.Full)
             throw new InvalidDataException($"Unsupported SS16-16 shelf-image insert result {insertResult}.");
+
+        if (TryConvertScalar16Scalar16SameKeyShelfToTerminal(
+            pathTarget,
+            fullShelfBytes,
+            profile,
+            encodedKeyHigh,
+            encodedKeyLow,
+            encodedIdentityHigh,
+            encodedIdentityLow,
+            allowDuplicateKeys,
+            out Scalar16Scalar16RoutedInsertResult terminalResult))
+        {
+            return terminalResult;
+        }
 
         if (TrySplitRoutedScalar16Scalar16ByParentRoute(
             pathTarget.ParentRouterOffset,
@@ -29484,6 +31748,11 @@ internal sealed partial class LibraDexFileSession : IDisposable
     {
         Scalar8Scalar16RoutePathTarget pathTarget = WalkScalar8Scalar16RoutePathTarget(rootRouterOffset, encodedKey, maxRouterHops);
         Scalar8Scalar16RouteTarget target = pathTarget.Target;
+        if (target.Kind == Scalar8Scalar16RouteTargetKind.TerminalIdentityRoot)
+        {
+            return InsertIntoScalar8Scalar16TerminalIdentityRoute(pathTarget, profile, encodedKey, encodedIdentityHigh, encodedIdentityLow, allowDuplicateKeys);
+        }
+
         if (target.Kind != Scalar8Scalar16RouteTargetKind.Shelf)
         {
             throw new InvalidDataException("The classified route walker did not terminate at an SS8-16 shelf.");
@@ -29541,6 +31810,19 @@ internal sealed partial class LibraDexFileSession : IDisposable
         if (insertResult != Scalar8Scalar16InsertResult.Full)
         {
             throw new InvalidDataException($"Unsupported SS8-16 walked insert result {insertResult}.");
+        }
+
+        if (TryConvertScalar8Scalar16SameKeyShelfToTerminal(
+            pathTarget,
+            existingShelf,
+            profile,
+            encodedKey,
+            encodedIdentityHigh,
+            encodedIdentityLow,
+            allowDuplicateKeys,
+            out Scalar8Scalar16RoutedInsertResult terminalResult))
+        {
+            return terminalResult;
         }
 
         if (TrySplitRoutedScalar8Scalar16ByParentRoute(
@@ -29634,6 +31916,17 @@ internal sealed partial class LibraDexFileSession : IDisposable
 
         Scalar8Scalar16RoutePathTarget pathTarget = WalkScalar8Scalar16RoutePathTarget(rootRouterOffset, encodedKey, maxRouterHops);
         Scalar8Scalar16RouteTarget target = pathTarget.Target;
+        if (target.Kind == Scalar8Scalar16RouteTargetKind.TerminalIdentityRoot)
+        {
+            return InsertIntoScalar8Scalar16TerminalIdentityRoute(
+                pathTarget,
+                profile,
+                encodedKey,
+                encodedIdentityHigh,
+                encodedIdentityLow,
+                allowDuplicateKeys);
+        }
+
         if (target.Kind != Scalar8Scalar16RouteTargetKind.Shelf || target.Offset != fullShelfOffset)
             throw new InvalidDataException("The classified SS8-16 route no longer resolves to the supplied full shelf image.");
 
@@ -29660,6 +31953,19 @@ internal sealed partial class LibraDexFileSession : IDisposable
 
         if (insertResult != Scalar8Scalar16InsertResult.Full)
             throw new InvalidDataException($"Unsupported SS8-16 shelf-image insert result {insertResult}.");
+
+        if (TryConvertScalar8Scalar16SameKeyShelfToTerminal(
+            pathTarget,
+            fullShelfBytes,
+            profile,
+            encodedKey,
+            encodedIdentityHigh,
+            encodedIdentityLow,
+            allowDuplicateKeys,
+            out Scalar8Scalar16RoutedInsertResult terminalResult))
+        {
+            return terminalResult;
+        }
 
         if (TrySplitRoutedScalar8Scalar16ByParentRoute(
             pathTarget.ParentRouterOffset,
@@ -30562,6 +32868,17 @@ internal sealed partial class LibraDexFileSession : IDisposable
     {
         Scalar16Scalar8RoutePathTarget pathTarget = WalkScalar16Scalar8RoutePathTarget(rootRouterOffset, encodedKeyHigh, encodedKeyLow, maxRouterHops);
         Scalar16Scalar8RouteTarget target = pathTarget.Target;
+        if (target.Kind == Scalar16Scalar8RouteTargetKind.TerminalIdentityRoot)
+        {
+            return InsertIntoScalar16Scalar8TerminalIdentityRoute(
+                pathTarget,
+                profile,
+                encodedKeyHigh,
+                encodedKeyLow,
+                encodedIdentity,
+                allowDuplicateKeys);
+        }
+
         if (target.Kind != Scalar16Scalar8RouteTargetKind.Shelf)
         {
             throw new InvalidDataException("The classified route walker did not terminate at an SS16-8 shelf.");
@@ -30619,6 +32936,19 @@ internal sealed partial class LibraDexFileSession : IDisposable
         if (insertResult != Scalar16Scalar8InsertResult.Full)
         {
             throw new InvalidDataException($"Unsupported SS16-8 walked insert result {insertResult}.");
+        }
+
+        if (TryConvertScalar16Scalar8SameKeyShelfToTerminal(
+            pathTarget,
+            existingShelf,
+            profile,
+            encodedKeyHigh,
+            encodedKeyLow,
+            encodedIdentity,
+            allowDuplicateKeys,
+            out Scalar16Scalar8RoutedInsertResult terminalResult))
+        {
+            return terminalResult;
         }
 
         if (TrySplitRoutedScalar16Scalar8ByParentRoute(
@@ -30767,6 +33097,19 @@ internal sealed partial class LibraDexFileSession : IDisposable
         if (insertResult != Scalar16Scalar8InsertResult.Full)
         {
             throw new InvalidDataException($"Unsupported SS16-8 shelf-image insert result {insertResult}.");
+        }
+
+        if (TryConvertScalar16Scalar8SameKeyShelfToTerminal(
+            pathTarget,
+            fullShelfBytes,
+            profile,
+            encodedKeyHigh,
+            encodedKeyLow,
+            encodedIdentity,
+            allowDuplicateKeys,
+            out Scalar16Scalar8RoutedInsertResult terminalResult))
+        {
+            return terminalResult;
         }
 
         if (TrySplitRoutedScalar16Scalar8ByParentRoute(
@@ -30956,6 +33299,20 @@ internal sealed partial class LibraDexFileSession : IDisposable
         {
             Scalar16Scalar8RoutePathTarget pathTarget = WalkScalar16Scalar8RoutePathTarget(rootRouterOffset, encodedKeyHigh, encodedKeyLow, maxRouterHops);
             Scalar16Scalar8RouteTarget target = pathTarget.Target;
+            if (target.Kind == Scalar16Scalar8RouteTargetKind.TerminalIdentityRoot)
+            {
+                Span<byte> keyBytes = stackalloc byte[Scalar16Scalar8Layout.KeySize];
+                BinaryPrimitives.WriteUInt64BigEndian(keyBytes, encodedKeyHigh);
+                BinaryPrimitives.WriteUInt64BigEndian(keyBytes.Slice(sizeof(ulong)), encodedKeyLow);
+                return TryDeleteTerminalIdentity8ForWriteContext(
+                    writeContext,
+                    target.Offset,
+                    profile.ShelfExtentSize,
+                    TerminalIdentityRootLayout.ShapeFixedKeyScalar8Identity,
+                    keyBytes,
+                    encodedIdentity);
+            }
+
             if (target.Kind != Scalar16Scalar8RouteTargetKind.Shelf)
             {
                 throw new InvalidDataException("The classified route walker did not terminate at an SS16-8 shelf.");
@@ -31040,6 +33397,19 @@ internal sealed partial class LibraDexFileSession : IDisposable
     {
         Fixed32Scalar8RoutePathTarget pathTarget = WalkFixed32Scalar8RoutePathTarget(rootRouterOffset, key0, key1, key2, key3, maxRouterHops);
         Fixed32Scalar8RouteTarget target = pathTarget.Target;
+        if (target.Kind == Fixed32Scalar8RouteTargetKind.TerminalIdentityRoot)
+        {
+            return InsertIntoFixed32Scalar8TerminalIdentityRoute(
+                pathTarget,
+                profile,
+                key0,
+                key1,
+                key2,
+                key3,
+                encodedIdentity,
+                allowDuplicateKeys);
+        }
+
         if (target.Kind != Fixed32Scalar8RouteTargetKind.Shelf)
         {
             throw new InvalidDataException("The classified route walker did not terminate at an FS32-8 shelf.");
@@ -31097,6 +33467,21 @@ internal sealed partial class LibraDexFileSession : IDisposable
         if (insertResult != Fixed32Scalar8InsertResult.Full)
         {
             throw new InvalidDataException($"Unsupported FS32-8 walked insert result {insertResult}.");
+        }
+
+        if (TryConvertFixed32Scalar8SameKeyShelfToTerminal(
+            pathTarget,
+            existingShelf,
+            profile,
+            key0,
+            key1,
+            key2,
+            key3,
+            encodedIdentity,
+            allowDuplicateKeys,
+            out Fixed32Scalar8RoutedInsertResult terminalResult))
+        {
+            return terminalResult;
         }
 
         if (TrySplitRoutedFixed32Scalar8ByParentRoute(
@@ -31227,6 +33612,21 @@ internal sealed partial class LibraDexFileSession : IDisposable
 
         if (insertResult != Fixed32Scalar8InsertResult.Full)
             throw new InvalidDataException($"Unsupported FS32-8 shelf-image insert result {insertResult}.");
+
+        if (TryConvertFixed32Scalar8SameKeyShelfToTerminal(
+            pathTarget,
+            fullShelfBytes,
+            profile,
+            key0,
+            key1,
+            key2,
+            key3,
+            encodedIdentity,
+            allowDuplicateKeys,
+            out Fixed32Scalar8RoutedInsertResult terminalResult))
+        {
+            return terminalResult;
+        }
 
         if (TrySplitRoutedFixed32Scalar8ByParentRoute(
             pathTarget.ParentRouterOffset,
@@ -31493,6 +33893,19 @@ internal sealed partial class LibraDexFileSession : IDisposable
         {
             Fixed32Scalar8RoutePathTarget pathTarget = WalkFixed32Scalar8RoutePathTarget(rootRouterOffset, key0, key1, key2, key3, maxRouterHops);
             Fixed32Scalar8RouteTarget target = pathTarget.Target;
+            if (target.Kind == Fixed32Scalar8RouteTargetKind.TerminalIdentityRoot)
+            {
+                Span<byte> keyBytes = stackalloc byte[Fixed32Scalar8Layout.KeySize];
+                WriteFixed32Scalar8KeyBytes(keyBytes, key0, key1, key2, key3);
+                return TryDeleteTerminalIdentity8ForWriteContext(
+                    writeContext,
+                    target.Offset,
+                    profile.ShelfExtentSize,
+                    TerminalIdentityRootLayout.ShapeFixedKeyScalar8Identity,
+                    keyBytes,
+                    encodedIdentity);
+            }
+
             if (target.Kind != Fixed32Scalar8RouteTargetKind.Shelf)
             {
                 throw new InvalidDataException("The classified route walker did not terminate at an FS32-8 shelf.");
@@ -31573,13 +33986,13 @@ internal sealed partial class LibraDexFileSession : IDisposable
         ulong encodedIdentity,
         bool allowDuplicateKeys,
         int maxRouterHops,
-        Scalar8Scalar8RouteReadPolicy readPolicy = Scalar8Scalar8RouteReadPolicy.Uncached)
+        Scalar8Scalar8RouteReadPolicy readPolicy = Scalar8Scalar8RouteReadPolicy.PreferPromotedViews)
     {
         Scalar8Scalar8RoutePathTarget pathTarget = WalkScalar8Scalar8RoutePathTarget(rootRouterOffset, encodedKey, maxRouterHops, readPolicy);
         Scalar8Scalar8RouteTarget target = pathTarget.Target;
         if (target.Kind == Scalar8Scalar8RouteTargetKind.TerminalIdentityRoot)
         {
-            if (TryDeepenMismatchedScalar8Scalar8TerminalIdentityRoute(pathTarget, profile, encodedKey, out _))
+            if (TryDeepenMismatchedScalar8Scalar8TerminalIdentityRoute(rootRouterOffset, pathTarget, profile, encodedKey, out _))
             {
                 return InsertWalkedRoutedScalar8Scalar8NoSplit(rootRouterOffset, profile, encodedKey, encodedIdentity, allowDuplicateKeys, maxRouterHops, readPolicy);
             }
@@ -31721,7 +34134,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
         ulong encodedIdentity,
         bool allowDuplicateKeys,
         int maxRouterHops,
-        Scalar8Scalar8RouteReadPolicy readPolicy = Scalar8Scalar8RouteReadPolicy.Uncached)
+        Scalar8Scalar8RouteReadPolicy readPolicy = Scalar8Scalar8RouteReadPolicy.PreferPromotedViews)
     {
         ArgumentNullException.ThrowIfNull(writeContext);
         EnterScalar8Scalar8WriterContextStaging(rootRouterOffset);
@@ -31885,7 +34298,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
         ulong encodedKey,
         ulong encodedIdentity,
         int maxRouterHops,
-        Scalar8Scalar8RouteReadPolicy readPolicy = Scalar8Scalar8RouteReadPolicy.Uncached)
+        Scalar8Scalar8RouteReadPolicy readPolicy = Scalar8Scalar8RouteReadPolicy.PreferPromotedViews)
     {
         ArgumentNullException.ThrowIfNull(writeContext);
         EnterScalar8Scalar8WriterContextStaging(rootRouterOffset);
@@ -32021,11 +34434,39 @@ internal sealed partial class LibraDexFileSession : IDisposable
     {
         Span<byte> expectedKey = stackalloc byte[Scalar8Scalar8Layout.KeySize];
         BinaryPrimitives.WriteUInt64BigEndian(expectedKey, encodedKey);
+        return TryDeleteTerminalIdentity8ForWriteContext(
+            writeContext,
+            rootOffset,
+            shelfExtentSize,
+            TerminalIdentityRootLayout.ShapeScalar8,
+            expectedKey,
+            encodedIdentity);
+    }
+
+    /// <summary>
+    /// Deletes one identity from a shape-qualified scalar-eight terminal route through an isolated writer context.<br/>
+    /// The caller supplies the exact persisted terminal shape and canonical key bytes, allowing fixed-key families to reuse the same shelf-local mutation and abort semantics as `SS8-8`.<br/>
+    /// </summary>
+    /// <param name="writeContext">The isolated writer context that owns staged terminal shelf bytes until publish or abort.<br/></param>
+    /// <param name="rootOffset">The terminal identity root offset reached by the route walker.<br/></param>
+    /// <param name="shelfExtentSize">The fixed extent size for every terminal identity shelf under this root.<br/></param>
+    /// <param name="expectedShape">The terminal root shape required by the owning index.<br/></param>
+    /// <param name="expectedKey">The complete canonical key bytes required in the terminal root.<br/></param>
+    /// <param name="encodedIdentity">The encoded scalar identity to remove.<br/></param>
+    /// <returns><see langword="true"/> when the identity was found and staged for deletion; otherwise <see langword="false"/>.<br/></returns>
+    private bool TryDeleteTerminalIdentity8ForWriteContext(
+        LibraDexWriteContext writeContext,
+        long rootOffset,
+        int shelfExtentSize,
+        byte expectedShape,
+        ReadOnlySpan<byte> expectedKey,
+        ulong encodedIdentity)
+    {
         byte[] rootBytes = ReadTerminalIdentityRootBytes(rootOffset);
-        if (TerminalIdentityRootLayout.ReadShape(rootBytes) != TerminalIdentityRootLayout.ShapeScalar8 ||
+        if (TerminalIdentityRootLayout.ReadShape(rootBytes) != expectedShape ||
             !IsTerminalIdentityRootForKey(rootBytes, expectedKey, out long shelfOffset))
         {
-            throw new InvalidDataException("The routed SS8-8 terminal identity delete root does not match the encoded key.");
+            throw new InvalidDataException("The routed terminal identity delete root does not match the required shape and encoded key.");
         }
 
         while (shelfOffset != 0)
@@ -32214,14 +34655,14 @@ internal sealed partial class LibraDexFileSession : IDisposable
         ulong encodedIdentity,
         bool allowDuplicateKeys,
         int maxRouterHops,
-        Scalar8Scalar8RouteReadPolicy readPolicy = Scalar8Scalar8RouteReadPolicy.Uncached,
+        Scalar8Scalar8RouteReadPolicy readPolicy = Scalar8Scalar8RouteReadPolicy.PreferPromotedViews,
         bool retryUnsetRouteChanges = true)
     {
         Scalar8Scalar8RoutePathTarget pathTarget = WalkScalar8Scalar8RoutePathTarget(rootRouterOffset, encodedKey, maxRouterHops, readPolicy);
         Scalar8Scalar8RouteTarget target = pathTarget.Target;
         if (target.Kind == Scalar8Scalar8RouteTargetKind.TerminalIdentityRoot)
         {
-            if (TryDeepenMismatchedScalar8Scalar8TerminalIdentityRoute(pathTarget, profile, encodedKey, out _))
+            if (TryDeepenMismatchedScalar8Scalar8TerminalIdentityRoute(rootRouterOffset, pathTarget, profile, encodedKey, out _))
             {
                 return InsertWalkedRoutedScalar8Scalar8(rootRouterOffset, profile, encodedKey, encodedIdentity, allowDuplicateKeys, maxRouterHops, readPolicy);
             }
@@ -32352,6 +34793,23 @@ internal sealed partial class LibraDexFileSession : IDisposable
             throw new InvalidDataException($"Unsupported SS8-8 walked insert result {insertResult}.");
         }
 
+        if (existingReadOnly.ItemCount != 0)
+        {
+            ulong existingFirstKey = existingReadOnly.ReadKeyAt(0);
+            if (existingFirstKey != encodedKey &&
+                existingReadOnly.ReadKeyAt(existingReadOnly.ItemCount - 1) == existingFirstKey &&
+                TryClearMismatchedScalar8Scalar8ConsumedRouteAlias(
+                    rootRouterOffset,
+                    pathTarget,
+                    existingFirstKey,
+                    encodedKey,
+                    "single-key shelf",
+                    out _))
+            {
+                return InsertWalkedRoutedScalar8Scalar8(rootRouterOffset, profile, encodedKey, encodedIdentity, allowDuplicateKeys, maxRouterHops, readPolicy);
+            }
+        }
+
         if (existingReadOnly.ItemCount != 0 &&
             existingReadOnly.ReadKeyAt(0) == encodedKey &&
             existingReadOnly.ReadKeyAt(existingReadOnly.ItemCount - 1) == encodedKey)
@@ -32414,7 +34872,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
                 encodedKey,
                 encodedIdentity,
                 target.AllocationClassId,
-                nextRouterKeyDepth);
+                nextRouterKeyDepth,
+                pathTarget.ParentRouterOffset,
+                pathTarget.RoutePrefixByte);
 
         Scalar8Scalar8RoutedInsertKind kind = transformResult == Scalar8Scalar8InsertResult.Inserted
             ? Scalar8Scalar8RoutedInsertKind.WalkedShelfTransformSplit
@@ -32473,7 +34933,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
         ulong encodedIdentity,
         ushort allocationClassId,
         ushort childRouterKeyDepth,
-        VarKeyScalar8RouteMutationHint routeMutationHint)
+        VarKeyScalar8RouteMutationHint routeMutationHint,
+        int requestedRouteCount)
     {
         if (existingShelf.Bytes.Length != profile.ShelfExtentSize)
         {
@@ -32494,9 +34955,87 @@ internal sealed partial class LibraDexFileSession : IDisposable
             out byte[] rightShelfBytes,
             out int leftItemCount,
             out int rightItemCount,
-            out VarKeyScalar8InsertResult insertResult))
+            out VarKeyScalar8InsertResult insertResult,
+            out bool requiresRecursiveReplacement))
         {
-            return (childRouterOffset, 0, 0, 0, 0, insertResult, true, default);
+            if (insertResult == VarKeyScalar8InsertResult.AlreadyPresent)
+            {
+                return (childRouterOffset, 0, 0, 0, 0, insertResult, true, default);
+            }
+
+            if (requiresRecursiveReplacement)
+            {
+                if (IsDurabilityBatchActive)
+                {
+                    throw new LibraDexWriteContextVarKeyScalar8TopologyFallbackException(
+                        "The active VS8 durability batch reached a shared-shelf recursive topology replacement. " +
+                        "Abort the pending batch generation and replay its bounded tuple chunk through serialized immediate publication so topology discovery observes every prior route rewrite.");
+                }
+
+                if (splitKeyDepth < childRouterKeyDepth)
+                {
+                    if (!TryPublishVarKeyScalar8RootPrefixRebuild(
+                        rootRouterOffset,
+                        childRouterOffset,
+                        profile.MaxKeyLength,
+                        requestedRouteCount,
+                        key,
+                        encodedIdentity,
+                        out DataKernelCommitTelemetry rootPrefixTelemetry,
+                        out long rootPrefixTargetOffset,
+                        out int rootPrefixTupleCount))
+                    {
+                        return (childRouterOffset, 0, 0, 0, 0, VarKeyScalar8InsertResult.Inserted, false, default);
+                    }
+
+                    return (
+                        rootPrefixTargetOffset,
+                        rootPrefixTargetOffset,
+                        rootPrefixTargetOffset,
+                        rootPrefixTupleCount,
+                        0,
+                        VarKeyScalar8InsertResult.Inserted,
+                        true,
+                        rootPrefixTelemetry);
+                }
+
+                VarKeyScalar8SortedTuple[] replacementTuples = CreateVarKeyScalar8RecursiveReplacementTuples(
+                    existingShelf,
+                    key,
+                    encodedIdentity);
+                if (!TryPublishVarKeyScalar8RecursiveShelfReplacement(
+                    rootRouterOffset,
+                    parentRouterOffset,
+                    routeIndex,
+                    childRouterOffset,
+                    parentHasDirectIndex,
+                    parentRangeStart,
+                    parentRangeEnd,
+                    parentFinalKeyDepth,
+                    childRouterKeyDepth,
+                    profile.MaxKeyLength,
+                    requestedRouteCount,
+                    replacementTuples,
+                    out DataKernelCommitTelemetry recursiveTelemetry,
+                    out long replacementTargetOffset))
+                {
+                    return (childRouterOffset, 0, 0, 0, 0, VarKeyScalar8InsertResult.Inserted, false, default);
+                }
+
+                return (
+                    replacementTargetOffset,
+                    replacementTargetOffset,
+                    replacementTargetOffset,
+                    replacementTuples.Length,
+                    0,
+                    VarKeyScalar8InsertResult.Inserted,
+                    true,
+                    recursiveTelemetry);
+            }
+
+            throw new InvalidDataException(
+                $"The VS8 transform could not produce two replacement shelves that fit the {profile.ShelfExtentSize:N0}-byte profile; " +
+                $"ChildOffset={childRouterOffset}; ExistingItems={existingShelf.ItemCount:N0}; IncomingKeyBytes={key.Length:N0}; FirstKeyDepth={childRouterKeyDepth}.");
         }
 
         try
@@ -32519,10 +35058,45 @@ internal sealed partial class LibraDexFileSession : IDisposable
                 profile,
                 leftShelfBytes,
                 rightShelfBytes,
+                out bool requiresOwnerSetReplacement,
                 out DataKernelCommitTelemetry telemetry,
                 out long leftShelfOffset,
                 out long rightShelfOffset))
             {
+                if (requiresOwnerSetReplacement)
+                {
+                    if (IsDurabilityBatchActive)
+                    {
+                        throw new LibraDexWriteContextVarKeyScalar8TopologyFallbackException(
+                            "The active VS8 durability batch reached a shared full shelf whose reachable owner set exceeds the walked parent range. " +
+                            "Abort the pending batch generation and replay its bounded tuple chunk through serialized immediate publication so the complete root-owner set can be rebuilt safely.");
+                    }
+
+                    if (!TryPublishVarKeyScalar8RootPrefixRebuild(
+                        rootRouterOffset,
+                        childRouterOffset,
+                        profile.MaxKeyLength,
+                        requestedRouteCount,
+                        key,
+                        encodedIdentity,
+                        out DataKernelCommitTelemetry rootPrefixTelemetry,
+                        out long rootPrefixTargetOffset,
+                        out int rootPrefixTupleCount))
+                    {
+                        return (childRouterOffset, 0, 0, leftItemCount, rightItemCount, insertResult, false, default);
+                    }
+
+                    return (
+                        rootPrefixTargetOffset,
+                        rootPrefixTargetOffset,
+                        rootPrefixTargetOffset,
+                        rootPrefixTupleCount,
+                        0,
+                        insertResult,
+                        true,
+                        rootPrefixTelemetry);
+                }
+
                 return (childRouterOffset, 0, 0, leftItemCount, rightItemCount, insertResult, false, default);
             }
 
@@ -32533,6 +35107,54 @@ internal sealed partial class LibraDexFileSession : IDisposable
             ReturnTemporaryVarKeyScalar8SplitShelfBytes(leftShelfBytes);
             ReturnTemporaryVarKeyScalar8SplitShelfBytes(rightShelfBytes);
         }
+    }
+
+    /// <summary>
+    /// Materializes the complete canonical tuple set for one bounded recursive `VS8` shelf replacement.<br/>
+    /// Existing keys are cloned because the source mutable shelf is released after topology publication; the incoming key is inserted directly into key-then-identity order without a second comparison sort.<br/>
+    /// The allocation is bounded by one full shelf plus one tuple and occurs only when the ordinary two-shelf transform cannot represent a valid skewed distribution.<br/>
+    /// </summary>
+    /// <param name="existingShelf">The full mutable shelf whose complete tuple set is being replaced.<br/></param>
+    /// <param name="incomingKey">The encoded incoming key that caused the full-shelf transform.<br/></param>
+    /// <param name="incomingIdentity">The encoded incoming scalar identity.<br/></param>
+    /// <returns>A strictly ordered tuple array containing every existing tuple and the incoming tuple exactly once.<br/></returns>
+    private static VarKeyScalar8SortedTuple[] CreateVarKeyScalar8RecursiveReplacementTuples(
+        VarKeyScalar8MutableShelf existingShelf,
+        ReadOnlySpan<byte> incomingKey,
+        ulong incomingIdentity)
+    {
+        int existingCount = existingShelf.ItemCount;
+        VarKeyScalar8SortedTuple[] tuples = new VarKeyScalar8SortedTuple[checked(existingCount + 1)];
+        bool inserted = false;
+        int targetIndex = 0;
+        for (int sourceIndex = 0; sourceIndex < existingCount; sourceIndex++)
+        {
+            ReadOnlySpan<byte> currentKey = existingShelf.ReadKeyAt(sourceIndex);
+            ulong currentIdentity = existingShelf.ReadIdentityAt(sourceIndex);
+            int comparison = CompareVarKeyScalar8Tuple(currentKey, currentIdentity, incomingKey, incomingIdentity);
+            if (comparison == 0)
+            {
+                throw new InvalidDataException("The recursive VS8 replacement received an incoming tuple already present in the full shelf.");
+            }
+            if (!inserted && comparison > 0)
+            {
+                tuples[targetIndex++] = new VarKeyScalar8SortedTuple(incomingKey.ToArray(), incomingIdentity);
+                inserted = true;
+            }
+
+            tuples[targetIndex++] = new VarKeyScalar8SortedTuple(currentKey.ToArray(), currentIdentity);
+        }
+
+        if (!inserted)
+        {
+            tuples[targetIndex++] = new VarKeyScalar8SortedTuple(incomingKey.ToArray(), incomingIdentity);
+        }
+        if (targetIndex != tuples.Length)
+        {
+            throw new InvalidDataException("The recursive VS8 replacement tuple materializer did not cover the complete source set.");
+        }
+
+        return tuples;
     }
 
     /// <summary>
@@ -32568,7 +35190,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
         out byte[] rightShelfBytes,
         out int leftItemCount,
         out int rightItemCount,
-        out VarKeyScalar8InsertResult insertResult)
+        out VarKeyScalar8InsertResult insertResult,
+        out bool requiresRecursiveReplacement)
     {
         splitKeyDepth = 0;
         selectedRightPrefixByte = 0;
@@ -32577,7 +35200,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
         rightShelfBytes = [];
         leftItemCount = 0;
         rightItemCount = 0;
-        insertResult = default;
+        insertResult = VarKeyScalar8InsertResult.Invalid;
+        requiresRecursiveReplacement = false;
 
         int existingCount = existingShelf.ItemCount;
         int totalCount = checked(existingCount + 1);
@@ -32630,14 +35254,20 @@ internal sealed partial class LibraDexFileSession : IDisposable
                 throw new InvalidDataException("The VS8 transform split source map did not cover the complete tuple set.");
             }
 
-            (splitKeyDepth, selectedRightPrefixByte) = ChooseVarKeyScalar8TransformSplitPlan(
+            if (!TryChooseVarKeyScalar8TransformSplitPlan(
                 existingShelf,
                 keyOffsets,
                 keyLengths,
                 key,
                 firstKeyDepth,
                 hintRightPrefixByte,
-                profile.MaxKeyLength);
+                profile,
+                out splitKeyDepth,
+                out selectedRightPrefixByte))
+            {
+                requiresRecursiveReplacement = true;
+                return false;
+            }
             selectedPrefixStem = CreateVarKeyScalar8SplitPrefixStem(
                 ReadVarKeyScalar8SplitSourceKey(existingShelf.Bytes, keyOffsets[0], keyLengths[0], key),
                 firstKeyDepth,
@@ -32992,38 +35622,75 @@ internal sealed partial class LibraDexFileSession : IDisposable
 
     /// <summary>
     /// Chooses the raw-key byte depth and right-side prefix boundary for a `VS8` transform split.<br/>
-    /// The search starts at the router depth replacing the full shelf and advances until it finds a prefix transition near the median.<br/>
+    /// The scan finds the first global divergence across the complete tuple range; when that depth precedes <paramref name="firstKeyDepth"/>, false is returned with <paramref name="keyDepth"/> set to the earlier depth so the caller can build a bounded recursive target beneath a deliberately converged route.<br/>
+    /// A false result at or after <paramref name="firstKeyDepth"/> means the ordinary two-shelf plan cannot satisfy the current shelf profile and the same bounded recursive replacement is required at the nominal child depth.<br/>
     /// </summary>
     /// <param name="existingShelf">The decoded mutable shelf that owns existing source slots.</param>
-    /// <param name="sourceSlots">The sorted source-slot map for existing tuples plus the incoming tuple.</param>
+    /// <param name="keyOffsets">The sorted key-payload offsets for existing tuples, with negative values representing the incoming tuple.<br/></param>
+    /// <param name="keyLengths">The sorted raw-key lengths aligned with <paramref name="keyOffsets"/>.<br/></param>
     /// <param name="incomingKey">The incoming raw key bytes.</param>
     /// <param name="firstKeyDepth">The first raw-key byte depth the replacement router can own.</param>
     /// <param name="hintRightPrefixByte">The incoming key prefix at <paramref name="firstKeyDepth"/>.</param>
-    /// <param name="maxKeyLength">The maximum supported raw-key length.</param>
-    /// <returns>The selected raw-key byte depth and first right-side prefix byte.</returns>
-    private static (ushort KeyDepth, byte RightPrefixByte) ChooseVarKeyScalar8TransformSplitPlan(
+    /// <param name="profile">The target replacement-shelf profile used to reject byte- or slot-overfull boundaries before construction.<br/></param>
+    /// <param name="keyDepth">Receives the first global divergence depth, including a depth earlier than <paramref name="firstKeyDepth"/> when routes have intentionally converged.<br/></param>
+    /// <param name="rightPrefixByte">Receives the selected first right-side prefix byte when an ordinary two-shelf plan fits.<br/></param>
+    /// <returns><see langword="true"/> when an ordinary two-shelf boundary fits; otherwise <see langword="false"/> so the caller can use the returned divergence depth for bounded recursive replacement.<br/></returns>
+    private static bool TryChooseVarKeyScalar8TransformSplitPlan(
         VarKeyScalar8MutableShelf existingShelf,
         ReadOnlySpan<int> keyOffsets,
         ReadOnlySpan<int> keyLengths,
         ReadOnlySpan<byte> incomingKey,
         ushort firstKeyDepth,
         byte hintRightPrefixByte,
-        int maxKeyLength)
+        VarKeyScalar8Profile profile,
+        out ushort keyDepth,
+        out byte rightPrefixByte)
     {
+        keyDepth = 0;
+        rightPrefixByte = 0;
         if (keyOffsets.Length < 2 || keyOffsets.Length != keyLengths.Length)
         {
             throw new InvalidDataException("The VS8 transform split boundary requires at least two complete key descriptors.");
         }
 
-        for (ushort keyDepth = firstKeyDepth; keyDepth < maxKeyLength; keyDepth++)
+        ushort splitKeyDepth = 0;
+        while (splitKeyDepth < profile.MaxKeyLength &&
+               GetVarKeyScalar8SplitSourcePrefix(existingShelf.Bytes, keyOffsets[0], keyLengths[0], incomingKey, splitKeyDepth) ==
+               GetVarKeyScalar8SplitSourcePrefix(existingShelf.Bytes, keyOffsets[^1], keyLengths[^1], incomingKey, splitKeyDepth))
         {
-            if (TryChooseVarKeyScalar8TransformSplitRightPrefix(existingShelf.Bytes, keyOffsets, keyLengths, incomingKey, keyDepth, hintRightPrefixByte, out byte rightPrefixByte))
-            {
-                return (keyDepth, rightPrefixByte);
-            }
+            splitKeyDepth++;
         }
 
-        throw new InvalidDataException("The VS8 transform split path requires at least two distinct prefixes in the remaining raw key bytes.");
+        keyDepth = splitKeyDepth;
+        if (splitKeyDepth < firstKeyDepth)
+        {
+            return false;
+        }
+        if (splitKeyDepth >= profile.MaxKeyLength)
+        {
+            return false;
+        }
+
+        bool foundBoundary = TryChooseVarKeyScalar8TransformSplitRightPrefix(
+                existingShelf.Bytes,
+                keyOffsets,
+                keyLengths,
+                incomingKey,
+                splitKeyDepth,
+                hintRightPrefixByte,
+                profile,
+                out rightPrefixByte,
+                out bool sourceOrderValid);
+        if (!sourceOrderValid)
+        {
+            throw new InvalidDataException("The VS8 transform split source is not globally ordered inside its owned prefix stem.");
+        }
+        if (!foundBoundary)
+        {
+            return false;
+        }
+
+        return true;
     }
 
     /// <summary>
@@ -33036,6 +35703,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
     /// <param name="incomingKey">The incoming raw key bytes.</param>
     /// <param name="keyDepth">The raw-key byte depth to evaluate.</param>
     /// <param name="hintRightPrefixByte">The incoming prefix byte at the initial child-router depth.</param>
+    /// <param name="profile">The replacement-shelf profile whose independent slot and payload capacities every candidate must satisfy.</param>
     /// <param name="rightPrefixByte">The selected first right-side prefix byte.</param>
     /// <returns>`true` when the source range can be divided at <paramref name="keyDepth"/>.</returns>
     private static bool TryChooseVarKeyScalar8TransformSplitRightPrefix(
@@ -33045,41 +35713,81 @@ internal sealed partial class LibraDexFileSession : IDisposable
         ReadOnlySpan<byte> incomingKey,
         ushort keyDepth,
         byte hintRightPrefixByte,
-        out byte rightPrefixByte)
+        VarKeyScalar8Profile profile,
+        out byte rightPrefixByte,
+        out bool sourceOrderValid)
     {
-        int desiredRightStart = keyOffsets.Length / 2;
-        for (int i = desiredRightStart; i < keyOffsets.Length; i++)
+        sourceOrderValid = true;
+        for (ushort ownedDepth = 0; ownedDepth < keyDepth; ownedDepth++)
         {
-            byte leftPrefix = GetVarKeyScalar8SplitSourcePrefix(existingShelfBytes, keyOffsets[i - 1], keyLengths[i - 1], incomingKey, keyDepth);
-            byte rightPrefix = GetVarKeyScalar8SplitSourcePrefix(existingShelfBytes, keyOffsets[i], keyLengths[i], incomingKey, keyDepth);
-            if (rightPrefix > leftPrefix)
+            byte ownedStem = GetVarKeyScalar8SplitSourcePrefix(existingShelfBytes, keyOffsets[0], keyLengths[0], incomingKey, ownedDepth);
+            for (int i = 1; i < keyOffsets.Length; i++)
             {
-                rightPrefixByte = rightPrefix;
-                return true;
+                if (GetVarKeyScalar8SplitSourcePrefix(existingShelfBytes, keyOffsets[i], keyLengths[i], incomingKey, ownedDepth) != ownedStem)
+                {
+                    sourceOrderValid = false;
+                    rightPrefixByte = 0;
+                    return false;
+                }
             }
         }
 
-        for (int i = desiredRightStart - 1; i > 0; i--)
+        int slotCapacityBytes = VarKeyScalar8Layout.CalculateSlotCapacityBytes(profile.ShelfExtentSize);
+        int recordCapacityBytes = profile.ShelfExtentSize - VarKeyScalar8Layout.HeaderSize - slotCapacityBytes;
+        long totalRecordBytes = 0;
+        for (int i = 0; i < keyLengths.Length; i++)
         {
-            byte leftPrefix = GetVarKeyScalar8SplitSourcePrefix(existingShelfBytes, keyOffsets[i - 1], keyLengths[i - 1], incomingKey, keyDepth);
-            byte rightPrefix = GetVarKeyScalar8SplitSourcePrefix(existingShelfBytes, keyOffsets[i], keyLengths[i], incomingKey, keyDepth);
-            if (rightPrefix > leftPrefix)
+            totalRecordBytes += VarKeyScalar8Layout.GetNewRecordLength(keyLengths[i]);
+        }
+
+        int bestRightStart = -1;
+        byte bestBoundary = 0;
+        long bestMaximumUtilization = long.MaxValue;
+        int bestBalanceDistance = int.MaxValue;
+        int bestHintDistance = int.MaxValue;
+        long leftRecordBytes = VarKeyScalar8Layout.GetNewRecordLength(keyLengths[0]);
+        byte priorPrefix = GetVarKeyScalar8SplitSourcePrefix(existingShelfBytes, keyOffsets[0], keyLengths[0], incomingKey, keyDepth);
+        for (int i = 1; i < keyOffsets.Length; i++)
+        {
+            byte currentPrefix = GetVarKeyScalar8SplitSourcePrefix(existingShelfBytes, keyOffsets[i], keyLengths[i], incomingKey, keyDepth);
+            if (currentPrefix < priorPrefix)
             {
-                rightPrefixByte = rightPrefix;
-                return true;
+                sourceOrderValid = false;
+                rightPrefixByte = 0;
+                return false;
             }
+            if (currentPrefix > priorPrefix)
+            {
+                int leftCount = i;
+                int rightCount = keyOffsets.Length - i;
+                long rightRecordBytes = totalRecordBytes - leftRecordBytes;
+                bool fits = leftCount * VarKeyScalar8Layout.SlotSize <= slotCapacityBytes &&
+                    rightCount * VarKeyScalar8Layout.SlotSize <= slotCapacityBytes &&
+                    leftRecordBytes <= recordCapacityBytes &&
+                    rightRecordBytes <= recordCapacityBytes;
+                int balanceDistance = Math.Abs(i - (keyOffsets.Length - i));
+                int hintDistance = Math.Abs(currentPrefix - hintRightPrefixByte);
+                long maximumUtilization = Math.Max(
+                    Math.Max(leftRecordBytes * slotCapacityBytes, (long)leftCount * VarKeyScalar8Layout.SlotSize * recordCapacityBytes),
+                    Math.Max(rightRecordBytes * slotCapacityBytes, (long)rightCount * VarKeyScalar8Layout.SlotSize * recordCapacityBytes));
+                if (fits &&
+                    (maximumUtilization < bestMaximumUtilization ||
+                     (maximumUtilization == bestMaximumUtilization && balanceDistance < bestBalanceDistance) ||
+                     (maximumUtilization == bestMaximumUtilization && balanceDistance == bestBalanceDistance && hintDistance < bestHintDistance)))
+                {
+                    bestRightStart = i;
+                    bestBoundary = currentPrefix;
+                    bestMaximumUtilization = maximumUtilization;
+                    bestBalanceDistance = balanceDistance;
+                    bestHintDistance = hintDistance;
+                }
+            }
+            priorPrefix = currentPrefix;
+            leftRecordBytes += VarKeyScalar8Layout.GetNewRecordLength(keyLengths[i]);
         }
 
-        byte firstPrefix = GetVarKeyScalar8SplitSourcePrefix(existingShelfBytes, keyOffsets[0], keyLengths[0], incomingKey, keyDepth);
-        byte lastPrefix = GetVarKeyScalar8SplitSourcePrefix(existingShelfBytes, keyOffsets[^1], keyLengths[^1], incomingKey, keyDepth);
-        if (hintRightPrefixByte > firstPrefix && hintRightPrefixByte <= lastPrefix)
-        {
-            rightPrefixByte = hintRightPrefixByte;
-            return true;
-        }
-
-        rightPrefixByte = 0;
-        return false;
+        rightPrefixByte = bestBoundary;
+        return bestRightStart >= 0;
     }
 
     /// <summary>
@@ -33106,15 +35814,21 @@ internal sealed partial class LibraDexFileSession : IDisposable
             throw new InvalidDataException("The VS8 transform split boundary requires at least two keys.");
         }
 
-        for (ushort keyDepth = firstKeyDepth; keyDepth < maxKeyLength; keyDepth++)
+        ushort splitKeyDepth = 0;
+        while (splitKeyDepth < maxKeyLength &&
+               GetVarKeyScalar8Prefix(ReadVarKeyScalar8SplitSourceKey(existingShelf, sourceSlots[0], incomingKey), splitKeyDepth) ==
+               GetVarKeyScalar8Prefix(ReadVarKeyScalar8SplitSourceKey(existingShelf, sourceSlots[^1], incomingKey), splitKeyDepth))
         {
-            if (TryChooseVarKeyScalar8TransformSplitRightPrefix(existingShelf, sourceSlots, incomingKey, keyDepth, hintRightPrefixByte, out byte rightPrefixByte))
-            {
-                return (keyDepth, rightPrefixByte);
-            }
+            splitKeyDepth++;
         }
 
-        throw new InvalidDataException("The VS8 transform split path requires at least two distinct prefixes in the remaining raw key bytes.");
+        if (splitKeyDepth < firstKeyDepth)
+            throw new InvalidDataException($"The VS8 source-slot transform source violates its routed prefix stem. FirstDifferentDepth={splitKeyDepth}; FirstOwnedDepth={firstKeyDepth}; Count={sourceSlots.Length}.");
+        if (splitKeyDepth >= maxKeyLength ||
+            !TryChooseVarKeyScalar8TransformSplitRightPrefix(existingShelf, sourceSlots, incomingKey, splitKeyDepth, hintRightPrefixByte, out byte rightPrefixByte))
+            throw new InvalidDataException("The VS8 source-slot transform split path requires one globally ordered prefix transition after its owned stem.");
+
+        return (splitKeyDepth, rightPrefixByte);
     }
 
     /// <summary>
@@ -33136,39 +35850,50 @@ internal sealed partial class LibraDexFileSession : IDisposable
         byte hintRightPrefixByte,
         out byte rightPrefixByte)
     {
-        int desiredRightStart = sourceSlots.Length / 2;
-        for (int i = desiredRightStart; i < sourceSlots.Length; i++)
+        for (ushort ownedDepth = 0; ownedDepth < keyDepth; ownedDepth++)
         {
-            byte leftPrefix = GetVarKeyScalar8Prefix(ReadVarKeyScalar8SplitSourceKey(existingShelf, sourceSlots[i - 1], incomingKey), keyDepth);
-            byte rightPrefix = GetVarKeyScalar8Prefix(ReadVarKeyScalar8SplitSourceKey(existingShelf, sourceSlots[i], incomingKey), keyDepth);
-            if (rightPrefix > leftPrefix)
+            byte ownedStem = GetVarKeyScalar8Prefix(ReadVarKeyScalar8SplitSourceKey(existingShelf, sourceSlots[0], incomingKey), ownedDepth);
+            for (int i = 1; i < sourceSlots.Length; i++)
             {
-                rightPrefixByte = rightPrefix;
-                return true;
+                if (GetVarKeyScalar8Prefix(ReadVarKeyScalar8SplitSourceKey(existingShelf, sourceSlots[i], incomingKey), ownedDepth) != ownedStem)
+                {
+                    rightPrefixByte = 0;
+                    return false;
+                }
             }
         }
 
-        for (int i = desiredRightStart - 1; i > 0; i--)
+        int bestRightStart = -1;
+        byte bestBoundary = 0;
+        int bestBalanceDistance = int.MaxValue;
+        int bestHintDistance = int.MaxValue;
+        byte priorPrefix = GetVarKeyScalar8Prefix(ReadVarKeyScalar8SplitSourceKey(existingShelf, sourceSlots[0], incomingKey), keyDepth);
+        for (int i = 1; i < sourceSlots.Length; i++)
         {
-            byte leftPrefix = GetVarKeyScalar8Prefix(ReadVarKeyScalar8SplitSourceKey(existingShelf, sourceSlots[i - 1], incomingKey), keyDepth);
-            byte rightPrefix = GetVarKeyScalar8Prefix(ReadVarKeyScalar8SplitSourceKey(existingShelf, sourceSlots[i], incomingKey), keyDepth);
-            if (rightPrefix > leftPrefix)
+            byte currentPrefix = GetVarKeyScalar8Prefix(ReadVarKeyScalar8SplitSourceKey(existingShelf, sourceSlots[i], incomingKey), keyDepth);
+            if (currentPrefix < priorPrefix)
             {
-                rightPrefixByte = rightPrefix;
-                return true;
+                rightPrefixByte = 0;
+                return false;
             }
+            if (currentPrefix > priorPrefix)
+            {
+                int balanceDistance = Math.Abs(i - (sourceSlots.Length - i));
+                int hintDistance = Math.Abs(currentPrefix - hintRightPrefixByte);
+                if (balanceDistance < bestBalanceDistance ||
+                    (balanceDistance == bestBalanceDistance && hintDistance < bestHintDistance))
+                {
+                    bestRightStart = i;
+                    bestBoundary = currentPrefix;
+                    bestBalanceDistance = balanceDistance;
+                    bestHintDistance = hintDistance;
+                }
+            }
+            priorPrefix = currentPrefix;
         }
 
-        byte firstPrefix = GetVarKeyScalar8Prefix(ReadVarKeyScalar8SplitSourceKey(existingShelf, sourceSlots[0], incomingKey), keyDepth);
-        byte lastPrefix = GetVarKeyScalar8Prefix(ReadVarKeyScalar8SplitSourceKey(existingShelf, sourceSlots[^1], incomingKey), keyDepth);
-        if (hintRightPrefixByte > firstPrefix && hintRightPrefixByte <= lastPrefix)
-        {
-            rightPrefixByte = hintRightPrefixByte;
-            return true;
-        }
-
-        rightPrefixByte = 0;
-        return false;
+        rightPrefixByte = bestBoundary;
+        return bestRightStart >= 0;
     }
 
     /// <summary>
@@ -33191,15 +35916,19 @@ internal sealed partial class LibraDexFileSession : IDisposable
             throw new InvalidDataException("The VS8 transform split boundary requires at least two keys.");
         }
 
-        for (ushort keyDepth = firstKeyDepth; keyDepth < maxKeyLength; keyDepth++)
+        ushort splitKeyDepth = 0;
+        while (splitKeyDepth < maxKeyLength && GetVarKeyScalar8Prefix(sortedKeys[0], splitKeyDepth) == GetVarKeyScalar8Prefix(sortedKeys[^1], splitKeyDepth))
         {
-            if (TryChooseVarKeyScalar8TransformSplitRightPrefix(sortedKeys, keyDepth, hintRightPrefixByte, out byte rightPrefixByte))
-            {
-                return (keyDepth, rightPrefixByte);
-            }
+            splitKeyDepth++;
         }
 
-        throw new InvalidDataException("The VS8 transform split path requires at least two distinct prefixes in the remaining raw key bytes.");
+        if (splitKeyDepth < firstKeyDepth)
+            throw new InvalidDataException($"The VS8 cloned-key transform source violates its routed prefix stem. FirstDifferentDepth={splitKeyDepth}; FirstOwnedDepth={firstKeyDepth}; Count={sortedKeys.Length}.");
+        if (splitKeyDepth >= maxKeyLength ||
+            !TryChooseVarKeyScalar8TransformSplitRightPrefix(sortedKeys, splitKeyDepth, hintRightPrefixByte, out byte rightPrefixByte))
+            throw new InvalidDataException("The VS8 cloned-key transform split path requires one globally ordered prefix transition after its owned stem.");
+
+        return (splitKeyDepth, rightPrefixByte);
     }
 
     private static bool TryChooseVarKeyScalar8TransformSplitRightPrefix(
@@ -33208,39 +35937,50 @@ internal sealed partial class LibraDexFileSession : IDisposable
         byte hintRightPrefixByte,
         out byte rightPrefixByte)
     {
-        int desiredRightStart = sortedKeys.Length / 2;
-        for (int i = desiredRightStart; i < sortedKeys.Length; i++)
+        for (ushort ownedDepth = 0; ownedDepth < keyDepth; ownedDepth++)
         {
-            byte leftPrefix = GetVarKeyScalar8Prefix(sortedKeys[i - 1], keyDepth);
-            byte rightPrefix = GetVarKeyScalar8Prefix(sortedKeys[i], keyDepth);
-            if (rightPrefix > leftPrefix)
+            byte ownedStem = GetVarKeyScalar8Prefix(sortedKeys[0], ownedDepth);
+            for (int i = 1; i < sortedKeys.Length; i++)
             {
-                rightPrefixByte = rightPrefix;
-                return true;
+                if (GetVarKeyScalar8Prefix(sortedKeys[i], ownedDepth) != ownedStem)
+                {
+                    rightPrefixByte = 0;
+                    return false;
+                }
             }
         }
 
-        for (int i = desiredRightStart - 1; i > 0; i--)
+        int bestRightStart = -1;
+        byte bestBoundary = 0;
+        int bestBalanceDistance = int.MaxValue;
+        int bestHintDistance = int.MaxValue;
+        byte priorPrefix = GetVarKeyScalar8Prefix(sortedKeys[0], keyDepth);
+        for (int i = 1; i < sortedKeys.Length; i++)
         {
-            byte leftPrefix = GetVarKeyScalar8Prefix(sortedKeys[i - 1], keyDepth);
-            byte rightPrefix = GetVarKeyScalar8Prefix(sortedKeys[i], keyDepth);
-            if (rightPrefix > leftPrefix)
+            byte currentPrefix = GetVarKeyScalar8Prefix(sortedKeys[i], keyDepth);
+            if (currentPrefix < priorPrefix)
             {
-                rightPrefixByte = rightPrefix;
-                return true;
+                rightPrefixByte = 0;
+                return false;
             }
+            if (currentPrefix > priorPrefix)
+            {
+                int balanceDistance = Math.Abs(i - (sortedKeys.Length - i));
+                int hintDistance = Math.Abs(currentPrefix - hintRightPrefixByte);
+                if (balanceDistance < bestBalanceDistance ||
+                    (balanceDistance == bestBalanceDistance && hintDistance < bestHintDistance))
+                {
+                    bestRightStart = i;
+                    bestBoundary = currentPrefix;
+                    bestBalanceDistance = balanceDistance;
+                    bestHintDistance = hintDistance;
+                }
+            }
+            priorPrefix = currentPrefix;
         }
 
-        byte firstPrefix = GetVarKeyScalar8Prefix(sortedKeys[0], keyDepth);
-        byte lastPrefix = GetVarKeyScalar8Prefix(sortedKeys[^1], keyDepth);
-        if (hintRightPrefixByte > firstPrefix && hintRightPrefixByte <= lastPrefix)
-        {
-            rightPrefixByte = hintRightPrefixByte;
-            return true;
-        }
-
-        rightPrefixByte = 0;
-        return false;
+        rightPrefixByte = bestBoundary;
+        return bestRightStart >= 0;
     }
 
     private static int CompareVarKeyScalar8Tuple(ReadOnlySpan<byte> leftKey, ulong leftIdentity, ReadOnlySpan<byte> rightKey, ulong rightIdentity)
@@ -34023,15 +36763,19 @@ internal sealed partial class LibraDexFileSession : IDisposable
             throw new InvalidDataException("The VS16 transform split boundary requires at least two keys.");
         }
 
-        for (ushort keyDepth = firstKeyDepth; keyDepth < maxKeyLength; keyDepth++)
+        ushort splitKeyDepth = 0;
+        while (splitKeyDepth < maxKeyLength && GetVarKeyScalar16Prefix(sortedKeys[0], splitKeyDepth) == GetVarKeyScalar16Prefix(sortedKeys[^1], splitKeyDepth))
         {
-            if (TryChooseVarKeyScalar16TransformSplitRightPrefix(sortedKeys, keyDepth, hintRightPrefixByte, out byte rightPrefixByte))
-            {
-                return (keyDepth, rightPrefixByte);
-            }
+            splitKeyDepth++;
         }
 
-        throw new InvalidDataException("The VS16 transform split path requires at least two distinct prefixes in the remaining raw key bytes.");
+        if (splitKeyDepth < firstKeyDepth)
+            throw new InvalidDataException($"The VS16 cloned-key transform source violates its routed prefix stem. FirstDifferentDepth={splitKeyDepth}; FirstOwnedDepth={firstKeyDepth}; Count={sortedKeys.Length}.");
+        if (splitKeyDepth >= maxKeyLength ||
+            !TryChooseVarKeyScalar16TransformSplitRightPrefix(sortedKeys, splitKeyDepth, hintRightPrefixByte, out byte rightPrefixByte))
+            throw new InvalidDataException("The VS16 cloned-key transform split path requires one globally ordered prefix transition after its owned stem.");
+
+        return (splitKeyDepth, rightPrefixByte);
     }
 
     private static bool TryChooseVarKeyScalar16TransformSplitRightPrefix(
@@ -34040,39 +36784,50 @@ internal sealed partial class LibraDexFileSession : IDisposable
         byte hintRightPrefixByte,
         out byte rightPrefixByte)
     {
-        int desiredRightStart = sortedKeys.Length / 2;
-        for (int i = desiredRightStart; i < sortedKeys.Length; i++)
+        for (ushort ownedDepth = 0; ownedDepth < keyDepth; ownedDepth++)
         {
-            byte leftPrefix = GetVarKeyScalar16Prefix(sortedKeys[i - 1], keyDepth);
-            byte rightPrefix = GetVarKeyScalar16Prefix(sortedKeys[i], keyDepth);
-            if (rightPrefix > leftPrefix)
+            byte ownedStem = GetVarKeyScalar16Prefix(sortedKeys[0], ownedDepth);
+            for (int i = 1; i < sortedKeys.Length; i++)
             {
-                rightPrefixByte = rightPrefix;
-                return true;
+                if (GetVarKeyScalar16Prefix(sortedKeys[i], ownedDepth) != ownedStem)
+                {
+                    rightPrefixByte = 0;
+                    return false;
+                }
             }
         }
 
-        for (int i = desiredRightStart - 1; i > 0; i--)
+        int bestRightStart = -1;
+        byte bestBoundary = 0;
+        int bestBalanceDistance = int.MaxValue;
+        int bestHintDistance = int.MaxValue;
+        byte priorPrefix = GetVarKeyScalar16Prefix(sortedKeys[0], keyDepth);
+        for (int i = 1; i < sortedKeys.Length; i++)
         {
-            byte leftPrefix = GetVarKeyScalar16Prefix(sortedKeys[i - 1], keyDepth);
-            byte rightPrefix = GetVarKeyScalar16Prefix(sortedKeys[i], keyDepth);
-            if (rightPrefix > leftPrefix)
+            byte currentPrefix = GetVarKeyScalar16Prefix(sortedKeys[i], keyDepth);
+            if (currentPrefix < priorPrefix)
             {
-                rightPrefixByte = rightPrefix;
-                return true;
+                rightPrefixByte = 0;
+                return false;
             }
+            if (currentPrefix > priorPrefix)
+            {
+                int balanceDistance = Math.Abs(i - (sortedKeys.Length - i));
+                int hintDistance = Math.Abs(currentPrefix - hintRightPrefixByte);
+                if (balanceDistance < bestBalanceDistance ||
+                    (balanceDistance == bestBalanceDistance && hintDistance < bestHintDistance))
+                {
+                    bestRightStart = i;
+                    bestBoundary = currentPrefix;
+                    bestBalanceDistance = balanceDistance;
+                    bestHintDistance = hintDistance;
+                }
+            }
+            priorPrefix = currentPrefix;
         }
 
-        byte firstPrefix = GetVarKeyScalar16Prefix(sortedKeys[0], keyDepth);
-        byte lastPrefix = GetVarKeyScalar16Prefix(sortedKeys[^1], keyDepth);
-        if (hintRightPrefixByte > firstPrefix && hintRightPrefixByte <= lastPrefix)
-        {
-            rightPrefixByte = hintRightPrefixByte;
-            return true;
-        }
-
-        rightPrefixByte = 0;
-        return false;
+        rightPrefixByte = bestBoundary;
+        return bestRightStart >= 0;
     }
 
     private static int CompareVarKeyScalar16Tuple(
@@ -34118,6 +36873,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
     /// <param name="encodedIdentity">The encoded 8-byte identity to insert.</param>
     /// <param name="allowDuplicateKeys">Whether duplicate keys with different identities are allowed.</param>
     /// <param name="maxRouterHops">The maximum number of router pages to follow.</param>
+    /// <param name="requestedRouteCount">The preferred compressed-router fanout cap used only when a full shelf requires bounded recursive replacement.<br/></param>
     /// <returns>The storage-facing routed insert result.</returns>
     internal VarKeyScalar8RoutedInsertResult InsertWalkedRoutedVarKeyScalar8(
         long rootRouterOffset,
@@ -34125,15 +36881,15 @@ internal sealed partial class LibraDexFileSession : IDisposable
         ReadOnlySpan<byte> key,
         ulong encodedIdentity,
         bool allowDuplicateKeys,
-        int maxRouterHops)
+        int maxRouterHops,
+        int requestedRouteCount = 16)
     {
         long phaseAllocatedStart = StartVarKeyScalar8PhaseAllocatedBytes();
         long routeWalkStart = Stopwatch.GetTimestamp();
-        VarKeyScalar8RoutePathTarget pathTarget;
-        lock (routerReadCacheSync)
-        {
-            pathTarget = WalkVarKeyScalar8RoutePathTarget(rootRouterOffset, key, maxRouterHops);
-        }
+        // Route-cache helpers use generation-checked internal critical sections and deliberately
+        // release the cache monitor before DataKernel reads.  Holding the broad cache monitor here
+        // would invert the storage-publication -> cache-invalidation order used by topology writes.
+        VarKeyScalar8RoutePathTarget pathTarget = WalkVarKeyScalar8RoutePathTarget(rootRouterOffset, key, maxRouterHops);
         long routeWalkTicks = Stopwatch.GetTimestamp() - routeWalkStart;
         RecordVarKeyScalar8PhaseAllocation("route", routeWalkTicks, StartVarKeyScalar8PhaseAllocatedBytes() - phaseAllocatedStart);
         VarKeyScalar8RouteTarget target = pathTarget.Target;
@@ -34152,7 +36908,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
                 return coldRouteResult;
             }
 
-            return InsertWalkedRoutedVarKeyScalar8(rootRouterOffset, maxKeyLength, key, encodedIdentity, allowDuplicateKeys, maxRouterHops);
+            return InsertWalkedRoutedVarKeyScalar8(rootRouterOffset, maxKeyLength, key, encodedIdentity, allowDuplicateKeys, maxRouterHops, requestedRouteCount);
         }
 
         if (target.Kind == VarKeyScalar8RouteTargetKind.TerminalIdentityRoot)
@@ -34172,7 +36928,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
                     key,
                     encodedIdentity,
                     allowDuplicateKeys,
-                    maxRouterHops);
+                    maxRouterHops,
+                    requestedRouteCount);
             }
 
             return InsertIntoVarKeyScalar8TerminalIdentityRoute(
@@ -34212,6 +36969,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
         phaseAllocatedStart = StartVarKeyScalar8PhaseAllocatedBytes();
         VarKeyScalar8MutableShelf existingShelf = ReadVarKeyScalar8MutableShelf(target.Offset, maxKeyLength);
         VarKeyScalar8Profile profile = existingShelf.Profile;
+        int itemCountBeforeMutation = existingShelf.ItemCount;
         long shelfReadTicks = Stopwatch.GetTimestamp() - shelfReadStart;
         RecordVarKeyScalar8PhaseAllocation("shelf-read", shelfReadTicks - linkedShelfReadTicks, StartVarKeyScalar8PhaseAllocatedBytes() - phaseAllocatedStart);
         bool sampleMutationHint = ShouldSampleVarKeyScalar8MutationHint(existingShelf.Bytes);
@@ -34313,7 +37071,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
                     key,
                     encodedIdentity,
                     allowDuplicateKeys,
-                    maxRouterHops);
+                    maxRouterHops,
+                    requestedRouteCount);
             }
 
             ReleaseVarKeyScalar8MutableShelf(existingShelf, clearShelfBytes: true);
@@ -34355,15 +37114,78 @@ internal sealed partial class LibraDexFileSession : IDisposable
             Span<byte> parentRouterBytes = stackalloc byte[RouterLayout.Size];
             ReadRouterPageUsingArenaCache(pathTarget.ParentRouterOffset, parentRouterBytes);
             RouterReader parentReader = new(parentRouterBytes);
-            if (!parentReader.IsValid ||
-                !TryGetVarKeyParentTargetRange(
-                    parentReader,
-                    pathTarget.RouteIndex,
+            bool parentRangeResolved = false;
+            bool parentRequiresOwnerSetReplacement = false;
+            bool parentHasDirectIndex = false;
+            int parentRangeStart = 0;
+            int parentRangeEnd = 0;
+            ushort parentFinalKeyDepth = 0;
+            if (parentReader.IsValid)
+            {
+                try
+                {
+                    parentRangeResolved = TryGetVarKeyParentTargetRange(
+                        parentReader,
+                        pathTarget.RouteIndex,
+                        target.Offset,
+                        out parentHasDirectIndex,
+                        out parentRangeStart,
+                        out parentRangeEnd,
+                        out parentFinalKeyDepth);
+                }
+                catch (InvalidDataException exception) when (exception.Message.Contains("noncontiguous target alias", StringComparison.Ordinal))
+                {
+                    parentRequiresOwnerSetReplacement = true;
+                }
+            }
+
+            if (parentRequiresOwnerSetReplacement)
+            {
+                varKeyScalar8MutableBatchShelves.Remove(target.Offset);
+                ReleaseVarKeyScalar8MutableShelf(existingShelf, clearShelfBytes: true);
+                if (IsDurabilityBatchActive)
+                {
+                    throw new LibraDexWriteContextVarKeyScalar8TopologyFallbackException(
+                        "The active VS8 durability batch encountered a noncontiguous shared-shelf owner alias. " +
+                        "Abort the pending batch generation and replay its bounded tuple chunk through serialized immediate publication so the complete root-owner set can be rebuilt safely.");
+                }
+
+                if (!TryPublishVarKeyScalar8RootPrefixRebuild(
+                    rootRouterOffset,
                     target.Offset,
-                    out bool parentHasDirectIndex,
-                    out int parentRangeStart,
-                    out int parentRangeEnd,
-                    out ushort parentFinalKeyDepth))
+                    maxKeyLength,
+                    requestedRouteCount,
+                    key,
+                    encodedIdentity,
+                    out DataKernelCommitTelemetry rootPrefixTelemetry,
+                    out long rootPrefixTargetOffset,
+                    out int rootPrefixTupleCount))
+                {
+                    return InsertWalkedRoutedVarKeyScalar8(
+                        rootRouterOffset,
+                        maxKeyLength,
+                        key,
+                        encodedIdentity,
+                        allowDuplicateKeys,
+                        maxRouterHops,
+                        requestedRouteCount);
+                }
+
+                long rootRebuildStructuralTicks = Stopwatch.GetTimestamp() - structuralStart;
+                RecordVarKeyScalar8PhaseAllocation("root-owner-rebuild", rootRebuildStructuralTicks, StartVarKeyScalar8PhaseAllocatedBytes() - phaseAllocatedStart);
+                return new VarKeyScalar8RoutedInsertResult(
+                    VarKeyScalar8RoutedInsertKind.WalkedShelfTransformSplit,
+                    VarKeyScalar8InsertResult.Inserted,
+                    target.Offset,
+                    rootPrefixTargetOffset,
+                    rootPrefixTelemetry,
+                    new VarKeyScalar8WalkedWriteAttribution(routeWalkTicks, shelfReadTicks, mutationTicks, 0, rootRebuildStructuralTicks),
+                    rootPrefixTupleCount,
+                    profile.ShelfExtentSize,
+                    target.RouterDepth);
+            }
+
+            if (!parentRangeResolved)
             {
                 varKeyScalar8MutableBatchShelves.Remove(target.Offset);
                 ReleaseVarKeyScalar8MutableShelf(existingShelf, clearShelfBytes: true);
@@ -34373,7 +37195,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
                     key,
                     encodedIdentity,
                     allowDuplicateKeys,
-                    maxRouterHops);
+                    maxRouterHops,
+                    requestedRouteCount);
             }
 
             ushort childRouterKeyDepth = parentRangeStart < parentRangeEnd
@@ -34414,7 +37237,13 @@ internal sealed partial class LibraDexFileSession : IDisposable
                     encodedIdentity,
                     target.AllocationClassId,
                     childRouterKeyDepth,
-                    routeMutationHint);
+                    routeMutationHint,
+                    requestedRouteCount);
+            }
+            catch (LibraDexWriteContextVarKeyScalar8TopologyFallbackException)
+            {
+                ReleaseVarKeyScalar8MutableShelf(existingShelf, clearShelfBytes: true);
+                throw;
             }
             catch (InvalidDataException ex) when (ex.Message == "The VS8 transform split path requires at least two distinct prefixes in the remaining raw key bytes.")
             {
@@ -34444,7 +37273,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
                     encodedIdentity,
                     target.AllocationClassId,
                     childRouterKeyDepth,
-                    default);
+                    default,
+                    requestedRouteCount);
             }
 
             ReleaseVarKeyScalar8MutableShelf(existingShelf, clearShelfBytes: true);
@@ -34456,7 +37286,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
                     key,
                     encodedIdentity,
                     allowDuplicateKeys,
-                    maxRouterHops);
+                    maxRouterHops,
+                    requestedRouteCount);
             }
 
             VarKeyScalar8RoutedInsertKind kind = transformResult == VarKeyScalar8InsertResult.Inserted
@@ -34485,9 +37316,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
             default,
             new VarKeyScalar8WalkedWriteAttribution(routeWalkTicks, shelfReadTicks, mutationTicks, 0, 0),
             existingShelf.ItemCount,
-            profile.ShelfExtentSize,
-            target.RouterDepth);
-    }
+                profile.ShelfExtentSize,
+                target.RouterDepth);
+        }
 
     /// <summary>
     /// Attempts one routed `VS8` insert through a writer-local ordinary-shelf context without allowing topology changes.<br/>
@@ -34512,11 +37343,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
         int maxRouterHops)
     {
         long routeWalkStart = Stopwatch.GetTimestamp();
-        VarKeyScalar8RoutePathTarget pathTarget;
-        lock (routerReadCacheSync)
-        {
-            pathTarget = WalkVarKeyScalar8RoutePathTarget(rootRouterOffset, key, maxRouterHops);
-        }
+        // Do not retain routerReadCacheSync across the route walk: cache helpers already guard
+        // publication internally, while the writer context validates its route claim at publish.
+        VarKeyScalar8RoutePathTarget pathTarget = WalkVarKeyScalar8RoutePathTarget(rootRouterOffset, key, maxRouterHops);
         long routeWalkTicks = Stopwatch.GetTimestamp() - routeWalkStart;
         VarKeyScalar8RouteTarget target = pathTarget.Target;
         if (target.Kind == VarKeyScalar8RouteTargetKind.TerminalIdentityRoot)
@@ -34559,12 +37388,12 @@ internal sealed partial class LibraDexFileSession : IDisposable
                     target.RouterDepth);
             }
 
-            throw new InvalidOperationException("The VS8 writer-context path does not yet support terminal identity append or rebuild.");
+            throw new LibraDexWriteContextVarKeyScalar8TopologyFallbackException("The VS8 writer-context path does not yet support terminal identity append or rebuild.");
         }
 
         if (target.Kind != VarKeyScalar8RouteTargetKind.Shelf)
         {
-            throw new InvalidOperationException("The VS8 writer-context path supports only ordinary warmed shelf routes.");
+            throw new LibraDexWriteContextVarKeyScalar8TopologyFallbackException("The VS8 writer-context path supports only ordinary warmed shelf routes.");
         }
 
         RecordVarKeyScalar8RouteClaimForWriteContext(writeContext, pathTarget);
@@ -34586,7 +37415,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
                 return duplicateRunResult;
             }
 
-            throw new InvalidOperationException("The VS8 writer-context path does not yet support duplicate-run append or rebuild.");
+            throw new LibraDexWriteContextVarKeyScalar8TopologyFallbackException("The VS8 writer-context path does not yet support duplicate-run append or rebuild.");
         }
 
         VarKeyScalar8MutableShelf existingShelf = ReadVarKeyScalar8MutableShelfForWriteContext(writeContext, target.Offset, maxKeyLength);
@@ -34603,7 +37432,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
         long mutationTicks = Stopwatch.GetTimestamp() - mutationStart;
         if (insertResult == VarKeyScalar8InsertResult.Full)
         {
-            throw new InvalidOperationException("The VS8 writer-context path does not yet support shelf growth or split transforms.");
+            throw new LibraDexWriteContextVarKeyScalar8TopologyFallbackException("The VS8 writer-context path does not yet support shelf growth or split transforms.");
         }
 
         if (insertResult == VarKeyScalar8InsertResult.Inserted)
@@ -34775,11 +37604,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
         ulong encodedIdentity,
         int maxRouterHops = DefaultVarKeyScalar8MaxRouterHops)
     {
-        VarKeyScalar8RoutePathTarget pathTarget;
-        lock (routerReadCacheSync)
-        {
-            pathTarget = WalkVarKeyScalar8RoutePathTarget(rootRouterOffset, key, maxRouterHops);
-        }
+        VarKeyScalar8RoutePathTarget pathTarget = WalkVarKeyScalar8RoutePathTarget(rootRouterOffset, key, maxRouterHops);
 
         VarKeyScalar8RouteTarget target = pathTarget.Target;
         if (target.Kind == VarKeyScalar8RouteTargetKind.TerminalIdentityRoot)
@@ -35000,29 +37825,15 @@ internal sealed partial class LibraDexFileSession : IDisposable
             throw new ArgumentException("The upper VS8 key must be greater than or equal to the lower key.", nameof(upperKey));
         }
 
-        byte lowerPrefix = GetVarKeyScalar8Prefix(lowerKey, 0);
-        byte upperPrefix = GetVarKeyScalar8Prefix(upperKey, 0);
         int copied = 0;
-        using RouteVisitedOffsetSet visitedShelves = RouteVisitedOffsetSet.Rent();
-        using RouteVisitedOffsetSet visitedRouters = RouteVisitedOffsetSet.Rent();
-        for (int prefix = lowerPrefix; prefix <= upperPrefix; prefix++)
+        using VarKeyScalar8RangeReader reader = OpenVarKeyScalar8RangeReader(
+            rootRouterOffset,
+            maxKeyLength,
+            lowerKey,
+            upperKey);
+        while (copied < encodedIdentities.Length && reader.MoveNext())
         {
-            long shelfOffset = FindRouterTarget(rootRouterOffset, (byte)prefix);
-            if (shelfOffset == 0)
-            {
-                continue;
-            }
-
-            copied = CopyVarKeyScalar8RangeFromTarget(
-                shelfOffset,
-                maxKeyLength,
-                lowerKey,
-                upperKey,
-                encodedIdentities,
-                copied,
-                visitedShelves,
-                visitedRouters,
-                remainingRouterHops: DefaultVarKeyScalar8MaxRouterHops);
+            encodedIdentities[copied++] = reader.CurrentEncodedIdentity;
         }
 
         return copied;
@@ -35166,6 +37977,17 @@ internal sealed partial class LibraDexFileSession : IDisposable
                 maxRouterHops);
         }
 
+        if (target.Kind == VarKeyScalar16RouteTargetKind.TerminalIdentityRoot)
+        {
+            return InsertIntoVarKeyScalar16TerminalIdentityRoute(
+                pathTarget,
+                maxKeyLength,
+                key,
+                encodedIdentityHigh,
+                encodedIdentityLow,
+                allowDuplicateKeys);
+        }
+
         if (target.Kind != VarKeyScalar16RouteTargetKind.Shelf)
         {
             throw new InvalidDataException("The classified route walker did not terminate at a VS16 shelf.");
@@ -35250,31 +38072,38 @@ internal sealed partial class LibraDexFileSession : IDisposable
             }
 
             varKeyScalar16MutableBatchShelves.Remove(target.Offset);
-            RawDataReservation grownReservation = kernel.Reserve(grownProfile.ShelfExtentSize);
-            grownShelf.CopyTo(grownReservation.Span);
-            byte[] parentRouterBytes = new byte[RouterLayout.Size];
-            kernel.Read(pathTarget.ParentRouterOffset, parentRouterBytes);
-            RouterReader parentReader = new(parentRouterBytes);
-            if (!parentReader.IsValid)
+            if (!TryPublishSharedShelfGrowth(
+                SharedShelfGrowthShapeVarKeyScalar16,
+                "VS16",
+                rootRouterOffset,
+                pathTarget.ParentRouterOffset,
+                pathTarget.RouteIndex,
+                target.Offset,
+                profile.ShelfExtentSize,
+                grownProfile.ShelfExtentSize,
+                grownShelf,
+                deferRouterCacheInvalidation: true,
+                out DataKernelCommitTelemetry telemetry,
+                out long grownShelfOffset))
             {
-                throw new InvalidDataException("The VS16 growth parent router is invalid.");
+                ReleaseVarKeyScalar16MutableShelf(existingShelf, clearShelfBytes: true);
+                return InsertWalkedRoutedVarKeyScalar16(
+                    rootRouterOffset,
+                    maxKeyLength,
+                    key,
+                    encodedIdentityHigh,
+                    encodedIdentityLow,
+                    allowDuplicateKeys,
+                    maxRouterHops);
             }
 
-            RawDataReservation parentRouterRewrite = kernel.ReserveAt(pathTarget.ParentRouterOffset, RouterLayout.Size);
-            parentRouterBytes.CopyTo(parentRouterRewrite.Span);
-            RouterWriter parentWriter = new(parentRouterRewrite.Span);
-            parentWriter.WriteRouteTarget(pathTarget.RouteIndex, grownReservation.Extent.Offset);
-
-            InvalidateRouterReadCacheForRouterRewrite(pathTarget.ParentRouterOffset);
-            DataKernelCommitTelemetry telemetry = CommitAndDeferRouterReadCacheInvalidation();
-            kernel.ReleaseMemoryExtent(target.Offset, profile.ShelfExtentSize);
             ReleaseVarKeyScalar16MutableShelf(existingShelf, clearShelfBytes: true);
             long growStructuralTicks = Stopwatch.GetTimestamp() - structuralStart;
             return new VarKeyScalar16RoutedInsertResult(
                 VarKeyScalar16RoutedInsertKind.WalkedGrow,
                 grownResult,
                 target.Offset,
-                grownReservation.Extent.Offset,
+                grownShelfOffset,
                 telemetry,
                 new VarKeyScalar16WalkedWriteAttribution(routeWalkTicks, shelfReadTicks, mutationTicks, 0, growStructuralTicks),
                 existingShelf.ItemCount,
@@ -35284,6 +38113,19 @@ internal sealed partial class LibraDexFileSession : IDisposable
 
         if (insertResult == VarKeyScalar16InsertResult.Full)
         {
+            if (TryConvertVarKeyScalar16DuplicateRunToTerminalRoute(
+                pathTarget,
+                existingShelf,
+                profile,
+                key,
+                encodedIdentityHigh,
+                encodedIdentityLow,
+                allowDuplicateKeys,
+                out VarKeyScalar16RoutedInsertResult terminalResult))
+            {
+                return terminalResult;
+            }
+
             Span<byte> parentRouterBytes = stackalloc byte[RouterLayout.Size];
             ReadRouterPageUsingArenaCache(pathTarget.ParentRouterOffset, parentRouterBytes);
             RouterReader parentReader = new(parentRouterBytes);
@@ -35428,11 +38270,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
         int maxRouterHops)
     {
         long routeWalkStart = Stopwatch.GetTimestamp();
-        VarKeyScalar16RoutePathTarget pathTarget;
-        lock (routerReadCacheSync)
-        {
-            pathTarget = WalkVarKeyScalar16RoutePathTarget(rootRouterOffset, key, maxRouterHops);
-        }
+        VarKeyScalar16RoutePathTarget pathTarget = WalkVarKeyScalar16RoutePathTarget(rootRouterOffset, key, maxRouterHops);
 
         long routeWalkTicks = Stopwatch.GetTimestamp() - routeWalkStart;
         VarKeyScalar16RouteTarget target = pathTarget.Target;
@@ -35500,30 +38338,17 @@ internal sealed partial class LibraDexFileSession : IDisposable
             throw new ArgumentException("The upper VS16 key must be greater than or equal to the lower key.", nameof(upperKey));
         }
 
-        byte lowerPrefix = GetVarKeyScalar16Prefix(lowerKey, 0);
-        byte upperPrefix = GetVarKeyScalar16Prefix(upperKey, 0);
         int copied = 0;
-        using RouteVisitedOffsetSet visitedShelves = RouteVisitedOffsetSet.Rent();
-        using RouteVisitedOffsetSet visitedRouters = RouteVisitedOffsetSet.Rent();
-        for (int prefix = lowerPrefix; prefix <= upperPrefix; prefix++)
+        int capacity = Math.Min(encodedIdentityHighs.Length, encodedIdentityLows.Length);
+        using VarKeyScalar16RangeReader reader = OpenVarKeyScalar16RangeReader(
+            rootRouterOffset,
+            maxKeyLength,
+            lowerKey,
+            upperKey);
+        while (copied < capacity && reader.MoveNext())
         {
-            long shelfOffset = FindRouterTarget(rootRouterOffset, (byte)prefix);
-            if (shelfOffset == 0)
-            {
-                continue;
-            }
-
-            copied = CopyVarKeyScalar16RangeFromTarget(
-                shelfOffset,
-                maxKeyLength,
-                lowerKey,
-                upperKey,
-                encodedIdentityHighs,
-                encodedIdentityLows,
-                copied,
-                visitedShelves,
-                visitedRouters,
-                remainingRouterHops: DefaultVarKeyScalar16MaxRouterHops);
+            reader.ReadCurrentIdentity(out encodedIdentityHighs[copied], out encodedIdentityLows[copied]);
+            copied++;
         }
 
         return copied;
@@ -35599,6 +38424,17 @@ internal sealed partial class LibraDexFileSession : IDisposable
     {
         VarKeyScalar16RoutePathTarget pathTarget = WalkVarKeyScalar16RoutePathTarget(rootRouterOffset, key, maxRouterHops);
         VarKeyScalar16RouteTarget target = pathTarget.Target;
+        if (target.Kind == VarKeyScalar16RouteTargetKind.TerminalIdentityRoot)
+        {
+            Span<byte> identity = stackalloc byte[VarKeyScalar16TerminalIdentitySize];
+            WriteVarKeyScalar16TerminalIdentity(identity, encodedIdentityHigh, encodedIdentityLow);
+            return DeleteTerminalVarIdentityExactTupleLocally(
+                target.Offset,
+                TerminalIdentityRootLayout.ShapeVarKeyScalar16Identity,
+                key,
+                identity);
+        }
+
         if (target.Kind != VarKeyScalar16RouteTargetKind.Shelf)
         {
             throw new InvalidDataException("The classified route walker did not terminate at a VS16 shelf for exact tuple delete.");
@@ -35641,11 +38477,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
         ulong encodedIdentityLow,
         int maxRouterHops = DefaultVarKeyScalar16MaxRouterHops)
     {
-        VarKeyScalar16RoutePathTarget pathTarget;
-        lock (routerReadCacheSync)
-        {
-            pathTarget = WalkVarKeyScalar16RoutePathTarget(rootRouterOffset, key, maxRouterHops);
-        }
+        VarKeyScalar16RoutePathTarget pathTarget = WalkVarKeyScalar16RoutePathTarget(rootRouterOffset, key, maxRouterHops);
 
         VarKeyScalar16RouteTarget target = pathTarget.Target;
         if (target.Kind != VarKeyScalar16RouteTargetKind.Shelf)
@@ -35758,6 +38590,11 @@ internal sealed partial class LibraDexFileSession : IDisposable
 
         if (kind != VarKeyScalar16RouteTargetKind.Router)
         {
+            if (kind == VarKeyScalar16RouteTargetKind.TerminalIdentityRoot)
+            {
+                throw new InvalidOperationException("The VS16 writer-context range delete requires the topology-aware durability path for terminal identity routes.");
+            }
+
             throw new InvalidDataException("The routed VS16 writer-context range delete target is not a shelf or router.");
         }
 
@@ -36484,6 +39321,22 @@ internal sealed partial class LibraDexFileSession : IDisposable
             return copied + shelf.CopyIdentitiesInKeyRange(lowerKey, upperKey, encodedIdentityHighs.Slice(copied), encodedIdentityLows.Slice(copied));
         }
 
+        if (kind == VarKeyScalar16RouteTargetKind.TerminalIdentityRoot)
+        {
+            if (!visitedShelves.Add(targetOffset))
+            {
+                return copied;
+            }
+
+            return CopyVarKeyScalar16TerminalIdentityRange(
+                targetOffset,
+                lowerKey,
+                upperKey,
+                encodedIdentityHighs,
+                encodedIdentityLows,
+                copied);
+        }
+
         if (kind != VarKeyScalar16RouteTargetKind.Router)
         {
             throw new InvalidDataException("The routed VS16 range target is not a shelf or router.");
@@ -36592,6 +39445,16 @@ internal sealed partial class LibraDexFileSession : IDisposable
             return deleted;
         }
 
+        if (kind == VarKeyScalar16RouteTargetKind.TerminalIdentityRoot)
+        {
+            if (!visitedShelves.Add(targetOffset))
+            {
+                return 0;
+            }
+
+            return DeleteVarKeyScalar16TerminalIdentityRange(targetOffset, lowerKey, upperKey);
+        }
+
         if (kind != VarKeyScalar16RouteTargetKind.Router)
         {
             throw new InvalidDataException("The routed VS16 delete target is not a shelf or router.");
@@ -36675,6 +39538,11 @@ internal sealed partial class LibraDexFileSession : IDisposable
             varKeyScalar8ReadShelfCache.TryGetValue(shelfOffset, out byte[]? cachedShelfBytes))
         {
             int cachedShelfExtentSize = VarKeyScalar8Layout.ReadShelfExtentSize(cachedShelfBytes);
+            if (cachedShelfExtentSize < VarKeyScalar8Layout.HeaderSize + 32)
+            {
+                throw new InvalidDataException($"The session-local VS8 read shelf cache contains an invalid extent. ShelfOffset={shelfOffset}; ShelfExtentSize={cachedShelfExtentSize}; CachedBytes={cachedShelfBytes.Length}.");
+            }
+
             profile = VarKeyScalar8Profile.Create(cachedShelfExtentSize, maxKeyLength);
             VarKeyScalar8ReadOnly cachedShelf = new(cachedShelfBytes, profile);
             if (!cachedShelf.IsValid)
@@ -36695,6 +39563,11 @@ internal sealed partial class LibraDexFileSession : IDisposable
         }
 
         int shelfExtentSize = VarKeyScalar8Layout.ReadShelfExtentSize(header);
+        if (shelfExtentSize < VarKeyScalar8Layout.HeaderSize + 32)
+        {
+            throw new InvalidDataException($"The persisted VS8 shelf header contains an invalid extent. ShelfOffset={shelfOffset}; ShelfExtentSize={shelfExtentSize}.");
+        }
+
         profile = VarKeyScalar8Profile.Create(shelfExtentSize, maxKeyLength);
         byte[] shelfBytes = new byte[shelfExtentSize];
         header.CopyTo(shelfBytes.AsSpan(0, header.Length));
@@ -36822,7 +39695,10 @@ internal sealed partial class LibraDexFileSession : IDisposable
         }
         else
         {
-            shelfBytes = ReadVarKeyScalar8ShelfBytes(shelfOffset, maxKeyLength, out profile);
+            byte[] readOnlyShelfBytes = ReadVarKeyScalar8ShelfBytes(shelfOffset, maxKeyLength, out profile);
+            shelfBytes = GC.AllocateUninitializedArray<byte>(profile.ShelfExtentSize);
+            readOnlyShelfBytes.AsSpan(0, profile.ShelfExtentSize).CopyTo(shelfBytes);
+            rentSidecars = true;
         }
 
         if (!VarKeyScalar8MutableShelf.TryCreate(shelfBytes, profile, ownsBytes, rentSidecars, out VarKeyScalar8MutableShelf shelf))
@@ -36874,7 +39750,10 @@ internal sealed partial class LibraDexFileSession : IDisposable
         }
         else
         {
-            shelfBytes = ReadVarKeyScalar16ShelfBytes(shelfOffset, maxKeyLength, out profile);
+            byte[] readOnlyShelfBytes = ReadVarKeyScalar16ShelfBytes(shelfOffset, maxKeyLength, out profile);
+            shelfBytes = GC.AllocateUninitializedArray<byte>(profile.ShelfExtentSize);
+            readOnlyShelfBytes.AsSpan(0, profile.ShelfExtentSize).CopyTo(shelfBytes);
+            rentSidecars = true;
         }
 
         if (!VarKeyScalar16MutableShelf.TryCreate(shelfBytes, profile, ownsBytes, rentSidecars, out VarKeyScalar16MutableShelf shelf))
@@ -37006,7 +39885,14 @@ internal sealed partial class LibraDexFileSession : IDisposable
             out int rightItemCount,
             out VarKeyScalar16InsertResult insertResult))
         {
-            return (childRouterOffset, 0, 0, 0, 0, insertResult, default);
+            if (insertResult == VarKeyScalar16InsertResult.AlreadyPresent)
+            {
+                return (childRouterOffset, 0, 0, 0, 0, insertResult, default);
+            }
+
+            throw new InvalidDataException(
+                $"The VS16 transform could not produce two replacement shelves that fit the {profile.ShelfExtentSize:N0}-byte profile; " +
+                $"ChildOffset={childRouterOffset}; ExistingItems={existingShelf.ItemCount:N0}; IncomingKeyBytes={key.Length:N0}; FirstKeyDepth={childRouterKeyDepth}.");
         }
 
         if (parentHasDirectIndex &&
@@ -37161,7 +40047,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
         rightShelfBytes = [];
         leftItemCount = 0;
         rightItemCount = 0;
-        insertResult = default;
+        insertResult = VarKeyScalar16InsertResult.Invalid;
 
         int existingCount = existingShelf.ItemCount;
         int totalCount = checked(existingCount + 1);
@@ -37226,7 +40112,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
                 key,
                 firstKeyDepth,
                 hintRightPrefixByte,
-                profile.MaxKeyLength);
+                profile);
             selectedPrefixStem = CreateVarKeyScalar16SplitPrefixStem(
                 ReadVarKeyScalar16SplitSourceKey(existingShelf.Bytes, keyOffsets[0], keyLengths[0], key),
                 firstKeyDepth,
@@ -37418,7 +40304,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
     /// <param name="incomingKey">The incoming raw key bytes.</param>
     /// <param name="firstKeyDepth">The first raw-key byte depth the replacement router can own.</param>
     /// <param name="hintRightPrefixByte">The incoming key prefix at <paramref name="firstKeyDepth"/>.</param>
-    /// <param name="maxKeyLength">The maximum supported raw-key length.</param>
+    /// <param name="profile">The target replacement-shelf profile used to reject byte- or slot-overfull boundaries before construction.</param>
     /// <returns>The selected raw-key byte depth and first right-side prefix byte.</returns>
     private static (ushort KeyDepth, byte RightPrefixByte) ChooseVarKeyScalar16TransformSplitPlan(
         byte[] existingShelfBytes,
@@ -37427,24 +40313,28 @@ internal sealed partial class LibraDexFileSession : IDisposable
         ReadOnlySpan<byte> incomingKey,
         ushort firstKeyDepth,
         byte hintRightPrefixByte,
-        int maxKeyLength)
+        VarKeyScalar16Profile profile)
     {
         if (keyOffsets.Length < 2 || keyOffsets.Length != keyLengths.Length)
         {
             throw new InvalidDataException("The VS16 transform split boundary requires at least two complete key descriptors.");
         }
 
-        for (ushort keyDepth = firstKeyDepth; keyDepth < maxKeyLength; keyDepth++)
+        ushort splitKeyDepth = 0;
+        while (splitKeyDepth < profile.MaxKeyLength &&
+               GetVarKeyScalar16SplitSourcePrefix(existingShelfBytes, keyOffsets[0], keyLengths[0], incomingKey, splitKeyDepth) ==
+               GetVarKeyScalar16SplitSourcePrefix(existingShelfBytes, keyOffsets[^1], keyLengths[^1], incomingKey, splitKeyDepth))
         {
-            if (TryChooseVarKeyScalar16TransformSplitRightPrefix(existingShelfBytes, keyOffsets, keyLengths, incomingKey, keyDepth, hintRightPrefixByte, out byte rightPrefixByte))
-            {
-                return (keyDepth, rightPrefixByte);
-            }
+            splitKeyDepth++;
         }
 
-        throw new InvalidDataException(
-            "The VS16 transform split path requires at least two distinct prefixes in the remaining raw key bytes. " +
-            CreateVarKeyScalar16TransformSplitFailureDetail(existingShelfBytes, keyOffsets, keyLengths, incomingKey, firstKeyDepth, maxKeyLength));
+        if (splitKeyDepth < firstKeyDepth)
+            throw new InvalidDataException($"The VS16 transform source violates its routed prefix stem. FirstDifferentDepth={splitKeyDepth}; FirstOwnedDepth={firstKeyDepth}; Count={keyOffsets.Length}. " + CreateVarKeyScalar16TransformSplitFailureDetail(existingShelfBytes, keyOffsets, keyLengths, incomingKey, firstKeyDepth, profile.MaxKeyLength));
+        if (splitKeyDepth >= profile.MaxKeyLength ||
+            !TryChooseVarKeyScalar16TransformSplitRightPrefix(existingShelfBytes, keyOffsets, keyLengths, incomingKey, splitKeyDepth, hintRightPrefixByte, profile, out byte rightPrefixByte))
+            throw new InvalidDataException("The VS16 transform split path requires one globally ordered prefix transition after its owned stem. " + CreateVarKeyScalar16TransformSplitFailureDetail(existingShelfBytes, keyOffsets, keyLengths, incomingKey, firstKeyDepth, profile.MaxKeyLength));
+
+        return (splitKeyDepth, rightPrefixByte);
     }
 
     private static string CreateVarKeyScalar16TransformSplitFailureDetail(
@@ -37470,7 +40360,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
 
     /// <summary>
     /// Chooses the right-side prefix byte for a `VS16` transform split from predecoded key descriptors.<br/>
-    /// The search prefers a transition near the median and falls back to the incoming-prefix hint when it still divides the observed source range.<br/>
+    /// The search rejects boundaries that would overflow either replacement shelf, then minimizes maximum byte/slot utilization before considering row balance and the incoming-prefix hint.<br/>
     /// </summary>
     /// <param name="existingShelfBytes">The authoritative byte image of the existing shelf.</param>
     /// <param name="keyOffsets">The sorted key-payload offsets for existing tuples, with negative values representing the incoming tuple.</param>
@@ -37478,6 +40368,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
     /// <param name="incomingKey">The incoming raw key bytes.</param>
     /// <param name="keyDepth">The raw-key byte depth to evaluate.</param>
     /// <param name="hintRightPrefixByte">The incoming prefix byte at the initial child-router depth.</param>
+    /// <param name="profile">The replacement-shelf profile whose independent slot and payload capacities every candidate must satisfy.</param>
     /// <param name="rightPrefixByte">The selected first right-side prefix byte.</param>
     /// <returns>`true` when the source range can be divided at <paramref name="keyDepth"/>.</returns>
     private static bool TryChooseVarKeyScalar16TransformSplitRightPrefix(
@@ -37487,41 +40378,77 @@ internal sealed partial class LibraDexFileSession : IDisposable
         ReadOnlySpan<byte> incomingKey,
         ushort keyDepth,
         byte hintRightPrefixByte,
+        VarKeyScalar16Profile profile,
         out byte rightPrefixByte)
     {
-        int desiredRightStart = keyOffsets.Length / 2;
-        for (int i = desiredRightStart; i < keyOffsets.Length; i++)
+        for (ushort ownedDepth = 0; ownedDepth < keyDepth; ownedDepth++)
         {
-            byte leftPrefix = GetVarKeyScalar16SplitSourcePrefix(existingShelfBytes, keyOffsets[i - 1], keyLengths[i - 1], incomingKey, keyDepth);
-            byte rightPrefix = GetVarKeyScalar16SplitSourcePrefix(existingShelfBytes, keyOffsets[i], keyLengths[i], incomingKey, keyDepth);
-            if (rightPrefix > leftPrefix)
+            byte ownedStem = GetVarKeyScalar16SplitSourcePrefix(existingShelfBytes, keyOffsets[0], keyLengths[0], incomingKey, ownedDepth);
+            for (int i = 1; i < keyOffsets.Length; i++)
             {
-                rightPrefixByte = rightPrefix;
-                return true;
+                if (GetVarKeyScalar16SplitSourcePrefix(existingShelfBytes, keyOffsets[i], keyLengths[i], incomingKey, ownedDepth) != ownedStem)
+                {
+                    rightPrefixByte = 0;
+                    return false;
+                }
             }
         }
 
-        for (int i = desiredRightStart - 1; i > 0; i--)
+        int slotCapacityBytes = VarKeyScalar16Layout.CalculateSlotCapacityBytes(profile.ShelfExtentSize);
+        int recordCapacityBytes = profile.ShelfExtentSize - VarKeyScalar16Layout.HeaderSize - slotCapacityBytes;
+        long totalRecordBytes = 0;
+        for (int i = 0; i < keyLengths.Length; i++)
         {
-            byte leftPrefix = GetVarKeyScalar16SplitSourcePrefix(existingShelfBytes, keyOffsets[i - 1], keyLengths[i - 1], incomingKey, keyDepth);
-            byte rightPrefix = GetVarKeyScalar16SplitSourcePrefix(existingShelfBytes, keyOffsets[i], keyLengths[i], incomingKey, keyDepth);
-            if (rightPrefix > leftPrefix)
+            totalRecordBytes += VarKeyScalar16Layout.GetNewRecordLength(keyLengths[i]);
+        }
+
+        int bestRightStart = -1;
+        byte bestBoundary = 0;
+        long bestMaximumUtilization = long.MaxValue;
+        int bestBalanceDistance = int.MaxValue;
+        int bestHintDistance = int.MaxValue;
+        long leftRecordBytes = VarKeyScalar16Layout.GetNewRecordLength(keyLengths[0]);
+        byte priorPrefix = GetVarKeyScalar16SplitSourcePrefix(existingShelfBytes, keyOffsets[0], keyLengths[0], incomingKey, keyDepth);
+        for (int i = 1; i < keyOffsets.Length; i++)
+        {
+            byte currentPrefix = GetVarKeyScalar16SplitSourcePrefix(existingShelfBytes, keyOffsets[i], keyLengths[i], incomingKey, keyDepth);
+            if (currentPrefix < priorPrefix)
             {
-                rightPrefixByte = rightPrefix;
-                return true;
+                rightPrefixByte = 0;
+                return false;
             }
+            if (currentPrefix > priorPrefix)
+            {
+                int leftCount = i;
+                int rightCount = keyOffsets.Length - i;
+                long rightRecordBytes = totalRecordBytes - leftRecordBytes;
+                bool fits = leftCount * VarKeyScalar16Layout.SlotSize <= slotCapacityBytes &&
+                    rightCount * VarKeyScalar16Layout.SlotSize <= slotCapacityBytes &&
+                    leftRecordBytes <= recordCapacityBytes &&
+                    rightRecordBytes <= recordCapacityBytes;
+                int balanceDistance = Math.Abs(i - (keyOffsets.Length - i));
+                int hintDistance = Math.Abs(currentPrefix - hintRightPrefixByte);
+                long maximumUtilization = Math.Max(
+                    Math.Max(leftRecordBytes * slotCapacityBytes, (long)leftCount * VarKeyScalar16Layout.SlotSize * recordCapacityBytes),
+                    Math.Max(rightRecordBytes * slotCapacityBytes, (long)rightCount * VarKeyScalar16Layout.SlotSize * recordCapacityBytes));
+                if (fits &&
+                    (maximumUtilization < bestMaximumUtilization ||
+                     (maximumUtilization == bestMaximumUtilization && balanceDistance < bestBalanceDistance) ||
+                     (maximumUtilization == bestMaximumUtilization && balanceDistance == bestBalanceDistance && hintDistance < bestHintDistance)))
+                {
+                    bestRightStart = i;
+                    bestBoundary = currentPrefix;
+                    bestMaximumUtilization = maximumUtilization;
+                    bestBalanceDistance = balanceDistance;
+                    bestHintDistance = hintDistance;
+                }
+            }
+            priorPrefix = currentPrefix;
+            leftRecordBytes += VarKeyScalar16Layout.GetNewRecordLength(keyLengths[i]);
         }
 
-        byte firstPrefix = GetVarKeyScalar16SplitSourcePrefix(existingShelfBytes, keyOffsets[0], keyLengths[0], incomingKey, keyDepth);
-        byte lastPrefix = GetVarKeyScalar16SplitSourcePrefix(existingShelfBytes, keyOffsets[^1], keyLengths[^1], incomingKey, keyDepth);
-        if (hintRightPrefixByte > firstPrefix && hintRightPrefixByte <= lastPrefix)
-        {
-            rightPrefixByte = hintRightPrefixByte;
-            return true;
-        }
-
-        rightPrefixByte = 0;
-        return false;
+        rightPrefixByte = bestBoundary;
+        return bestRightStart >= 0;
     }
 
     /// <summary>
@@ -38305,6 +41232,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
             VerifyActiveWriteContext(writeContext);
             long deferredRequests = deferredDurabilityCommitRequests;
             kernel.DiscardPending();
+            ClearTerminalIdentityReadCaches();
             ClearRouterReadCaches();
             durabilityBatchActive = false;
             ReleaseDiagnosticWriteWindow(writeContext.OperationToken);
@@ -38630,6 +41558,11 @@ internal sealed partial class LibraDexFileSession : IDisposable
     {
         byte[] bytes = mutableShelf.Bytes;
         bool returnLargeBytes = bytes.Length > PooledMutableShelfMaxBytes;
+        if (returnLargeBytes)
+        {
+            RemoveReadShelfCacheAlias(varKeyScalar8ReadShelfCache, bytes);
+        }
+
         if (clearShelfBytes && returnLargeBytes)
         {
             bytes.AsSpan(0, mutableShelf.Profile.ShelfExtentSize).Clear();
@@ -38652,6 +41585,11 @@ internal sealed partial class LibraDexFileSession : IDisposable
     {
         byte[] bytes = mutableShelf.Bytes;
         bool returnLargeBytes = bytes.Length > PooledMutableShelfMaxBytes;
+        if (returnLargeBytes)
+        {
+            RemoveReadShelfCacheAlias(varKeyScalar16ReadShelfCache, bytes);
+        }
+
         if (clearShelfBytes && returnLargeBytes)
         {
             bytes.AsSpan(0, mutableShelf.Profile.ShelfExtentSize).Clear();
@@ -38661,6 +41599,27 @@ internal sealed partial class LibraDexFileSession : IDisposable
         if (returnLargeBytes)
         {
             ReturnLargeMutableShelfBytes(bytes);
+        }
+    }
+
+    /// <summary>
+    /// Removes a read-cache entry that aliases a mutable large-shelf byte image before that image is cleared or returned for reuse.<br/>
+    /// Conditional key/value removal prevents a concurrent cache replacement for the same offset from being discarded, while reference comparison avoids scanning or copying shelf contents.<br/>
+    /// </summary>
+    /// <param name="readCache">The shape-specific read shelf cache that may retain the mutable byte-array reference.<br/></param>
+    /// <param name="mutableBytes">The mutable byte image about to be cleared or returned to the large-shelf pool.<br/></param>
+    private static void RemoveReadShelfCacheAlias(
+        ConcurrentDictionary<long, byte[]> readCache,
+        byte[] mutableBytes)
+    {
+        ICollection<KeyValuePair<long, byte[]>> conditionalEntries = readCache;
+        foreach (KeyValuePair<long, byte[]> entry in readCache)
+        {
+            if (ReferenceEquals(entry.Value, mutableBytes))
+            {
+                _ = conditionalEntries.Remove(entry);
+                return;
+            }
         }
     }
 
@@ -38680,12 +41639,15 @@ internal sealed partial class LibraDexFileSession : IDisposable
             return ArrayPool<byte>.Shared.Rent(shelfExtentSize);
         }
 
-        if (largeMutableShelfBytePool.TryGetValue(shelfExtentSize, out Stack<byte[]>? buffers) &&
-            buffers.Count != 0)
+        lock (largeMutableShelfBytePoolSync)
         {
-            ownsPooledBytes = false;
-            largeMutableShelfBytePoolBytes -= shelfExtentSize;
-            return buffers.Pop();
+            if (largeMutableShelfBytePool.TryGetValue(shelfExtentSize, out Stack<byte[]>? buffers) &&
+                buffers.Count != 0)
+            {
+                ownsPooledBytes = false;
+                largeMutableShelfBytePoolBytes -= shelfExtentSize;
+                return buffers.Pop();
+            }
         }
 
         ownsPooledBytes = false;
@@ -38745,20 +41707,27 @@ internal sealed partial class LibraDexFileSession : IDisposable
     /// <param name="bytes">The large mutable shelf byte image to retain for reuse or drop for normal GC collection.</param>
     private void ReturnLargeMutableShelfBytes(byte[] bytes)
     {
-        if (bytes.Length <= PooledMutableShelfMaxBytes ||
-            largeMutableShelfBytePoolBytes + bytes.Length > LargeMutableShelfPoolMaxBytes)
+        if (bytes.Length <= PooledMutableShelfMaxBytes)
         {
             return;
         }
 
-        if (!largeMutableShelfBytePool.TryGetValue(bytes.Length, out Stack<byte[]>? buffers))
+        lock (largeMutableShelfBytePoolSync)
         {
-            buffers = new Stack<byte[]>();
-            largeMutableShelfBytePool.Add(bytes.Length, buffers);
-        }
+            if (largeMutableShelfBytePoolBytes + bytes.Length > LargeMutableShelfPoolMaxBytes)
+            {
+                return;
+            }
 
-        buffers.Push(bytes);
-        largeMutableShelfBytePoolBytes += bytes.Length;
+            if (!largeMutableShelfBytePool.TryGetValue(bytes.Length, out Stack<byte[]>? buffers))
+            {
+                buffers = new Stack<byte[]>();
+                largeMutableShelfBytePool.Add(bytes.Length, buffers);
+            }
+
+            buffers.Push(bytes);
+            largeMutableShelfBytePoolBytes += bytes.Length;
+        }
     }
 
     /// <summary>
@@ -39140,6 +42109,52 @@ internal sealed partial class LibraDexFileSession : IDisposable
             {
                 arena.MarkUsed(pageIndex);
             }
+        }
+    }
+
+    /// <summary>
+    /// Lazily recovers one persisted router arena when an allocator request names its page-zero base but the current session has not registered it yet.<br/>
+    /// The targeted read avoids an eager whole-file arena scan during open while still making durable shelf-to-router reuse available before a normal arena-aware traversal happens to warm the cache.<br/>
+    /// A non-router, a standalone router, or a router whose persisted arena base differs from the requested base is treated as a missed allocation hint rather than as corruption.<br/>
+    /// Valid arena metadata is authoritative: the complete extent is loaded once, registered, and scanned for already occupied router pages before any page can be reused.<br/>
+    /// </summary>
+    /// <param name="preferredArenaBaseOffset">The expected page-zero file offset of the persisted router arena.<br/></param>
+    /// <returns>The recovered session-local arena state, or <see langword="null"/> when the preferred offset does not identify that arena.<br/></returns>
+    private RouterArenaState? TryRecoverPersistedRouterArena(long preferredArenaBaseOffset)
+    {
+        Span<byte> routerBytes = stackalloc byte[RouterLayout.Size];
+        kernel.Read(preferredArenaBaseOffset, routerBytes);
+        RouterReader reader = new(routerBytes);
+        if (!reader.IsValid || !reader.IsArenaMember)
+        {
+            return null;
+        }
+
+        long persistedArenaBaseOffset = checked(preferredArenaBaseOffset + reader.ArenaBaseDelta);
+        if (persistedArenaBaseOffset != preferredArenaBaseOffset)
+        {
+            return null;
+        }
+
+        int arenaLength = reader.ArenaLength;
+        if (arenaLength <= RouterLayout.Size)
+        {
+            return null;
+        }
+
+        byte[] arenaBytes = new byte[arenaLength];
+        kernel.Read(persistedArenaBaseOffset, arenaBytes);
+        lock (routerReadCacheSync)
+        {
+            RouterArenaState? existing = FindRouterArena(persistedArenaBaseOffset);
+            if (existing is not null)
+            {
+                return existing;
+            }
+
+            routerArenaReadCache.Store(persistedArenaBaseOffset, arenaBytes, arenaLength, RouterArenaReadCacheMaxBytes);
+            RegisterRouterArenaFromCachedBytes(persistedArenaBaseOffset, arenaLength);
+            return FindRouterArena(persistedArenaBaseOffset);
         }
     }
 
@@ -39927,6 +42942,11 @@ internal sealed partial class LibraDexFileSession : IDisposable
             return Fixed32Scalar16RouteTargetKind.Shelf;
         }
 
+        if (magic == TerminalIdentityRootLayout.Magic)
+        {
+            return Fixed32Scalar16RouteTargetKind.TerminalIdentityRoot;
+        }
+
         throw new InvalidDataException($"FS32-16 route target at offset {targetOffset} does not contain a recognized LibraDex structure.");
     }
 
@@ -39968,6 +42988,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
     /// <param name="key3">The encoded fixed key part 3 whose prefix bytes drive routing.</param>
     /// <param name="maxRouterHops">The maximum number of router pages to follow before treating the route graph as invalid.</param>
     /// <param name="routerOffsetsByDepth">Optional caller-owned frontier storage populated with each visited router offset at its encoded key depth.<br/></param>
+    /// <param name="returnDefaultWhenUnset">Whether an intentionally absent exact-stem route returns the default path target instead of throwing.<br/></param>
     /// <returns>The classified route target and parent router route metadata.</returns>
     /// <exception cref="ArgumentOutOfRangeException">Thrown when <paramref name="maxRouterHops"/> is not positive.</exception>
     /// <exception cref="InvalidDataException">Thrown when a route is unset, a router is invalid, or routing does not terminate at a shelf.</exception>
@@ -39978,7 +42999,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
         ulong key2,
         ulong key3,
         int maxRouterHops,
-        Span<long> routerOffsetsByDepth = default)
+        Span<long> routerOffsetsByDepth = default,
+        bool returnDefaultWhenUnset = false)
     {
         if (maxRouterHops <= 0)
         {
@@ -40003,6 +43025,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
                 long directTargetOffset = directView.GetTarget(directPrefixByte);
                 if (directTargetOffset == 0)
                 {
+                    if (returnDefaultWhenUnset)
+                        return default;
                     throw new InvalidDataException("The routed FS32-16 target is unset.");
                 }
 
@@ -40013,7 +43037,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
                     directView.SetTargetKind(directPrefixByte, (Scalar8Scalar8RouteTargetKind)directKind);
                 }
 
-                if (directKind == Fixed32Scalar16RouteTargetKind.Shelf)
+                if (directKind == Fixed32Scalar16RouteTargetKind.Shelf ||
+                    directKind == Fixed32Scalar16RouteTargetKind.TerminalIdentityRoot)
                 {
                     return new Fixed32Scalar16RoutePathTarget(
                         new Fixed32Scalar16RouteTarget(directKind, directTargetOffset, directView.KeyDepth, directView.AllocationClassId),
@@ -40044,11 +43069,14 @@ internal sealed partial class LibraDexFileSession : IDisposable
             long targetOffset = reader.FindTarget(prefixByte);
             if (targetOffset == 0)
             {
+                if (returnDefaultWhenUnset)
+                    return default;
                 throw new InvalidDataException("The routed FS32-16 target is unset.");
             }
 
             Fixed32Scalar16RouteTargetKind kind = ClassifyFixed32Scalar16RouteTarget(targetOffset);
-            if (kind == Fixed32Scalar16RouteTargetKind.Shelf)
+            if (kind == Fixed32Scalar16RouteTargetKind.Shelf ||
+                kind == Fixed32Scalar16RouteTargetKind.TerminalIdentityRoot)
             {
                 return new Fixed32Scalar16RoutePathTarget(
                     new Fixed32Scalar16RouteTarget(kind, targetOffset, reader.KeyDepth, reader.AllocationClassId),
@@ -41556,16 +44584,30 @@ internal sealed partial class LibraDexFileSession : IDisposable
             if (routerDepth == splitKeyDepth)
                 appendedWriter.InitializeExpandedOneByteSplit(routerDepth, allocationClassId, leftAppend.Extent.Offset, rightAppend.Extent.Offset, selectedRightPrefixByte);
             else
-                appendedWriter.InitializeExpandedOneByteUniform(routerDepth, allocationClassId, nextRouterOffset);
+                appendedWriter.InitializeExpandedOneByte(
+                    routerDepth,
+                    allocationClassId,
+                    CreateScalar8Scalar8IntermediateSplitRouteTargets(
+                        nextRouterOffset,
+                        leftAppend.Extent.Offset,
+                        rightAppend.Extent.Offset,
+                        GetFixed32Scalar16Prefix(key0s[0], key1s[0], key2s[0], key3s[0], routerDepth)));
             nextRouterOffset = appendedRouter.Extent.Offset;
         }
 
         RawDataReservation childRouterRewrite = kernel.ReserveAt(childRouterOffset, RouterLayout.Size);
         RouterWriter childWriter = new(childRouterRewrite.Span);
-        if (nextRouterOffset != 0)
-            childWriter.InitializeExpandedOneByteUniform(childRouterKeyDepth, allocationClassId, nextRouterOffset);
-        else
+        if (nextRouterOffset == 0)
             childWriter.InitializeExpandedOneByteSplit(childRouterKeyDepth, allocationClassId, leftAppend.Extent.Offset, rightAppend.Extent.Offset, selectedRightPrefixByte);
+        else
+            childWriter.InitializeExpandedOneByte(
+                childRouterKeyDepth,
+                allocationClassId,
+                CreateScalar8Scalar8IntermediateSplitRouteTargets(
+                    nextRouterOffset,
+                    leftAppend.Extent.Offset,
+                    rightAppend.Extent.Offset,
+                    GetFixed32Scalar16Prefix(key0s[0], key1s[0], key2s[0], key3s[0], childRouterKeyDepth)));
         childWriter.WriteArenaMetadata(
             arenaBaseDelta: 0,
             arenaLength: profile.ShelfExtentSize,
@@ -41853,15 +44895,21 @@ internal sealed partial class LibraDexFileSession : IDisposable
             throw new InvalidDataException("The FS32-16 transform split boundary requires at least two keys.");
         }
 
-        for (ushort keyDepth = firstKeyDepth; keyDepth < Fixed32Scalar16Layout.KeySize; keyDepth++)
+        ushort splitKeyDepth = 0;
+        while (splitKeyDepth < Fixed32Scalar16Layout.KeySize &&
+               GetFixed32Scalar16Prefix(sortedKey0s[0], sortedKey1s[0], sortedKey2s[0], sortedKey3s[0], splitKeyDepth) ==
+               GetFixed32Scalar16Prefix(sortedKey0s[^1], sortedKey1s[^1], sortedKey2s[^1], sortedKey3s[^1], splitKeyDepth))
         {
-            if (TryChooseFixed32Scalar16TransformSplitRightPrefix(sortedKey0s, sortedKey1s, sortedKey2s, sortedKey3s, keyDepth, hintRightPrefixByte, out byte rightPrefixByte))
-            {
-                return (keyDepth, rightPrefixByte);
-            }
+            splitKeyDepth++;
         }
 
-        throw new InvalidDataException("The FS32-16 transform split path requires at least two distinct prefixes in the remaining encoded key bytes.");
+        if (splitKeyDepth < firstKeyDepth)
+            throw new InvalidDataException($"The FS32-16 transform source violates its routed prefix stem. FirstDifferentDepth={splitKeyDepth}; FirstOwnedDepth={firstKeyDepth}; Count={sortedKey0s.Length}.");
+        if (splitKeyDepth >= Fixed32Scalar16Layout.KeySize ||
+            !TryChooseFixed32Scalar16TransformSplitRightPrefix(sortedKey0s, sortedKey1s, sortedKey2s, sortedKey3s, splitKeyDepth, hintRightPrefixByte, out byte rightPrefixByte))
+            throw new InvalidDataException("The FS32-16 transform split path requires one globally ordered prefix transition after its owned stem.");
+
+        return (splitKeyDepth, rightPrefixByte);
     }
 
 
@@ -41887,39 +44935,47 @@ internal sealed partial class LibraDexFileSession : IDisposable
         byte hintRightPrefixByte,
         out byte rightPrefixByte)
     {
-        int desiredRightStart = sortedKey0s.Length / 2;
-        for (int i = desiredRightStart; i < sortedKey0s.Length; i++)
+        for (ushort ownedDepth = 0; ownedDepth < keyDepth; ownedDepth++)
         {
-            byte leftPrefix = GetFixed32Scalar16Prefix(sortedKey0s[i - 1], sortedKey1s[i - 1], sortedKey2s[i - 1], sortedKey3s[i - 1], keyDepth);
-            byte rightPrefix = GetFixed32Scalar16Prefix(sortedKey0s[i], sortedKey1s[i], sortedKey2s[i], sortedKey3s[i], keyDepth);
-            if (rightPrefix > leftPrefix)
+            if (GetFixed32Scalar16Prefix(sortedKey0s[0], sortedKey1s[0], sortedKey2s[0], sortedKey3s[0], ownedDepth) !=
+                GetFixed32Scalar16Prefix(sortedKey0s[^1], sortedKey1s[^1], sortedKey2s[^1], sortedKey3s[^1], ownedDepth))
             {
-                rightPrefixByte = rightPrefix;
-                return true;
+                rightPrefixByte = 0;
+                return false;
             }
         }
 
-        for (int i = desiredRightStart - 1; i > 0; i--)
+        int bestRightStart = -1;
+        byte bestBoundary = 0;
+        int bestBalanceDistance = int.MaxValue;
+        int bestHintDistance = int.MaxValue;
+        byte priorPrefix = GetFixed32Scalar16Prefix(sortedKey0s[0], sortedKey1s[0], sortedKey2s[0], sortedKey3s[0], keyDepth);
+        for (int i = 1; i < sortedKey0s.Length; i++)
         {
-            byte leftPrefix = GetFixed32Scalar16Prefix(sortedKey0s[i - 1], sortedKey1s[i - 1], sortedKey2s[i - 1], sortedKey3s[i - 1], keyDepth);
-            byte rightPrefix = GetFixed32Scalar16Prefix(sortedKey0s[i], sortedKey1s[i], sortedKey2s[i], sortedKey3s[i], keyDepth);
-            if (rightPrefix > leftPrefix)
+            byte currentPrefix = GetFixed32Scalar16Prefix(sortedKey0s[i], sortedKey1s[i], sortedKey2s[i], sortedKey3s[i], keyDepth);
+            if (currentPrefix < priorPrefix)
             {
-                rightPrefixByte = rightPrefix;
-                return true;
+                rightPrefixByte = 0;
+                return false;
             }
+            if (currentPrefix > priorPrefix)
+            {
+                int balanceDistance = Math.Abs(i - (sortedKey0s.Length - i));
+                int hintDistance = Math.Abs(currentPrefix - hintRightPrefixByte);
+                if (balanceDistance < bestBalanceDistance ||
+                    (balanceDistance == bestBalanceDistance && hintDistance < bestHintDistance))
+                {
+                    bestRightStart = i;
+                    bestBoundary = currentPrefix;
+                    bestBalanceDistance = balanceDistance;
+                    bestHintDistance = hintDistance;
+                }
+            }
+            priorPrefix = currentPrefix;
         }
 
-        byte firstPrefix = GetFixed32Scalar16Prefix(sortedKey0s[0], sortedKey1s[0], sortedKey2s[0], sortedKey3s[0], keyDepth);
-        byte lastPrefix = GetFixed32Scalar16Prefix(sortedKey0s[^1], sortedKey1s[^1], sortedKey2s[^1], sortedKey3s[^1], keyDepth);
-        if (hintRightPrefixByte > firstPrefix && hintRightPrefixByte <= lastPrefix)
-        {
-            rightPrefixByte = hintRightPrefixByte;
-            return true;
-        }
-
-        rightPrefixByte = 0;
-        return false;
+        rightPrefixByte = bestBoundary;
+        return bestRightStart >= 0;
     }
 
 
@@ -42544,6 +45600,11 @@ internal sealed partial class LibraDexFileSession : IDisposable
     {
         Fixed32Scalar16RoutePathTarget pathTarget = WalkFixed32Scalar16RoutePathTarget(rootRouterOffset, key0, key1, key2, key3, maxRouterHops);
         Fixed32Scalar16RouteTarget target = pathTarget.Target;
+        if (target.Kind == Fixed32Scalar16RouteTargetKind.TerminalIdentityRoot)
+        {
+            return InsertIntoFixed32Scalar16TerminalIdentityRoute(pathTarget, profile, key0, key1, key2, key3, encodedIdentityHigh, encodedIdentityLow, allowDuplicateKeys);
+        }
+
         if (target.Kind != Fixed32Scalar16RouteTargetKind.Shelf)
         {
             throw new InvalidDataException("The classified route walker did not terminate at an FS32-16 shelf.");
@@ -42601,6 +45662,22 @@ internal sealed partial class LibraDexFileSession : IDisposable
         if (insertResult != Fixed32Scalar16InsertResult.Full)
         {
             throw new InvalidDataException($"Unsupported FS32-16 walked insert result {insertResult}.");
+        }
+
+        if (TryConvertFixed32Scalar16SameKeyShelfToTerminal(
+            pathTarget,
+            existingShelf,
+            profile,
+            key0,
+            key1,
+            key2,
+            key3,
+            encodedIdentityHigh,
+            encodedIdentityLow,
+            allowDuplicateKeys,
+            out Fixed32Scalar16RoutedInsertResult terminalResult))
+        {
+            return terminalResult;
         }
 
         if (TrySplitRoutedFixed32Scalar16ByParentRoute(
@@ -42706,6 +45783,20 @@ internal sealed partial class LibraDexFileSession : IDisposable
 
         Fixed32Scalar16RoutePathTarget pathTarget = WalkFixed32Scalar16RoutePathTarget(rootRouterOffset, key0, key1, key2, key3, maxRouterHops);
         Fixed32Scalar16RouteTarget target = pathTarget.Target;
+        if (target.Kind == Fixed32Scalar16RouteTargetKind.TerminalIdentityRoot)
+        {
+            return InsertIntoFixed32Scalar16TerminalIdentityRoute(
+                pathTarget,
+                profile,
+                key0,
+                key1,
+                key2,
+                key3,
+                encodedIdentityHigh,
+                encodedIdentityLow,
+                allowDuplicateKeys);
+        }
+
         if (target.Kind != Fixed32Scalar16RouteTargetKind.Shelf || target.Offset != fullShelfOffset)
             throw new InvalidDataException("The classified FS32-16 route no longer resolves to the supplied full shelf image.");
 
@@ -42732,6 +45823,22 @@ internal sealed partial class LibraDexFileSession : IDisposable
 
         if (insertResult != Fixed32Scalar16InsertResult.Full)
             throw new InvalidDataException($"Unsupported FS32-16 shelf-image insert result {insertResult}.");
+
+        if (TryConvertFixed32Scalar16SameKeyShelfToTerminal(
+            pathTarget,
+            fullShelfBytes,
+            profile,
+            key0,
+            key1,
+            key2,
+            key3,
+            encodedIdentityHigh,
+            encodedIdentityLow,
+            allowDuplicateKeys,
+            out Fixed32Scalar16RoutedInsertResult terminalResult))
+        {
+            return terminalResult;
+        }
 
         if (TrySplitRoutedFixed32Scalar16ByParentRoute(
             pathTarget.ParentRouterOffset,
@@ -43470,5 +46577,408 @@ internal sealed partial class LibraDexFileSession : IDisposable
         ulong Key3,
         byte PrefixRangeStart,
         byte PrefixRangeEnd);
+
+    /// <summary>
+    /// Walks one index topology and sums exact persisted orphaned variable-record bytes.<br/>
+    /// This is an explicit blocking maintenance path: it visits each distinct router and shelf target once, follows duplicate-run shelf chains, and performs no mutation or result materialization.<br/>
+    /// Fixed-width shelves and immutable composite snapshots contribute zero because their delete or replacement paths do not retain reclaimable record-arena payload.<br/>
+    /// </summary>
+    /// <param name="slotIndex">The active physical index-directory slot whose root owns the topology.<br/></param>
+    /// <returns>Exact reclaimable bytes, visited variable-shelf count, and whether every encountered physical target kind was understood.<br/></returns>
+    internal (long ReclaimableBytes, int ShelfCount, bool Complete) AssessIndexReclaimablePayload(
+        int slotIndex)
+    {
+        if (!TryFindIndexDirectorySlot(slotIndex, out IndexDirectorySlotSnapshot slot))
+            return (0, 0, false);
+
+        if (slot.RootRouterOffset <= 0)
+            return (0, 0, true);
+
+        Stack<long> pending = new();
+        HashSet<long> visited = new();
+        pending.Push(slot.RootRouterOffset);
+        long reclaimableBytes = 0;
+        int shelfCount = 0;
+        bool complete = true;
+        byte[] header = new byte[Scalar8VarIdentityLayout.HeaderSize];
+        byte[] routerBytes = new byte[RouterLayout.Size];
+        while (pending.Count != 0)
+        {
+            long offset = pending.Pop();
+            if (offset <= 0 || !visited.Add(offset))
+                continue;
+
+            kernel.Read(offset, header.AsSpan(0, sizeof(uint)));
+            uint magic = BinaryPrimitives.ReadUInt32LittleEndian(header);
+            if (magic == RouterLayout.Magic)
+            {
+                ReadRouterPageUsingArenaCache(offset, routerBytes);
+                RouterReader reader = new(routerBytes);
+                if (!reader.IsValid)
+                {
+                    complete = false;
+                    continue;
+                }
+
+                for (int i = 0; i < reader.RouteCount; i++)
+                {
+                    long target = reader.GetRouteTargetAt(i);
+                    if (target > 0)
+                        pending.Push(target);
+                }
+
+                continue;
+            }
+
+            if (magic == VarKeyScalar8Layout.Magic)
+            {
+                kernel.Read(offset, header.AsSpan(0, VarKeyScalar8Layout.HeaderSize));
+                shelfCount++;
+                reclaimableBytes = checked(reclaimableBytes + VarKeyScalar8Layout.ReadReclaimablePayloadBytes(header));
+                if (VarKeyScalar8Layout.HasDuplicateRunFlag(header))
+                {
+                    long next = VarKeyScalar8Layout.ReadDuplicateRunNextOffset(header);
+                    if (next > 0)
+                        pending.Push(next);
+                }
+                continue;
+            }
+
+            if (magic == VarKeyScalar16Layout.Magic)
+            {
+                kernel.Read(offset, header.AsSpan(0, VarKeyScalar16Layout.HeaderSize));
+                shelfCount++;
+                reclaimableBytes = checked(reclaimableBytes + VarKeyScalar16Layout.ReadReclaimablePayloadBytes(header));
+                continue;
+            }
+
+            if (magic == VarKeyVarIdentityLayout.Magic)
+            {
+                kernel.Read(offset, header.AsSpan(0, VarKeyVarIdentityLayout.HeaderSize));
+                shelfCount++;
+                reclaimableBytes = checked(reclaimableBytes + VarKeyVarIdentityLayout.ReadReclaimablePayloadBytes(header));
+                continue;
+            }
+
+            if (magic == Scalar8VarIdentityLayout.Magic)
+            {
+                kernel.Read(offset, header.AsSpan(0, Scalar8VarIdentityLayout.HeaderSize));
+                shelfCount++;
+                reclaimableBytes = checked(reclaimableBytes + Scalar8VarIdentityLayout.ReadReclaimablePayloadBytes(header));
+                long next = Scalar8VarIdentityLayout.ReadNextShelfOffset(header);
+                if (next > 0)
+                    pending.Push(next);
+                continue;
+            }
+
+            if (magic == Scalar16VarIdentityLayout.Magic)
+            {
+                kernel.Read(offset, header.AsSpan(0, Scalar16VarIdentityLayout.HeaderSize));
+                shelfCount++;
+                reclaimableBytes = checked(reclaimableBytes + Scalar16VarIdentityLayout.ReadReclaimablePayloadBytes(header));
+                long next = Scalar16VarIdentityLayout.ReadNextShelfOffset(header);
+                if (next > 0)
+                    pending.Push(next);
+                continue;
+            }
+
+            if (IsKnownNonReclaimableMaintenanceTarget(magic))
+                continue;
+
+            complete = false;
+        }
+
+        return (reclaimableBytes, shelfCount, complete);
+    }
+
+    /// <summary>
+    /// Rewrites reclaimable `VS8` and `VS16` record arenas in place for one physical index topology.<br/>
+    /// The blocking walk visits each distinct target once and preserves router offsets, shelf offsets, tuple order, and file length; physical tail reclamation remains the separate closed-file compaction operation.<br/>
+    /// </summary>
+    /// <param name="slotIndex">The active physical index-directory slot whose topology should be repacked.<br/></param>
+    /// <param name="maxKeyLength">The persisted maximum variable key length used to decode mutable shelves.<br/></param>
+    /// <param name="maxIdentityLength">The persisted maximum variable identity length used to decode mutable shelves.<br/></param>
+    /// <param name="maxWorkItems">The maximum number of distinct physical targets to visit, including routers and non-reclaimable leaves, or null for an unbounded walk.<br/></param>
+    /// <returns>The exact physical-target work count, changed shelf count, and any reason the topology was not completed.<br/></returns>
+    internal LibraDexMaintenanceWalkResult RepackIndexPayload(
+        int slotIndex,
+        int maxKeyLength,
+        int maxIdentityLength,
+        int? maxWorkItems)
+    {
+        if (maxWorkItems is <= 0)
+            throw new ArgumentOutOfRangeException(nameof(maxWorkItems), maxWorkItems, "The repack work limit must be positive when supplied.");
+        if (!TryFindIndexDirectorySlot(slotIndex, out IndexDirectorySlotSnapshot slot))
+            return new LibraDexMaintenanceWalkResult(0, 0, LibraDexMaintenanceIncompleteReason.InvalidTopology);
+        if (slot.RootRouterOffset <= 0)
+            return new LibraDexMaintenanceWalkResult(0, 0, LibraDexMaintenanceIncompleteReason.None);
+
+        Stack<long> pending = new();
+        HashSet<long> visited = new();
+        pending.Push(slot.RootRouterOffset);
+        int considered = 0;
+        int changed = 0;
+        LibraDexMaintenanceIncompleteReason incompleteReasons = LibraDexMaintenanceIncompleteReason.None;
+        byte[] header = new byte[VarKeyScalar16Layout.HeaderSize];
+        byte[] routerBytes = new byte[RouterLayout.Size];
+        while (pending.Count != 0)
+        {
+            long offset = pending.Pop();
+            if (offset <= 0 || !visited.Add(offset))
+                continue;
+            if (maxWorkItems is int limit && considered >= limit)
+            {
+                incompleteReasons |= LibraDexMaintenanceIncompleteReason.WorkLimit;
+                break;
+            }
+            considered++;
+
+            kernel.Read(offset, header.AsSpan(0, sizeof(uint)));
+            uint magic = BinaryPrimitives.ReadUInt32LittleEndian(header);
+            if (magic == RouterLayout.Magic)
+            {
+                ReadRouterPageUsingArenaCache(offset, routerBytes);
+                RouterReader reader = new(routerBytes);
+                if (!reader.IsValid)
+                {
+                    incompleteReasons |= LibraDexMaintenanceIncompleteReason.InvalidTopology;
+                    continue;
+                }
+
+                for (int i = 0; i < reader.RouteCount; i++)
+                {
+                    long target = reader.GetRouteTargetAt(i);
+                    if (target > 0)
+                        pending.Push(target);
+                }
+                continue;
+            }
+
+            if (magic == VarKeyScalar8Layout.Magic)
+            {
+                VarKeyScalar8MutableShelf shelf = ReadVarKeyScalar8MutableShelf(offset, maxKeyLength);
+                if (VarKeyScalar8Layout.HasDuplicateRunFlag(shelf.Bytes))
+                {
+                    long next = VarKeyScalar8Layout.ReadDuplicateRunNextOffset(shelf.Bytes);
+                    if (next > 0)
+                        pending.Push(next);
+                }
+                if (shelf.RepackPayloadIfWorthwhile(0, 0))
+                {
+                    _ = StageVarKeyScalar8ShelfRewrite(offset, shelf);
+                    changed++;
+                }
+                continue;
+            }
+
+            if (magic == VarKeyScalar16Layout.Magic)
+            {
+                VarKeyScalar16MutableShelf shelf = ReadVarKeyScalar16MutableShelf(offset, maxKeyLength);
+                if (shelf.RepackPayloadIfWorthwhile(0, 0))
+                {
+                    _ = StageVarKeyScalar16ShelfRewrite(offset, shelf);
+                    changed++;
+                }
+                continue;
+            }
+
+            if (magic == VarKeyVarIdentityLayout.Magic)
+            {
+                VarKeyVarIdentityMutableShelf shelf = ReadVarKeyVarIdentityMutableShelf(offset, maxKeyLength, maxIdentityLength);
+                if (shelf.RepackPayloadIfWorthwhile(0, 0))
+                {
+                    _ = StageVarKeyVarIdentityShelfRewrite(offset, shelf);
+                    changed++;
+                }
+                continue;
+            }
+
+            if (magic == Scalar8VarIdentityLayout.Magic)
+            {
+                Scalar8VarIdentityMutableShelfView shelf = ReadScalar8VarIdentityMutableShelf(offset, maxIdentityLength);
+                long next = Scalar8VarIdentityLayout.ReadNextShelfOffset(shelf.Bytes);
+                if (next > 0)
+                    pending.Push(next);
+                byte[]? compacted = shelf.BuildCompactedPayloadIfWorthwhile(0, 0);
+                if (compacted is not null)
+                {
+                    _ = StageScalar8VarIdentityShelfRewrite(offset, shelf, compacted);
+                    changed++;
+                }
+                continue;
+            }
+
+            if (magic == Scalar16VarIdentityLayout.Magic)
+            {
+                Scalar16VarIdentityMutableShelfView shelf = ReadScalar16VarIdentityMutableShelf(offset, maxIdentityLength);
+                long next = Scalar16VarIdentityLayout.ReadNextShelfOffset(shelf.Bytes);
+                if (next > 0)
+                    pending.Push(next);
+                byte[]? compacted = shelf.BuildCompactedPayloadIfWorthwhile(0, 0);
+                if (compacted is not null)
+                {
+                    _ = StageScalar16VarIdentityShelfRewrite(offset, shelf, compacted);
+                    changed++;
+                }
+                continue;
+            }
+
+            if (!IsKnownNonReclaimableMaintenanceTarget(magic))
+                incompleteReasons |= LibraDexMaintenanceIncompleteReason.InvalidTopology;
+        }
+
+        return new LibraDexMaintenanceWalkResult(considered, changed, incompleteReasons);
+    }
+
+    /// <summary>
+    /// Identifies physical target formats whose current mutation model retains no reclaimable variable-record payload.<br/>
+    /// </summary>
+    /// <param name="magic">The four-byte physical target magic read at the target offset.<br/></param>
+    /// <returns><see langword="true"/> when the format is understood and contributes zero orphaned payload bytes.<br/></returns>
+    private static bool IsKnownNonReclaimableMaintenanceTarget(uint magic)
+    {
+        return magic == Scalar8Scalar8Layout.Magic ||
+            magic == Scalar16Scalar8Layout.Magic ||
+            magic == Scalar8Scalar16Layout.Magic ||
+            magic == Scalar16Scalar16Layout.Magic ||
+            magic == Fixed32Scalar8Layout.Magic ||
+            magic == Fixed32Scalar16Layout.Magic ||
+            magic == FixedNScalar8Layout.Magic ||
+            magic == FixedNScalar16Layout.Magic ||
+            magic == FixedNVarIdentityLayout.Magic ||
+            magic == TerminalIdentityRootLayout.Magic ||
+            magic == TerminalIdentity8ShelfLayout.Magic ||
+            magic == TerminalVarIdentityShelfLayout.Magic ||
+            magic == KeyStateIdentityRouteLayout.Magic ||
+            magic == 0x5350434CU;
+    }
+
+    /// <summary>
+    /// Walks one encoded `SS8-8` key using only persisted router pages and target magic values.<br/>
+    /// Every router hop and selected target classification performs a direct backing-store read, bypassing promoted router views, target-kind projections, router-page caches, and router-arena caches.<br/>
+    /// This deliberately expensive path is the raw-file A/B control for proving the behavior and benefit of production route projections.<br/>
+    /// </summary>
+    /// <param name="rootRouterOffset">The persisted file offset of the root router.<br/></param>
+    /// <param name="encodedKey">The encoded scalar key whose prefix bytes select each route.<br/></param>
+    /// <param name="maxRouterHops">The maximum router pages that may be visited before the graph is rejected.<br/></param>
+    /// <returns>The classified non-router target reached by the raw route walk.<br/></returns>
+    /// <exception cref="InvalidDataException">Thrown when a route is unset, a router is invalid, routing does not terminate at a shelf or terminal identity root, or the hop limit is exceeded.<br/></exception>
+    private Scalar8Scalar8RouteTarget WalkScalar8Scalar8RouteTargetRawFile(
+        long rootRouterOffset,
+        ulong encodedKey,
+        int maxRouterHops)
+    {
+        Scalar8Scalar8RoutePathTarget pathTarget = WalkScalar8Scalar8RoutePathTargetRawFile(
+            rootRouterOffset,
+            encodedKey,
+            maxRouterHops);
+        if (pathTarget.Target.Kind == Scalar8Scalar8RouteTargetKind.None)
+        {
+            throw new InvalidDataException("The routed target is unset.");
+        }
+
+        return pathTarget.Target;
+    }
+
+    /// <summary>
+    /// Walks one encoded `SS8-8` key from raw persisted bytes while retaining the selected parent router and prefix.<br/>
+    /// No session route projection is read or populated, so repeated calls remain a deterministic physical-I/O control rather than warming into the production fast path.<br/>
+    /// </summary>
+    /// <param name="rootRouterOffset">The persisted file offset of the root router.<br/></param>
+    /// <param name="encodedKey">The encoded scalar key whose prefix bytes select each route.<br/></param>
+    /// <param name="maxRouterHops">The maximum router pages that may be visited before the graph is rejected.<br/></param>
+    /// <returns>The classified target together with its direct parent router offset and selected prefix.<br/></returns>
+    /// <exception cref="ArgumentOutOfRangeException">Thrown when <paramref name="maxRouterHops"/> is not positive.<br/></exception>
+    /// <exception cref="InvalidDataException">Thrown when a router is invalid, a target has unknown structure, or the hop limit is exceeded.<br/></exception>
+    private Scalar8Scalar8RoutePathTarget WalkScalar8Scalar8RoutePathTargetRawFile(
+        long rootRouterOffset,
+        ulong encodedKey,
+        int maxRouterHops)
+    {
+        if (maxRouterHops <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(maxRouterHops), maxRouterHops, "The maximum router hop count must be positive.");
+        }
+
+        Span<byte> routerBytes = stackalloc byte[RouterLayout.Size];
+        long routerOffset = rootRouterOffset;
+        for (int hop = 0; hop < maxRouterHops; hop++)
+        {
+            kernel.Read(routerOffset, routerBytes);
+            RouterReader reader = new(routerBytes);
+            if (!reader.IsValid)
+            {
+                throw new InvalidDataException("The routed page is not a valid router.");
+            }
+
+            byte prefixByte = GetScalar8Scalar8Prefix(encodedKey, reader.KeyDepth);
+            long targetOffset = reader.FindTarget(prefixByte);
+            if (targetOffset == 0)
+            {
+                Scalar8Scalar8RouteTarget noneTarget = new(
+                    Scalar8Scalar8RouteTargetKind.None,
+                    0,
+                    reader.KeyDepth,
+                    reader.AllocationClassId);
+                return new Scalar8Scalar8RoutePathTarget(noneTarget, routerOffset, prefixByte);
+            }
+
+            Scalar8Scalar8RouteTargetKind kind = ClassifyScalar8Scalar8RouteTargetRawFile(targetOffset);
+            if (kind == Scalar8Scalar8RouteTargetKind.Shelf ||
+                kind == Scalar8Scalar8RouteTargetKind.TerminalIdentityRoot)
+            {
+                Scalar8Scalar8RouteTarget target = new(
+                    kind,
+                    targetOffset,
+                    reader.KeyDepth,
+                    reader.AllocationClassId);
+                return new Scalar8Scalar8RoutePathTarget(target, routerOffset, prefixByte);
+            }
+
+            if (kind != Scalar8Scalar8RouteTargetKind.Router)
+            {
+                throw new InvalidDataException("The routed target is not a shelf, terminal identity root, or router.");
+            }
+
+            routerOffset = targetOffset;
+        }
+
+        throw new InvalidDataException("The routed target walk exceeded the configured maximum router hop count.");
+    }
+
+    /// <summary>
+    /// Classifies one persisted `SS8-8` route target from its four-byte magic without consulting or populating session caches.<br/>
+    /// The method is intentionally paired only with raw-file route controls so production routing retains promoted target-kind reuse.<br/>
+    /// </summary>
+    /// <param name="targetOffset">The persisted route target offset, or zero for an unset route.<br/></param>
+    /// <returns>The physical route target kind encoded at <paramref name="targetOffset"/>.<br/></returns>
+    /// <exception cref="InvalidDataException">Thrown when the target does not contain a recognized router, shelf, or terminal identity root.<br/></exception>
+    private Scalar8Scalar8RouteTargetKind ClassifyScalar8Scalar8RouteTargetRawFile(long targetOffset)
+    {
+        if (targetOffset == 0)
+        {
+            return Scalar8Scalar8RouteTargetKind.None;
+        }
+
+        Span<byte> magicBytes = stackalloc byte[sizeof(uint)];
+        kernel.Read(targetOffset, magicBytes);
+        uint magic = BinaryPrimitives.ReadUInt32LittleEndian(magicBytes);
+        if (magic == RouterLayout.Magic)
+        {
+            return Scalar8Scalar8RouteTargetKind.Router;
+        }
+
+        if (magic == Scalar8Scalar8Layout.Magic)
+        {
+            return Scalar8Scalar8RouteTargetKind.Shelf;
+        }
+
+        if (magic == TerminalIdentityRootLayout.Magic)
+        {
+            return Scalar8Scalar8RouteTargetKind.TerminalIdentityRoot;
+        }
+
+        throw new InvalidDataException($"Raw-file SS8-8 route target at offset {targetOffset} does not contain a recognized LibraDex structure.");
+    }
 
 }

@@ -269,6 +269,16 @@ internal sealed partial class LibraDexFileSession
                 remainingRouterHops);
         }
 
+        if (kind == VarKeyScalar16RouteTargetKind.TerminalIdentityRoot)
+        {
+            if (!visitedTargets.Add(targetOffset))
+                return 0;
+
+            return lowerEdge || upperEdge
+                ? CountVarKeyScalar16TerminalIdentityRootInRange(targetOffset, lowerKey, upperKey)
+                : CountTerminalVarIdentityRootNarrow(targetOffset, TerminalIdentityRootLayout.ShapeVarKeyScalar16Identity);
+        }
+
         if (kind != VarKeyScalar16RouteTargetKind.Shelf)
             throw new InvalidDataException("The VS16 scoop-count target is not a shelf or router.");
 

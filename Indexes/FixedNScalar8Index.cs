@@ -152,7 +152,14 @@ internal sealed class FixedNScalar8Index : IDisposable
         bool deleted;
         if (handle.IsRouted)
         {
-            deleted = session.DeleteRoutedFixedNScalar8ExactForWriteContext(writeContext, handle, key, encodedIdentity);
+            try
+            {
+                deleted = session.DeleteRoutedFixedNScalar8ExactForWriteContext(writeContext, handle, key, encodedIdentity);
+            }
+            catch (InvalidOperationException)
+            {
+                return (false, false);
+            }
         }
         else
         {
@@ -496,6 +503,17 @@ internal sealed class FixedNScalar8Index : IDisposable
     {
         ThrowIfDisposed();
         return session.CountScalar8KeyStateIdentities(slotIndex, KeyStateRoute.Null);
+    }
+
+    /// <summary>
+    /// Streams every live ordinary tuple through the shape-native fixed-N reader.<br/>
+    /// Keys are returned as owned sortable bytes and identities remain encoded for facade-level decoding.<br/>
+    /// </summary>
+    /// <returns>Authoritative ordinary tuples in physical key/identity order.<br/></returns>
+    internal IEnumerable<FixedNScalar8Tuple> IterateTuples()
+    {
+        ThrowIfDisposed();
+        return session.IterateFixedNScalar8Tuples(handle);
     }
 
     /// <summary>

@@ -6,16 +6,19 @@ namespace LibraDex;
 /// </summary>
 public sealed class LibraDexUInt64VarIdentityIndex : IIndex, IIdentityPrimitiveExecutor, IIdentityPrimitiveTupleExecutor, IIdentityPrimitiveTupleStreamer, IDisposable
 {
+    private readonly Catalog catalog;
     private readonly Scalar8VarIdentityIndex inner;
     private readonly IndexKeys keyContract;
     private bool disposed;
 
     internal LibraDexUInt64VarIdentityIndex(
+        Catalog catalog,
         string group,
         string name,
         Scalar8VarIdentityIndex inner,
         IndexKeys keyContract)
     {
+        this.catalog = catalog ?? throw new ArgumentNullException(nameof(catalog));
         ArgumentNullException.ThrowIfNull(inner);
         Group = group;
         Name = name;
@@ -28,6 +31,11 @@ public sealed class LibraDexUInt64VarIdentityIndex : IIndex, IIdentityPrimitiveE
     /// Condition materialization uses this value to keep index-set predicates bound to one identity universe.<br/>
     /// </summary>
     public string Group { get; }
+
+    /// <summary>
+    /// Gets the open catalog that owns this index handle.<br/>
+    /// </summary>
+    public Catalog Catalog => catalog;
 
     /// <summary>
     /// Gets the logical index name recorded for this index.<br/>

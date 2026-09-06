@@ -129,12 +129,14 @@ internal sealed class VarKeyScalar8MutableShelf
         int expectedSlotStreamLength = checked(count * VarKeyScalar8Layout.SlotSize);
         int expectedSlotCapacityBytes = VarKeyScalar8Layout.CalculateSlotCapacityBytes(profile.ShelfExtentSize);
         int recordArenaStart = VarKeyScalar8Layout.HeaderSize + slotCapacityBytes;
+        int reclaimablePayloadBytes = VarKeyScalar8Layout.ReadReclaimablePayloadBytes(bytes);
         if (count < 0 ||
             slotStreamLength != expectedSlotStreamLength ||
             slotStreamLength > slotCapacityBytes ||
             slotCapacityBytes != expectedSlotCapacityBytes ||
             recordArenaEnd < recordArenaStart ||
-            recordArenaEnd > profile.ShelfExtentSize)
+            recordArenaEnd > profile.ShelfExtentSize ||
+            reclaimablePayloadBytes > recordArenaEnd - recordArenaStart)
         {
             if (ownsBytes)
             {
@@ -186,6 +188,7 @@ internal sealed class VarKeyScalar8MutableShelf
             slotStreamLength,
             slotCapacityBytes,
             recordArenaEnd);
+        shelf.deletedPayloadBytes = reclaimablePayloadBytes;
         return true;
     }
 
@@ -271,6 +274,14 @@ internal sealed class VarKeyScalar8MutableShelf
         int recordLength = VarKeyScalar8Layout.GetNewRecordLength(key.Length);
         int recordOffset = recordArenaEnd;
         int newRecordArenaEnd = recordOffset + recordLength;
+        if (newRecordArenaEnd > Profile.ShelfExtentSize &&
+            deletedPayloadBytes >= recordLength &&
+            RepackPayloadIfWorthwhile(recordLength, 0))
+        {
+            recordOffset = recordArenaEnd;
+            newRecordArenaEnd = recordOffset + recordLength;
+        }
+
         if (newRecordArenaEnd > Profile.ShelfExtentSize)
         {
             return VarKeyScalar8InsertResult.Full;
@@ -343,6 +354,7 @@ internal sealed class VarKeyScalar8MutableShelf
 
         if (marked != 0)
         {
+            VarKeyScalar8Layout.WriteReclaimablePayloadBytes(Bytes, deletedPayloadBytes);
             IsDirty = true;
         }
 
@@ -529,6 +541,7 @@ internal sealed class VarKeyScalar8MutableShelf
         slotStreamLength = checked(itemCount * VarKeyScalar8Layout.SlotSize);
         recordArenaEnd = recordCursor;
         deletedPayloadBytes = 0;
+        VarKeyScalar8Layout.WriteReclaimablePayloadBytes(Bytes, 0);
         IsDirty = true;
         return true;
     }

@@ -202,13 +202,90 @@ internal static partial class RawHarness
         GroupByCompositeMetadataProofMeasurement metadata = MeasureGroupByCompositeMetadata(activeCondition, resolver, compositeIndex);
         ValidateGroupByCompositeCounts(expected, counts.Counts);
         ValidateGroupByCompositeMetadata(expected, metadata.Metadata);
+        ValidateCompositeExtendedScalarCodec();
+
+        _ = compositeIndex.VisitEntries(static (parts, identity) =>
+        {
+            if (parts.Length != 2 || parts[0] is not string || parts[1] is not string || identity is not long)
+                throw new InvalidDataException("Borrowed composite visitor warm-up returned an incompatible tuple.");
+        });
+        long visitorRows = 0;
+        long visitorIdentitySum = 0;
+        long visitorAllocatedBefore = GC.GetAllocatedBytesForCurrentThread();
+        long visitorReported = compositeIndex.VisitEntries((parts, identity) =>
+        {
+            if (parts.Length != 2 || parts[0] is not string || parts[1] is not string || identity is not long typedIdentity)
+                throw new InvalidDataException("Borrowed composite visitor returned an incompatible tuple.");
+            visitorRows++;
+            visitorIdentitySum = unchecked(visitorIdentitySum + typedIdentity);
+        });
+        long visitorAllocated = GC.GetAllocatedBytesForCurrentThread() - visitorAllocatedBefore;
+        long expectedIdentitySum = checked((long)itemCount * (itemCount + 1L) / 2L);
+        if (visitorReported != itemCount || visitorRows != itemCount || visitorIdentitySum != expectedIdentitySum)
+            throw new InvalidDataException("Borrowed composite visitor did not report every seeded tuple exactly once.");
+        if (visitorAllocated > 8_192)
+            throw new InvalidDataException($"Borrowed composite visitor allocated {visitorAllocated:N0} bytes for {itemCount:N0} rows; expected a bounded traversal under 8,192 bytes.");
+
+        using (LibraDexRoutedCompositeIndex.EntryCursor warmCursor = compositeIndex.OpenEntryCursor())
+        {
+            if (!warmCursor.Read() || warmCursor.KeyParts.Length != 2 || warmCursor.Identity is not long)
+                throw new InvalidDataException("Borrowed composite cursor warm-up returned an incompatible tuple.");
+        }
+        long cursorRows = 0;
+        long cursorIdentitySum = 0;
+        long cursorAllocatedBefore = GC.GetAllocatedBytesForCurrentThread();
+        using (LibraDexRoutedCompositeIndex.EntryCursor cursor = compositeIndex.OpenEntryCursor())
+        {
+            while (cursor.Read())
+            {
+                ReadOnlySpan<object?> parts = cursor.KeyParts;
+                if (parts.Length != 2 || parts[0] is not string || parts[1] is not string || cursor.Identity is not long typedIdentity)
+                    throw new InvalidDataException("Borrowed composite cursor returned an incompatible tuple.");
+                cursorRows++;
+                cursorIdentitySum = unchecked(cursorIdentitySum + typedIdentity);
+            }
+        }
+        long cursorAllocated = GC.GetAllocatedBytesForCurrentThread() - cursorAllocatedBefore;
+        if (cursorRows != itemCount || cursorIdentitySum != expectedIdentitySum)
+            throw new InvalidDataException("Borrowed composite cursor did not report every seeded tuple exactly once.");
+        if (cursorAllocated > 8_192)
+            throw new InvalidDataException($"Borrowed composite cursor allocated {cursorAllocated:N0} bytes for {itemCount:N0} rows; expected a bounded traversal under 8,192 bytes.");
 
         Console.WriteLine("composite-count-path groups total-count elapsed-ms alloc-bytes bytes-per-row");
         WriteGroupByCompositeCountProofRow("production-composite-counts", counts, itemCount);
         Console.WriteLine("composite-metadata-path groups total-count elapsed-ms alloc-bytes bytes-per-row");
         WriteGroupByCompositeMetadataProofRow("production-composite-metadata", metadata, itemCount);
+        Console.WriteLine($"composite-borrowed-visitor rows={visitorRows:N0} alloc-bytes={visitorAllocated:N0}");
+        Console.WriteLine($"composite-borrowed-cursor rows={cursorRows:N0} alloc-bytes={cursorAllocated:N0}");
         Console.WriteLine("group-by-composite-proof ok");
         return 0;
+    }
+
+    /// <summary>
+    /// Verifies exact durable value round trips for the extended scalar types accepted by routed composite shapes.<br/>
+    /// The proof uses the same primitive codec invoked by composite snapshots and node pages, catching advertised-type drift before a catalog reopen loses a route value.<br/>
+    /// </summary>
+    private static void ValidateCompositeExtendedScalarCodec()
+    {
+        object[] values =
+        [
+            Int128.MinValue + 123,
+            UInt128.MaxValue - 123,
+            -123.5f,
+            Math.PI,
+            123456789.0123456789m
+        ];
+        foreach (object value in values)
+        {
+            using var stream = new MemoryStream();
+            using (var writer = new BinaryWriter(stream, System.Text.Encoding.UTF8, leaveOpen: true))
+                LibraDexCompositeSnapshotCodec.WriteValue(writer, value.GetType(), value);
+            stream.Position = 0;
+            using var reader = new BinaryReader(stream, System.Text.Encoding.UTF8, leaveOpen: true);
+            object? reopened = LibraDexCompositeSnapshotCodec.ReadValue(reader, value.GetType());
+            if (!value.Equals(reopened) || stream.Position != stream.Length)
+                throw new InvalidDataException($"Composite scalar codec did not exactly round-trip '{value.GetType().FullName}'.");
+        }
     }
 
     /// <summary>
@@ -2034,7 +2111,7 @@ internal static partial class RawHarness
         LibraDexConditionEndCondition condition = LibraDexCondition
             .ForGroup("fixedn-key-state-promotion-proof")
             .Index("score8")
-            .AsBigInteger
+            .AsBigInt
             .EqualTo(ScalarNull.Null)
             .EndCondition;
         IReadOnlyList<long> identities = condition.ToList<long>(resolver, deduplication: IdentityDeduplication.Preserve);
@@ -2065,7 +2142,7 @@ internal static partial class RawHarness
         LibraDexConditionEndCondition condition = LibraDexCondition
             .ForGroup("fixedn-key-state-promotion-proof")
             .Index("score16")
-            .AsBigInteger
+            .AsBigInt
             .EqualTo(ScalarNull.Null)
             .EndCondition;
         IReadOnlyList<Guid> identities = condition.ToList<Guid>(resolver, deduplication: IdentityDeduplication.Preserve);
@@ -2098,7 +2175,7 @@ internal static partial class RawHarness
         LibraDexConditionEndCondition condition = LibraDexCondition
             .ForGroup("fixedn-key-state-promotion-proof")
             .Index(indexName)
-            .AsBigInteger
+            .AsBigInt
             .All()
             .EndCondition;
         long counted = condition.Count(resolver, IdentityDeduplication.Preserve);
@@ -2124,7 +2201,7 @@ internal static partial class RawHarness
         LibraDexConditionEndCondition condition = LibraDexCondition
             .ForGroup("fixedn-key-state-promotion-proof")
             .Index("score8")
-            .AsBigInteger
+            .AsBigInt
             .EqualTo(key)
             .EndCondition;
         IReadOnlyList<long> identities = condition.ToList<long>(resolver, deduplication: IdentityDeduplication.Preserve);
@@ -2152,7 +2229,7 @@ internal static partial class RawHarness
         LibraDexConditionEndCondition condition = LibraDexCondition
             .ForGroup("fixedn-key-state-promotion-proof")
             .Index("score16")
-            .AsBigInteger
+            .AsBigInt
             .EqualTo(key)
             .EndCondition;
         IReadOnlyList<Guid> identities = condition.ToList<Guid>(resolver, deduplication: IdentityDeduplication.Preserve);
@@ -2647,8 +2724,8 @@ internal static partial class RawHarness
         long LastIdentity);
 
     /// <summary>
-    /// Proves the staged <c>GroupBy(...).Aggregate(...).Return(...).EndCondition</c> grammar through exact, Folded, and SortKey grouping.<br/>
-    /// The proof covers filtered and unfiltered roots, deterministic Max ties, natural and explicit result shapes, raw identities, and adaptive reader Skip/Pull movement.<br/>
+    /// Proves staged <c>GroupBy(...).First|Last.Return(...).EndCondition</c> and <c>GroupBy(...).Aggregate(...).Return(...).EndCondition</c> grammar through exact, Folded, and SortKey grouping.<br/>
+    /// The proof covers filtered and unfiltered roots, distinct representatives, deterministic extrema ties, natural and explicit result shapes, bookmarks, mutation selection, raw identities, and adaptive reader Skip/Pull movement.<br/>
     /// </summary>
     /// <param name="args">Unused harness arguments.<br/></param>
     /// <returns>Zero when grouped selection and every producer return the same deterministic logical sequence.<br/></returns>
@@ -2668,6 +2745,7 @@ internal static partial class RawHarness
         using LibraDexIndex<int, ulong> transformIndex = indexes["transformTarget"].Int32Keys<ulong>().Create();
         using LibraDexIndex<int, ulong> topWindowIndex = indexes["topWindowTarget"].Int32Keys<ulong>().Create();
         using LibraDexIndex<int, ulong> ordinaryWindowIndex = indexes["ordinaryWindowTarget"].Int32Keys<ulong>().Create();
+        using LibraDexIndex<int, ulong> representativeTargetIndex = indexes["representativeTarget"].Int32Keys<ulong>().Create();
         using LibraDexIndex<int, ulong> ambiguousOrderIndex = indexes["ambiguousOrder"].Int32Keys<ulong>().Create();
 
         DateTime t100 = new(2026, 1, 1, 0, 1, 0, DateTimeKind.Utc);
@@ -2683,6 +2761,101 @@ internal static partial class RawHarness
         Add(6, "Device-C", t300, active: true);
         _ = ambiguousOrderIndex.Insert(10, 1);
         _ = ambiguousOrderIndex.Insert(20, 1);
+
+        LibraDexCondition<(long Identity, string Key1)> firstActivePerFoldedDevice = indexes
+            .Where("status").AsInt32.EqualTo(1)
+            .GroupBy("deviceId").AsString(SubIndexType.Folded)
+            .First
+            .Return<long, string>("deviceId")
+            .EndCondition;
+        LibraDexCondition<(long Identity, string Key1)> lastActivePerFoldedDevice = indexes
+            .Where("status").AsInt32.EqualTo(1)
+            .GroupBy("deviceId").AsString(SubIndexType.Folded)
+            .Last
+            .Return<long, string>("deviceId")
+            .EndCondition;
+        IReadOnlyList<(long Identity, string Key1)> firstActiveRows = indexes.Get(firstActivePerFoldedDevice);
+        IReadOnlyList<(long Identity, string Key1)> lastActiveRows = indexes.Get(lastActivePerFoldedDevice);
+        LibraDexConditionResultPlan representativePlan = firstActivePerFoldedDevice.Plan();
+        if (!representativePlan.IsBlocking ||
+            !string.Equals(representativePlan.Shape, "GroupBy.First.Identity+1Key.NaturalOrder", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Grouped representative result plan did not expose its blocking selection and return shape.");
+        }
+        if (!firstActiveRows.SequenceEqual(new[]
+            {
+                (1L, "device-a"),
+                (4L, "device-b"),
+                (5L, "device-c")
+            }) ||
+            !lastActiveRows.SequenceEqual(new[]
+            {
+                (2L, "device-a"),
+                (4L, "device-b"),
+                (6L, "device-c")
+            }))
+        {
+            throw new InvalidOperationException("Condition-native First/Last did not select distinct representatives in folded grouping-index order.");
+        }
+
+        LibraDexCondition<LibraDexRepresentativeRow> naturalFirst = indexes
+            .GroupBy("deviceId")
+            .First
+            .EndCondition;
+        IReadOnlyList<LibraDexRepresentativeRow> naturalFirstRows = indexes.Get(naturalFirst);
+        if (naturalFirstRows.Count != 4 ||
+            !naturalFirstRows.Any(row => Equals(row.GroupKey, "Device-B") && Equals(row.Identity, 3UL)))
+        {
+            throw new InvalidOperationException("Unfiltered GroupBy.First did not expose the natural group-key/identity result.");
+        }
+
+        LibraDexCondition<long> firstActiveByNewestRepresentative = indexes
+            .Where("status").AsInt32.EqualTo(1)
+            .GroupBy("deviceId").AsString(SubIndexType.Folded)
+            .First
+            .Return<long>()
+            .OrderByDescending("timeStamp")
+            .Top(2)
+            .EndCondition;
+        if (!indexes.Get(firstActiveByNewestRepresentative).SequenceEqual(new long[] { 5, 4 }))
+            throw new InvalidOperationException("Representative selection did not compose with named ordering and Top after Return.");
+
+        if (!indexes.Iterate(lastActivePerFoldedDevice).SequenceEqual(lastActiveRows))
+            throw new InvalidOperationException("Representative Get and Iterate producers returned different logical sequences.");
+        using (LibraDexResultReader<(long Identity, string Key1)> representativeReader =
+            indexes.OpenReader(firstActivePerFoldedDevice))
+        {
+            if (!representativeReader.Pull(2).SequenceEqual(firstActiveRows.Take(2)) ||
+                !representativeReader.Next() ||
+                representativeReader.Current != firstActiveRows[2] ||
+                representativeReader.Next())
+            {
+                throw new InvalidOperationException("Representative OpenReader did not preserve Pull, Next, or cursor advancement.");
+            }
+        }
+
+        LibraDexBookmark representativeBookmark;
+        using (LibraDexResultReader<(long Identity, string Key1)> representativeReader =
+            indexes.OpenReader(firstActivePerFoldedDevice))
+        {
+            if (!representativeReader.Next() || representativeReader.Current != firstActiveRows[0])
+                throw new InvalidOperationException("Representative bookmark setup could not consume its first logical row.");
+            representativeBookmark = representativeReader.Bookmark;
+        }
+        using (LibraDexResultReader<(long Identity, string Key1)> representativeReader =
+            indexes.OpenReader(firstActivePerFoldedDevice, representativeBookmark))
+        {
+            if (!representativeReader.Pull(2).SequenceEqual(firstActiveRows.Skip(1)))
+                throw new InvalidOperationException("Representative bookmark continuation did not resume at the next grouped winner.");
+        }
+
+        LibraDexIdentityMutationResult representativeMutation =
+            indexes["representativeTarget"].SetKey(firstActivePerFoldedDevice, 6000);
+        if (representativeMutation.ChangedCount != 3 ||
+            !GetEqual("representativeTarget", 6000).SequenceEqual(new ulong[] { 1, 4, 5 }))
+        {
+            throw new InvalidOperationException("Mutation execution did not consume the representative condition's selected identities.");
+        }
 
         LibraDexCondition<(long Identity, string Key1, DateTime Key2)> condition = indexes
             .Where("status")
@@ -2999,6 +3172,192 @@ internal static partial class RawHarness
         {
         }
 
+        LibraDexBookmark pageBookmark;
+        using (LibraDexResultReader<(long Identity, string Key1)> reader = indexes.OpenReader(oldestActiveWithDevice))
+        {
+            IReadOnlyList<(long Identity, string Key1)> firstPage = reader.Pull(2);
+            if (!firstPage.SequenceEqual(new[] { (1L, "Device-A"), (4L, "Device-B") }))
+                throw new InvalidOperationException("Bookmark reader first page did not preserve the condition result order.");
+
+            pageBookmark = reader.Bookmark;
+            if (pageBookmark.ResultsConsumed != 2 ||
+                !string.Equals(pageBookmark.Group, "events", StringComparison.Ordinal) ||
+                pageBookmark.Indexes.Count != 3 ||
+                !pageBookmark.Indexes.Any(index =>
+                    string.Equals(index.Name, "status", StringComparison.Ordinal) &&
+                    (index.Roles & LibraDexBookmarkIndexRole.Filter) != 0) ||
+                !pageBookmark.Indexes.Any(index =>
+                    string.Equals(index.Name, "deviceId", StringComparison.Ordinal) &&
+                    (index.Roles & LibraDexBookmarkIndexRole.Return) != 0) ||
+                !pageBookmark.Indexes.Any(index =>
+                    string.Equals(index.Name, "timeStamp", StringComparison.Ordinal) &&
+                    (index.Roles & LibraDexBookmarkIndexRole.Order) != 0))
+            {
+                throw new InvalidOperationException("Multi-index bookmark inspection did not retain condition-result index provenance.");
+            }
+        }
+
+        using (LibraDexResultReader<(long Identity, string Key1)> reader = indexes.OpenReader(oldestActiveWithDevice, pageBookmark))
+        {
+            if (!reader.Next() || reader.Current != (2L, "device-a") || reader.Next())
+                throw new InvalidOperationException("Generation-bound reader resume did not continue at the bookmark's next unread result.");
+        }
+
+        IReadOnlyList<(long Identity, string Key1)> detachedPage = indexes.Get(
+            oldestActiveWithDevice,
+            take: 1,
+            bookmark: pageBookmark);
+        if (detachedPage.Count != 1 || detachedPage[0] != (2L, "device-a"))
+            throw new InvalidOperationException("Detached Get did not use the same condition bookmark as OpenReader.");
+
+        LibraDexCondition<long> allActiveByTimestamp = indexes
+            .Where("status").AsInt32.EqualTo(1)
+            .Return<long>()
+            .OrderBy("timeStamp")
+            .EndCondition;
+        LibraDexBookmark duplicateKeyBookmark;
+        using (LibraDexResultReader<long> reader = indexes.OpenReader(allActiveByTimestamp))
+        {
+            if (!reader.Pull(4).SequenceEqual(new long[] { 1, 4, 2, 5 }))
+                throw new InvalidOperationException("Bookmark duplicate-key setup did not stop on the first identity in the shared timestamp run.");
+
+            duplicateKeyBookmark = reader.Bookmark;
+        }
+
+        using (LibraDexResultReader<long> reader = indexes.OpenReader(allActiveByTimestamp, duplicateKeyBookmark))
+        {
+            if (!reader.Next() || reader.Current != 6 || reader.Next())
+                throw new InvalidOperationException("Bookmark seek did not find the exact identity inside a duplicate order-key run.");
+        }
+
+        int selectorCalls = 0;
+        int valueCalls = 0;
+        LibraDexCondition<long> deferredBookmarkCondition = LibraDexCondition.Group("events")
+            .Where(
+                () =>
+                {
+                    selectorCalls++;
+                    return "status";
+                },
+                "selectedIndex")
+            .AsInt32.EqualTo(
+                () =>
+                {
+                    valueCalls++;
+                    return 1;
+                })
+            .Return<long>()
+            .OrderBy("timeStamp")
+            .EndCondition;
+
+        LibraDexBookmark deferredBookmark;
+        using (LibraDexResultReader<long> reader = indexes.OpenReader(deferredBookmarkCondition))
+        {
+            if (selectorCalls != 1 || valueCalls != 1)
+                throw new InvalidOperationException("Bookmark preparation did not materialize a deferred selector and value exactly once.");
+            if (reader.Pull(2).Count != 2)
+                throw new InvalidOperationException("Deferred bookmark reader did not produce its first page.");
+
+            deferredBookmark = reader.Bookmark;
+            _ = deferredBookmark.Condition.Shape;
+            _ = deferredBookmark.Indexes[0].Name;
+            if (selectorCalls != 1 || valueCalls != 1 ||
+                !deferredBookmark.Condition.HasDeferredSelectors ||
+                !deferredBookmark.Condition.HasDeferredValues ||
+                !deferredBookmark.Indexes.Any(index =>
+                    string.Equals(index.Name, "status", StringComparison.Ordinal) &&
+                    string.Equals(index.SelectorName, "selectedIndex", StringComparison.Ordinal)))
+            {
+                throw new InvalidOperationException("Bookmark inspection invoked deferred code or lost resolved selector provenance.");
+            }
+        }
+
+        using (LibraDexResultReader<long> reader = indexes.OpenReader(deferredBookmarkCondition, deferredBookmark))
+        {
+            if (selectorCalls != 2 || valueCalls != 2 || !reader.Next())
+                throw new InvalidOperationException("Deferred condition resume did not materialize once and continue after its bookmark.");
+        }
+
+        LibraDexParameter<string> parameterizedIndex = LibraDexParameter.Create("status", "currentIndex");
+        LibraDexParameter<int> parameterizedKey = LibraDexParameter.Create(1, "currentStatus");
+        LibraDexConditionEndCondition parameterizedCondition = indexes
+            .Where(parameterizedIndex).AsInt32.GreaterOrEqual(parameterizedKey)
+            .AND.Where(parameterizedIndex).AsInt32.LessOrEqual(parameterizedKey)
+            .EndCondition;
+        int parameterResolverCalls = 0;
+        IReadOnlyList<ulong> firstParameterizedIds = parameterizedCondition
+            .Materialize(indexName =>
+            {
+                parameterResolverCalls++;
+                parameterizedIndex.Value = "missing-after-snapshot";
+                parameterizedKey.Value = 0;
+                return indexes.Index(indexName);
+            })
+            .IDs
+            .ToList<ulong>();
+        if (parameterResolverCalls != 2 || !firstParameterizedIds.OrderBy(static value => value).SequenceEqual(new ulong[] { 1, 2, 4, 5, 6 }))
+            throw new InvalidOperationException("Execution-time parameters were not fully snapshotted before index resolution began.");
+
+        parameterizedIndex.Value = "status";
+        parameterizedKey.Value = 0;
+        IReadOnlyList<ulong> secondParameterizedIds = parameterizedCondition.Materialize(indexes.Index).IDs.ToList<ulong>();
+        if (!secondParameterizedIds.SequenceEqual(new ulong[] { 3 }))
+            throw new InvalidOperationException("A reusable parameterized condition did not observe values changed between executions.");
+
+        using (Catalog otherCatalog = Catalog.CreateMemory())
+        using (LibraDexIndex<int, ulong> wrongGroupIndex = otherCatalog.Indexes["other-events"]["status"].Int32Keys<ulong>().Create())
+        {
+            LibraDexParameter<IIndex> wrongGroupParameter = LibraDexParameter.Create<IIndex>(wrongGroupIndex, "selectedIndex");
+            LibraDexConditionEndCondition wrongGroupCondition = indexes.Where(wrongGroupParameter).AsInt32.EqualTo(1).EndCondition;
+            try
+            {
+                _ = wrongGroupCondition.Materialize(indexes.Index);
+                throw new InvalidOperationException("An opened-index parameter crossed identity groups during materialization.");
+            }
+            catch (InvalidOperationException ex) when (ex.Message.Contains("not condition group", StringComparison.Ordinal))
+            {
+            }
+        }
+
+        LibraDexCondition<long> enumMembershipBookmarkCondition = indexes
+            .Where("status").AsInt32.InSet(new[] { ProofStatus.One })
+            .Return<long>()
+            .OrderBy("timeStamp")
+            .EndCondition;
+        LibraDexBookmark enumMembershipBookmark;
+        using (LibraDexResultReader<long> reader = indexes.OpenReader(enumMembershipBookmarkCondition))
+        {
+            if (!reader.Pull(2).SequenceEqual(new long[] { 1, 4 }))
+                throw new InvalidOperationException("Enum membership bookmark setup did not preserve the materialized set result order.");
+
+            enumMembershipBookmark = reader.Bookmark;
+        }
+
+        using (LibraDexResultReader<long> reader = indexes.OpenReader(enumMembershipBookmarkCondition, enumMembershipBookmark))
+        {
+            if (!reader.Next() || reader.Current != 2)
+                throw new InvalidOperationException("Enum membership bookmark did not structurally match its freshly materialized scalar set.");
+        }
+
+        _ = statusIndex.Insert(1, 7);
+        try
+        {
+            using LibraDexResultReader<(long Identity, string Key1)> stale = indexes.OpenReader(oldestActiveWithDevice, pageBookmark);
+            throw new InvalidOperationException("Generation-bound bookmark accepted a changed catalog.");
+        }
+        catch (InvalidOperationException ex) when (ex.Message.Contains("catalog changed", StringComparison.Ordinal))
+        {
+        }
+
+        using (LibraDexResultReader<(long Identity, string Key1)> live = indexes.OpenReader(
+            oldestActiveWithDevice,
+            pageBookmark,
+            LibraDexBookmarkConsistency.LiveContinuation))
+        {
+            if (!live.Next() || live.Current != (2L, "device-a") || live.Next())
+                throw new InvalidOperationException("Live bookmark continuation did not resume after the retained logical anchor.");
+        }
+
         Console.WriteLine("condition-result-latest-reader-sanity ok");
         return 0;
 
@@ -3014,6 +3373,7 @@ internal static partial class RawHarness
             _ = transformIndex.Insert(100 + (int)identity, identity);
             _ = topWindowIndex.Insert(100 + (int)identity, identity);
             _ = ordinaryWindowIndex.Insert(100 + (int)identity, identity);
+            _ = representativeTargetIndex.Insert(100 + (int)identity, identity);
         }
 
         ulong[] GetAll(string indexName)

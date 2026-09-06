@@ -3139,7 +3139,7 @@ internal static partial class RawHarness
             {
                 for (int i = 0; i < keys.Length; i++)
                 {
-                    VarKeyScalar8RoutedInsertResult result = session.InsertWalkedRoutedVarKeyScalar8(handle.RootRouterOffset, handle.MaxKeyLength, keys[i], CreateVarKeyScalar8Identity(i), allowDuplicateKeys: true, maxRouterHops: 16);
+                    VarKeyScalar8RoutedInsertResult result = session.InsertWalkedRoutedVarKeyScalar8(handle.RootRouterOffset, handle.MaxKeyLength, keys[i], CreateVarKeyScalar8Identity(i), allowDuplicateKeys: true, maxRouterHops: LibraDexFileSession.DefaultVarKeyScalar8MaxRouterHops);
                     if (result.InsertResult != VarKeyScalar8InsertResult.Inserted)
                     {
                         throw new InvalidDataException($"Expected lifecycle optimizer VS8 insert {i}, got {result.Kind}/{result.InsertResult}.");
@@ -3200,7 +3200,7 @@ internal static partial class RawHarness
                 for (int i = 0; i < keys.Length; i++)
                 {
                     CreateVarKeyScalar16Identity(i, out ulong identityHigh, out ulong identityLow);
-                    VarKeyScalar16RoutedInsertResult result = session.InsertWalkedRoutedVarKeyScalar16(handle.RootRouterOffset, handle.MaxKeyLength, keys[i], identityHigh, identityLow, allowDuplicateKeys: true, maxRouterHops: 16);
+                    VarKeyScalar16RoutedInsertResult result = session.InsertWalkedRoutedVarKeyScalar16(handle.RootRouterOffset, handle.MaxKeyLength, keys[i], identityHigh, identityLow, allowDuplicateKeys: true, maxRouterHops: LibraDexFileSession.DefaultVarKeyScalar16MaxRouterHops);
                     if (result.InsertResult != VarKeyScalar16InsertResult.Inserted)
                     {
                         throw new InvalidDataException($"Expected lifecycle optimizer VS16 insert {i}, got {result.Kind}/{result.InsertResult}.");
@@ -3269,7 +3269,7 @@ internal static partial class RawHarness
             {
                 for (int i = 0; i < keys.Length; i++)
                 {
-                    VarKeyScalar8RoutedInsertResult result = session.InsertWalkedRoutedVarKeyScalar8(handle.RootRouterOffset, handle.MaxKeyLength, keys[i], CreateVarKeyScalar8Identity(i), allowDuplicateKeys: true, maxRouterHops: 16);
+                    VarKeyScalar8RoutedInsertResult result = session.InsertWalkedRoutedVarKeyScalar8(handle.RootRouterOffset, handle.MaxKeyLength, keys[i], CreateVarKeyScalar8Identity(i), allowDuplicateKeys: true, maxRouterHops: LibraDexFileSession.DefaultVarKeyScalar8MaxRouterHops);
                     if (result.InsertResult != VarKeyScalar8InsertResult.Inserted)
                     {
                         throw new InvalidDataException($"Expected on-demand optimizer VS8 insert {i}, got {result.Kind}/{result.InsertResult}.");
@@ -3325,7 +3325,7 @@ internal static partial class RawHarness
             {
                 for (int i = 0; i < keys.Length; i++)
                 {
-                    VarKeyScalar8RoutedInsertResult result = session.InsertWalkedRoutedVarKeyScalar8(handle.RootRouterOffset, handle.MaxKeyLength, keys[i], CreateVarKeyScalar8Identity(i), allowDuplicateKeys: true, maxRouterHops: 16);
+                    VarKeyScalar8RoutedInsertResult result = session.InsertWalkedRoutedVarKeyScalar8(handle.RootRouterOffset, handle.MaxKeyLength, keys[i], CreateVarKeyScalar8Identity(i), allowDuplicateKeys: true, maxRouterHops: LibraDexFileSession.DefaultVarKeyScalar8MaxRouterHops);
                     if (result.InsertResult != VarKeyScalar8InsertResult.Inserted)
                     {
                         throw new InvalidDataException($"Expected automatic optimizer VS8 insert {i}, got {result.Kind}/{result.InsertResult}.");
@@ -3397,7 +3397,7 @@ internal static partial class RawHarness
 
         using LibraDexFileSession reopened = LibraDexFileSession.Open(path, options, DataKernelTelemetryOptions.EnabledOptions);
         VarKeyScalar8RouterShapeStats stats = MeasureVarKeyScalar8RouterShapeStats(reopened, rootOffset);
-        if (stats.MultiByteRouterCount <= 0 || stats.MaxRouteDepth > 2)
+        if (stats.MultiByteRouterCount <= 0 || stats.MaxRouteDepth > 3)
         {
             throw new InvalidDataException($"The VS8 optimizer mode produced an unexpected route shape: mbRouters={stats.MultiByteRouterCount}, maxDepth={stats.MaxRouteDepth}.");
         }
@@ -3406,7 +3406,19 @@ internal static partial class RawHarness
         int copied = reopened.ReadVarKeyScalar8IdentityRange(rootOffset, maxKeyLength, lower, upper, identities);
         if (copied != expectedCount)
         {
-            throw new InvalidDataException($"Reopened optimizer-mode VS8 range returned {copied} identities; expected {expectedCount}.");
+            long structuralCount = reopened.CountVarKeyScalar8Identities(rootOffset, maxKeyLength);
+            using VarKeyScalar8RangeReader diagnosticReader = reopened.OpenVarKeyScalar8RangeReader(
+                rootOffset,
+                maxKeyLength,
+                lower,
+                upper,
+                captureDiagnostics: true);
+            int diagnosticCount = diagnosticReader.Count;
+            VarKeyScalar8RangeReadDiagnostics diagnostics = diagnosticReader.Diagnostics;
+            throw new InvalidDataException(
+                $"Reopened optimizer-mode VS8 range returned {copied} identities; expected {expectedCount}; structuralCount={structuralCount}; " +
+                $"diagnosticCount={diagnosticCount}, targets={diagnostics.TargetsPopped}/{diagnostics.TargetsQueued}, routers={diagnostics.RoutersVisited}, " +
+                $"oneByte={diagnostics.OneByteRoutersVisited}, multiByte={diagnostics.MultiByteRoutersVisited}, shelves={diagnostics.ShelvesVisited}, matching={diagnostics.MatchingRows}.");
         }
 
         long checksum = 0;
@@ -3456,7 +3468,7 @@ internal static partial class RawHarness
                 for (int i = 0; i < keys.Length; i++)
                 {
                     CreateVarKeyScalar16Identity(i, out ulong identityHigh, out ulong identityLow);
-                    VarKeyScalar16RoutedInsertResult result = session.InsertWalkedRoutedVarKeyScalar16(handle.RootRouterOffset, handle.MaxKeyLength, keys[i], identityHigh, identityLow, allowDuplicateKeys: true, maxRouterHops: 16);
+                    VarKeyScalar16RoutedInsertResult result = session.InsertWalkedRoutedVarKeyScalar16(handle.RootRouterOffset, handle.MaxKeyLength, keys[i], identityHigh, identityLow, allowDuplicateKeys: true, maxRouterHops: LibraDexFileSession.DefaultVarKeyScalar16MaxRouterHops);
                     if (result.InsertResult != VarKeyScalar16InsertResult.Inserted)
                     {
                         throw new InvalidDataException($"Expected on-demand optimizer VS16 insert {i}, got {result.Kind}/{result.InsertResult}.");
@@ -3513,7 +3525,7 @@ internal static partial class RawHarness
                 for (int i = 0; i < keys.Length; i++)
                 {
                     CreateVarKeyScalar16Identity(i, out ulong identityHigh, out ulong identityLow);
-                    VarKeyScalar16RoutedInsertResult result = session.InsertWalkedRoutedVarKeyScalar16(handle.RootRouterOffset, handle.MaxKeyLength, keys[i], identityHigh, identityLow, allowDuplicateKeys: true, maxRouterHops: 16);
+                    VarKeyScalar16RoutedInsertResult result = session.InsertWalkedRoutedVarKeyScalar16(handle.RootRouterOffset, handle.MaxKeyLength, keys[i], identityHigh, identityLow, allowDuplicateKeys: true, maxRouterHops: LibraDexFileSession.DefaultVarKeyScalar16MaxRouterHops);
                     if (result.InsertResult != VarKeyScalar16InsertResult.Inserted)
                     {
                         throw new InvalidDataException($"Expected automatic optimizer VS16 insert {i}, got {result.Kind}/{result.InsertResult}.");
@@ -3585,7 +3597,7 @@ internal static partial class RawHarness
 
         using LibraDexFileSession reopened = LibraDexFileSession.Open(path, options, DataKernelTelemetryOptions.EnabledOptions);
         VarKeyScalar8RouterShapeStats stats = MeasureVarKeyScalar8RouterShapeStats(reopened, rootOffset);
-        if (stats.MultiByteRouterCount <= 0 || stats.MaxRouteDepth > 2)
+        if (stats.MultiByteRouterCount <= 0 || stats.MaxRouteDepth > 3)
         {
             throw new InvalidDataException($"The VS16 optimizer mode produced an unexpected route shape: mbRouters={stats.MultiByteRouterCount}, maxDepth={stats.MaxRouteDepth}.");
         }

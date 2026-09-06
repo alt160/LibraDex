@@ -23,6 +23,7 @@ internal static class SuperblockLayout
     public const int IndexSlotCountOffset = 36;
     public const int FileGuidOffset = 64;
     public const int CreatedUtcTicksOffset = 80;
+    public const int AllocationDirectoryOffsetOffset = 88;
     public const int DevBlockOffset = 1024;
     public const int DevIdentityOffset = DevBlockOffset;
     public const int DevIdentityByteLength = 128;
@@ -151,6 +152,30 @@ internal static class SuperblockLayout
     public static void WriteCreatedUtcTicks(Span<byte> target, long value)
     {
         BinaryPrimitives.WriteInt64LittleEndian(target.Slice(CreatedUtcTicksOffset, sizeof(long)), value);
+    }
+
+    /// <summary>
+    /// Reads the optional file-allocation directory offset.<br/>
+    /// Zero identifies a legacy catalog that has not enabled durable extent segments.<br/>
+    /// </summary>
+    /// <param name="source">The complete superblock bytes.<br/></param>
+    /// <returns>The allocation-directory offset, or zero.<br/></returns>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static long ReadAllocationDirectoryOffset(ReadOnlySpan<byte> source)
+    {
+        return BinaryPrimitives.ReadInt64LittleEndian(source.Slice(AllocationDirectoryOffsetOffset, sizeof(long)));
+    }
+
+    /// <summary>
+    /// Writes the optional file-allocation directory offset.<br/>
+    /// The field occupies previously reserved system bytes and remains zero-compatible with existing format-version-one files.<br/>
+    /// </summary>
+    /// <param name="target">The complete superblock bytes.<br/></param>
+    /// <param name="value">The allocation-directory offset, or zero.<br/></param>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static void WriteAllocationDirectoryOffset(Span<byte> target, long value)
+    {
+        BinaryPrimitives.WriteInt64LittleEndian(target.Slice(AllocationDirectoryOffsetOffset, sizeof(long)), value);
     }
 
     public static string ReadDevIdentity(ReadOnlySpan<byte> source)

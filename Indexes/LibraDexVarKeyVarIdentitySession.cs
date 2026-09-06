@@ -1231,28 +1231,37 @@ internal sealed partial class LibraDexFileSession
             }
 
             varKeyVarIdentityMutableBatchShelves.Remove(target.Offset);
-            RawDataReservation grownReservation = kernel.Reserve(grownProfile.ShelfExtentSize);
-            grownShelf.CopyTo(grownReservation.Span);
-            byte[] parentRouterBytes = new byte[RouterLayout.Size];
-            kernel.Read(pathTarget.ParentRouterOffset, parentRouterBytes);
-            RouterReader parentReader = new(parentRouterBytes);
-            if (!parentReader.IsValid)
+            if (!TryPublishSharedShelfGrowth(
+                SharedShelfGrowthShapeVarKeyVarIdentity,
+                "VV",
+                rootRouterOffset,
+                pathTarget.ParentRouterOffset,
+                pathTarget.RouteIndex,
+                target.Offset,
+                profile.ShelfExtentSize,
+                grownProfile.ShelfExtentSize,
+                grownShelf,
+                deferRouterCacheInvalidation: false,
+                out DataKernelCommitTelemetry telemetry,
+                out long grownShelfOffset))
             {
-                throw new InvalidDataException("The VV growth parent router is invalid.");
+                existingShelf.Release(clearShelfBytes: true);
+                return InsertWalkedRoutedVarKeyVarIdentity(
+                    rootRouterOffset,
+                    maxKeyLength,
+                    maxIdentityLength,
+                    key,
+                    identity,
+                    allowDuplicateKeys,
+                    maxRouterHops);
             }
 
-            RawDataReservation parentRouterRewrite = kernel.ReserveAt(pathTarget.ParentRouterOffset, RouterLayout.Size);
-            parentRouterBytes.CopyTo(parentRouterRewrite.Span);
-            RouterWriter parentWriter = new(parentRouterRewrite.Span);
-            parentWriter.WriteRouteTarget(pathTarget.RouteIndex, grownReservation.Extent.Offset);
-
-            DataKernelCommitTelemetry telemetry = CommitAndInvalidateRouterReadCache();
             existingShelf.Release(clearShelfBytes: true);
             return new VarKeyVarIdentityRoutedInsertResult(
                 VarKeyVarIdentityRoutedInsertKind.WalkedGrow,
                 grownResult,
                 target.Offset,
-                grownReservation.Extent.Offset,
+                grownShelfOffset,
                 telemetry,
                 beforeItemCount + 1,
                 grownProfile.ShelfExtentSize,
@@ -1274,18 +1283,10 @@ internal sealed partial class LibraDexFileSession
                 return terminalResult;
             }
 
-            if (TryExtractVarKeyVarIdentityDuplicateKeyToTerminalRoute(
-                pathTarget,
-                existingShelf,
-                profile,
-                key,
-                identity,
-                allowDuplicateKeys,
-                out VarKeyVarIdentityRoutedInsertResult extractedResult))
-            {
-                existingShelf.Release(clearShelfBytes: true);
-                return extractedResult;
-            }
+            // Mixed-shelf extraction is intentionally not published here. Its shared fallback shelf can be
+            // referenced through noncontiguous aliases after the exact terminal route is installed. The
+            // ordinary transform below first separates key ranges; same-key shelves can then use the safe
+            // cold-fallback terminal conversion without creating an ambiguous parent ownership range.
 
             Span<byte> parentRouterBytes = stackalloc byte[RouterLayout.Size];
             ReadRouterPageUsingArenaCache(pathTarget.ParentRouterOffset, parentRouterBytes);
@@ -1505,7 +1506,7 @@ internal sealed partial class LibraDexFileSession
 
     /// <summary>
     /// Converts one full same-key `VV` shelf into an exact-key terminal var-identity route.<br/>
-    /// The source shelf is cleared and kept as the fallback target for nonmatching branches; the exact-key path points at a terminal root that stores the key once and identities only thereafter.<br/>
+    /// The exact-key chain leaves nonmatching branches unset so later nearby keys lazily receive independent cold shelves instead of sharing one fallback shelf through noncontiguous aliases.<br/>
     /// This is the varlen-key equivalent of the `SV8` duplicate-run terminal shape and avoids repeated key payload storage under hot duplicate keys.<br/>
     /// </summary>
     /// <param name="pathTarget">The routed path target that reached the full source shelf.</param>
@@ -1570,22 +1571,18 @@ internal sealed partial class LibraDexFileSession
             terminalShelfExtentSize,
             identities);
         varKeyVarIdentityMutableBatchShelves.Remove(pathTarget.Target.Offset);
-        byte[] clearedSourceShelf = VarKeyVarIdentity.CreateEmpty(profile);
-        RawDataReservation sourceRewrite = kernel.ReserveAt(pathTarget.Target.Offset, profile.ShelfExtentSize);
-        clearedSourceShelf.CopyTo(sourceRewrite.Span);
         long replacementOffset = CreateVarKeyVarIdentityTerminalRouterChain(
             firstDepth: 0,
             pathTarget.Target.AllocationClassId,
             key,
             profile.MaxKeyLength,
-            pathTarget.Target.Offset,
+            emptyShelfOffset: 0,
             rootOffset);
-        RepointExactRouteAndAliases(
+        RepointMatchingRoutes(
             pathTarget.ParentRouterOffset,
             pathTarget.Target.Offset,
-            pathTarget.RouteIndex,
-            replacementOffset,
-            pathTarget.Target.Offset);
+            replacementOffset);
+        kernel.StageExtentRetirement(pathTarget.Target.Offset, profile.ShelfExtentSize);
         DataKernelCommitTelemetry telemetry = CommitAndInvalidateRouterReadCache();
         result = new VarKeyVarIdentityRoutedInsertResult(
             VarKeyVarIdentityRoutedInsertKind.WalkedDuplicateRunOverflow,
@@ -1886,7 +1883,7 @@ internal sealed partial class LibraDexFileSession
     /// <param name="allocationClassId">The allocation class id written to each created router.</param>
     /// <param name="key">The raw variable key owned by the terminal route.</param>
     /// <param name="maxKeyLength">The maximum raw variable key length accepted by the owning index.</param>
-    /// <param name="emptyShelfOffset">The cleared ordinary shelf target for nonmatching branches.</param>
+    /// <param name="emptyShelfOffset">The ordinary fallback shelf target for nonmatching branches, or zero to leave those branches cold and unset.</param>
     /// <param name="terminalRootOffset">The exact-key terminal identity root offset.</param>
     /// <returns>The top router offset that should replace the parent route target.</returns>
     private long CreateVarKeyVarIdentityTerminalRouterChain(
@@ -1901,7 +1898,9 @@ internal sealed partial class LibraDexFileSession
         long nextTargetOffset = terminalRootOffset;
         for (int depth = terminalDepth; depth >= firstDepth; depth--)
         {
-            long[] targets = CreateFilledScalar8Scalar8RouteTargets(emptyShelfOffset);
+            long[] targets = emptyShelfOffset == 0
+                ? new long[RouterLayout.MaxOneByteRouteCount]
+                : CreateFilledScalar8Scalar8RouteTargets(emptyShelfOffset);
             targets[GetVarKeyScalar8Prefix(key, depth)] = nextTargetOffset;
             RawDataReservation reservation = kernel.Reserve(RouterLayout.Size);
             RouterWriter writer = new(reservation.Span);
@@ -2048,7 +2047,7 @@ internal sealed partial class LibraDexFileSession
         }
         catch (InvalidDataException ex) when (ex.Message.Contains("remaining variable-key route is exhausted", StringComparison.Ordinal))
         {
-            kernel.ReleaseMemoryExtent(incomingShelfReservation.Extent.Offset, profile.ShelfExtentSize);
+            kernel.StageExtentRetirement(incomingShelfReservation.Extent.Offset, profile.ShelfExtentSize);
             return DeterminalizeMismatchedVarKeyVarIdentityRoute(
                 pathTarget,
                 maxKeyLength,
@@ -2166,9 +2165,9 @@ internal sealed partial class LibraDexFileSession
         shelfBytes.CopyTo(shelfReservation.Span);
         RepointMatchingRoutes(pathTarget.ParentRouterOffset, pathTarget.Target.Offset, shelfReservation.Extent.Offset);
         ClearTerminalIdentityReadCaches();
-        DataKernelCommitTelemetry telemetry = CommitAndInvalidateRouterReadCache();
         ReleaseTerminalVarIdentityShelfChain(oldFirstShelfOffset, terminalShelfExtentSize);
-        kernel.ReleaseMemoryExtent(pathTarget.Target.Offset, TerminalIdentityRootLayout.Size);
+        kernel.StageExtentRetirement(pathTarget.Target.Offset, TerminalIdentityRootLayout.Size);
+        DataKernelCommitTelemetry telemetry = CommitAndInvalidateRouterReadCache();
         return new VarKeyVarIdentityRoutedInsertResult(
             VarKeyVarIdentityRoutedInsertKind.WalkedShelfTransformSplit,
             VarKeyVarIdentityInsertResult.Inserted,
@@ -2973,7 +2972,7 @@ internal sealed partial class LibraDexFileSession
 
     /// <summary>
     /// Deletes one exact raw identity from a `VV` terminal duplicate route whose root stores the key once and identities in terminal var-identity shelves.<br/>
-    /// The method rewrites the terminal identity chain with all surviving identities, so duplicate-key paths and ordinary shelf paths preserve the same exact tuple delete contract.<br/>
+    /// The containing identity shelf is repacked at its existing offset, or unlinked with only predecessor/root endpoint updates when it becomes empty.<br/>
     /// </summary>
     /// <param name="rootOffset">The terminal identity root reached by the exact key route.<br/></param>
     /// <param name="key">The encoded variable key expected on the terminal root.<br/></param>
@@ -2988,28 +2987,11 @@ internal sealed partial class LibraDexFileSession
             return false;
         }
 
-        int shelfExtentSize = TerminalIdentityRootLayout.ReadShelfExtentSize(rootBytes);
-        byte[][] identities = ReadScalar8VarIdentityTerminalIdentities(rootOffset, key, shelfExtentSize);
-        int deleteIndex = LowerBoundTerminalVarIdentity(identities, identity);
-        if (deleteIndex >= identities.Length ||
-            Scalar8VarIdentityLayout.CompareIdentityBytes(identities[deleteIndex], identity) != 0)
-        {
-            return false;
-        }
-
-        byte[][] survivors = new byte[identities.Length - 1][];
-        if (deleteIndex > 0)
-        {
-            Array.Copy(identities, 0, survivors, 0, deleteIndex);
-        }
-
-        if (deleteIndex + 1 < identities.Length)
-        {
-            Array.Copy(identities, deleteIndex + 1, survivors, deleteIndex, identities.Length - deleteIndex - 1);
-        }
-
-        _ = RewriteScalar8VarIdentityTerminalRoute(rootOffset, TerminalIdentityRootLayout.ShapeVarKey, key, shelfExtentSize, survivors);
-        return true;
+        return DeleteTerminalVarIdentityExactTupleLocally(
+            rootOffset,
+            TerminalIdentityRootLayout.ShapeVarKey,
+            key,
+            identity);
     }
 
     /// <summary>
@@ -3069,7 +3051,14 @@ internal sealed partial class LibraDexFileSession
             out int rightItemCount,
             out VarKeyVarIdentityInsertResult insertResult))
         {
-            return (childRouterOffset, 0, 0, 0, 0, insertResult, default);
+            if (insertResult == VarKeyVarIdentityInsertResult.AlreadyPresent)
+            {
+                return (childRouterOffset, 0, 0, 0, 0, insertResult, default);
+            }
+
+            throw new InvalidDataException(
+                $"The VV transform could not produce two replacement shelves that fit the {profile.ShelfExtentSize:N0}-byte profile; " +
+                $"ChildOffset={childRouterOffset}; ExistingItems={existingShelf.ItemCount:N0}; IncomingKeyBytes={key.Length:N0}; IncomingIdentityBytes={identity.Length:N0}; FirstKeyDepth={childRouterKeyDepth}.");
         }
 
         if (parentHasDirectIndex &&
@@ -3244,7 +3233,7 @@ internal sealed partial class LibraDexFileSession
         rightShelfBytes = [];
         leftItemCount = 0;
         rightItemCount = 0;
-        insertResult = default;
+        insertResult = VarKeyVarIdentityInsertResult.Invalid;
 
         int existingCount = existingShelf.ItemCount;
         int totalCount = checked(existingCount + 1);
@@ -3307,10 +3296,11 @@ internal sealed partial class LibraDexFileSession
                 existingShelf.Bytes,
                 keyOffsets,
                 keyLengths,
+                identityLengths,
                 key,
                 firstKeyDepth,
                 hintRightPrefixByte,
-                profile.MaxKeyLength);
+                profile);
             selectedPrefixStem = CreateVarKeyVarIdentitySplitPrefixStem(
                 ReadVarKeyVarIdentitySplitSourceKey(existingShelf.Bytes, keyOffsets[0], keyLengths[0], key),
                 firstKeyDepth,
@@ -3353,6 +3343,7 @@ internal sealed partial class LibraDexFileSession
     /// <param name="existingShelfBytes">The authoritative byte image of the existing shelf.</param>
     /// <param name="keyOffsets">The sorted key-payload offsets, with negative values representing the incoming tuple.</param>
     /// <param name="keyLengths">The sorted key lengths matching <paramref name="keyOffsets"/>.</param>
+    /// <param name="identityLengths">The sorted identity lengths matching <paramref name="keyOffsets"/>.</param>
     /// <param name="identityOffsets">The sorted identity-payload offsets, with negative values representing the incoming tuple.</param>
     /// <param name="identityLengths">The sorted identity lengths matching <paramref name="identityOffsets"/>.</param>
     /// <param name="incomingKey">The incoming raw key bytes.</param>
@@ -3557,87 +3548,133 @@ internal sealed partial class LibraDexFileSession
     /// <param name="incomingKey">The incoming raw key bytes.</param>
     /// <param name="firstKeyDepth">The first key depth eligible for the replacement router.</param>
     /// <param name="hintRightPrefixByte">The incoming key prefix byte at <paramref name="firstKeyDepth"/>.</param>
-    /// <param name="maxKeyLength">The maximum raw key length accepted by the profile family.</param>
+    /// <param name="profile">The target replacement-shelf profile used to reject byte- or slot-overfull boundaries before construction.</param>
     /// <returns>The selected split key depth and first right-side prefix byte.</returns>
     private static (ushort KeyDepth, byte RightPrefixByte) ChooseVarKeyVarIdentityTransformSplitPlan(
         byte[] existingShelfBytes,
         ReadOnlySpan<int> keyOffsets,
         ReadOnlySpan<int> keyLengths,
+        ReadOnlySpan<int> identityLengths,
         ReadOnlySpan<byte> incomingKey,
         ushort firstKeyDepth,
         byte hintRightPrefixByte,
-        int maxKeyLength)
+        VarKeyVarIdentityProfile profile)
     {
-        if (keyOffsets.Length < 2 || keyOffsets.Length != keyLengths.Length)
+        if (keyOffsets.Length < 2 || keyOffsets.Length != keyLengths.Length || keyOffsets.Length != identityLengths.Length)
         {
             throw new InvalidDataException("The VV transform split boundary requires at least two complete key descriptors.");
         }
 
-        for (ushort keyDepth = firstKeyDepth; keyDepth < maxKeyLength; keyDepth++)
+        ushort splitKeyDepth = 0;
+        while (splitKeyDepth < profile.MaxKeyLength &&
+               GetVarKeyVarIdentitySplitSourcePrefix(existingShelfBytes, keyOffsets[0], keyLengths[0], incomingKey, splitKeyDepth) ==
+               GetVarKeyVarIdentitySplitSourcePrefix(existingShelfBytes, keyOffsets[^1], keyLengths[^1], incomingKey, splitKeyDepth))
         {
-            if (TryChooseVarKeyVarIdentityTransformSplitRightPrefix(existingShelfBytes, keyOffsets, keyLengths, incomingKey, keyDepth, hintRightPrefixByte, out byte rightPrefixByte))
-            {
-                return (keyDepth, rightPrefixByte);
-            }
+            splitKeyDepth++;
         }
 
-        throw new InvalidDataException("The VV transform split path requires at least two distinct prefixes in the remaining raw key bytes.");
+        if (splitKeyDepth < firstKeyDepth)
+            throw new InvalidDataException($"The VV transform source violates its routed prefix stem. FirstDifferentDepth={splitKeyDepth}; FirstOwnedDepth={firstKeyDepth}; Count={keyOffsets.Length}.");
+        if (splitKeyDepth >= profile.MaxKeyLength ||
+            !TryChooseVarKeyVarIdentityTransformSplitRightPrefix(existingShelfBytes, keyOffsets, keyLengths, identityLengths, incomingKey, splitKeyDepth, hintRightPrefixByte, profile, out byte rightPrefixByte))
+            throw new InvalidDataException("The VV transform split path requires one globally ordered prefix transition after its owned stem.");
+
+        return (splitKeyDepth, rightPrefixByte);
     }
 
     /// <summary>
-    /// Attempts to choose a balanced right-side prefix byte at one raw-key depth.<br/>
-    /// The method checks the median-near boundary first, then scans right and left for the closest usable prefix break before falling back to the incoming-key hint when it still lies inside the observed prefix range.<br/>
+    /// Attempts to choose a capacity-valid right-side prefix byte at one raw-key depth.<br/>
+    /// The method minimizes maximum byte/slot utilization before considering row balance and the incoming-key hint, preventing variable key or identity sizes from invalidating an otherwise plausible split.<br/>
     /// </summary>
     /// <param name="existingShelfBytes">The existing shelf byte image containing persisted records.</param>
     /// <param name="keyOffsets">The sorted key-payload offsets, with negative values representing the incoming tuple.</param>
     /// <param name="keyLengths">The sorted key lengths matching <paramref name="keyOffsets"/>.</param>
+    /// <param name="identityLengths">The sorted identity lengths matching <paramref name="keyOffsets"/>.</param>
     /// <param name="incomingKey">The incoming raw key bytes.</param>
     /// <param name="keyDepth">The raw key byte depth being evaluated.</param>
     /// <param name="hintRightPrefixByte">The incoming key prefix byte at the first candidate depth.</param>
+    /// <param name="profile">The replacement-shelf profile whose independent slot and payload capacities every candidate must satisfy.</param>
     /// <param name="rightPrefixByte">The first prefix byte that should route to the right replacement shelf.</param>
     /// <returns>`true` when a prefix boundary was found at this depth; otherwise `false`.</returns>
     private static bool TryChooseVarKeyVarIdentityTransformSplitRightPrefix(
         byte[] existingShelfBytes,
         ReadOnlySpan<int> keyOffsets,
         ReadOnlySpan<int> keyLengths,
+        ReadOnlySpan<int> identityLengths,
         ReadOnlySpan<byte> incomingKey,
         ushort keyDepth,
         byte hintRightPrefixByte,
+        VarKeyVarIdentityProfile profile,
         out byte rightPrefixByte)
     {
-        int desiredRightStart = keyOffsets.Length / 2;
-        for (int i = desiredRightStart; i < keyOffsets.Length; i++)
+        for (ushort ownedDepth = 0; ownedDepth < keyDepth; ownedDepth++)
         {
-            byte leftPrefix = GetVarKeyVarIdentitySplitSourcePrefix(existingShelfBytes, keyOffsets[i - 1], keyLengths[i - 1], incomingKey, keyDepth);
-            byte rightPrefix = GetVarKeyVarIdentitySplitSourcePrefix(existingShelfBytes, keyOffsets[i], keyLengths[i], incomingKey, keyDepth);
-            if (rightPrefix > leftPrefix)
+            byte ownedStem = GetVarKeyVarIdentitySplitSourcePrefix(existingShelfBytes, keyOffsets[0], keyLengths[0], incomingKey, ownedDepth);
+            for (int i = 1; i < keyOffsets.Length; i++)
             {
-                rightPrefixByte = rightPrefix;
-                return true;
+                if (GetVarKeyVarIdentitySplitSourcePrefix(existingShelfBytes, keyOffsets[i], keyLengths[i], incomingKey, ownedDepth) != ownedStem)
+                {
+                    rightPrefixByte = 0;
+                    return false;
+                }
             }
         }
 
-        for (int i = desiredRightStart - 1; i > 0; i--)
+        int slotCapacityBytes = VarKeyVarIdentityLayout.CalculateSlotCapacityBytes(profile.ShelfExtentSize);
+        int recordCapacityBytes = profile.ShelfExtentSize - VarKeyVarIdentityLayout.HeaderSize - slotCapacityBytes;
+        long totalRecordBytes = 0;
+        for (int i = 0; i < keyLengths.Length; i++)
         {
-            byte leftPrefix = GetVarKeyVarIdentitySplitSourcePrefix(existingShelfBytes, keyOffsets[i - 1], keyLengths[i - 1], incomingKey, keyDepth);
-            byte rightPrefix = GetVarKeyVarIdentitySplitSourcePrefix(existingShelfBytes, keyOffsets[i], keyLengths[i], incomingKey, keyDepth);
-            if (rightPrefix > leftPrefix)
+            totalRecordBytes += VarKeyVarIdentityLayout.GetNewRecordLength(keyLengths[i], identityLengths[i]);
+        }
+
+        int bestRightStart = -1;
+        byte bestBoundary = 0;
+        long bestMaximumUtilization = long.MaxValue;
+        int bestBalanceDistance = int.MaxValue;
+        int bestHintDistance = int.MaxValue;
+        long leftRecordBytes = VarKeyVarIdentityLayout.GetNewRecordLength(keyLengths[0], identityLengths[0]);
+        byte priorPrefix = GetVarKeyVarIdentitySplitSourcePrefix(existingShelfBytes, keyOffsets[0], keyLengths[0], incomingKey, keyDepth);
+        for (int i = 1; i < keyOffsets.Length; i++)
+        {
+            byte currentPrefix = GetVarKeyVarIdentitySplitSourcePrefix(existingShelfBytes, keyOffsets[i], keyLengths[i], incomingKey, keyDepth);
+            if (currentPrefix < priorPrefix)
             {
-                rightPrefixByte = rightPrefix;
-                return true;
+                rightPrefixByte = 0;
+                return false;
             }
+            if (currentPrefix > priorPrefix)
+            {
+                int leftCount = i;
+                int rightCount = keyOffsets.Length - i;
+                long rightRecordBytes = totalRecordBytes - leftRecordBytes;
+                bool fits = leftCount * VarKeyVarIdentityLayout.SlotSize <= slotCapacityBytes &&
+                    rightCount * VarKeyVarIdentityLayout.SlotSize <= slotCapacityBytes &&
+                    leftRecordBytes <= recordCapacityBytes &&
+                    rightRecordBytes <= recordCapacityBytes;
+                int balanceDistance = Math.Abs(i - (keyOffsets.Length - i));
+                int hintDistance = Math.Abs(currentPrefix - hintRightPrefixByte);
+                long maximumUtilization = Math.Max(
+                    Math.Max(leftRecordBytes * slotCapacityBytes, (long)leftCount * VarKeyVarIdentityLayout.SlotSize * recordCapacityBytes),
+                    Math.Max(rightRecordBytes * slotCapacityBytes, (long)rightCount * VarKeyVarIdentityLayout.SlotSize * recordCapacityBytes));
+                if (fits &&
+                    (maximumUtilization < bestMaximumUtilization ||
+                     (maximumUtilization == bestMaximumUtilization && balanceDistance < bestBalanceDistance) ||
+                     (maximumUtilization == bestMaximumUtilization && balanceDistance == bestBalanceDistance && hintDistance < bestHintDistance)))
+                {
+                    bestRightStart = i;
+                    bestBoundary = currentPrefix;
+                    bestMaximumUtilization = maximumUtilization;
+                    bestBalanceDistance = balanceDistance;
+                    bestHintDistance = hintDistance;
+                }
+            }
+            priorPrefix = currentPrefix;
+            leftRecordBytes += VarKeyVarIdentityLayout.GetNewRecordLength(keyLengths[i], identityLengths[i]);
         }
 
-        byte firstPrefix = GetVarKeyVarIdentitySplitSourcePrefix(existingShelfBytes, keyOffsets[0], keyLengths[0], incomingKey, keyDepth);
-        byte lastPrefix = GetVarKeyVarIdentitySplitSourcePrefix(existingShelfBytes, keyOffsets[^1], keyLengths[^1], incomingKey, keyDepth);
-        if (hintRightPrefixByte > firstPrefix && hintRightPrefixByte <= lastPrefix)
-        {
-            rightPrefixByte = hintRightPrefixByte;
-            return true;
-        }
-
-        rightPrefixByte = 0;
-        return false;
+        rightPrefixByte = bestBoundary;
+        return bestRightStart >= 0;
     }
 
     /// <summary>

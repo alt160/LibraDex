@@ -375,7 +375,7 @@ Avoid fluent chains that are only fluent for the implementer. A good fluent chai
 store.Where.Prop(x => x.Name).EqualTo("Alice");
 
 // Avoid this kind of shape unless the extra concepts are required.
-store.Query().For<Record>().WithSelector(x => x.Name).UsingOperator(Equal).WithValue("Alice").Execute();
+store.Query().For<Record>().Select(x => x.Name).EqualTo("Alice").Execute();
 ```
 
 Favor common-case defaults. Optional knobs should not obscure the simplest correct call.
@@ -482,6 +482,26 @@ Strong tendencies:
 8. Low call depth unless a helper has real semantic weight.
 9. Public APIs shaped around short, discoverable common-case calls.
 10. Performance costs kept visible instead of hidden behind pleasant abstractions.
+11. Fluent condition-builder stages prefer properties when the transition is side-effect-free and requires no caller input.
+
+### Fluent Property Boundary
+
+For condition-builder and result-reader APIs, prefer an argument-free property for a semantic stage transition:
+
+```csharp
+condition.And.Index("age").AsInt32.GreaterOrEqual(18).EndCondition
+index.Keys.Duplicates.AsString.Get()
+```
+
+Use a method when the caller must supply input, or when the operation executes work, allocates a result, performs IO, blocks, or mutates state:
+
+```csharp
+index.Keys.Slice(6, 8).AsInt32(Coercion.Numeric.LibraDex)
+catalog.Get(condition)
+index.Delete(condition)
+```
+
+Do not add a proxy stage solely to disguise a parameterized operation as properties. Property-first means argument-free semantic navigation is discoverable and low ceremony; it does not mean hiding meaningful work or required choices behind property getters.
 
 Project/local tendencies:
 

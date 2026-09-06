@@ -10,6 +10,53 @@ internal static partial class RawHarness
     {
         if (typeof(LibraDexConditionOperator<>).GetMethod("All", BindingFlags.Public | BindingFlags.Instance) is not null)
             throw new InvalidOperationException("The developer-facing condition grammar must not expose All(); unfiltered result selection is implicit.");
+        string[] prohibitedTerminalRebindingMethods =
+        [
+            "WithValue",
+            "WithDeferredValue",
+            "WithParameter",
+            "WithIndex",
+            "WithDeferredIndex",
+            "WithIndexParameter"
+        ];
+        if (typeof(LibraDexConditionEndCondition).GetMethods(BindingFlags.Public | BindingFlags.Instance)
+            .Any(method => prohibitedTerminalRebindingMethods.Contains(method.Name, StringComparer.Ordinal)))
+        {
+            throw new InvalidOperationException("EndCondition is terminal; completed conditions must not expose post-terminal operand or index rebinding.");
+        }
+        if (typeof(LibraDexConditionOperator<>).GetMethod("IsNull", BindingFlags.Public | BindingFlags.Instance) is not null ||
+            typeof(LibraDexConditionOperator<>).GetMethod("IsNotNull", BindingFlags.Public | BindingFlags.Instance) is not null)
+        {
+            throw new InvalidOperationException("The universal condition operator must not expose scalar-null semantics to string, binary, or unsupported reference-key families.");
+        }
+        if (typeof(LibraDexConditionOperator<>).GetMethods(BindingFlags.Public | BindingFlags.Instance).Any(method =>
+            {
+                ParameterInfo[] parameters = method.GetParameters();
+                return (method.Name == "EqualTo" || method.Name == "NotEqualTo") &&
+                    parameters.Length == 1 &&
+                    parameters[0].ParameterType == typeof(ScalarNull);
+            }))
+        {
+            throw new InvalidOperationException("ScalarNull sentinel overloads must remain constrained extensions instead of universal instance methods.");
+        }
+        if (typeof(LibraDexConditionGroupBy).GetProperty("First", BindingFlags.Public | BindingFlags.Instance) is null ||
+            typeof(LibraDexConditionGroupBy).GetProperty("Last", BindingFlags.Public | BindingFlags.Instance) is null ||
+            typeof(LibraDexConditionGroupBy).GetMethod("First", BindingFlags.Public | BindingFlags.Instance) is not null ||
+            typeof(LibraDexConditionGroupBy).GetMethod("Last", BindingFlags.Public | BindingFlags.Instance) is not null)
+        {
+            throw new InvalidOperationException("Grouped representative selection must expose property-first First and Last stages without competing method forms.");
+        }
+        if (!Enum.GetNames<AggType>().SequenceEqual(new[] { "Min", "Max", "Count" }))
+        {
+            throw new InvalidOperationException("AggType must remain scalar-only; order-based First and Last belong directly to the GroupBy stage.");
+        }
+        if (typeof(LibraDexIndexIdentities).GetMethods(BindingFlags.Public | BindingFlags.Instance)
+                .Any(method => method.Name.Contains("ReaderByKey", StringComparison.Ordinal)) ||
+            typeof(LibraDexIndexEntries).GetMethods(BindingFlags.Public | BindingFlags.Instance)
+                .Any(method => method.Name.Contains("ReaderByKey", StringComparison.Ordinal)))
+        {
+            throw new InvalidOperationException("Direct exact-key APIs must remain eager; condition execution owns reader, bookmark, filtering, and custom iteration behavior.");
+        }
 
         string path = GetOption(args, "--path", DefaultPublicApiSnapshotPath);
         bool update = HasOption(args, "--update");

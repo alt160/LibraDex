@@ -20,6 +20,7 @@ internal sealed class Scalar16Scalar8RangeReader : IDisposable
     private long[]? pendingOffsets;
     private int[]? pendingHops;
     private byte[]? pendingFlags;
+    private byte[]? routerScratch;
     private RouteVisitedOffsetSet? visitedShelves;
     private RouteVisitedOffsetSet? visitedRouters;
     private LibraDexFileSession? session;
@@ -442,11 +443,17 @@ internal sealed class Scalar16Scalar8RangeReader : IDisposable
             ArrayPool<byte>.Shared.Return(pendingFlags, clearArray: false);
         }
 
+        if (routerScratch is not null)
+        {
+            ArrayPool<byte>.Shared.Return(routerScratch, clearArray: false);
+        }
+
         visitedShelves?.Dispose();
         visitedRouters?.Dispose();
         pendingOffsets = null;
         pendingHops = null;
         pendingFlags = null;
+        routerScratch = null;
         visitedShelves = null;
         visitedRouters = null;
         session = null;
@@ -596,6 +603,14 @@ internal sealed class Scalar16Scalar8RangeReader : IDisposable
                     continue;
                 }
 
+                if (localSession.ClassifyScalar16Scalar8RouteTarget(shelfOffsets[i]) == Scalar16Scalar8RouteTargetKind.TerminalIdentityRoot)
+                {
+                    Span<byte> keyBytes = stackalloc byte[Scalar16Scalar8Layout.KeySize];
+                    System.Buffers.Binary.BinaryPrimitives.WriteUInt64BigEndian(keyBytes, readOnly.ReadKeyHighAt(slot));
+                    System.Buffers.Binary.BinaryPrimitives.WriteUInt64BigEndian(keyBytes.Slice(sizeof(ulong)), readOnly.ReadKeyLowAt(slot));
+                    return localSession.DeleteFixedScalar8TerminalIdentity(shelfOffsets[i], keyBytes, profile.ShelfExtentSize, encodedIdentity) == 1;
+                }
+
                 Scalar16Scalar8 shelf = new(shelves[i], profile);
                 _ = shelf.RemoveSlotRange(slot, 1);
                 _ = localSession.StageScalar16Scalar8ShelfRewriteForBatch(shelfOffsets[i], profile, shelves[i]);
@@ -650,7 +665,8 @@ internal sealed class Scalar16Scalar8RangeReader : IDisposable
         RouteVisitedOffsetSet localVisitedShelves = visitedShelves ?? throw new ObjectDisposedException(nameof(Scalar16Scalar8RangeReader));
         RouteVisitedOffsetSet localVisitedRouters = visitedRouters ?? throw new ObjectDisposedException(nameof(Scalar16Scalar8RangeReader));
         int previousRowCount = rowCount;
-        byte[] routerBytes = new byte[RouterLayout.Size];
+        byte[] routerBytes = routerScratch ??= ArrayPool<byte>.Shared.Rent(RouterLayout.Size);
+        Span<byte> routerPage = routerBytes.AsSpan(0, RouterLayout.Size);
         while (pendingCount > 0)
         {
             PopTarget(out long targetOffset, out int remainingHops, out bool lowerEdge, out bool upperEdge);
@@ -676,6 +692,22 @@ internal sealed class Scalar16Scalar8RangeReader : IDisposable
                 continue;
             }
 
+            if (kind == Scalar16Scalar8RouteTargetKind.TerminalIdentityRoot)
+            {
+                if (!localVisitedShelves.Add(targetOffset))
+                {
+                    continue;
+                }
+
+                AddTerminalIdentityRootRanges(targetOffset, localSession);
+                if (rowCount > previousRowCount)
+                {
+                    return true;
+                }
+
+                continue;
+            }
+
             if (kind != Scalar16Scalar8RouteTargetKind.Router)
             {
                 throw new InvalidDataException("The routed SS16-8 range target is not a shelf or router.");
@@ -686,8 +718,8 @@ internal sealed class Scalar16Scalar8RangeReader : IDisposable
                 continue;
             }
 
-            localSession.ReadRouterPageUsingArenaCache(targetOffset, routerBytes);
-            RouterReader router = new(routerBytes);
+            localSession.ReadRouterPageUsingArenaCache(targetOffset, routerPage);
+            RouterReader router = new(routerPage);
             if (!router.IsValid)
             {
                 throw new InvalidDataException("The routed SS16-8 range router is invalid.");
@@ -755,6 +787,71 @@ internal sealed class Scalar16Scalar8RangeReader : IDisposable
 
         traversalComplete = true;
         return false;
+    }
+
+    /// <summary>
+    /// Projects one persisted fixed-key scalar-eight terminal route into bounded ordinary `SS16-8` cursor shelves.<br/>
+    /// The fixed key is decoded once, terminal identities remain in persisted order, and descending readers add high identity chunks first so global tuple order remains exact.<br/>
+    /// </summary>
+    /// <param name="rootOffset">The terminal identity root selected by routed traversal.<br/></param>
+    /// <param name="localSession">The owning file session used to read the root and identity-only shelf chain.<br/></param>
+    private void AddTerminalIdentityRootRanges(long rootOffset, LibraDexFileSession localSession)
+    {
+        byte[] rootBytes = localSession.ReadTerminalIdentityRootBytes(rootOffset);
+        if (TerminalIdentityRootLayout.ReadShape(rootBytes) != TerminalIdentityRootLayout.ShapeFixedKeyScalar8Identity ||
+            TerminalIdentityRootLayout.ReadKeyLength(rootBytes) != Scalar16Scalar8Layout.KeySize ||
+            TerminalIdentityRootLayout.ReadShelfExtentSize(rootBytes) != profile.ShelfExtentSize)
+        {
+            throw new InvalidDataException("The routed SS16-8 terminal identity root does not match its owning index shape.");
+        }
+
+        ReadOnlySpan<byte> keyBytes = rootBytes.AsSpan(TerminalIdentityRootLayout.KeyBytesOffset, Scalar16Scalar8Layout.KeySize);
+        ulong keyHigh = System.Buffers.Binary.BinaryPrimitives.ReadUInt64BigEndian(keyBytes);
+        ulong keyLow = System.Buffers.Binary.BinaryPrimitives.ReadUInt64BigEndian(keyBytes.Slice(sizeof(ulong)));
+        if (CompareKey(keyHigh, keyLow, lowerKeyHigh, lowerKeyLow) < 0 ||
+            CompareKey(keyHigh, keyLow, upperKeyHigh, upperKeyLow) > 0)
+        {
+            return;
+        }
+
+        List<ulong> identities = localSession.ReadTerminalIdentity8RouteIdentities(rootOffset, keyBytes, profile.ShelfExtentSize);
+        int capacity = profile.MaxItemCount;
+        if (!descendingTraversal)
+        {
+            for (int start = 0; start < identities.Count; start += capacity)
+                AddTerminalIdentityChunk(rootOffset, keyHigh, keyLow, identities, start, Math.Min(capacity, identities.Count - start));
+            return;
+        }
+
+        int finalChunkStart = identities.Count == 0 ? 0 : ((identities.Count - 1) / capacity) * capacity;
+        for (int start = finalChunkStart; start >= 0 && start < identities.Count; start -= capacity)
+            AddTerminalIdentityChunk(rootOffset, keyHigh, keyLow, identities, start, Math.Min(capacity, identities.Count - start));
+    }
+
+    /// <summary>
+    /// Builds one cursor-owned `SS16-8` projection shelf for a contiguous terminal identity slice.<br/>
+    /// The projection is read-only cursor state and does not duplicate the key in persisted storage.<br/>
+    /// </summary>
+    /// <param name="rootOffset">The terminal root offset retained as the projection owner.<br/></param>
+    /// <param name="keyHigh">The high encoded key lane.<br/></param>
+    /// <param name="keyLow">The low encoded key lane.<br/></param>
+    /// <param name="identities">The complete ordered terminal identity list.<br/></param>
+    /// <param name="start">The first identity index to project.<br/></param>
+    /// <param name="count">The number of identities to project.<br/></param>
+    private void AddTerminalIdentityChunk(long rootOffset, ulong keyHigh, ulong keyLow, IReadOnlyList<ulong> identities, int start, int count)
+    {
+        byte[] shelfBytes = ArrayPool<byte>.Shared.Rent(profile.ShelfExtentSize);
+        shelfBytes.AsSpan(0, profile.ShelfExtentSize).Clear();
+        Scalar16Scalar8 shelf = new(shelfBytes, profile);
+        shelf.Initialize();
+        for (int i = 0; i < count; i++)
+        {
+            Scalar16Scalar8InsertResult insert = shelf.Insert(keyHigh, keyLow, identities[start + i], allowDuplicateKeys: true);
+            if (insert != Scalar16Scalar8InsertResult.Inserted)
+                throw new InvalidDataException($"Expected SS16-8 terminal cursor projection insert, got {insert}.");
+        }
+
+        AddShelfRange(rootOffset, shelfBytes);
     }
 
     private void EnsureAllRangesLoaded()

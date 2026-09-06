@@ -36,6 +36,9 @@ internal static class LibraDexGenericScalarCodec<T>
                 type == typeof(uint) ||
                 type == typeof(long) ||
                 type == typeof(ulong) ||
+                type == typeof(float) ||
+                type == typeof(double) ||
+                type == typeof(decimal) ||
                 type == typeof(Int128) ||
                 type == typeof(UInt128) ||
                 type == typeof(DateTime) ||
@@ -122,6 +125,27 @@ internal static class LibraDexGenericScalarCodec<T>
         {
             ulong typed = ulong.MinValue;
             value = Unsafe.As<ulong, T>(ref typed);
+            return true;
+        }
+
+        if (type == typeof(float))
+        {
+            float typed = float.NegativeInfinity;
+            value = Unsafe.As<float, T>(ref typed);
+            return true;
+        }
+
+        if (type == typeof(double))
+        {
+            double typed = double.NegativeInfinity;
+            value = Unsafe.As<double, T>(ref typed);
+            return true;
+        }
+
+        if (type == typeof(decimal))
+        {
+            decimal typed = decimal.MinValue;
+            value = Unsafe.As<decimal, T>(ref typed);
             return true;
         }
 
@@ -254,6 +278,27 @@ internal static class LibraDexGenericScalarCodec<T>
         {
             ulong typed = ulong.MaxValue;
             value = Unsafe.As<ulong, T>(ref typed);
+            return true;
+        }
+
+        if (type == typeof(float))
+        {
+            float typed = float.PositiveInfinity;
+            value = Unsafe.As<float, T>(ref typed);
+            return true;
+        }
+
+        if (type == typeof(double))
+        {
+            double typed = double.PositiveInfinity;
+            value = Unsafe.As<double, T>(ref typed);
+            return true;
+        }
+
+        if (type == typeof(decimal))
+        {
+            decimal typed = decimal.MaxValue;
+            value = Unsafe.As<decimal, T>(ref typed);
             return true;
         }
 
@@ -498,6 +543,34 @@ internal static class LibraDexGenericScalarCodec<T>
     private static bool TryGetPreviousSignedLikeValue(T current, DateTimeKeyEncoding dateTimeKeyEncoding, out T previous)
     {
         Type type = typeof(T);
+        if (type == typeof(float))
+        {
+            float typed = Unsafe.As<T, float>(ref current);
+            if (float.IsNaN(typed) || float.IsNegativeInfinity(typed))
+            {
+                previous = default!;
+                return false;
+            }
+
+            float result = MathF.BitDecrement(typed);
+            previous = Unsafe.As<float, T>(ref result);
+            return true;
+        }
+
+        if (type == typeof(double))
+        {
+            double typed = Unsafe.As<T, double>(ref current);
+            if (double.IsNaN(typed) || double.IsNegativeInfinity(typed))
+            {
+                previous = default!;
+                return false;
+            }
+
+            double result = Math.BitDecrement(typed);
+            previous = Unsafe.As<double, T>(ref result);
+            return true;
+        }
+
         if (type == typeof(sbyte))
         {
             sbyte typed = Unsafe.As<T, sbyte>(ref current);
@@ -565,6 +638,19 @@ internal static class LibraDexGenericScalarCodec<T>
 
             typed--;
             previous = Unsafe.As<ulong, T>(ref typed);
+            return true;
+        }
+
+        if (type == typeof(decimal))
+        {
+            decimal typed = Unsafe.As<T, decimal>(ref current);
+            if (!LibraDexOrderedDecimalCodec.TryGetPrevious(typed, out decimal result))
+            {
+                previous = default!;
+                return false;
+            }
+
+            previous = Unsafe.As<decimal, T>(ref result);
             return true;
         }
 
@@ -680,6 +766,34 @@ internal static class LibraDexGenericScalarCodec<T>
     private static bool TryGetNextSignedLikeValue(T current, DateTimeKeyEncoding dateTimeKeyEncoding, out T next)
     {
         Type type = typeof(T);
+        if (type == typeof(float))
+        {
+            float typed = Unsafe.As<T, float>(ref current);
+            if (float.IsNaN(typed) || float.IsPositiveInfinity(typed))
+            {
+                next = default!;
+                return false;
+            }
+
+            float result = MathF.BitIncrement(typed);
+            next = Unsafe.As<float, T>(ref result);
+            return true;
+        }
+
+        if (type == typeof(double))
+        {
+            double typed = Unsafe.As<T, double>(ref current);
+            if (double.IsNaN(typed) || double.IsPositiveInfinity(typed))
+            {
+                next = default!;
+                return false;
+            }
+
+            double result = Math.BitIncrement(typed);
+            next = Unsafe.As<double, T>(ref result);
+            return true;
+        }
+
         if (type == typeof(sbyte))
         {
             sbyte typed = Unsafe.As<T, sbyte>(ref current);
@@ -747,6 +861,19 @@ internal static class LibraDexGenericScalarCodec<T>
 
             typed++;
             next = Unsafe.As<ulong, T>(ref typed);
+            return true;
+        }
+
+        if (type == typeof(decimal))
+        {
+            decimal typed = Unsafe.As<T, decimal>(ref current);
+            if (!LibraDexOrderedDecimalCodec.TryGetNext(typed, out decimal result))
+            {
+                next = default!;
+                return false;
+            }
+
+            next = Unsafe.As<decimal, T>(ref result);
             return true;
         }
 
@@ -925,7 +1052,8 @@ internal static class LibraDexGenericScalarCodec<T>
             throw new ArgumentException("Generic LibraDex scalar width overrides are only supported for byte[] keys and identities in this slice.");
         }
 
-        if (type == typeof(Guid))
+        if (type == typeof(Guid) ||
+            type == typeof(decimal))
         {
             return LibraDexScalarWidth.Bytes16;
         }
@@ -954,7 +1082,9 @@ internal static class LibraDexGenericScalarCodec<T>
             type == typeof(int) ||
             type == typeof(uint) ||
             type == typeof(long) ||
-            type == typeof(ulong))
+            type == typeof(ulong) ||
+            type == typeof(float) ||
+            type == typeof(double))
         {
             return LibraDexScalarWidth.Bytes8;
         }
@@ -984,13 +1114,13 @@ internal static class LibraDexGenericScalarCodec<T>
         if (type == typeof(sbyte))
         {
             sbyte typed = Unsafe.As<T, sbyte>(ref value);
-            return unchecked((byte)(typed ^ sbyte.MinValue));
+            return unchecked((ulong)((long)typed ^ long.MinValue));
         }
 
         if (type == typeof(short))
         {
             short typed = Unsafe.As<T, short>(ref value);
-            return unchecked((ushort)(typed ^ short.MinValue));
+            return unchecked((ulong)((long)typed ^ long.MinValue));
         }
 
         if (type == typeof(ushort))
@@ -1006,7 +1136,7 @@ internal static class LibraDexGenericScalarCodec<T>
         if (type == typeof(int))
         {
             int typed = Unsafe.As<T, int>(ref value);
-            return unchecked((uint)(typed ^ int.MinValue));
+            return unchecked((ulong)((long)typed ^ long.MinValue));
         }
 
         if (type == typeof(uint))
@@ -1023,6 +1153,18 @@ internal static class LibraDexGenericScalarCodec<T>
         if (type == typeof(ulong))
         {
             return Unsafe.As<T, ulong>(ref value);
+        }
+
+        if (type == typeof(float))
+        {
+            float typed = Unsafe.As<T, float>(ref value);
+            return LibraDexOrderedFloatingCodec.Encode(typed);
+        }
+
+        if (type == typeof(double))
+        {
+            double typed = Unsafe.As<T, double>(ref value);
+            return LibraDexOrderedFloatingCodec.Encode(typed);
         }
 
         if (type == typeof(DateTime))
@@ -1094,6 +1236,13 @@ internal static class LibraDexGenericScalarCodec<T>
             return;
         }
 
+        if (type == typeof(decimal))
+        {
+            decimal typed = Unsafe.As<T, decimal>(ref value);
+            LibraDexOrderedDecimalCodec.Encode(typed, out high, out low);
+            return;
+        }
+
         if (type == typeof(byte[]))
         {
             byte[] typed = Unsafe.As<T, byte[]>(ref value) ?? throw new ArgumentNullException(nameof(value), "Generic LibraDex scalar values cannot be null.");
@@ -1152,13 +1301,15 @@ internal static class LibraDexGenericScalarCodec<T>
 
         if (type == typeof(sbyte))
         {
-            sbyte typed = unchecked((sbyte)((byte)encodedValue ^ sbyte.MinValue));
+            long numeric = unchecked((long)(encodedValue ^ (ulong)long.MinValue));
+            sbyte typed = checked((sbyte)numeric);
             return Unsafe.As<sbyte, T>(ref typed);
         }
 
         if (type == typeof(short))
         {
-            short typed = unchecked((short)((ushort)encodedValue ^ short.MinValue));
+            long numeric = unchecked((long)(encodedValue ^ (ulong)long.MinValue));
+            short typed = checked((short)numeric);
             return Unsafe.As<short, T>(ref typed);
         }
 
@@ -1176,7 +1327,8 @@ internal static class LibraDexGenericScalarCodec<T>
 
         if (type == typeof(int))
         {
-            int typed = unchecked((int)((uint)encodedValue ^ int.MinValue));
+            long numeric = unchecked((long)(encodedValue ^ (ulong)long.MinValue));
+            int typed = checked((int)numeric);
             return Unsafe.As<int, T>(ref typed);
         }
 
@@ -1196,6 +1348,18 @@ internal static class LibraDexGenericScalarCodec<T>
         {
             ulong typed = encodedValue;
             return Unsafe.As<ulong, T>(ref typed);
+        }
+
+        if (type == typeof(float))
+        {
+            float typed = LibraDexOrderedFloatingCodec.DecodeSingle(encodedValue);
+            return Unsafe.As<float, T>(ref typed);
+        }
+
+        if (type == typeof(double))
+        {
+            double typed = LibraDexOrderedFloatingCodec.DecodeDouble(encodedValue);
+            return Unsafe.As<double, T>(ref typed);
         }
 
         if (type == typeof(DateTime))
@@ -1262,6 +1426,12 @@ internal static class LibraDexGenericScalarCodec<T>
         {
             UInt128 typed = ((UInt128)high << 64) | low;
             return Unsafe.As<UInt128, T>(ref typed);
+        }
+
+        if (type == typeof(decimal))
+        {
+            decimal typed = LibraDexOrderedDecimalCodec.Decode(high, low);
+            return Unsafe.As<decimal, T>(ref typed);
         }
 
         if (type == typeof(byte[]))

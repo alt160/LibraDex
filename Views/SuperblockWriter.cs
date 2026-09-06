@@ -30,7 +30,8 @@ internal ref struct SuperblockWriter
         long indexDirectoryOffset,
         Guid fileGuid,
         long createdUtcTicks,
-        SuperblockDeveloperMetadata developerMetadata)
+        SuperblockDeveloperMetadata developerMetadata,
+        long allocationDirectoryOffset = 0)
     {
         bytes.Clear();
         SuperblockLayout.WriteMagic(bytes, SuperblockLayout.Magic);
@@ -43,6 +44,7 @@ internal ref struct SuperblockWriter
         SuperblockLayout.WriteIndexSlotCount(bytes, IndexDirectoryLayout.SlotCount);
         SuperblockLayout.WriteFileGuid(bytes, fileGuid);
         SuperblockLayout.WriteCreatedUtcTicks(bytes, createdUtcTicks);
+        SuperblockLayout.WriteAllocationDirectoryOffset(bytes, allocationDirectoryOffset);
         WriteDeveloperMetadata(developerMetadata);
     }
 

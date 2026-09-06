@@ -17,20 +17,43 @@ internal static class LibraDexVarLenKeyCodec
 
     internal static byte[] Encode(ReadOnlySpan<byte> key, int maxPhysicalLength, string paramName)
     {
+        byte[] encoded = GC.AllocateUninitializedArray<byte>(GetEncodedLength(key, maxPhysicalLength, paramName));
+        Encode(key, maxPhysicalLength, paramName, encoded);
+        return encoded;
+    }
+
+    /// <summary>
+    /// Returns the exact physical byte count required for one non-null variable-length key.<br/>
+    /// The result includes the one-byte key-state marker and validates the configured maximum before a caller reserves arena storage.<br/>
+    /// </summary>
+    /// <param name="key">Developer-facing key payload.<br/></param>
+    /// <param name="maxPhysicalLength">Maximum encoded key length accepted by the target shape.<br/></param>
+    /// <param name="paramName">Parameter name used by validation failures.<br/></param>
+    /// <returns>The exact encoded byte count.<br/></returns>
+    internal static int GetEncodedLength(ReadOnlySpan<byte> key, int maxPhysicalLength, string paramName)
+    {
         if (key.Length > GetMaxLogicalLength(maxPhysicalLength))
         {
             throw new ArgumentOutOfRangeException(paramName, key.Length, $"Variable-length key payload length must be from 0 to {GetMaxLogicalLength(maxPhysicalLength)} bytes.");
         }
+        return checked(key.Length + 1);
+    }
 
-        if (key.Length == 0)
-        {
-            return new[] { EmptyMarker };
-        }
-
-        byte[] encoded = new byte[key.Length + 1];
-        encoded[0] = ValueMarker;
-        key.CopyTo(encoded.AsSpan(1));
-        return encoded;
+    /// <summary>
+    /// Encodes one non-null variable-length key directly into caller-owned storage.<br/>
+    /// This avoids a temporary per-key array when a bulk builder already owns a compact byte arena.<br/>
+    /// </summary>
+    /// <param name="key">Developer-facing key payload.<br/></param>
+    /// <param name="maxPhysicalLength">Maximum encoded key length accepted by the target shape.<br/></param>
+    /// <param name="paramName">Parameter name used by validation failures.<br/></param>
+    /// <param name="destination">Destination whose length must equal the validated encoded length.<br/></param>
+    internal static void Encode(ReadOnlySpan<byte> key, int maxPhysicalLength, string paramName, Span<byte> destination)
+    {
+        int required = GetEncodedLength(key, maxPhysicalLength, paramName);
+        if (destination.Length != required)
+            throw new ArgumentException($"Encoded variable-key destination length must be exactly {required:N0} bytes.", nameof(destination));
+        destination[0] = key.Length == 0 ? EmptyMarker : ValueMarker;
+        key.CopyTo(destination[1..]);
     }
 
     internal static byte[] Encode(byte[]? key, int maxPhysicalLength, string paramName)

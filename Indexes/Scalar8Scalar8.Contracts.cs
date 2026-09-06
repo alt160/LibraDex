@@ -337,10 +337,28 @@ internal readonly ref struct Scalar8Scalar8RangeReadScratch
     public Span<byte> Range { get; }
 }
 
+/// <summary>
+/// Selects the session-local read strategy used while walking an `SS8-8` route graph.<br/>
+/// The policy names describe every route-projection layer that may satisfy a router or target-kind lookup.<br/>
+/// </summary>
 internal enum Scalar8Scalar8RouteReadPolicy
 {
-    Uncached = 0,
-    PreferArenaCache = 1
+    /// <summary>
+    /// Uses promoted direct-router views, promoted child-router links, and target-kind projections before reading persisted bytes.<br/>
+    /// This is the normal low-friction production policy for point and mutation routing.<br/>
+    /// </summary>
+    PreferPromotedViews = 0,
+
+    /// <summary>
+    /// Uses promoted direct-router views and additionally permits persisted router-arena bytes to satisfy non-direct router reads.<br/>
+    /// </summary>
+    PreferArenaCache = 1,
+
+    /// <summary>
+    /// Reads every visited router page and every selected target magic directly from the backing store.<br/>
+    /// This policy bypasses all session route projections and exists as an internal correctness and performance control.<br/>
+    /// </summary>
+    RawFile = 2
 }
 
 /// <summary>

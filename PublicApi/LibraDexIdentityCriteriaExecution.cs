@@ -155,6 +155,30 @@ internal interface IIdentityPrimitiveExecutor : IIdentityPrimitiveAggregateExecu
     IEnumerable<object> IterateIdentityUniverse();
 }
 
+/// <summary>
+/// Exposes the strongly typed counterpart of an internal identity primitive executor.<br/>
+/// Built-in scalar indexes implement this contract so value-type identities remain unboxed from physical decoding through logical condition composition and final projection.<br/>
+/// The non-generic executor remains the compatibility contract for runtime-shaped and public object APIs; callers should prefer this interface whenever their identity type is known.<br/>
+/// </summary>
+/// <typeparam name="TIdentity">The decoded identity type emitted by the physical index.<br/></typeparam>
+internal interface IIdentityPrimitiveExecutor<TIdentity>
+{
+    /// <summary>
+    /// Streams one normalized primitive as typed identities without routing values through <see cref="object"/>.<br/>
+    /// Implementations must preserve the same traversal direction, take limit, and condition semantics as their non-generic executor counterpart.<br/>
+    /// </summary>
+    /// <param name="request">The normalized primitive request to execute.<br/></param>
+    /// <returns>A forward-only typed identity sequence.<br/></returns>
+    IEnumerable<TIdentity> IterateIdentityPrimitiveTyped(LibraDexIdentityPrimitiveRequest request);
+
+    /// <summary>
+    /// Streams the best available typed identity universe for this executor's identity group.<br/>
+    /// Group-aware implementations must preserve the same de-duplicated universe semantics as <see cref="IIdentityPrimitiveExecutor.IterateIdentityUniverse"/>.<br/>
+    /// </summary>
+    /// <returns>A forward-only typed identity universe.<br/></returns>
+    IEnumerable<TIdentity> IterateIdentityUniverseTyped();
+}
+
 internal interface IIdentityPrimitiveMutator
 {
     /// <summary>
@@ -456,33 +480,10 @@ internal sealed class LibraDexIdentityCriterionProjection : IIdentityCriterionPr
         => LibraDexIdentityExecutionPlanner.Iterate(Criterion, Options);
 
     public IEnumerable<TIdentity> Iterate<TIdentity>()
-    {
-        int ordinal = 0;
-        foreach (object identityObject in Iterate())
-        {
-            if (identityObject is not TIdentity identity)
-            {
-                throw new InvalidCastException($"Identity at ordinal {ordinal} is {identityObject.GetType().FullName}, not {typeof(TIdentity).FullName}.");
-            }
-
-            ordinal++;
-            yield return identity;
-        }
-    }
+        => LibraDexIdentityExecutionPlanner.IterateTyped<TIdentity>(Criterion, Options);
 
     public IReadOnlyList<TIdentity> ToList<TIdentity>()
-    {
-        IReadOnlyList<object> identities = ToList();
-        TIdentity[] typed = new TIdentity[identities.Count];
-        for (int i = 0; i < identities.Count; i++)
-        {
-            typed[i] = identities[i] is TIdentity identity
-                ? identity
-                : throw new InvalidCastException($"Identity at ordinal {i} is {identities[i].GetType().FullName}, not {typeof(TIdentity).FullName}.");
-        }
-
-        return typed;
-    }
+        => LibraDexIdentityExecutionPlanner.ToListTyped<TIdentity>(Criterion, Options);
 
     public LibraDexIdentityExecutionResult Execute()
         => LibraDexIdentityExecutionPlanner.Execute(Criterion, Options);
@@ -491,10 +492,59 @@ internal sealed class LibraDexIdentityCriterionProjection : IIdentityCriterionPr
 
 internal static class LibraDexIdentityExecutionPlanner
 {
+    /// <summary>
+    /// Resolves the physical duplicate policy for one materialized identity criterion.<br/>
+    /// A single primitive over an index that explicitly guarantees one key per identity cannot emit duplicate identities, so satisfying a caller's distinct-result contract requires no runtime set.<br/>
+    /// Composite, external, negated, union, and multiple-key-per-identity shapes retain the requested policy because their streams can repeat an identity.<br/>
+    /// </summary>
+    /// <param name="criterion">The materialized criterion whose physical multiplicity is known.<br/></param>
+    /// <param name="options">The caller-requested execution options.<br/></param>
+    /// <returns>Execution options with redundant physical deduplication removed only when the index contract proves it unnecessary.<br/></returns>
+    private static LibraDexIdentityQueryOptions ResolvePhysicalDeduplication(
+        IIdentityCriterion criterion,
+        LibraDexIdentityQueryOptions options)
+    {
+        if (options.Deduplication == IdentityDeduplication.Distinct &&
+            criterion.NodeKind == LibraDexIdentityCriterionNodeKind.Leaf &&
+            criterion.Index is { IdentityKeyMultiplicity: IdentityKeyMultiplicity.SingleKeyPerIdentity } &&
+            criterion.CriteriaKind is { } criteriaKind &&
+            PrimitiveVisitsEachTupleAtMostOnce(criteriaKind))
+        {
+            return options with { Deduplication = IdentityDeduplication.Preserve };
+        }
+
+        return options;
+    }
+
+    /// <summary>
+    /// Identifies primitive executions that traverse one physical tuple stream without independently concatenating potentially overlapping operand streams.<br/>
+    /// Membership and multi-range primitives remain excluded because repeated or overlapping operands can emit one otherwise single-valued identity more than once.<br/>
+    /// </summary>
+    /// <param name="criteriaKind">The normalized primitive execution kind.<br/></param>
+    /// <returns><see langword="true"/> when one physical tuple can be visited at most once by the primitive.<br/></returns>
+    private static bool PrimitiveVisitsEachTupleAtMostOnce(LibraDexCriteriaKind criteriaKind)
+        => criteriaKind is
+            LibraDexCriteriaKind.All or
+            LibraDexCriteriaKind.Find or
+            LibraDexCriteriaKind.Between or
+            LibraDexCriteriaKind.Before or
+            LibraDexCriteriaKind.AtOrBefore or
+            LibraDexCriteriaKind.After or
+            LibraDexCriteriaKind.AtOrAfter or
+            LibraDexCriteriaKind.Prefix or
+            LibraDexCriteriaKind.Suffix or
+            LibraDexCriteriaKind.Contains or
+            LibraDexCriteriaKind.Matches or
+            LibraDexCriteriaKind.StructuredComponent or
+            LibraDexCriteriaKind.GuidPattern or
+            LibraDexCriteriaKind.BinaryPattern or
+            LibraDexCriteriaKind.BinaryTypedSlice;
+
     internal static LibraDexIdentityExecutionPlan Plan(IIdentityCriterion criterion, LibraDexIdentityQueryOptions options)
     {
         ArgumentNullException.ThrowIfNull(criterion);
         options.Validate();
+        options = ResolvePhysicalDeduplication(criterion, options);
         PlanAccumulator accumulator = new();
         LibraDexIdentityExecutionPlan root = PlanNode(criterion, options, accumulator);
         bool requiresOrdering = options.Ordering != IdentityResultOrdering.PlanNatural;
@@ -525,6 +575,7 @@ internal static class LibraDexIdentityExecutionPlanner
     {
         ArgumentNullException.ThrowIfNull(criterion);
         options.Validate();
+        options = ResolvePhysicalDeduplication(criterion, options);
         LibraDexIdentityExecutionPlan plan = Plan(criterion, options);
         if (options.Ordering == IdentityResultOrdering.PlanNatural)
         {
@@ -560,6 +611,7 @@ internal static class LibraDexIdentityExecutionPlanner
     {
         ArgumentNullException.ThrowIfNull(criterion);
         options.Validate();
+        options = ResolvePhysicalDeduplication(criterion, options);
         if (options.Ordering != IdentityResultOrdering.PlanNatural)
         {
             foreach (object identity in Execute(criterion, options).Identities)
@@ -581,6 +633,61 @@ internal static class LibraDexIdentityExecutionPlanner
             yield return identity;
         }
     }
+
+    /// <summary>
+    /// Streams a projection as the caller's identity type and retains genuine distinct-result state in that type.<br/>
+    /// Plan-natural execution therefore lets value-type identities such as Abraxas record IDs use <see cref="HashSet{T}"/> without retaining one boxed object per distinct identity.<br/>
+    /// Physical single-key proofs still suppress the set entirely, while ordered projections retain the established materialized ordering route.<br/>
+    /// Duplicate removal occurs before paging so skip, take, and bookmark positions continue to count distinct logical identities.<br/>
+    /// </summary>
+    /// <typeparam name="TIdentity">The identity type expected by the caller.<br/></typeparam>
+    /// <param name="criterion">The materialized criterion tree to execute.<br/></param>
+    /// <param name="options">The requested ordering, duplicate, and paging contract.<br/></param>
+    /// <returns>A lazy typed identity stream honoring the supplied projection options.<br/></returns>
+    internal static IEnumerable<TIdentity> IterateTyped<TIdentity>(
+        IIdentityCriterion criterion,
+        LibraDexIdentityQueryOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(criterion);
+        options.Validate();
+        options = ResolvePhysicalDeduplication(criterion, options);
+        IEnumerable<TIdentity> identities = IterateNodeTyped<TIdentity>(criterion);
+        if (options.Deduplication == IdentityDeduplication.Distinct)
+        {
+            identities = DistinctTypedIterator(identities);
+        }
+
+        if (options.Ordering != IdentityResultOrdering.PlanNatural)
+        {
+            List<TIdentity> ordered = identities.ToList();
+            ordered.Sort(Comparer<TIdentity>.Default);
+            if (options.Ordering == IdentityResultOrdering.IdentityDescending)
+            {
+                ordered.Reverse();
+            }
+
+            identities = ordered;
+        }
+
+        foreach (TIdentity identity in ApplyStreamingPagingTyped(identities, options))
+        {
+            yield return identity;
+        }
+    }
+
+    /// <summary>
+    /// Materializes a typed projection directly from the typed streaming route.<br/>
+    /// This avoids first retaining an object result list and then allocating a second typed array for plan-natural Abraxas reads.<br/>
+    /// Ordering, duplicate handling, and paging remain owned by <see cref="IterateTyped{TIdentity}(IIdentityCriterion, LibraDexIdentityQueryOptions)"/>.<br/>
+    /// </summary>
+    /// <typeparam name="TIdentity">The identity type expected by the caller.<br/></typeparam>
+    /// <param name="criterion">The materialized criterion tree to execute.<br/></param>
+    /// <param name="options">The requested ordering, duplicate, and paging contract.<br/></param>
+    /// <returns>A read-only typed list containing the projected page.<br/></returns>
+    internal static IReadOnlyList<TIdentity> ToListTyped<TIdentity>(
+        IIdentityCriterion criterion,
+        LibraDexIdentityQueryOptions options)
+        => IterateTyped<TIdentity>(criterion, options).ToList();
 
     internal static bool Exists(IIdentityCriterion criterion, IdentityDeduplication deduplication)
     {
@@ -1090,6 +1197,108 @@ internal static class LibraDexIdentityExecutionPlanner
     }
 
     /// <summary>
+    /// Streams one criterion tree while retaining the caller's identity type across leaves and logical composition.<br/>
+    /// Built-in typed primitive executors therefore avoid per-row boxing for leaf, union, intersection, difference, complement, distinct, ordering, and paging work.<br/>
+    /// Runtime-only external sources and legacy executors remain supported through the checked compatibility adapter.<br/>
+    /// </summary>
+    /// <typeparam name="TIdentity">The identity type expected by the caller.<br/></typeparam>
+    /// <param name="criterion">The criterion node to execute.<br/></param>
+    /// <returns>A plan-natural typed identity stream for the supplied node.<br/></returns>
+    private static IEnumerable<TIdentity> IterateNodeTyped<TIdentity>(IIdentityCriterion criterion)
+    {
+        return criterion.NodeKind switch
+        {
+            LibraDexIdentityCriterionNodeKind.Leaf => IterateLeafTyped<TIdentity>(criterion),
+            LibraDexIdentityCriterionNodeKind.External => IterateExternalTyped<TIdentity>(criterion),
+            LibraDexIdentityCriterionNodeKind.And => IterateIntersectionTyped<TIdentity>(RequireLeft(criterion), RequireRight(criterion)),
+            LibraDexIdentityCriterionNodeKind.Or => UnionTypedIterator(IterateNodeTyped<TIdentity>(RequireLeft(criterion)), IterateNodeTyped<TIdentity>(RequireRight(criterion))),
+            LibraDexIdentityCriterionNodeKind.Except => ExceptTypedIterator(IterateNodeTyped<TIdentity>(RequireLeft(criterion)), IterateNodeTyped<TIdentity>(RequireRight(criterion)).ToList()),
+            LibraDexIdentityCriterionNodeKind.Not => ComplementTypedIterator<TIdentity>(criterion, IterateNodeTyped<TIdentity>(RequireLeft(criterion)).ToList()),
+            _ => throw new NotSupportedException($"Identity criterion node {criterion.NodeKind} is not supported by typed identity iteration.")
+        };
+    }
+
+    /// <summary>
+    /// Opens one primitive leaf through its typed executor when the concrete index supports the requested identity type.<br/>
+    /// Legacy or runtime-shaped indexes fall back to the checked object adapter so compatibility is preserved without weakening type validation.<br/>
+    /// </summary>
+    /// <typeparam name="TIdentity">The identity type expected by the caller.<br/></typeparam>
+    /// <param name="criterion">The executable leaf criterion.<br/></param>
+    /// <returns>A typed primitive identity stream.<br/></returns>
+    private static IEnumerable<TIdentity> IterateLeafTyped<TIdentity>(IIdentityCriterion criterion)
+    {
+        if (criterion.CriteriaKind is null)
+        {
+            throw new NotSupportedException("The identity criterion leaf is not backed by an executable LibraDex index.");
+        }
+
+        LibraDexIdentityPrimitiveRequest request = new(criterion.CriteriaKind.Value, criterion.Values);
+        if (criterion.Index is IIdentityPrimitiveExecutor<TIdentity> typedExecutor)
+        {
+            return typedExecutor.IterateIdentityPrimitiveTyped(request);
+        }
+
+        if (criterion.Index is not IIdentityPrimitiveExecutor primitiveExecutor)
+        {
+            throw new NotSupportedException("The identity criterion leaf is not backed by an executable LibraDex primitive executor.");
+        }
+
+        return CastIdentityIterator<TIdentity>(primitiveExecutor.IterateIdentityPrimitive(request));
+    }
+
+    /// <summary>
+    /// Adapts one caller-supplied runtime identity source to the typed execution pipeline.<br/>
+    /// External sources retain their object-shaped public contract, so this is an intentional compatibility boundary rather than a built-in physical-index boxing path.<br/>
+    /// </summary>
+    /// <typeparam name="TIdentity">The identity type expected by the caller.<br/></typeparam>
+    /// <param name="criterion">The external source criterion.<br/></param>
+    /// <returns>A checked typed view over the external identities.<br/></returns>
+    private static IEnumerable<TIdentity> IterateExternalTyped<TIdentity>(IIdentityCriterion criterion)
+        => CastIdentityIterator<TIdentity>(IterateExternal(criterion));
+
+    /// <summary>
+    /// Streams a typed intersection and retains typed membership state for the materialized right side.<br/>
+    /// External predicates remain supported by constructing their documented object context only at that explicit callback boundary.<br/>
+    /// </summary>
+    /// <typeparam name="TIdentity">The identity type carried by both logical branches.<br/></typeparam>
+    /// <param name="leftCriterion">The left intersection child.<br/></param>
+    /// <param name="rightCriterion">The right intersection child.<br/></param>
+    /// <returns>The typed identities present in both branches.<br/></returns>
+    private static IEnumerable<TIdentity> IterateIntersectionTyped<TIdentity>(IIdentityCriterion leftCriterion, IIdentityCriterion rightCriterion)
+    {
+        if (TryGetExternalFilterPair(leftCriterion, rightCriterion, out IIdentityCriterion? source, out Func<LibraDexExternalIdentityContext, bool>? filter))
+        {
+            return FilterExternalIdentityIteratorTyped(IterateNodeTyped<TIdentity>(source), filter);
+        }
+
+        return IntersectTypedIterator(IterateNodeTyped<TIdentity>(leftCriterion), IterateNodeTyped<TIdentity>(rightCriterion).ToList());
+    }
+
+    /// <summary>
+    /// Applies an object-context external predicate to a typed source while preserving typed output.<br/>
+    /// The predicate invocation may box a value-type identity because the external callback contract is runtime-shaped; no box is retained after the callback returns.<br/>
+    /// </summary>
+    /// <typeparam name="TIdentity">The typed identity carried by the indexed source.<br/></typeparam>
+    /// <param name="source">The typed candidate identity stream.<br/></param>
+    /// <param name="filter">The caller-supplied runtime identity predicate.<br/></param>
+    /// <returns>The typed identities accepted by the predicate.<br/></returns>
+    private static IEnumerable<TIdentity> FilterExternalIdentityIteratorTyped<TIdentity>(
+        IEnumerable<TIdentity> source,
+        Func<LibraDexExternalIdentityContext, bool> filter)
+    {
+        long ordinal = 0;
+        foreach (TIdentity identity in source)
+        {
+            LibraDexExternalIdentityContext context = new(identity!, ordinal, ordinal == 0);
+            ordinal++;
+            if (filter(context))
+            {
+                yield return identity;
+            }
+        }
+    }
+
+    /// <summary>
     /// Tests whether a criteria tree can produce at least one identity without routing through the general projection pipeline.<br/>
     /// Existence is independent of duplicate handling, so this recursive path can short-circuit `Or`, leaf, intersection, difference, and complement shapes directly.<br/>
     /// The method still preserves explicit primitive failures for unsupported leaves instead of treating unsupported execution as an empty result.<br/>
@@ -1409,7 +1618,7 @@ internal static class LibraDexIdentityExecutionPlanner
         long start = options.SkipCount;
         if (options.Bookmark is { } bookmark)
         {
-            start = Math.Max(start, bookmark.Position);
+            start = Math.Max(start, bookmark.ResultsConsumed);
         }
 
         long requested = start + takeCount;
@@ -1679,10 +1888,168 @@ internal static class LibraDexIdentityExecutionPlanner
         }
     }
 
+    /// <summary>
+    /// Concatenates two typed logical branches in plan-natural order.<br/>
+    /// Duplicate policy remains the responsibility of the projection stage so `Preserve` and `Distinct` retain their existing semantics.<br/>
+    /// </summary>
+    /// <typeparam name="TIdentity">The identity type carried by both branches.<br/></typeparam>
+    /// <param name="left">The left branch emitted first.<br/></param>
+    /// <param name="right">The right branch emitted second.<br/></param>
+    /// <returns>The concatenated typed identity stream.<br/></returns>
+    private static IEnumerable<TIdentity> UnionTypedIterator<TIdentity>(
+        IEnumerable<TIdentity> left,
+        IEnumerable<TIdentity> right)
+    {
+        foreach (TIdentity identity in left)
+        {
+            yield return identity;
+        }
+
+        foreach (TIdentity identity in right)
+        {
+            yield return identity;
+        }
+    }
+
+    /// <summary>
+    /// Streams typed left-side identities present in the materialized right-side membership set.<br/>
+    /// The set uses LibraDex identity equality so binary and composite identity types retain structural semantics without forcing scalar identities through <see cref="object"/>.<br/>
+    /// </summary>
+    /// <typeparam name="TIdentity">The identity type carried by both branches.<br/></typeparam>
+    /// <param name="left">The left branch whose order is retained.<br/></param>
+    /// <param name="right">The materialized right branch used for membership checks.<br/></param>
+    /// <returns>The typed intersection stream.<br/></returns>
+    private static IEnumerable<TIdentity> IntersectTypedIterator<TIdentity>(
+        IEnumerable<TIdentity> left,
+        IReadOnlyList<TIdentity> right)
+    {
+        HashSet<TIdentity> rightSet = new(right, LibraDexKeyEquality<TIdentity>.Comparer);
+        foreach (TIdentity identity in left)
+        {
+            if (rightSet.Contains(identity))
+            {
+                yield return identity;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Streams typed left-side identities absent from the materialized right-side membership set.<br/>
+    /// First-appearance order and repeated left-side identities are preserved until the projection's selected dedupe policy is applied.<br/>
+    /// </summary>
+    /// <typeparam name="TIdentity">The identity type carried by both branches.<br/></typeparam>
+    /// <param name="left">The left branch whose order is retained.<br/></param>
+    /// <param name="right">The materialized right branch used for exclusion checks.<br/></param>
+    /// <returns>The typed difference stream.<br/></returns>
+    private static IEnumerable<TIdentity> ExceptTypedIterator<TIdentity>(
+        IEnumerable<TIdentity> left,
+        IReadOnlyList<TIdentity> right)
+    {
+        HashSet<TIdentity> rightSet = new(right, LibraDexKeyEquality<TIdentity>.Comparer);
+        foreach (TIdentity identity in left)
+        {
+            if (!rightSet.Contains(identity))
+            {
+                yield return identity;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Streams the typed identity universe for a negated criterion and excludes the typed child result set.<br/>
+    /// Single-index negation uses that index's own `All` primitive, while cross-index negation asks the first executable index for its group-aware universe.<br/>
+    /// </summary>
+    /// <typeparam name="TIdentity">The identity type expected by the projection.<br/></typeparam>
+    /// <param name="criterion">The negated criterion that defines universe scope.<br/></param>
+    /// <param name="excluded">The materialized typed child identities to exclude.<br/></param>
+    /// <returns>A typed stream containing identities outside the child criterion.<br/></returns>
+    private static IEnumerable<TIdentity> ComplementTypedIterator<TIdentity>(
+        IIdentityCriterion criterion,
+        IReadOnlyList<TIdentity> excluded)
+    {
+        IEnumerable<TIdentity> universe;
+        if (TryResolveSingleExecutableUniverse(criterion, out IIdentityPrimitiveExecutor? singleIndexExecutor))
+        {
+            LibraDexIdentityPrimitiveRequest allRequest = new(LibraDexCriteriaKind.All, Array.Empty<object?>());
+            universe = singleIndexExecutor is IIdentityPrimitiveExecutor<TIdentity> typedSingleIndexExecutor
+                ? typedSingleIndexExecutor.IterateIdentityPrimitiveTyped(allRequest)
+                : CastIdentityIterator<TIdentity>(singleIndexExecutor.IterateIdentityPrimitive(allRequest));
+        }
+        else
+        {
+            IIdentityCriterion leaf = FindFirstLeaf(criterion);
+            if (leaf.Index is IIdentityPrimitiveExecutor<TIdentity> typedExecutor)
+            {
+                universe = typedExecutor.IterateIdentityUniverseTyped();
+            }
+            else if (leaf.Index is IIdentityPrimitiveExecutor executor)
+            {
+                universe = CastIdentityIterator<TIdentity>(executor.IterateIdentityUniverse());
+            }
+            else
+            {
+                throw new NotSupportedException("Negated identity criteria require at least one executable index to provide the identity universe.");
+            }
+        }
+
+        HashSet<TIdentity> excludedSet = new(excluded, LibraDexKeyEquality<TIdentity>.Comparer);
+        foreach (TIdentity identity in universe)
+        {
+            if (!excludedSet.Contains(identity))
+            {
+                yield return identity;
+            }
+        }
+    }
+
     private static IEnumerable<object> DistinctIterator(IEnumerable<object> identities)
     {
         HashSet<object> seen = new(LibraDexObjectValueComparer.Instance);
         foreach (object identity in identities)
+        {
+            if (seen.Add(identity))
+            {
+                yield return identity;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Casts an internal object identity stream to the caller's requested identity type without materializing an intermediate collection.<br/>
+    /// The reported ordinal identifies the exact malformed source position when a custom or mixed identity source violates its declared projection type.<br/>
+    /// </summary>
+    /// <typeparam name="TIdentity">The identity type expected by the caller.<br/></typeparam>
+    /// <param name="identities">The internal identity stream to cast.<br/></param>
+    /// <returns>A lazy typed view over the supplied identities.<br/></returns>
+    /// <exception cref="InvalidCastException">Thrown when an identity is null or has a different runtime type.<br/></exception>
+    private static IEnumerable<TIdentity> CastIdentityIterator<TIdentity>(IEnumerable<object> identities)
+    {
+        int ordinal = 0;
+        foreach (object? identityObject in identities)
+        {
+            if (identityObject is not TIdentity identity)
+            {
+                string actualType = identityObject?.GetType().FullName ?? "null";
+                throw new InvalidCastException($"Identity at ordinal {ordinal} is {actualType}, not {typeof(TIdentity).FullName}.");
+            }
+
+            ordinal++;
+            yield return identity;
+        }
+    }
+
+    /// <summary>
+    /// Removes repeated identities while preserving the first-appearance order of the composed plan-natural stream.<br/>
+    /// The retained set stores <typeparamref name="TIdentity"/> values directly, eliminating long-lived boxing for value-type Abraxas identities while preserving LibraDex key equality semantics.<br/>
+    /// This helper is selected only when logical composition can genuinely repeat identities; proven single-key primitive streams bypass it before enumeration begins.<br/>
+    /// </summary>
+    /// <typeparam name="TIdentity">The identity type expected by the caller.<br/></typeparam>
+    /// <param name="identities">The internal composed identity stream.<br/></param>
+    /// <returns>A lazy typed stream containing the first occurrence of each identity.<br/></returns>
+    private static IEnumerable<TIdentity> DistinctTypedIterator<TIdentity>(IEnumerable<TIdentity> identities)
+    {
+        HashSet<TIdentity> seen = new(LibraDexKeyEquality<TIdentity>.Comparer);
+        foreach (TIdentity identity in identities)
         {
             if (seen.Add(identity))
             {
@@ -1696,11 +2063,48 @@ internal static class LibraDexIdentityExecutionPlanner
         long skip = options.SkipCount;
         if (options.Bookmark is { } bookmark)
         {
-            skip = Math.Max(skip, bookmark.Position);
+            skip = Math.Max(skip, bookmark.ResultsConsumed);
         }
 
         long returned = 0;
         foreach (object identity in identities)
+        {
+            if (skip > 0)
+            {
+                skip--;
+                continue;
+            }
+
+            if (options.TakeCount is not null && returned >= options.TakeCount.Value)
+            {
+                yield break;
+            }
+
+            returned++;
+            yield return identity;
+        }
+    }
+
+    /// <summary>
+    /// Applies skip, bookmark, and take controls to a typed plan-natural identity stream.<br/>
+    /// Callers place this stage after distinct processing so every paging position refers to a logical result rather than a duplicated physical occurrence.<br/>
+    /// </summary>
+    /// <typeparam name="TIdentity">The identity type carried by the stream.<br/></typeparam>
+    /// <param name="identities">The typed identities to page.<br/></param>
+    /// <param name="options">The validated projection options.<br/></param>
+    /// <returns>A lazy typed stream containing only the requested page.<br/></returns>
+    private static IEnumerable<TIdentity> ApplyStreamingPagingTyped<TIdentity>(
+        IEnumerable<TIdentity> identities,
+        LibraDexIdentityQueryOptions options)
+    {
+        long skip = options.SkipCount;
+        if (options.Bookmark is { } bookmark)
+        {
+            skip = Math.Max(skip, bookmark.ResultsConsumed);
+        }
+
+        long returned = 0;
+        foreach (TIdentity identity in identities)
         {
             if (skip > 0)
             {
@@ -1730,7 +2134,7 @@ internal static class LibraDexIdentityExecutionPlanner
         long skip = options.SkipCount;
         if (options.Bookmark is { } bookmark)
         {
-            skip = Math.Max(skip, bookmark.Position);
+            skip = Math.Max(skip, bookmark.ResultsConsumed);
         }
 
         if (options.TakeCount == 0)
@@ -1824,7 +2228,7 @@ internal static class LibraDexIdentityExecutionPlanner
         int start = options.SkipCount;
         if (options.Bookmark is { } bookmark)
         {
-            start = Math.Max(start, checked((int)Math.Min(bookmark.Position, int.MaxValue)));
+            start = Math.Max(start, checked((int)Math.Min(bookmark.ResultsConsumed, int.MaxValue)));
         }
 
         if (start >= identities.Count)
@@ -2055,6 +2459,123 @@ internal sealed class LibraDexIdentityCriterionMutation : IIdentityCriterionMuta
 
     public LibraDexIdentityMutationResult Execute()
         => LibraDexIdentityExecutionPlanner.ExecuteMutation(this);
+}
+
+/// <summary>
+/// Opens one independent physical identity partition for an exact-worker consumer.<br/>
+/// The returned enumerator must acquire and retain its own coherent read on the calling worker thread; callers must not create it on one thread and consume it on another.<br/>
+/// </summary>
+/// <typeparam name="TIdentity">The scalar identity type emitted by the partition.<br/></typeparam>
+internal interface IIdentityPrimitivePartition<TIdentity>
+{
+    /// <summary>
+    /// Opens the worker-owned enumerator for this disjoint physical partition.<br/>
+    /// Opening is intentionally explicit so a coordinator can prove that every requested worker owns a live coherent reader before releasing the planning-to-execution transition read.<br/>
+    /// </summary>
+    /// <returns>An enumerator that must be consumed and disposed on the calling worker thread.<br/></returns>
+    IEnumerator<TIdentity> OpenEnumerator();
+
+    /// <summary>
+    /// Captures bounded work counters owned by this one physical partition.<br/>
+    /// The coordinator reads the snapshot only after the worker has disposed its enumerator, so hot traversal requires no atomic counter or shared collection.<br/>
+    /// </summary>
+    /// <returns>Work descriptors claimed, physical source rows examined, and matching identities emitted by this partition.<br/></returns>
+    IdentityPrimitivePartitionWork CaptureWork();
+}
+
+/// <summary>
+/// Describes physical work completed by one exact-worker identity partition without retaining keys, identities, or payloads.<br/>
+/// </summary>
+/// <param name="WorkItemsClaimed">Topology targets or fixed physical slices claimed by the worker.<br/></param>
+/// <param name="SourceItemsExamined">Physical keys, identities, or records examined before residual selection.<br/></param>
+/// <param name="MatchesEmitted">Matching identities emitted by the partition enumerator.<br/></param>
+internal readonly record struct IdentityPrimitivePartitionWork(
+    int WorkItemsClaimed,
+    long SourceItemsExamined,
+    long MatchesEmitted);
+
+/// <summary>
+/// Creates an exact number of independent physical partitions for one normalized primitive request.<br/>
+/// Implementations return <see langword="false"/> when the requested primitive or current topology cannot provide that exact physical worker count without overlapping keys, eager result materialization, or a shared producer cursor.<br/>
+/// </summary>
+/// <typeparam name="TIdentity">The scalar identity type emitted by each partition.<br/></typeparam>
+internal interface IIdentityPrimitivePartitioner<TIdentity>
+{
+    /// <summary>
+    /// Attempts to create an exact-worker partition set for one primitive request.<br/>
+    /// A successful set owns a transition read acquired on this calling thread; the same thread must release or dispose it after all worker readers have opened.<br/>
+    /// </summary>
+    /// <param name="request">The normalized primitive request whose complete semantics each partition must preserve.<br/></param>
+    /// <param name="workerCount">The exact number of independent physical workers requested by the developer.<br/></param>
+    /// <param name="partitions">The exact partition set when successful; otherwise <see langword="null"/>.<br/></param>
+    /// <returns><see langword="true"/> only when exactly <paramref name="workerCount"/> disjoint partitions were created.<br/></returns>
+    bool TryCreateIdentityPrimitivePartitions(
+        LibraDexIdentityPrimitiveRequest request,
+        int workerCount,
+        out LibraDexIdentityPrimitivePartitionSet<TIdentity>? partitions,
+        out string? unsupportedReason);
+}
+
+/// <summary>
+/// Owns one exact collection of disjoint physical identity partitions plus the coherent read that bridges topology planning to worker-reader acquisition.<br/>
+/// The transition read is released explicitly after every worker reports that its own reader is open; disposal remains the failure-path guarantee.<br/>
+/// </summary>
+/// <typeparam name="TIdentity">The scalar identity type emitted by the partitions.<br/></typeparam>
+internal sealed class LibraDexIdentityPrimitivePartitionSet<TIdentity> : IDisposable
+{
+    private IDisposable? transitionRead;
+
+    /// <summary>
+    /// Initializes one exact partition set.<br/>
+    /// </summary>
+    /// <param name="partitions">The non-empty exact partition collection.<br/></param>
+    /// <param name="transitionRead">The coherent read acquired by the planner on the current coordinator thread.<br/></param>
+    /// <param name="topologyRoutersRead">Router pages read while deriving the bounded partition frontier, or zero for a non-router partition shape.<br/></param>
+    /// <param name="topologyTargetsSelected">Disjoint physical continuation targets assigned across the workers, or zero when the shape does not expose target-level work.<br/></param>
+    internal LibraDexIdentityPrimitivePartitionSet(
+        IReadOnlyList<IIdentityPrimitivePartition<TIdentity>> partitions,
+        IDisposable transitionRead,
+        int topologyRoutersRead = 0,
+        int topologyTargetsSelected = 0)
+    {
+        ArgumentNullException.ThrowIfNull(partitions);
+        ArgumentNullException.ThrowIfNull(transitionRead);
+        if (partitions.Count == 0)
+            throw new ArgumentException("An identity primitive partition set requires at least one physical partition.", nameof(partitions));
+
+        Partitions = partitions;
+        this.transitionRead = transitionRead;
+        TopologyRoutersRead = Math.Max(0, topologyRoutersRead);
+        TopologyTargetsSelected = Math.Max(0, topologyTargetsSelected);
+    }
+
+    /// <summary>Gets the exact disjoint physical partitions in logical key-range order.<br/></summary>
+    internal IReadOnlyList<IIdentityPrimitivePartition<TIdentity>> Partitions { get; }
+
+    /// <summary>Gets the bounded router-page reads used to derive this partition set.<br/></summary>
+    internal int TopologyRoutersRead { get; }
+
+    /// <summary>Gets the disjoint continuation-target count distributed across this partition set.<br/></summary>
+    internal int TopologyTargetsSelected { get; }
+
+    /// <summary>
+    /// Releases the planning-to-worker transition read after every worker has opened its own coherent reader.<br/>
+    /// The call must occur on the thread that created this set because DataKernel coherent-read ownership is thread-affine.<br/>
+    /// </summary>
+    internal void ReleaseTransitionRead()
+    {
+        IDisposable? owned = Interlocked.Exchange(ref transitionRead, null);
+        owned?.Dispose();
+    }
+
+    /// <summary>
+    /// Releases the transition read on failure or early disposal.<br/>
+    /// Worker-owned enumerators are not owned by this object and remain the responsibility of their worker loops.<br/>
+    /// </summary>
+    public void Dispose()
+    {
+        ReleaseTransitionRead();
+    }
 }
 
 /// <summary>

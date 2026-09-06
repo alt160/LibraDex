@@ -77,7 +77,7 @@ public sealed class LibraDexCompositeConditionWhere
 /// Continues or ends a composite-index condition after one routed composite predicate has been captured.<br/>
 /// The continuation keeps the same composite index selected so handwritten code can naturally chain `.And.KeyPart(...)` or `.Or.FullKey(...)` without repeating the index name.<br/>
 /// </summary>
-public sealed class LibraDexCompositeConditionContinuation
+public sealed class LibraDexCompositeConditionContinuation : LibraDexCompositeResultContinuation
 {
     private readonly LibraDexConditionContinueOrEnd continuation;
     private readonly LibraDexConditionIndexSelector indexSelector;
@@ -85,6 +85,7 @@ public sealed class LibraDexCompositeConditionContinuation
     internal LibraDexCompositeConditionContinuation(
         LibraDexConditionContinueOrEnd continuation,
         LibraDexConditionIndexSelector indexSelector)
+        : base(continuation)
     {
         this.continuation = continuation;
         this.indexSelector = indexSelector;
@@ -146,15 +147,70 @@ public sealed class LibraDexCompositeConditionKeyPartSelector
     /// <summary>
     /// Interprets the selected composite key part as structured date/time data.<br/>
     /// </summary>
-    public LibraDexCompositeConditionDateOperator AsDate => new(inner.AsDate, capture);
+    public LibraDexCompositeConditionDateOperator AsDateTime => new(inner.AsDateTime, capture);
 
-    /// <summary>
-    /// Interprets the selected composite key part as an ordered scalar value.<br/>
-    /// </summary>
-    /// <typeparam name="TValue">The scalar component value type.</typeparam>
-    /// <returns>Scalar operators that capture into the owning composite condition.</returns>
-    public LibraDexCompositeConditionScalarOperator<TValue> AsScalar<TValue>()
-        => new LibraDexCompositeConditionScalarOperator<TValue>(inner.AsScalar<TValue>(), capture);
+    /// <summary>Interprets the selected composite key part as a Boolean scalar.<br/></summary>
+    public LibraDexCompositeConditionScalarOperator<bool> AsBoolean => Scalar<bool>();
+
+    /// <summary>Interprets the selected composite key part as an unsigned 8-bit scalar.<br/></summary>
+    public LibraDexCompositeConditionScalarOperator<byte> AsByte => Scalar<byte>();
+
+    /// <summary>Interprets the selected composite key part as a signed 8-bit scalar.<br/></summary>
+    public LibraDexCompositeConditionScalarOperator<sbyte> AsSByte => Scalar<sbyte>();
+
+    /// <summary>Interprets the selected composite key part as a signed 16-bit scalar.<br/></summary>
+    public LibraDexCompositeConditionScalarOperator<short> AsInt16 => Scalar<short>();
+
+    /// <summary>Interprets the selected composite key part as an unsigned 16-bit scalar.<br/></summary>
+    public LibraDexCompositeConditionScalarOperator<ushort> AsUInt16 => Scalar<ushort>();
+
+    /// <summary>Interprets the selected composite key part as a signed 32-bit scalar.<br/></summary>
+    public LibraDexCompositeConditionScalarOperator<int> AsInt32 => Scalar<int>();
+
+    /// <summary>Interprets the selected composite key part as an unsigned 32-bit scalar.<br/></summary>
+    public LibraDexCompositeConditionScalarOperator<uint> AsUInt32 => Scalar<uint>();
+
+    /// <summary>Interprets the selected composite key part as a signed 64-bit scalar.<br/></summary>
+    public LibraDexCompositeConditionScalarOperator<long> AsInt64 => Scalar<long>();
+
+    /// <summary>Interprets the selected composite key part as an unsigned 64-bit scalar.<br/></summary>
+    public LibraDexCompositeConditionScalarOperator<ulong> AsUInt64 => Scalar<ulong>();
+
+    /// <summary>Interprets the selected composite key part as a signed 128-bit scalar.<br/></summary>
+    public LibraDexCompositeConditionScalarOperator<Int128> AsInt128 => Scalar<Int128>();
+
+    /// <summary>Interprets the selected composite key part as an unsigned 128-bit scalar.<br/></summary>
+    public LibraDexCompositeConditionScalarOperator<UInt128> AsUInt128 => Scalar<UInt128>();
+
+    /// <summary>Interprets the selected composite key part as a single-precision scalar.<br/></summary>
+    public LibraDexCompositeConditionScalarOperator<float> AsSingle => Scalar<float>();
+
+    /// <summary>Interprets the selected composite key part as a double-precision scalar.<br/></summary>
+    public LibraDexCompositeConditionScalarOperator<double> AsDouble => Scalar<double>();
+
+    /// <summary>Interprets the selected composite key part as an exact Decimal scalar.<br/></summary>
+    public LibraDexCompositeConditionScalarOperator<decimal> AsDecimal => Scalar<decimal>();
+
+    /// <summary>Interprets the selected composite key part as an arbitrary-precision integer.<br/></summary>
+    public LibraDexCompositeConditionScalarOperator<System.Numerics.BigInteger> AsBigInt => Scalar<System.Numerics.BigInteger>();
+
+    /// <summary>Interprets the selected composite key part as a UTF-16 code-unit scalar.<br/></summary>
+    public LibraDexCompositeConditionScalarOperator<char> AsChar => Scalar<char>();
+
+    /// <summary>Interprets the selected composite key part as a DateTimeOffset scalar.<br/></summary>
+    public LibraDexCompositeConditionScalarOperator<DateTimeOffset> AsDateTimeOffset => Scalar<DateTimeOffset>();
+
+    /// <summary>Interprets the selected composite key part as a DateOnly scalar.<br/></summary>
+    public LibraDexCompositeConditionScalarOperator<DateOnly> AsDateOnly => Scalar<DateOnly>();
+
+    /// <summary>Interprets the selected composite key part as a TimeOnly scalar.<br/></summary>
+    public LibraDexCompositeConditionScalarOperator<TimeOnly> AsTimeOnly => Scalar<TimeOnly>();
+
+    /// <summary>Interprets the selected composite key part as a TimeSpan scalar.<br/></summary>
+    public LibraDexCompositeConditionScalarOperator<TimeSpan> AsTimeSpan => Scalar<TimeSpan>();
+
+    private LibraDexCompositeConditionScalarOperator<TValue> Scalar<TValue>()
+        => new(inner.Scalar<TValue>(), capture);
 }
 
 /// <summary>
@@ -277,6 +333,22 @@ public sealed class LibraDexCompositeConditionStringOperator
     /// <param name="culture">Optional culture name for managed comparison.</param>
     /// <returns>A continuation for the same composite index condition.</returns>
     public LibraDexCompositeConditionContinuation Contains(string value, bool ignoreCase = false, string? culture = null) => capture(inner.Contains(value, ignoreCase, culture));
+
+    /// <summary>
+    /// Captures a negated containment predicate against the selected string key part.<br/>
+    /// </summary>
+    public LibraDexCompositeConditionContinuation NotContains(string value, bool ignoreCase = false, string? culture = null) => capture(inner.NotContains(value, ignoreCase, culture));
+
+    /// <summary>
+    /// Captures a wildcard predicate against the selected string key part using `*` and `?` semantics.<br/>
+    /// Simple wildcard shapes are reduced to exact, prefix, suffix, or containment operators before execution.<br/>
+    /// </summary>
+    public LibraDexCompositeConditionContinuation Like(string pattern, bool ignoreCase = false, string? culture = null) => capture(inner.Like(pattern, ignoreCase, culture));
+
+    /// <summary>
+    /// Captures a negated wildcard predicate against the selected string key part using `*` and `?` semantics.<br/>
+    /// </summary>
+    public LibraDexCompositeConditionContinuation NotLike(string pattern, bool ignoreCase = false, string? culture = null) => capture(inner.NotLike(pattern, ignoreCase, culture));
 
     /// <summary>
     /// Captures a wildcard pattern predicate against the selected string key part.<br/>
@@ -491,6 +563,21 @@ public sealed class LibraDexCompositeConditionFullKeyStringOperator
     public LibraDexCompositeConditionContinuation Contains(string value, bool ignoreCase = false, string? culture = null) => capture(inner.Contains(value, ignoreCase, culture));
 
     /// <summary>
+    /// Captures a negated string containment predicate against the full composite key representation.<br/>
+    /// </summary>
+    public LibraDexCompositeConditionContinuation NotContains(string value, bool ignoreCase = false, string? culture = null) => capture(inner.NotContains(value, ignoreCase, culture));
+
+    /// <summary>
+    /// Captures a wildcard predicate against the full composite key string representation using `*` and `?` semantics.<br/>
+    /// </summary>
+    public LibraDexCompositeConditionContinuation Like(string pattern, bool ignoreCase = false, string? culture = null) => capture(inner.Like(pattern, ignoreCase, culture));
+
+    /// <summary>
+    /// Captures a negated wildcard predicate against the full composite key string representation using `*` and `?` semantics.<br/>
+    /// </summary>
+    public LibraDexCompositeConditionContinuation NotLike(string pattern, bool ignoreCase = false, string? culture = null) => capture(inner.NotLike(pattern, ignoreCase, culture));
+
+    /// <summary>
     /// Captures an encoded typed containment predicate inside the full composite key.<br/>
     /// </summary>
     /// <param name="value">The typed operand to encode and search for.</param>
@@ -566,6 +653,43 @@ public sealed class LibraDexCompositeConditionGuidOperator
     /// <param name="byteCount">The number of leading GUID bytes to compare.</param>
     /// <returns>A continuation for the same composite index condition.</returns>
     public LibraDexCompositeConditionContinuation StartsWith(Guid value, int byteCount) => capture(inner.StartsWith(value, byteCount));
+
+    /// <summary>
+    /// Captures a canonical GUID text-prefix predicate against the selected key part.<br/>
+    /// The text is compiled to a canonical-nibble predicate once and candidate composite GUIDs remain binary during execution.<br/>
+    /// </summary>
+    /// <param name="value">The canonical GUID text or segment prefix.</param>
+    /// <returns>A continuation for the same composite index condition.</returns>
+    public LibraDexCompositeConditionContinuation StartsWith(string value) => capture(inner.StartsWith(value));
+
+    /// <summary>
+    /// Captures a canonical GUID text-suffix predicate against the selected key part.<br/>
+    /// </summary>
+    /// <param name="value">The canonical GUID text suffix.</param>
+    /// <returns>A continuation for the same composite index condition.</returns>
+    public LibraDexCompositeConditionContinuation EndsWith(string value) => capture(inner.EndsWith(value));
+
+    /// <summary>
+    /// Captures canonical GUID text containment against the selected key part.<br/>
+    /// Containment searches every viable position among the 32 canonical hexadecimal digits.<br/>
+    /// </summary>
+    /// <param name="value">The canonical GUID text fragment that must occur.</param>
+    /// <returns>A continuation for the same composite index condition.</returns>
+    public LibraDexCompositeConditionContinuation Contains(string value) => capture(inner.Contains(value));
+
+    /// <summary>
+    /// Captures an `x`-wildcard canonical GUID pattern against the selected key part.<br/>
+    /// </summary>
+    /// <param name="pattern">The full 32-nibble canonical GUID pattern.</param>
+    /// <returns>A continuation for the same composite index condition.</returns>
+    public LibraDexCompositeConditionContinuation MatchesPattern(string pattern) => capture(inner.MatchesPattern(pattern));
+
+    /// <summary>
+    /// Captures an `x`-wildcard canonical GUID pattern using the short public spelling.<br/>
+    /// </summary>
+    /// <param name="pattern">The full 32-nibble canonical GUID pattern.</param>
+    /// <returns>A continuation for the same composite index condition.</returns>
+    public LibraDexCompositeConditionContinuation Matches(string pattern) => MatchesPattern(pattern);
 
     /// <summary>
     /// Captures GUID membership against the selected key part.<br/>
@@ -1051,15 +1175,69 @@ public sealed class LibraDexCompositeKeyPartCondition
     /// Interprets the selected composite key part as structured date/time data.<br/>
     /// Date criteria use the composite part's stored DateTime encoding contract rather than query-time text parsing.<br/>
     /// </summary>
-    public LibraDexCompositeDatePartCondition AsDate => LibraDexCompositePart.Date(name);
+    public LibraDexCompositeDatePartCondition AsDateTime => LibraDexCompositePart.Date(name);
 
-    /// <summary>
-    /// Interprets the selected composite key part as an ordered scalar value.<br/>
-    /// The generic value type must match the composite part descriptor at materialization time.<br/>
-    /// </summary>
-    /// <typeparam name="TValue">The scalar component value type.</typeparam>
-    /// <returns>Scalar predicates for the selected key part.</returns>
-    public LibraDexCompositeScalarPartCondition<TValue> AsScalar<TValue>()
+    /// <summary>Interprets the selected composite key part as a Boolean scalar.<br/></summary>
+    public LibraDexCompositeScalarPartCondition<bool> AsBoolean => Scalar<bool>();
+
+    /// <summary>Interprets the selected composite key part as an unsigned 8-bit scalar.<br/></summary>
+    public LibraDexCompositeScalarPartCondition<byte> AsByte => Scalar<byte>();
+
+    /// <summary>Interprets the selected composite key part as a signed 8-bit scalar.<br/></summary>
+    public LibraDexCompositeScalarPartCondition<sbyte> AsSByte => Scalar<sbyte>();
+
+    /// <summary>Interprets the selected composite key part as a signed 16-bit scalar.<br/></summary>
+    public LibraDexCompositeScalarPartCondition<short> AsInt16 => Scalar<short>();
+
+    /// <summary>Interprets the selected composite key part as an unsigned 16-bit scalar.<br/></summary>
+    public LibraDexCompositeScalarPartCondition<ushort> AsUInt16 => Scalar<ushort>();
+
+    /// <summary>Interprets the selected composite key part as a signed 32-bit scalar.<br/></summary>
+    public LibraDexCompositeScalarPartCondition<int> AsInt32 => Scalar<int>();
+
+    /// <summary>Interprets the selected composite key part as an unsigned 32-bit scalar.<br/></summary>
+    public LibraDexCompositeScalarPartCondition<uint> AsUInt32 => Scalar<uint>();
+
+    /// <summary>Interprets the selected composite key part as a signed 64-bit scalar.<br/></summary>
+    public LibraDexCompositeScalarPartCondition<long> AsInt64 => Scalar<long>();
+
+    /// <summary>Interprets the selected composite key part as an unsigned 64-bit scalar.<br/></summary>
+    public LibraDexCompositeScalarPartCondition<ulong> AsUInt64 => Scalar<ulong>();
+
+    /// <summary>Interprets the selected composite key part as a signed 128-bit scalar.<br/></summary>
+    public LibraDexCompositeScalarPartCondition<Int128> AsInt128 => Scalar<Int128>();
+
+    /// <summary>Interprets the selected composite key part as an unsigned 128-bit scalar.<br/></summary>
+    public LibraDexCompositeScalarPartCondition<UInt128> AsUInt128 => Scalar<UInt128>();
+
+    /// <summary>Interprets the selected composite key part as a single-precision scalar.<br/></summary>
+    public LibraDexCompositeScalarPartCondition<float> AsSingle => Scalar<float>();
+
+    /// <summary>Interprets the selected composite key part as a double-precision scalar.<br/></summary>
+    public LibraDexCompositeScalarPartCondition<double> AsDouble => Scalar<double>();
+
+    /// <summary>Interprets the selected composite key part as an exact Decimal scalar.<br/></summary>
+    public LibraDexCompositeScalarPartCondition<decimal> AsDecimal => Scalar<decimal>();
+
+    /// <summary>Interprets the selected composite key part as an arbitrary-precision integer.<br/></summary>
+    public LibraDexCompositeScalarPartCondition<System.Numerics.BigInteger> AsBigInt => Scalar<System.Numerics.BigInteger>();
+
+    /// <summary>Interprets the selected composite key part as a UTF-16 code-unit scalar.<br/></summary>
+    public LibraDexCompositeScalarPartCondition<char> AsChar => Scalar<char>();
+
+    /// <summary>Interprets the selected composite key part as a DateTimeOffset scalar.<br/></summary>
+    public LibraDexCompositeScalarPartCondition<DateTimeOffset> AsDateTimeOffset => Scalar<DateTimeOffset>();
+
+    /// <summary>Interprets the selected composite key part as a DateOnly scalar.<br/></summary>
+    public LibraDexCompositeScalarPartCondition<DateOnly> AsDateOnly => Scalar<DateOnly>();
+
+    /// <summary>Interprets the selected composite key part as a TimeOnly scalar.<br/></summary>
+    public LibraDexCompositeScalarPartCondition<TimeOnly> AsTimeOnly => Scalar<TimeOnly>();
+
+    /// <summary>Interprets the selected composite key part as a TimeSpan scalar.<br/></summary>
+    public LibraDexCompositeScalarPartCondition<TimeSpan> AsTimeSpan => Scalar<TimeSpan>();
+
+    internal LibraDexCompositeScalarPartCondition<TValue> Scalar<TValue>()
         => LibraDexCompositePart.Scalar<TValue>(name);
 }
 
@@ -1138,7 +1316,7 @@ public static class LibraDexCompositePart
 /// Describes one named predicate inside a routed composite-key condition.<br/>
 /// The descriptor stores the part name, operator, value kind, and operands separately from physical execution so the composite index can bind the predicate to a specific tier descriptor at materialization time.<br/>
 /// </summary>
-public sealed class LibraDexCompositePartCriterion
+public sealed class LibraDexCompositePartCriterion : ILibraDexParameterSnapshotValue
 {
     internal const string FullKeyPartName = "__libradex_full_key";
 
@@ -1194,6 +1372,62 @@ public sealed class LibraDexCompositePartCriterion
     /// Gets the optional culture name requested for text comparison.<br/>
     /// </summary>
     public string? Culture { get; }
+
+    bool ILibraDexParameterSnapshotValue.HasParameters
+    {
+        get
+        {
+            for (int i = 0; i < Values.Count; i++)
+            {
+                if (Values[i] is LibraDexConditionOperand operand && operand.HasExplicitParameter)
+                    return true;
+            }
+
+            return false;
+        }
+    }
+
+    void ILibraDexParameterSnapshotValue.CaptureParameters(LibraDexParameterSnapshot snapshot)
+    {
+        for (int i = 0; i < Values.Count; i++)
+        {
+            if (Values[i] is LibraDexConditionOperand operand)
+                operand.CaptureParameter(snapshot);
+        }
+    }
+
+    object ILibraDexParameterSnapshotValue.Snapshot(LibraDexParameterSnapshot snapshot)
+    {
+        object?[] values = new object?[Values.Count];
+        bool changed = false;
+        for (int i = 0; i < values.Length; i++)
+        {
+            object? value = Values[i];
+            if (value is LibraDexConditionOperand operand)
+            {
+                values[i] = operand.GetValue(snapshot);
+                changed = true;
+            }
+            else
+            {
+                values[i] = value;
+            }
+        }
+
+        if (!changed)
+            return this;
+
+        return new LibraDexCompositePartCriterion(
+            PartName,
+            ValueKind,
+            Operator,
+            Array.AsReadOnly(values),
+            IgnoreCase,
+            Culture,
+            FullKeyDelimiter,
+            FullKeyPartNames,
+            FullKeyExcludedPartNames);
+    }
 
     /// <summary>
     /// Gets the delimiter used by an explicit full-key composite predicate.<br/>
@@ -1382,6 +1616,25 @@ public sealed class LibraDexCompositeFullKeyStringCondition
         => Create(LibraDexConditionOperatorKind.Contains, ignoreCase, culture, value);
 
     /// <summary>
+    /// Captures a negated containment predicate against the full composite key string representation.<br/>
+    /// </summary>
+    public LibraDexCompositePartCriterion NotContains(string value, bool ignoreCase = false, string? culture = null)
+        => Create(LibraDexConditionOperatorKind.NotContains, ignoreCase, culture, value);
+
+    /// <summary>
+    /// Captures a wildcard predicate against the full composite key string representation.<br/>
+    /// Literal backslashes remain literal; only backslashes adjacent to wildcard syntax participate in escaping.<br/>
+    /// </summary>
+    public LibraDexCompositePartCriterion Like(string pattern, bool ignoreCase = false, string? culture = null)
+        => CreateWildcard(pattern, negate: false, ignoreCase, culture);
+
+    /// <summary>
+    /// Captures a negated wildcard predicate against the full composite key string representation.<br/>
+    /// </summary>
+    public LibraDexCompositePartCriterion NotLike(string pattern, bool ignoreCase = false, string? culture = null)
+        => CreateWildcard(pattern, negate: true, ignoreCase, culture);
+
+    /// <summary>
     /// Captures a containment predicate against an encoded typed value inside the full composite key.<br/>
     /// The operand is encoded once into the same byte-domain used by composite components, which is the preferred path for typed GUID, scalar, date/time, or raw byte containment checks.<br/>
     /// </summary>
@@ -1406,6 +1659,24 @@ public sealed class LibraDexCompositeFullKeyStringCondition
     /// </summary>
     public LibraDexCompositePartCriterion Matches(string pattern, bool ignoreCase = false, string? culture = null)
         => MatchesPattern(pattern, ignoreCase, culture);
+
+    private LibraDexCompositePartCriterion CreateWildcard(string pattern, bool negate, bool ignoreCase, string? culture)
+    {
+        LibraDexWildcardPattern wildcard = LibraDexWildcardPattern.Create(
+            pattern,
+            LibraDexStringComparisonPolicy.FromLegacy(ignoreCase, culture),
+            compileComplex: false);
+        LibraDexConditionOperatorKind operatorKind = wildcard.Shape switch
+        {
+            LibraDexWildcardShape.Exact => negate ? LibraDexConditionOperatorKind.NotEqualTo : LibraDexConditionOperatorKind.EqualTo,
+            LibraDexWildcardShape.StartsWith => negate ? LibraDexConditionOperatorKind.NotStartsWith : LibraDexConditionOperatorKind.StartsWith,
+            LibraDexWildcardShape.EndsWith => negate ? LibraDexConditionOperatorKind.NotEndsWith : LibraDexConditionOperatorKind.EndsWith,
+            LibraDexWildcardShape.Contains => negate ? LibraDexConditionOperatorKind.NotContains : LibraDexConditionOperatorKind.Contains,
+            _ => negate ? LibraDexConditionOperatorKind.NotMatchesPattern : LibraDexConditionOperatorKind.MatchesPattern
+        };
+        string operand = wildcard.Shape == LibraDexWildcardShape.Complex ? pattern : wildcard.Literal;
+        return Create(operatorKind, ignoreCase, culture, operand);
+    }
 
     private LibraDexCompositePartCriterion Create(
         LibraDexConditionOperatorKind operatorKind,
@@ -1566,6 +1837,24 @@ public sealed class LibraDexCompositeStringPartCondition
         => Create(LibraDexConditionOperatorKind.Contains, ignoreCase, culture, value);
 
     /// <summary>
+    /// Captures a negated containment predicate for one string component tier.<br/>
+    /// </summary>
+    public LibraDexCompositePartCriterion NotContains(string value, bool ignoreCase = false, string? culture = null)
+        => Create(LibraDexConditionOperatorKind.NotContains, ignoreCase, culture, value);
+
+    /// <summary>
+    /// Captures a wildcard predicate for one string component tier using `*` and `?` semantics.<br/>
+    /// </summary>
+    public LibraDexCompositePartCriterion Like(string pattern, bool ignoreCase = false, string? culture = null)
+        => CreateWildcard(pattern, negate: false, ignoreCase, culture);
+
+    /// <summary>
+    /// Captures a negated wildcard predicate for one string component tier using `*` and `?` semantics.<br/>
+    /// </summary>
+    public LibraDexCompositePartCriterion NotLike(string pattern, bool ignoreCase = false, string? culture = null)
+        => CreateWildcard(pattern, negate: true, ignoreCase, culture);
+
+    /// <summary>
     /// Captures a wildcard pattern predicate for one string component tier.<br/>
     /// The pattern uses the same wildcard rules as other LibraDex string patterns: `*` spans zero or more characters and `?` matches one character.<br/>
     /// </summary>
@@ -1582,6 +1871,24 @@ public sealed class LibraDexCompositeStringPartCondition
     /// </summary>
     public LibraDexCompositePartCriterion Matches(string pattern, bool ignoreCase = false, string? culture = null)
         => MatchesPattern(pattern, ignoreCase, culture);
+
+    private LibraDexCompositePartCriterion CreateWildcard(string pattern, bool negate, bool ignoreCase, string? culture)
+    {
+        LibraDexWildcardPattern wildcard = LibraDexWildcardPattern.Create(
+            pattern,
+            LibraDexStringComparisonPolicy.FromLegacy(ignoreCase, culture),
+            compileComplex: false);
+        LibraDexConditionOperatorKind operatorKind = wildcard.Shape switch
+        {
+            LibraDexWildcardShape.Exact => negate ? LibraDexConditionOperatorKind.NotEqualTo : LibraDexConditionOperatorKind.EqualTo,
+            LibraDexWildcardShape.StartsWith => negate ? LibraDexConditionOperatorKind.NotStartsWith : LibraDexConditionOperatorKind.StartsWith,
+            LibraDexWildcardShape.EndsWith => negate ? LibraDexConditionOperatorKind.NotEndsWith : LibraDexConditionOperatorKind.EndsWith,
+            LibraDexWildcardShape.Contains => negate ? LibraDexConditionOperatorKind.NotContains : LibraDexConditionOperatorKind.Contains,
+            _ => negate ? LibraDexConditionOperatorKind.NotMatchesPattern : LibraDexConditionOperatorKind.MatchesPattern
+        };
+        string operand = wildcard.Shape == LibraDexWildcardShape.Complex ? pattern : wildcard.Literal;
+        return Create(operatorKind, ignoreCase, culture, operand);
+    }
 
     /// <summary>
     /// Captures a string component predicate greater than the supplied value.<br/>
@@ -1800,6 +2107,48 @@ public sealed class LibraDexCompositeGuidPartCondition
 
         return Create(LibraDexConditionOperatorKind.StartsWith, value, byteCount);
     }
+
+    /// <summary>
+    /// Captures a prefix predicate over canonical GUID text while retaining binary composite execution.<br/>
+    /// The compiled predicate maps canonical nibble positions to .NET's physical GUID bytes and never formats routed candidates as strings.<br/>
+    /// </summary>
+    /// <param name="value">The canonical GUID text or segment prefix.</param>
+    /// <returns>A composite part predicate.</returns>
+    public LibraDexCompositePartCriterion StartsWith(string value)
+        => Create(LibraDexConditionOperatorKind.StartsWith, LibraDexGuidPatternPredicate.Create(value, LibraDexGuidPatternMode.StartsWith));
+
+    /// <summary>
+    /// Captures a suffix predicate over canonical GUID text while retaining binary composite execution.<br/>
+    /// </summary>
+    /// <param name="value">The canonical GUID text suffix.</param>
+    /// <returns>A composite part predicate.</returns>
+    public LibraDexCompositePartCriterion EndsWith(string value)
+        => Create(LibraDexConditionOperatorKind.EndsWith, LibraDexGuidPatternPredicate.Create(value, LibraDexGuidPatternMode.EndsWith));
+
+    /// <summary>
+    /// Captures anywhere-containment over canonical GUID hexadecimal digits while retaining binary composite execution.<br/>
+    /// </summary>
+    /// <param name="value">The canonical GUID text fragment that must occur.</param>
+    /// <returns>A composite part predicate.</returns>
+    public LibraDexCompositePartCriterion Contains(string value)
+        => Create(LibraDexConditionOperatorKind.Contains, LibraDexGuidPatternPredicate.Create(value, LibraDexGuidPatternMode.Contains));
+
+    /// <summary>
+    /// Captures a full canonical GUID pattern where `x` is the only wildcard nibble.<br/>
+    /// SQL, regular-expression, and glob wildcard characters are rejected to keep the GUID-specific grammar unambiguous.<br/>
+    /// </summary>
+    /// <param name="pattern">The full 32-nibble canonical GUID pattern.</param>
+    /// <returns>A composite part predicate.</returns>
+    public LibraDexCompositePartCriterion MatchesPattern(string pattern)
+        => Create(LibraDexConditionOperatorKind.MatchesPattern, LibraDexGuidPatternPredicate.Create(pattern, LibraDexGuidPatternMode.MatchesPattern));
+
+    /// <summary>
+    /// Captures a full canonical GUID pattern using the short public spelling.<br/>
+    /// </summary>
+    /// <param name="pattern">The full 32-nibble canonical GUID pattern.</param>
+    /// <returns>A composite part predicate.</returns>
+    public LibraDexCompositePartCriterion Matches(string pattern)
+        => MatchesPattern(pattern);
 
     /// <summary>
     /// Captures GUID component membership in a supplied value set.<br/>

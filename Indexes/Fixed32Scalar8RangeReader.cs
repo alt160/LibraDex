@@ -629,6 +629,18 @@ internal sealed class Fixed32Scalar8RangeReader : IDisposable
                     continue;
                 }
 
+                if (localSession.ClassifyFixed32Scalar8RouteTarget(shelfOffsets[i]) == Fixed32Scalar8RouteTargetKind.TerminalIdentityRoot)
+                {
+                    Span<byte> keyBytes = stackalloc byte[Fixed32Scalar8Layout.KeySize];
+                    LibraDexFileSession.WriteFixed32Scalar8KeyBytes(
+                        keyBytes,
+                        readOnly.ReadKeyPart0At(slot),
+                        readOnly.ReadKeyPart1At(slot),
+                        readOnly.ReadKeyPart2At(slot),
+                        readOnly.ReadKeyPart3At(slot));
+                    return localSession.DeleteFixedScalar8TerminalIdentity(shelfOffsets[i], keyBytes, profile.ShelfExtentSize, encodedIdentity) == 1;
+                }
+
                 byte[] shelfBytes = CloneShelfBytesForMutation(i);
                 Fixed32Scalar8 shelf = new(shelfBytes, profile);
                 _ = shelf.RemoveSlotRange(slot, 1);
@@ -737,6 +749,22 @@ internal sealed class Fixed32Scalar8RangeReader : IDisposable
                 continue;
             }
 
+            if (kind == Fixed32Scalar8RouteTargetKind.TerminalIdentityRoot)
+            {
+                if (!localVisitedShelves.Add(targetOffset))
+                {
+                    continue;
+                }
+
+                AddTerminalIdentityRootRanges(targetOffset, localSession);
+                if (rowCount > previousRowCount)
+                {
+                    return true;
+                }
+
+                continue;
+            }
+
             if (kind != Fixed32Scalar8RouteTargetKind.Router)
             {
                 throw new InvalidDataException("The routed FS32-8 range target is not a shelf or router.");
@@ -822,6 +850,74 @@ internal sealed class Fixed32Scalar8RangeReader : IDisposable
 
         traversalComplete = true;
         return false;
+    }
+
+    /// <summary>
+    /// Projects one persisted fixed-key scalar-eight terminal route into bounded ordinary `FS32-8` cursor shelves.<br/>
+    /// The fixed key is decoded once, terminal identities remain in persisted order, and descending readers add high identity chunks first so global tuple order remains exact.<br/>
+    /// </summary>
+    /// <param name="rootOffset">The terminal identity root selected by routed traversal.<br/></param>
+    /// <param name="localSession">The owning file session used to read the root and identity-only shelf chain.<br/></param>
+    private void AddTerminalIdentityRootRanges(long rootOffset, LibraDexFileSession localSession)
+    {
+        byte[] rootBytes = localSession.ReadTerminalIdentityRootBytes(rootOffset);
+        if (TerminalIdentityRootLayout.ReadShape(rootBytes) != TerminalIdentityRootLayout.ShapeFixedKeyScalar8Identity ||
+            TerminalIdentityRootLayout.ReadKeyLength(rootBytes) != Fixed32Scalar8Layout.KeySize ||
+            TerminalIdentityRootLayout.ReadShelfExtentSize(rootBytes) != profile.ShelfExtentSize)
+        {
+            throw new InvalidDataException("The routed FS32-8 terminal identity root does not match its owning index shape.");
+        }
+
+        ReadOnlySpan<byte> keyBytes = rootBytes.AsSpan(TerminalIdentityRootLayout.KeyBytesOffset, Fixed32Scalar8Layout.KeySize);
+        ulong key0 = System.Buffers.Binary.BinaryPrimitives.ReadUInt64BigEndian(keyBytes);
+        ulong key1 = System.Buffers.Binary.BinaryPrimitives.ReadUInt64BigEndian(keyBytes.Slice(8));
+        ulong key2 = System.Buffers.Binary.BinaryPrimitives.ReadUInt64BigEndian(keyBytes.Slice(16));
+        ulong key3 = System.Buffers.Binary.BinaryPrimitives.ReadUInt64BigEndian(keyBytes.Slice(24));
+        if (CompareKey(key0, key1, key2, key3, lower0, lower1, lower2, lower3) < 0 ||
+            CompareKey(key0, key1, key2, key3, upper0, upper1, upper2, upper3) > 0)
+        {
+            return;
+        }
+
+        List<ulong> identities = localSession.ReadTerminalIdentity8RouteIdentities(rootOffset, keyBytes, profile.ShelfExtentSize);
+        int capacity = profile.MaxItemCount;
+        if (!descendingTraversal)
+        {
+            for (int start = 0; start < identities.Count; start += capacity)
+                AddTerminalIdentityChunk(rootOffset, key0, key1, key2, key3, identities, start, Math.Min(capacity, identities.Count - start));
+            return;
+        }
+
+        int finalChunkStart = identities.Count == 0 ? 0 : ((identities.Count - 1) / capacity) * capacity;
+        for (int start = finalChunkStart; start >= 0 && start < identities.Count; start -= capacity)
+            AddTerminalIdentityChunk(rootOffset, key0, key1, key2, key3, identities, start, Math.Min(capacity, identities.Count - start));
+    }
+
+    /// <summary>
+    /// Builds one cursor-owned `FS32-8` projection shelf for a contiguous terminal identity slice.<br/>
+    /// The projection is read-only cursor state and does not duplicate the key in persisted storage.<br/>
+    /// </summary>
+    /// <param name="rootOffset">The terminal root offset retained as the projection owner.<br/></param>
+    /// <param name="key0">The first encoded key lane.<br/></param>
+    /// <param name="key1">The second encoded key lane.<br/></param>
+    /// <param name="key2">The third encoded key lane.<br/></param>
+    /// <param name="key3">The fourth encoded key lane.<br/></param>
+    /// <param name="identities">The complete ordered terminal identity list.<br/></param>
+    /// <param name="start">The first identity index to project.<br/></param>
+    /// <param name="count">The number of identities to project.<br/></param>
+    private void AddTerminalIdentityChunk(long rootOffset, ulong key0, ulong key1, ulong key2, ulong key3, IReadOnlyList<ulong> identities, int start, int count)
+    {
+        byte[] shelfBytes = new byte[profile.ShelfExtentSize];
+        Fixed32Scalar8 shelf = new(shelfBytes, profile);
+        shelf.Initialize();
+        for (int i = 0; i < count; i++)
+        {
+            Fixed32Scalar8InsertResult insert = shelf.Insert(key0, key1, key2, key3, identities[start + i], allowDuplicateKeys: true);
+            if (insert != Fixed32Scalar8InsertResult.Inserted)
+                throw new InvalidDataException($"Expected FS32-8 terminal cursor projection insert, got {insert}.");
+        }
+
+        AddShelfRange(rootOffset, shelfBytes);
     }
 
     /// <summary>

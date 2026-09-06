@@ -1,7 +1,9 @@
 using System.Buffers;
 using System.Diagnostics;
 using System.Numerics;
+using System.Security.Cryptography;
 using System.Threading;
+using LibraDex.Layouts;
 using Microsoft.Win32.SafeHandles;
 
 namespace LibraDex;
@@ -25,9 +27,11 @@ internal sealed class DataKernel : IDisposable
     private readonly List<CommitSlice> fileCommitSlices = new(InitialCommitSliceCapacity);
     private readonly List<CommittedRange> coveredRanges = new(InitialCoveredRangeCapacity);
     private readonly List<CommittedRange> remainingRanges = new(InitialRemainingRangeCapacity);
+    private readonly List<RawDataExtent> pendingMemoryRetirements = [];
     private readonly VolatileMemoryArena memoryArena = new(MemoryPageSize);
     private readonly ReaderWriterLockSlim storageSync = new(LockRecursionPolicy.SupportsRecursion);
     private readonly DataKernelBackingKind backingKind;
+    private FileExtentAllocator? fileExtentAllocator;
     [ThreadStatic]
     private static CoherentReadState? currentCoherentRead;
     private VolatileMemoryArenaSnapshot? activeMemoryReadSnapshot;
@@ -70,6 +74,13 @@ internal sealed class DataKernel : IDisposable
     /// Count/read-side derived caches use this value to avoid serving metadata that predates a raw storage mutation.<br/>
     /// </summary>
     internal long MutationVersion => Volatile.Read(ref mutationVersion);
+
+    /// <summary>
+    /// Gets or sets an internal observer invoked after one non-empty file commit phase has reached its configured flush boundary.<br/>
+    /// The production path leaves this null; deterministic harnesses may throw from the callback to emulate abrupt termination between allocation claim, payload, authoritative publication, and retirement without adding a replay log.<br/>
+    /// Memory-backed commits do not invoke the observer because they have no independently durable phase boundaries.<br/>
+    /// </summary>
+    internal Action<PendingSegmentPhase>? FileCommitPhaseCompleted { get; set; }
 
     /// <summary>
     /// Opens a raw file-backed DataKernel over a file path.<br/>
@@ -117,6 +128,52 @@ internal sealed class DataKernel : IDisposable
     }
 
     /// <summary>
+    /// Configures a file-backed kernel to select compatible future reservations from the persisted segment allocator.<br/>
+    /// Existing legacy extents remain readable and allocations with unsupported lengths continue through the append fallback.<br/>
+    /// </summary>
+    /// <param name="allocationDirectoryOffset">The nonzero persisted allocation-directory offset.<br/></param>
+    internal void ConfigureFileExtentAllocator(long allocationDirectoryOffset)
+    {
+        storageSync.EnterWriteLock();
+        try
+        {
+            ThrowIfDisposed();
+            if (backingKind != DataKernelBackingKind.File)
+                return;
+
+            if (allocationDirectoryOffset <= 0)
+                throw new ArgumentOutOfRangeException(nameof(allocationDirectoryOffset), allocationDirectoryOffset, "A file allocation directory must use a positive offset.");
+
+            fileExtentAllocator = FileExtentAllocator.Load(this, allocationDirectoryOffset);
+        }
+        finally
+        {
+            storageSync.ExitWriteLock();
+        }
+    }
+
+    /// <summary>
+    /// Configures a newly initialized allocator whose directory bytes are already part of the current committed file image.<br/>
+    /// This avoids rereading the page during catalog creation while retaining the same validation contract as reopen.<br/>
+    /// </summary>
+    /// <param name="allocationDirectoryOffset">The persisted allocation-directory offset.<br/></param>
+    /// <param name="initializedDirectoryBytes">The complete initialized directory page.<br/></param>
+    internal void ConfigureNewFileExtentAllocator(long allocationDirectoryOffset, ReadOnlySpan<byte> initializedDirectoryBytes)
+    {
+        storageSync.EnterWriteLock();
+        try
+        {
+            ThrowIfDisposed();
+            if (backingKind == DataKernelBackingKind.File)
+                fileExtentAllocator = FileExtentAllocator.Create(allocationDirectoryOffset, initializedDirectoryBytes);
+        }
+        finally
+        {
+            storageSync.ExitWriteLock();
+        }
+    }
+
+    /// <summary>
     /// Stages raw bytes for append during the next commit.<br/>
     /// Data is copied into pooled append buffers so adjacent appends can be committed with fewer backing writes.<br/>
     /// </summary>
@@ -137,7 +194,9 @@ internal sealed class DataKernel : IDisposable
             AdvanceMutationVersion();
 
             long extentOffset = nextAppendOffset;
-            if (backingKind == DataKernelBackingKind.Memory)
+            if (backingKind == DataKernelBackingKind.Memory &&
+                Volatile.Read(ref coherentMemoryReadCount) == 0 &&
+                Volatile.Read(ref activeMemoryReadSnapshot) is null)
             {
                 memoryArena.Write(extentOffset, source);
                 nextAppendOffset += source.Length;
@@ -157,7 +216,7 @@ internal sealed class DataKernel : IDisposable
 
             while (remaining > 0)
             {
-                PendingSegment segment = GetAppendSegment(remaining);
+                PendingSegment segment = GetAppendSegment(remaining, PendingSegmentPhase.Payload);
                 int writable = Math.Min(remaining, segment.Capacity - segment.Length);
                 source.Slice(sourceOffset, writable).CopyTo(segment.Buffer.AsSpan(segment.SourceOffset + segment.Length, writable));
                 segment.Length += writable;
@@ -202,7 +261,9 @@ internal sealed class DataKernel : IDisposable
 
             AdvanceMutationVersion();
 
-            if (backingKind == DataKernelBackingKind.Memory)
+            if (backingKind == DataKernelBackingKind.Memory &&
+                Volatile.Read(ref coherentMemoryReadCount) == 0 &&
+                Volatile.Read(ref activeMemoryReadSnapshot) is null)
             {
                 if (memoryArena.TryReserveReleased(length, out long releasedOffset) &&
                     memoryArena.TryGetWritableSpan(releasedOffset, length, out Span<byte> releasedSpan))
@@ -245,15 +306,17 @@ internal sealed class DataKernel : IDisposable
                 return new RawDataReservation(new RawDataExtent(releasedFallbackOffset, length), releasedBuffer.AsSpan(0, length));
             }
 
-            PendingSegment segment = GetContiguousAppendSegment(length);
-            long extentOffset = nextAppendOffset;
-            Span<byte> span = segment.Buffer.AsSpan(segment.SourceOffset + segment.Length, length);
+            if (backingKind == DataKernelBackingKind.File &&
+                fileExtentAllocator is not null &&
+                fileExtentAllocator.TryReserve(this, length, out RawDataReservation fileReservation))
+            {
+                stagedExtentCount++;
+                return fileReservation;
+            }
 
-            segment.Length += length;
-            nextAppendOffset += length;
+            RawDataReservation appendReservation = ReserveAppendCore(length, PendingSegmentPhase.Payload);
             stagedExtentCount++;
-
-            return new RawDataReservation(new RawDataExtent(extentOffset, length), span);
+            return appendReservation;
         }
         finally
         {
@@ -295,6 +358,8 @@ internal sealed class DataKernel : IDisposable
             AdvanceMutationVersion();
 
             if (backingKind == DataKernelBackingKind.Memory &&
+                Volatile.Read(ref coherentMemoryReadCount) == 0 &&
+                Volatile.Read(ref activeMemoryReadSnapshot) is null &&
                 memoryArena.TryGetWritableSpan(offset, length, out Span<byte> memorySpan))
             {
                 stagedExtentCount++;
@@ -308,14 +373,14 @@ internal sealed class DataKernel : IDisposable
                 return new RawDataReservation(new RawDataExtent(offset, length), memorySpan);
             }
 
-            if (TryGetPendingWritableSpan(offset, length, out Span<byte> pendingSpan))
+            if (TryGetPendingWritableSpan(offset, length, PendingSegmentPhase.Publication, out Span<byte> pendingSpan))
             {
                 return new RawDataReservation(new RawDataExtent(offset, length), pendingSpan);
             }
 
             int capacity = length;
             byte[] buffer = ArrayPool<byte>.Shared.Rent(capacity);
-            PendingSegment segment = new(buffer, offset, capacity, isAppend: false);
+            PendingSegment segment = new(buffer, offset, capacity, isAppend: false, phase: PendingSegmentPhase.Publication);
             segment.Length = length;
             pendingSegments.Add(segment);
             stagedExtentCount++;
@@ -356,7 +421,7 @@ internal sealed class DataKernel : IDisposable
             }
 
             AdvanceMutationVersion();
-            pendingSegments.Add(new PendingSegment(source, sourceOffset, offset, length, isAppend: false, returnsBuffer: false)
+            pendingSegments.Add(new PendingSegment(source, sourceOffset, offset, length, isAppend: false, returnsBuffer: false, phase: PendingSegmentPhase.Publication)
             {
                 Length = length
             });
@@ -450,6 +515,8 @@ internal sealed class DataKernel : IDisposable
             directMemoryStagedExtentCount = 0;
             directMemoryWriteCallCount = 0;
             directMemoryBytesWritten = 0;
+            pendingMemoryRetirements.Clear();
+            fileExtentAllocator?.ReloadAfterDiscard(this);
         }
         finally
         {
@@ -458,25 +525,183 @@ internal sealed class DataKernel : IDisposable
     }
 
     /// <summary>
-    /// Releases one committed extent back to the volatile memory arena when this kernel is memory backed.<br/>
-    /// File-backed kernels intentionally ignore the call because durable files cannot reclaim arbitrary middle extents without a compaction pass.<br/>
+    /// Stages retirement of one committed structural extent after its authoritative route or root replacement has been staged.<br/>
+    /// File-backed segment bits publish in the retirement phase after topology; memory-backed extents remain allocated until the same commit has published every replacement byte, preventing a failed publication from freeing still-authoritative storage.<br/>
+    /// Unknown legacy or append-fallback file extents are ignored conservatively and remain eligible for closed-file compaction.<br/>
     /// </summary>
-    /// <param name="offset">The committed extent offset to release.</param>
-    /// <param name="length">The committed extent length to release.</param>
-    internal void ReleaseMemoryExtent(long offset, int length)
+    /// <param name="offset">The exact committed extent offset to retire.<br/></param>
+    /// <param name="length">The exact committed extent length.<br/></param>
+    internal void StageExtentRetirement(long offset, int length)
     {
         storageSync.EnterWriteLock();
         try
         {
             ThrowIfDisposed();
-
-            if (backingKind != DataKernelBackingKind.Memory || length <= 0 || offset <= 0)
-            {
+            if (length <= 0 || offset <= 0)
                 return;
+
+            if (backingKind == DataKernelBackingKind.Memory)
+            {
+                RawDataExtent retirement = new(offset, length);
+                if (!pendingMemoryRetirements.Contains(retirement))
+                {
+                    pendingMemoryRetirements.Add(retirement);
+                    stagedExtentCount++;
+                    AdvanceMutationVersion();
+                }
+            }
+            else if (fileExtentAllocator?.TryRetire(this, offset, length) == true)
+            {
+                stagedExtentCount++;
+                AdvanceMutationVersion();
+            }
+        }
+        finally
+        {
+            storageSync.ExitWriteLock();
+        }
+    }
+
+    /// <summary>
+    /// Stages retirement for every distinct allocator-owned file extent in one topology snapshot.<br/>
+    /// The caller must first stage removal of every authoritative route to these offsets; commit phase ordering then publishes those route changes before the retirement bitmap updates.<br/>
+    /// Unknown offsets belong to legacy, metadata, or append-fallback storage and remain conservatively unreachable rather than being guessed into a reusable class.<br/>
+    /// </summary>
+    /// <param name="offsets">Exact topology offsets collected while the owning index-directory slots are still active.<br/></param>
+    /// <returns>The number of allocator-owned offsets accepted for retirement, including offsets already free in an idempotent replay.<br/></returns>
+    internal int RetireFileExtents(ReadOnlySpan<long> offsets)
+    {
+        storageSync.EnterWriteLock();
+        try
+        {
+            ThrowIfDisposed();
+            if (backingKind != DataKernelBackingKind.File || fileExtentAllocator is null || offsets.IsEmpty)
+                return 0;
+
+            int retiredCount = 0;
+            for (int offsetIndex = 0; offsetIndex < offsets.Length; offsetIndex++)
+            {
+                long offset = offsets[offsetIndex];
+                if (offset > 0 && fileExtentAllocator.TryRetire(this, offset))
+                    retiredCount++;
             }
 
-            AdvanceMutationVersion();
-            memoryArena.Release(offset, length);
+            if (retiredCount > 0)
+            {
+                AdvanceMutationVersion();
+                stagedExtentCount = checked(stagedExtentCount + retiredCount);
+            }
+
+            return retiredCount;
+        }
+        finally
+        {
+            storageSync.ExitWriteLock();
+        }
+    }
+
+    /// <summary>
+    /// Captures exact durable allocator storage accounting for maintenance diagnostics.<br/>
+    /// Legacy or memory-backed kernels return the default snapshot because they have no persisted allocation directory.<br/>
+    /// </summary>
+    /// <returns>The current allocator storage snapshot, or the default value when no file allocator is configured.<br/></returns>
+    internal FileAllocationStorageSnapshot GetFileAllocationStorageSnapshot()
+    {
+        storageSync.EnterReadLock();
+        try
+        {
+            ThrowIfDisposed();
+            return fileExtentAllocator?.CaptureStorageSnapshot() ?? default;
+        }
+        finally
+        {
+            storageSync.ExitReadLock();
+        }
+    }
+
+    /// <summary>
+    /// Forces the current file-backed contents through the operating-system durable flush boundary.<br/>
+    /// Closed-file catalog compaction uses this after completing and validating its shadow writes but before the source-file replacement boundary.<br/>
+    /// Memory-backed kernels have no durable file and therefore treat this operation as a no-op.<br/>
+    /// </summary>
+    internal void FlushFileToDisk()
+    {
+        storageSync.EnterWriteLock();
+        try
+        {
+            ThrowIfDisposed();
+            if (backingKind == DataKernelBackingKind.File)
+                RandomAccess.FlushToDisk(handle!);
+        }
+        finally
+        {
+            storageSync.ExitWriteLock();
+        }
+    }
+
+    /// <summary>
+    /// Copies the exact committed file image into a new destination while holding the raw storage-publication write lock.<br/>
+    /// Pending writer-local or durability-batch bytes are not part of the image; callers must coordinate admission before entering this method.<br/>
+    /// The source is flushed before its length is captured, and the destination is durably flushed before the lock is released; ordinary readers and writers wait for that entire physical-copy boundary.<br/>
+    /// </summary>
+    /// <param name="destinationPath">The new file path that receives the committed image.<br/></param>
+    /// <param name="copyEntered">Optional internal proof hook invoked after the source is flushed and while publication remains blocked.<br/></param>
+    /// <param name="copyBlockCompleted">Optional internal proof hook invoked after each physical copy block with copied and total byte counts.<br/></param>
+    /// <param name="cancellationToken">A token observed before and between copy blocks.<br/></param>
+    /// <returns>The exact copied byte count and uppercase SHA-256 content hash.<br/></returns>
+    /// <exception cref="InvalidOperationException">Thrown for a memory-backed kernel.<br/></exception>
+    /// <exception cref="IOException">Thrown when the destination already exists.<br/></exception>
+    internal (long Bytes, string ContentHash) CopyCommittedFileImage(
+        string destinationPath,
+        Action? copyEntered,
+        Action<long, long>? copyBlockCompleted,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(destinationPath);
+        storageSync.EnterWriteLock();
+        try
+        {
+            ThrowIfDisposed();
+            if (backingKind != DataKernelBackingKind.File)
+                throw new InvalidOperationException("A live backup requires a file-backed LibraDex catalog.");
+
+            cancellationToken.ThrowIfCancellationRequested();
+            RandomAccess.FlushToDisk(handle!);
+            long length = RandomAccess.GetLength(handle!);
+            copyEntered?.Invoke();
+
+            using SafeFileHandle destination = File.OpenHandle(
+                destinationPath,
+                FileMode.CreateNew,
+                FileAccess.Write,
+                FileShare.None,
+                FileOptions.RandomAccess | FileOptions.WriteThrough);
+            using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+            byte[] buffer = ArrayPool<byte>.Shared.Rent(1024 * 1024);
+            try
+            {
+                long offset = 0;
+                while (offset < length)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    int requested = (int)Math.Min(buffer.Length, length - offset);
+                    int read = RandomAccess.Read(handle!, buffer.AsSpan(0, requested), offset);
+                    if (read <= 0)
+                        throw new EndOfStreamException($"The LibraDex source image ended at byte {offset:n0} while {length:n0} bytes were expected.");
+
+                    RandomAccess.Write(destination, buffer.AsSpan(0, read), offset);
+                    hash.AppendData(buffer, 0, read);
+                    offset += read;
+                    copyBlockCompleted?.Invoke(offset, length);
+                }
+
+                RandomAccess.FlushToDisk(destination);
+                return (length, Convert.ToHexString(hash.GetHashAndReset()));
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(buffer);
+            }
         }
         finally
         {
@@ -511,7 +736,8 @@ internal sealed class DataKernel : IDisposable
 
             AdvanceMutationVersion();
 
-            if (exclusiveStoragePublicationDepth != 0 || Volatile.Read(ref coherentMemoryReadCount) != 0)
+            if (Volatile.Read(ref activeMemoryReadSnapshot) is not null ||
+                Volatile.Read(ref coherentMemoryReadCount) != 0)
             {
                 memoryArena.WriteCopyOnWrite(offset, source);
             }
@@ -562,7 +788,8 @@ internal sealed class DataKernel : IDisposable
 
             if (backingKind == DataKernelBackingKind.Memory)
             {
-                if (exclusiveStoragePublicationDepth != 0 || Volatile.Read(ref coherentMemoryReadCount) != 0)
+                if (Volatile.Read(ref activeMemoryReadSnapshot) is not null ||
+                    Volatile.Read(ref coherentMemoryReadCount) != 0)
                 {
                     memoryArena.WriteCopyOnWrite(offset, source);
                 }
@@ -580,7 +807,7 @@ internal sealed class DataKernel : IDisposable
                 return;
             }
 
-            if (TryGetPendingWritableSpan(offset, source.Length, out Span<byte> pendingSpan))
+            if (TryGetPendingWritableSpan(offset, source.Length, PendingSegmentPhase.Publication, out Span<byte> pendingSpan))
             {
                 source.CopyTo(pendingSpan);
                 return;
@@ -606,9 +833,30 @@ internal sealed class DataKernel : IDisposable
     /// </summary>
     internal void EnterExclusiveStoragePublication()
     {
+        EnterExclusiveStoragePublicationCore(allowConcurrentRawReads: true);
+    }
+
+    /// <summary>
+    /// Enters an exclusive publication scope that blocks new raw memory reads instead of publishing an ambient committed snapshot.<br/>
+    /// Owners whose mutations are already linearized use this mode to update memory pages in place when no coherent reader exists, while existing snapshot-enabled index publication keeps its concurrent route-staging behavior.<br/>
+    /// </summary>
+    internal void EnterExclusiveStoragePublicationBlockingReads()
+    {
+        EnterExclusiveStoragePublicationCore(allowConcurrentRawReads: false);
+    }
+
+    /// <summary>
+    /// Enters the shared recursive storage-publication gate with caller-selected raw-reader behavior.<br/>
+    /// Snapshot mode preserves existing cross-writer staging; blocking mode still copy-on-writes for already-active coherent readers but makes new raw reads wait on the storage lock.<br/>
+    /// </summary>
+    /// <param name="allowConcurrentRawReads">Whether raw memory reads may use an ambient committed snapshot during publication.<br/></param>
+    private void EnterExclusiveStoragePublicationCore(bool allowConcurrentRawReads)
+    {
         storageSync.EnterWriteLock();
         exclusiveStoragePublicationDepth++;
-        if (backingKind == DataKernelBackingKind.Memory && exclusiveStoragePublicationDepth == 1)
+        if (backingKind == DataKernelBackingKind.Memory &&
+            exclusiveStoragePublicationDepth == 1 &&
+            allowConcurrentRawReads)
         {
             Volatile.Write(ref activeMemoryReadSnapshot, memoryArena.CaptureSnapshot());
         }
@@ -633,10 +881,23 @@ internal sealed class DataKernel : IDisposable
                 snapshot = memoryArena.CaptureSnapshot();
                 Interlocked.Increment(ref coherentMemoryReadCount);
             }
+            else
+            {
+                holdsStorageReadLock = true;
+            }
 
-            CoherentReadState state = new(this, snapshot, currentCoherentRead, Environment.CurrentManagedThreadId, holdsStorageReadLock);
+            CoherentReadState state = new(
+                this,
+                snapshot,
+                currentCoherentRead,
+                Environment.CurrentManagedThreadId,
+                holdsStorageReadLock,
+                holdsStorageUpgradeableReadLock: false);
             currentCoherentRead = state;
-            storageSync.ExitReadLock();
+            if (!holdsStorageReadLock)
+            {
+                storageSync.ExitReadLock();
+            }
 
             return new CoherentReadLease(state);
         }
@@ -649,6 +910,65 @@ internal sealed class DataKernel : IDisposable
 
             storageSync.ExitReadLock();
             throw;
+        }
+    }
+
+    /// <summary>
+    /// Enters a coherent read scope that may upgrade to the storage write lock on the same thread.<br/>
+    /// Maintenance planners use this to read one authoritative generation and then stage a compare-and-publish replacement without releasing the generation barrier or violating <see cref="ReaderWriterLockSlim"/> recursion rules.<br/>
+    /// Ordinary public readers must continue to use <see cref="EnterCoherentRead"/> so only deliberate maintenance operations occupy the single upgradeable-reader lane.<br/>
+    /// </summary>
+    /// <returns>A thread-affine coherent lease that must be disposed after the final publication attempt.<br/></returns>
+    internal CoherentReadLease EnterCoherentUpgradeableRead()
+    {
+        storageSync.EnterUpgradeableReadLock();
+        VolatileMemoryArenaSnapshot? snapshot = null;
+        try
+        {
+            ThrowIfDisposed();
+            if (backingKind == DataKernelBackingKind.Memory)
+            {
+                snapshot = memoryArena.CaptureSnapshot();
+                Interlocked.Increment(ref coherentMemoryReadCount);
+            }
+
+            CoherentReadState state = new(
+                this,
+                snapshot,
+                currentCoherentRead,
+                Environment.CurrentManagedThreadId,
+                holdsStorageReadLock: false,
+                holdsStorageUpgradeableReadLock: true);
+            currentCoherentRead = state;
+            return new CoherentReadLease(state);
+        }
+        catch
+        {
+            if (snapshot is not null)
+                Interlocked.Decrement(ref coherentMemoryReadCount);
+            storageSync.ExitUpgradeableReadLock();
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Verifies that the current thread returned every coherent reader owned by this kernel.<br/>
+    /// Maintenance and copy pipelines call this at phase boundaries so an iterator lifetime defect is attributed to the producing operation instead of surfacing later as an opaque lock-recursion failure during catalog disposal.<br/>
+    /// </summary>
+    /// <param name="operation">The phase description included in a lifecycle failure.<br/></param>
+    /// <exception cref="InvalidOperationException">Thrown when the current thread still owns a coherent lease for this kernel.<br/></exception>
+    internal void AssertNoRetainedCoherentRead(string operation)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(operation);
+        CoherentReadState? current = FindCurrentCoherentReadState();
+        bool ownsAmbientLease = current is not null;
+        if (ownsAmbientLease || storageSync.IsReadLockHeld || storageSync.IsUpgradeableReadLockHeld)
+        {
+            throw new InvalidOperationException(
+                $"{operation} retained a DataKernel reader after its phase completed; " +
+                $"ambient={(ownsAmbientLease ? "yes" : "no")}, active-depth={(ownsAmbientLease ? current!.ActiveDepth : -1)}, " +
+                $"thread-read-lock={storageSync.IsReadLockHeld}, thread-upgradeable-read-lock={storageSync.IsUpgradeableReadLockHeld}, " +
+                $"recursive-read-count={storageSync.RecursiveReadCount}, recursive-upgrade-count={storageSync.RecursiveUpgradeCount}.");
         }
     }
 
@@ -690,6 +1010,7 @@ internal sealed class DataKernel : IDisposable
 
             if (backingKind != DataKernelBackingKind.Memory ||
                 Volatile.Read(ref coherentMemoryReadCount) != 0 ||
+                Volatile.Read(ref activeMemoryReadSnapshot) is not null ||
                 length < 0)
             {
                 span = Span<byte>.Empty;
@@ -711,14 +1032,22 @@ internal sealed class DataKernel : IDisposable
     /// <returns>The active snapshot for this kernel, or <see langword="null"/> when the current thread has no coherent memory scope.<br/></returns>
     private VolatileMemoryArenaSnapshot? GetCurrentCoherentMemorySnapshot()
     {
+        CoherentReadState? state = FindCurrentCoherentReadState();
+        return state is not null && state.ActiveDepth != 0 ? state.Snapshot : null;
+    }
+
+    /// <summary>
+    /// Finds this kernel's newest coherent scope in the current thread's short cross-kernel chain.<br/>
+    /// The chain avoids a per-read dictionary while allowing independent catalogs to retain readers concurrently on one thread.<br/>
+    /// </summary>
+    /// <returns>The newest active state owned by this kernel, or <see langword="null"/> when none exists.<br/></returns>
+    private CoherentReadState? FindCurrentCoherentReadState()
+    {
         CoherentReadState? state = currentCoherentRead;
         while (state is not null)
         {
             if (ReferenceEquals(state.Owner, this))
-            {
-                return state.ActiveDepth != 0 ? state.Snapshot : null;
-            }
-
+                return state;
             state = state.Previous;
         }
 
@@ -727,7 +1056,7 @@ internal sealed class DataKernel : IDisposable
 
     /// <summary>
     /// Leaves one thread-affine coherent read scope and releases its memory snapshot count or retained file read lock.<br/>
-    /// Strict last-in/first-out validation prevents a mismatched cursor disposal from silently exposing later reads to a different storage version.<br/>
+    /// Readers over the same kernel remain strict last-in/first-out; independent kernels may close in either order because their storage locks and snapshots do not share version state.<br/>
     /// </summary>
     /// <param name="state">The exact state created for the lease being disposed.<br/></param>
     private void ExitCoherentRead(CoherentReadState state)
@@ -737,15 +1066,35 @@ internal sealed class DataKernel : IDisposable
             throw new InvalidOperationException("A coherent DataKernel read scope must be disposed on the thread that entered it.");
         }
 
-        if (!ReferenceEquals(currentCoherentRead, state))
+        CoherentReadState? cursor = currentCoherentRead;
+        CoherentReadState? newer = null;
+        while (cursor is not null && !ReferenceEquals(cursor, state))
         {
-            throw new InvalidOperationException("Coherent DataKernel read scopes must be disposed in last-in/first-out order.");
-        }
+            if (ReferenceEquals(cursor.Owner, this))
+            {
+                throw new InvalidOperationException(
+                    "Coherent DataKernel read scopes over the same kernel must be disposed in last-in/first-out order.");
+            }
 
-        currentCoherentRead = state.Previous;
+            newer = cursor;
+            cursor = cursor.Previous;
+        }
+        if (cursor is null)
+            throw new InvalidOperationException("The coherent DataKernel read scope is not active on its owning thread.");
+
+        if (newer is null)
+            currentCoherentRead = state.Previous;
+        else
+            newer.Previous = state.Previous;
         if (state.HoldsStorageReadLock)
         {
             storageSync.ExitReadLock();
+        }
+        else if (state.HoldsStorageUpgradeableReadLock)
+        {
+            if (state.Snapshot is not null)
+                Interlocked.Decrement(ref coherentMemoryReadCount);
+            storageSync.ExitUpgradeableReadLock();
         }
         else if (state.Snapshot is not null)
         {
@@ -821,24 +1170,40 @@ internal sealed class DataKernel : IDisposable
 
             if (backingKind == DataKernelBackingKind.File)
             {
-                CommitFileSegments(
-                    ref writeCallCount,
-                    ref backingWriteCallCount,
-                    ref bytesWritten,
-                    ref coalescedAdjacentSegmentCount,
-                    ref coalescedGapCount,
-                    ref coalescedGapBytes,
-                    ref maxCoalescedGapBytes,
-                    ref rejectedGapCount,
-                    ref rejectedGapBytes,
-                    ref maxRejectedGapBytes,
-                    ref overlapBreakCount,
-                    ref fileCommitSliceBuildTicks,
-                    ref fileCommitCoveredRangeMergeTicks,
-                    ref fileCommitGroupShapeTicks,
-                    ref fileCommitBufferBuildTicks,
-                    ref fileCommitGapReadTicks,
-                    ref fileCommitBackingWriteTicks);
+                for (PendingSegmentPhase phase = PendingSegmentPhase.AllocationClaim;
+                    phase <= PendingSegmentPhase.Retirement;
+                    phase++)
+                {
+                    bool hasPhaseWrites = CommitFileSegments(
+                        phase,
+                        ref writeCallCount,
+                        ref backingWriteCallCount,
+                        ref bytesWritten,
+                        ref coalescedAdjacentSegmentCount,
+                        ref coalescedGapCount,
+                        ref coalescedGapBytes,
+                        ref maxCoalescedGapBytes,
+                        ref rejectedGapCount,
+                        ref rejectedGapBytes,
+                        ref maxRejectedGapBytes,
+                        ref overlapBreakCount,
+                        ref fileCommitSliceBuildTicks,
+                        ref fileCommitCoveredRangeMergeTicks,
+                        ref fileCommitGroupShapeTicks,
+                        ref fileCommitBufferBuildTicks,
+                        ref fileCommitGapReadTicks,
+                        ref fileCommitBackingWriteTicks);
+
+                    if (options.FlushToDiskOnCommit && hasPhaseWrites)
+                    {
+                        RandomAccess.FlushToDisk(handle!);
+                        if (telemetryOptions.Enabled)
+                            flushCallCount++;
+                    }
+
+                    if (hasPhaseWrites)
+                        FileCommitPhaseCompleted?.Invoke(phase);
+                }
             }
             else
             {
@@ -855,7 +1220,8 @@ internal sealed class DataKernel : IDisposable
                         continue;
                     }
 
-                    if (exclusiveStoragePublicationDepth != 0 || Volatile.Read(ref coherentMemoryReadCount) != 0)
+                    if (Volatile.Read(ref activeMemoryReadSnapshot) is not null ||
+                        Volatile.Read(ref coherentMemoryReadCount) != 0)
                     {
                         memoryArena.WriteCopyOnWrite(segment.Offset, segment.Buffer.AsSpan(segment.SourceOffset, segment.Length));
                     }
@@ -871,18 +1237,20 @@ internal sealed class DataKernel : IDisposable
                         bytesWritten += segment.Length;
                     }
                 }
-            }
 
-            if (options.FlushToDiskOnCommit && pendingSegments.Count > 0 && backingKind == DataKernelBackingKind.File)
-            {
-                RandomAccess.FlushToDisk(handle!);
-                flushCallCount = telemetryOptions.Enabled ? 1 : 0;
+                for (int retirementIndex = 0; retirementIndex < pendingMemoryRetirements.Count; retirementIndex++)
+                {
+                    RawDataExtent retirement = pendingMemoryRetirements[retirementIndex];
+                    memoryArena.Release(retirement.Offset, retirement.Length);
+                }
             }
 
             long elapsedTicks = telemetryOptions.Enabled ? Stopwatch.GetTimestamp() - commitStartTicks : 0;
 
             int stagedSegmentCount = pendingSegments.Count;
             ReturnPendingSegments();
+            pendingMemoryRetirements.Clear();
+            fileExtentAllocator?.OnCommitCompleted();
 
             DataKernelCommitTelemetry telemetry = new(
                 Level: telemetryOptions.Level,
@@ -930,7 +1298,8 @@ internal sealed class DataKernel : IDisposable
     /// <param name="writeCallCount">The accumulated public file write call count.</param>
     /// <param name="backingWriteCallCount">The accumulated backing write call count.</param>
     /// <param name="bytesWritten">The accumulated committed byte count.</param>
-    private void CommitFileSegments(
+    private bool CommitFileSegments(
+        PendingSegmentPhase phase,
         ref long writeCallCount,
         ref long backingWriteCallCount,
         ref long bytesWritten,
@@ -950,7 +1319,7 @@ internal sealed class DataKernel : IDisposable
         ref long fileCommitBackingWriteTicks)
     {
         long sliceBuildStartTicks = telemetryOptions.Enabled ? Stopwatch.GetTimestamp() : 0;
-        List<CommitSlice> commitSlices = CreateFileCommitSlices(ref fileCommitCoveredRangeMergeTicks);
+        List<CommitSlice> commitSlices = CreateFileCommitSlices(phase, ref fileCommitCoveredRangeMergeTicks);
         if (telemetryOptions.Enabled)
         {
             fileCommitSliceBuildTicks += Stopwatch.GetTimestamp() - sliceBuildStartTicks;
@@ -1068,9 +1437,11 @@ internal sealed class DataKernel : IDisposable
                 ArrayPool<int>.Shared.Return(rentedGroupGapBytes);
             }
         }
+
+        return commitSlices.Count != 0;
     }
 
-    private List<CommitSlice> CreateFileCommitSlices(ref long coveredRangeMergeTicks)
+    private List<CommitSlice> CreateFileCommitSlices(PendingSegmentPhase phase, ref long coveredRangeMergeTicks)
     {
         fileCommitSlices.Clear();
         coveredRanges.Clear();
@@ -1079,7 +1450,7 @@ internal sealed class DataKernel : IDisposable
         for (int segmentIndex = pendingSegments.Count - 1; segmentIndex >= 0; segmentIndex--)
         {
             PendingSegment segment = pendingSegments[segmentIndex];
-            if (segment.Length == 0)
+            if (segment.Length == 0 || segment.Phase != phase)
             {
                 continue;
             }
@@ -1486,21 +1857,27 @@ internal sealed class DataKernel : IDisposable
     }
 
     /// <summary>
-    /// Returns a writable view over the latest staged segment that fully owns a requested fixed-offset range.<br/>
-    /// The scan walks from newest to oldest and refuses reuse if a newer segment partially overlaps the requested range, preserving normal later-write-wins commit/read semantics.<br/>
-    /// This avoids renting another buffer when a durability batch rewrites the same shelf or router offset repeatedly before commit.<br/>
+    /// Returns a writable view over the latest staged segment in one durability phase that fully owns a requested fixed-offset range.<br/>
+    /// The scan walks from newest to oldest inside the requested phase and refuses reuse if a newer same-phase segment partially overlaps the requested range, preserving normal later-write-wins commit/read semantics.<br/>
+    /// Segments from other phases are deliberately ignored: claim, payload, publication, and retirement must retain distinct byte images so a later-phase rewrite cannot become durable at an earlier crash boundary.<br/>
+    /// This avoids renting another buffer when a durability batch rewrites the same shelf or router offset repeatedly within the same phase.<br/>
     /// </summary>
     /// <param name="offset">The absolute backing offset requested for update.<br/></param>
     /// <param name="length">The byte count requested for update.<br/></param>
+    /// <param name="phase">The durability phase whose staged bytes may be updated in place.<br/></param>
     /// <param name="span">Receives the writable staged span when one segment fully owns the requested range.<br/></param>
     /// <returns><see langword="true"/> when the pending range can be updated in place; otherwise <see langword="false"/>.<br/></returns>
-    private bool TryGetPendingWritableSpan(long offset, int length, out Span<byte> span)
+    private bool TryGetPendingWritableSpan(
+        long offset,
+        int length,
+        PendingSegmentPhase phase,
+        out Span<byte> span)
     {
         long endOffset = offset + length;
         for (int i = pendingSegments.Count - 1; i >= 0; i--)
         {
             PendingSegment segment = pendingSegments[i];
-            if (segment.Length == 0)
+            if (segment.Length == 0 || segment.Phase != phase)
             {
                 continue;
             }
@@ -1533,11 +1910,98 @@ internal sealed class DataKernel : IDisposable
         return false;
     }
 
-    private PendingSegment GetAppendSegment(int remaining)
+    /// <summary>
+    /// Reserves append space for allocator metadata or segment payload while the caller owns the recursive storage write lock.<br/>
+    /// The phase remains attached to pending bytes so commit preserves claim, payload, publication, and retirement ordering.<br/>
+    /// </summary>
+    /// <param name="length">The positive contiguous byte count.<br/></param>
+    /// <param name="phase">The ordered publication phase.<br/></param>
+    /// <returns>The staged raw reservation.<br/></returns>
+    internal RawDataReservation ReserveAppendForAllocator(int length, PendingSegmentPhase phase)
+    {
+        return ReserveAppendCore(length, phase);
+    }
+
+    /// <summary>
+    /// Advances the file append cursor beyond a materialized allocator extent reconstructed from durable metadata.<br/>
+    /// An allocation claim may be durable before its payload phase extends the physical file, so reopen must honor the claimed high-water mark instead of treating the current end of file as unreserved space.<br/>
+    /// The cursor only moves forward; allocator-owned free slots remain reusable through their segment bitmap rather than through append allocation.<br/>
+    /// </summary>
+    /// <param name="minimumOffset">The first byte after the highest materialized allocator extent.<br/></param>
+    internal void EnsureAppendOffsetForAllocator(long minimumOffset)
+    {
+        if (minimumOffset < 0)
+            throw new ArgumentOutOfRangeException(nameof(minimumOffset));
+
+        if (minimumOffset > nextAppendOffset)
+            nextAppendOffset = minimumOffset;
+    }
+
+    /// <summary>
+    /// Reserves fixed-offset bytes for allocator-owned metadata or payload while the caller owns the recursive storage write lock.<br/>
+    /// A fully covering staged buffer is reused; otherwise a phase-tagged positional segment is created.<br/>
+    /// </summary>
+    /// <param name="offset">The exact target offset.<br/></param>
+    /// <param name="length">The positive byte count.<br/></param>
+    /// <param name="phase">The ordered publication phase.<br/></param>
+    /// <returns>The staged raw reservation.<br/></returns>
+    internal RawDataReservation ReserveAtForAllocator(long offset, int length, PendingSegmentPhase phase)
+    {
+        if (offset < 0)
+            throw new ArgumentOutOfRangeException(nameof(offset));
+        if (length <= 0)
+            throw new ArgumentOutOfRangeException(nameof(length));
+
+        if (TryGetPendingWritableSpan(offset, length, phase, out Span<byte> pendingSpan))
+            return new RawDataReservation(new RawDataExtent(offset, length), pendingSpan);
+
+        byte[] buffer = ArrayPool<byte>.Shared.Rent(length);
+        PendingSegment segment = new(buffer, offset, length, isAppend: false, phase: phase)
+        {
+            Length = length
+        };
+        pendingSegments.Add(segment);
+        return new RawDataReservation(new RawDataExtent(offset, length), buffer.AsSpan(0, length));
+    }
+
+    /// <summary>
+    /// Reads committed file bytes for allocator reconstruction while the caller owns the storage write lock.<br/>
+    /// Pending mutation bytes are intentionally excluded so discard/reopen observes only persisted allocator state.<br/>
+    /// </summary>
+    /// <param name="offset">The committed file offset.<br/></param>
+    /// <param name="destination">The destination that must be filled completely.<br/></param>
+    internal void ReadCommittedFileForAllocator(long offset, Span<byte> destination)
+    {
+        if (backingKind != DataKernelBackingKind.File)
+            throw new InvalidOperationException("Durable extent allocation requires file backing.");
+
+        int totalRead = 0;
+        while (totalRead < destination.Length)
+        {
+            int read = RandomAccess.Read(handle!, destination[totalRead..], offset + totalRead);
+            if (read == 0)
+                throw new EndOfStreamException($"Unable to read {destination.Length:N0} allocator bytes from offset {offset:N0}.");
+
+            totalRead += read;
+        }
+    }
+
+    private RawDataReservation ReserveAppendCore(int length, PendingSegmentPhase phase)
+    {
+        PendingSegment segment = GetContiguousAppendSegment(length, phase);
+        long extentOffset = nextAppendOffset;
+        Span<byte> span = segment.Buffer.AsSpan(segment.SourceOffset + segment.Length, length);
+        segment.Length += length;
+        nextAppendOffset += length;
+        return new RawDataReservation(new RawDataExtent(extentOffset, length), span);
+    }
+
+    private PendingSegment GetAppendSegment(int remaining, PendingSegmentPhase phase)
     {
         PendingSegment? current = pendingSegments.Count == 0 ? null : pendingSegments[^1];
         if (current is not null &&
             current.IsAppend &&
+            current.Phase == phase &&
             current.Offset + current.Length == nextAppendOffset &&
             current.Length < current.Capacity)
         {
@@ -1549,16 +2013,17 @@ internal sealed class DataKernel : IDisposable
             : options.AppendBufferSize;
 
         byte[] buffer = ArrayPool<byte>.Shared.Rent(capacity);
-        PendingSegment segment = new(buffer, nextAppendOffset, capacity, isAppend: true);
+        PendingSegment segment = new(buffer, nextAppendOffset, capacity, isAppend: true, phase: phase);
         pendingSegments.Add(segment);
         return segment;
     }
 
-    private PendingSegment GetContiguousAppendSegment(int length)
+    private PendingSegment GetContiguousAppendSegment(int length, PendingSegmentPhase phase)
     {
         PendingSegment? current = pendingSegments.Count == 0 ? null : pendingSegments[^1];
         if (current is not null &&
             current.IsAppend &&
+            current.Phase == phase &&
             current.Offset + current.Length == nextAppendOffset &&
             current.Capacity - current.Length >= length)
         {
@@ -1570,7 +2035,7 @@ internal sealed class DataKernel : IDisposable
             : options.AppendBufferSize;
 
         byte[] buffer = ArrayPool<byte>.Shared.Rent(capacity);
-        PendingSegment segment = new(buffer, nextAppendOffset, capacity, isAppend: true);
+        PendingSegment segment = new(buffer, nextAppendOffset, capacity, isAppend: true, phase: phase);
         pendingSegments.Add(segment);
         return segment;
     }
@@ -1605,8 +2070,13 @@ internal sealed class DataKernel : IDisposable
 
     private sealed class PendingSegment
     {
-        public PendingSegment(byte[] buffer, long offset, int capacity, bool isAppend)
-            : this(buffer, 0, offset, capacity, isAppend, returnsBuffer: true)
+        public PendingSegment(
+            byte[] buffer,
+            long offset,
+            int capacity,
+            bool isAppend,
+            PendingSegmentPhase phase = PendingSegmentPhase.Payload)
+            : this(buffer, 0, offset, capacity, isAppend, returnsBuffer: true, phase)
         {
         }
 
@@ -1620,7 +2090,14 @@ internal sealed class DataKernel : IDisposable
         /// <param name="capacity">The number of source bytes available to the segment.<br/></param>
         /// <param name="isAppend">Whether the segment advances the append cursor.<br/></param>
         /// <param name="returnsBuffer">Whether cleanup returns <paramref name="buffer"/> to the shared array pool.<br/></param>
-        public PendingSegment(byte[] buffer, int sourceOffset, long offset, int capacity, bool isAppend, bool returnsBuffer)
+        public PendingSegment(
+            byte[] buffer,
+            int sourceOffset,
+            long offset,
+            int capacity,
+            bool isAppend,
+            bool returnsBuffer,
+            PendingSegmentPhase phase = PendingSegmentPhase.Payload)
         {
             Buffer = buffer;
             SourceOffset = sourceOffset;
@@ -1628,6 +2105,7 @@ internal sealed class DataKernel : IDisposable
             Capacity = capacity;
             IsAppend = isAppend;
             ReturnsBuffer = returnsBuffer;
+            Phase = phase;
         }
 
         public byte[] Buffer { get; }
@@ -1643,6 +2121,8 @@ internal sealed class DataKernel : IDisposable
         public bool IsAppend { get; }
 
         public bool ReturnsBuffer { get; }
+
+        public PendingSegmentPhase Phase { get; }
     }
 
     private readonly record struct CommitSlice(
@@ -1676,24 +2156,28 @@ internal sealed class DataKernel : IDisposable
             VolatileMemoryArenaSnapshot? snapshot,
             CoherentReadState? previous,
             int threadId,
-            bool holdsStorageReadLock)
+            bool holdsStorageReadLock,
+            bool holdsStorageUpgradeableReadLock)
         {
             Owner = owner;
             Snapshot = snapshot;
             Previous = previous;
             ThreadId = threadId;
             HoldsStorageReadLock = holdsStorageReadLock;
+            HoldsStorageUpgradeableReadLock = holdsStorageUpgradeableReadLock;
         }
 
         internal DataKernel Owner { get; }
 
         internal VolatileMemoryArenaSnapshot? Snapshot { get; }
 
-        internal CoherentReadState? Previous { get; }
+        internal CoherentReadState? Previous { get; set; }
 
         internal int ThreadId { get; }
 
         internal bool HoldsStorageReadLock { get; }
+
+        internal bool HoldsStorageUpgradeableReadLock { get; }
 
         internal int ActiveDepth { get; set; } = 1;
     }

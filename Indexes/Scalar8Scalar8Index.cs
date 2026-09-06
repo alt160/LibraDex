@@ -339,7 +339,7 @@ internal sealed class Scalar8Scalar8Index : IDisposable
             encodedKey,
             encodedIdentity,
             maxRouterHops: 8,
-            Scalar8Scalar8RouteReadPolicy.Uncached,
+            Scalar8Scalar8RouteReadPolicy.PreferPromotedViews,
             out telemetry);
     }
 
@@ -657,94 +657,12 @@ internal sealed class Scalar8Scalar8QueuedWriter
                     };
                 }
 
-                if (index.Session.TrySplitScalar8Scalar8QueuedRootPrefix(
+                Scalar8Scalar8EncodedInsertResult? narrowTopologyResult = index.Session.RunScalar8Scalar8NarrowTopologyMutation(
                     index.Handle.RootRouterOffset,
-                    rootPrefixByte,
-                    index.Handle.Profile,
-                    encodedKey,
-                    encodedIdentity,
-                    allowDuplicateKeys,
-                    out Scalar8Scalar8EncodedInsertResult rootPrefixSplitResult))
+                    () => TryInsertEncodedThroughNarrowTopologyPublisher(encodedKey, encodedIdentity, allowDuplicateKeys));
+                if (narrowTopologyResult.HasValue)
                 {
-                    return rootPrefixSplitResult with
-                    {
-                        QueuedInsertPath = Scalar8Scalar8QueuedInsertPath.NarrowTopologyPublisher
-                    };
-                }
-
-                if (index.Session.TrySplitScalar8Scalar8QueuedRootShelfTransform(
-                    index.Handle.RootRouterOffset,
-                    rootPrefixByte,
-                    index.Handle.Profile,
-                    encodedKey,
-                    encodedIdentity,
-                    allowDuplicateKeys,
-                    out Scalar8Scalar8EncodedInsertResult rootShelfTransformResult))
-                {
-                    return rootShelfTransformResult with
-                    {
-                        QueuedInsertPath = Scalar8Scalar8QueuedInsertPath.NarrowTopologyPublisher
-                    };
-                }
-
-                if (index.Session.TrySplitScalar8Scalar8QueuedParentRoute(
-                    index.Handle.RootRouterOffset,
-                    index.Handle.Profile,
-                    encodedKey,
-                    encodedIdentity,
-                    allowDuplicateKeys,
-                    maxRouterHops: 8,
-                    out Scalar8Scalar8EncodedInsertResult parentRouteSplitResult))
-                {
-                    return parentRouteSplitResult with
-                    {
-                        QueuedInsertPath = Scalar8Scalar8QueuedInsertPath.NarrowTopologyPublisher
-                    };
-                }
-
-                if (index.Session.TryInsertScalar8Scalar8QueuedDuplicateRunChain(
-                    index.Handle.RootRouterOffset,
-                    index.Handle.Profile,
-                    encodedKey,
-                    encodedIdentity,
-                    allowDuplicateKeys,
-                    maxRouterHops: 8,
-                    out Scalar8Scalar8EncodedInsertResult duplicateRunChainResult))
-                {
-                    return duplicateRunChainResult with
-                    {
-                        QueuedInsertPath = Scalar8Scalar8QueuedInsertPath.NarrowTopologyPublisher
-                    };
-                }
-
-                if (index.Session.TryInsertScalar8Scalar8QueuedTerminalIdentityOverflow(
-                    index.Handle.RootRouterOffset,
-                    index.Handle.Profile,
-                    encodedKey,
-                    encodedIdentity,
-                    allowDuplicateKeys,
-                    maxRouterHops: 8,
-                    out Scalar8Scalar8EncodedInsertResult terminalIdentityOverflowResult))
-                {
-                    return terminalIdentityOverflowResult with
-                    {
-                        QueuedInsertPath = Scalar8Scalar8QueuedInsertPath.NarrowTopologyPublisher
-                    };
-                }
-
-                if (index.Session.TryInsertScalar8Scalar8QueuedDuplicateKeyOverflow(
-                    index.Handle.RootRouterOffset,
-                    index.Handle.Profile,
-                    encodedKey,
-                    encodedIdentity,
-                    allowDuplicateKeys,
-                    maxRouterHops: 8,
-                    out Scalar8Scalar8EncodedInsertResult duplicateKeyOverflowResult))
-                {
-                    return duplicateKeyOverflowResult with
-                    {
-                        QueuedInsertPath = Scalar8Scalar8QueuedInsertPath.NarrowTopologyPublisher
-                    };
+                    return narrowTopologyResult.Value;
                 }
 
                 lock (queueSync)
@@ -837,5 +755,114 @@ internal sealed class Scalar8Scalar8QueuedWriter
             queuedPath = Scalar8Scalar8QueuedInsertPath.WriterContext;
             return true;
         }
+    }
+
+    /// <summary>
+    /// Attempts every bounded topology-changing `SS8-8` publisher for one encoded insert while the caller owns the per-root topology write gate.<br/>
+    /// Cold root-route creation is deliberately attempted before this method under its independent root-prefix owner because an unset prefix cannot have a staged shelf writer and therefore does not require the whole-root drain barrier.<br/>
+    /// The ordered probes preserve the existing root split/transform, parent split, duplicate-run, terminal-identity, and duplicate-key fallback preference while preventing any pre-existing writer context from retaining a private image across a topology rewrite.<br/>
+    /// A null result means no narrow publisher accepted the current topology and the caller should use the broader serialized fallback.<br/>
+    /// </summary>
+    /// <param name="encodedKey">The already encoded sortable 8-byte scalar key.<br/></param>
+    /// <param name="encodedIdentity">The already encoded 8-byte scalar identity value.<br/></param>
+    /// <param name="allowDuplicateKeys">Whether multiple identities may share the same encoded key.<br/></param>
+    /// <returns>The published narrow-topology result, or <see langword="null"/> when broader fallback is required.<br/></returns>
+    private Scalar8Scalar8EncodedInsertResult? TryInsertEncodedThroughNarrowTopologyPublisher(
+        ulong encodedKey,
+        ulong encodedIdentity,
+        bool allowDuplicateKeys)
+    {
+        byte rootPrefixByte = (byte)(encodedKey >> 56);
+        if (index.Session.TrySplitScalar8Scalar8QueuedRootPrefix(
+            index.Handle.RootRouterOffset,
+            rootPrefixByte,
+            index.Handle.Profile,
+            encodedKey,
+            encodedIdentity,
+            allowDuplicateKeys,
+            out Scalar8Scalar8EncodedInsertResult rootPrefixSplitResult))
+        {
+            return rootPrefixSplitResult with
+            {
+                QueuedInsertPath = Scalar8Scalar8QueuedInsertPath.NarrowTopologyPublisher
+            };
+        }
+
+        if (index.Session.TrySplitScalar8Scalar8QueuedRootShelfTransform(
+            index.Handle.RootRouterOffset,
+            rootPrefixByte,
+            index.Handle.Profile,
+            encodedKey,
+            encodedIdentity,
+            allowDuplicateKeys,
+            out Scalar8Scalar8EncodedInsertResult rootShelfTransformResult))
+        {
+            return rootShelfTransformResult with
+            {
+                QueuedInsertPath = Scalar8Scalar8QueuedInsertPath.NarrowTopologyPublisher
+            };
+        }
+
+        if (index.Session.TrySplitScalar8Scalar8QueuedParentRoute(
+            index.Handle.RootRouterOffset,
+            index.Handle.Profile,
+            encodedKey,
+            encodedIdentity,
+            allowDuplicateKeys,
+            maxRouterHops: 8,
+            out Scalar8Scalar8EncodedInsertResult parentRouteSplitResult))
+        {
+            return parentRouteSplitResult with
+            {
+                QueuedInsertPath = Scalar8Scalar8QueuedInsertPath.NarrowTopologyPublisher
+            };
+        }
+
+        if (index.Session.TryInsertScalar8Scalar8QueuedDuplicateRunChain(
+            index.Handle.RootRouterOffset,
+            index.Handle.Profile,
+            encodedKey,
+            encodedIdentity,
+            allowDuplicateKeys,
+            maxRouterHops: 8,
+            out Scalar8Scalar8EncodedInsertResult duplicateRunChainResult))
+        {
+            return duplicateRunChainResult with
+            {
+                QueuedInsertPath = Scalar8Scalar8QueuedInsertPath.NarrowTopologyPublisher
+            };
+        }
+
+        if (index.Session.TryInsertScalar8Scalar8QueuedTerminalIdentityOverflow(
+            index.Handle.RootRouterOffset,
+            index.Handle.Profile,
+            encodedKey,
+            encodedIdentity,
+            allowDuplicateKeys,
+            maxRouterHops: 8,
+            out Scalar8Scalar8EncodedInsertResult terminalIdentityOverflowResult))
+        {
+            return terminalIdentityOverflowResult with
+            {
+                QueuedInsertPath = Scalar8Scalar8QueuedInsertPath.NarrowTopologyPublisher
+            };
+        }
+
+        if (index.Session.TryInsertScalar8Scalar8QueuedDuplicateKeyOverflow(
+            index.Handle.RootRouterOffset,
+            index.Handle.Profile,
+            encodedKey,
+            encodedIdentity,
+            allowDuplicateKeys,
+            maxRouterHops: 8,
+            out Scalar8Scalar8EncodedInsertResult duplicateKeyOverflowResult))
+        {
+            return duplicateKeyOverflowResult with
+            {
+                QueuedInsertPath = Scalar8Scalar8QueuedInsertPath.NarrowTopologyPublisher
+            };
+        }
+
+        return null;
     }
 }

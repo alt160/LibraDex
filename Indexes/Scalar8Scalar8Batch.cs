@@ -391,7 +391,7 @@ internal sealed class Scalar8Scalar8Batch : IDisposable
             rootRouterOffset,
             encodedKey,
             maxRouterHops: 8,
-            Scalar8Scalar8RouteReadPolicy.Uncached);
+            Scalar8Scalar8RouteReadPolicy.PreferPromotedViews);
         target = pathTarget.Target;
         if (target.Kind != Scalar8Scalar8RouteTargetKind.Shelf)
         {
@@ -443,7 +443,7 @@ internal sealed class Scalar8Scalar8Batch : IDisposable
             rootRouterOffset,
             encodedKey,
             maxRouterHops: 8,
-            Scalar8Scalar8RouteReadPolicy.Uncached,
+            Scalar8Scalar8RouteReadPolicy.PreferPromotedViews,
             ref insertAttributionTelemetry.RouteWalkAttribution);
         insertAttributionTelemetry.RouteWalkTicks += Stopwatch.GetTimestamp() - routeWalkStart;
         long classificationStart = Stopwatch.GetTimestamp();

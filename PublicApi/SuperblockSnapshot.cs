@@ -13,6 +13,7 @@ internal readonly record struct SuperblockSnapshot(
     long IndexDirectoryOffset,
     int IndexDirectoryLength,
     int IndexSlotCount,
+    long AllocationDirectoryOffset,
     SuperblockDeveloperMetadata DeveloperMetadata)
 {
     internal static SuperblockSnapshot FromReader(SuperblockReader reader)
@@ -32,6 +33,7 @@ internal readonly record struct SuperblockSnapshot(
             reader.IndexDirectoryOffset,
             reader.IndexDirectoryLength,
             reader.IndexSlotCount,
+            reader.AllocationDirectoryOffset,
             developerMetadata);
     }
 }

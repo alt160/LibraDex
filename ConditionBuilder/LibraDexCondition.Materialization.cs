@@ -11,6 +11,7 @@ internal enum LibraDexConditionNodeKind
 {
     Leaf,
     External,
+    Guarded,
     Not,
     And,
     Or
@@ -20,6 +21,7 @@ internal sealed class LibraDexConditionBuilder
 {
     private LibraDexConditionNode? current;
     private LibraDexConditionNodeKind? pendingOperation;
+    private LibraDexConditionIndexSelector? pendingAvailabilityGuard;
 
     internal LibraDexConditionBuilder(string group)
     {
@@ -73,6 +75,27 @@ internal sealed class LibraDexConditionBuilder
         pendingOperation = operation;
     }
 
+    /// <summary>
+    /// Records an execution-time availability guard that will wrap the next real condition clause.<br/>
+    /// A pending OR is rejected because availability guards intentionally protect only root or AND-dependent branches.<br/>
+    /// </summary>
+    /// <param name="indexSelector">The static or deferred index selector whose definition must be resolvable.</param>
+    internal void GuardNextClause(LibraDexConditionIndexSelector indexSelector)
+    {
+        ArgumentNullException.ThrowIfNull(indexSelector);
+        if (pendingOperation == LibraDexConditionNodeKind.Or)
+        {
+            throw new NotSupportedException("Index-availability guards may protect only a root clause or an AND-connected dependent clause.");
+        }
+
+        if (pendingAvailabilityGuard is not null)
+        {
+            throw new InvalidOperationException("A LibraDex condition cannot stack index-availability guards before one clause.");
+        }
+
+        pendingAvailabilityGuard = indexSelector;
+    }
+
     internal LibraDexConditionEndCondition End()
     {
         if (current is null)
@@ -80,7 +103,7 @@ internal sealed class LibraDexConditionBuilder
             throw new InvalidOperationException("A LibraDex condition must contain at least one clause.");
         }
 
-        if (pendingOperation is not null)
+        if (pendingOperation is not null || pendingAvailabilityGuard is not null)
         {
             throw new InvalidOperationException("A LibraDex condition cannot end with a composition operator.");
         }
@@ -90,6 +113,12 @@ internal sealed class LibraDexConditionBuilder
 
     private LibraDexConditionContinueOrEnd AddNode(LibraDexConditionNode node)
     {
+        if (pendingAvailabilityGuard is not null)
+        {
+            node = LibraDexConditionNode.Guarded(pendingAvailabilityGuard, node);
+            pendingAvailabilityGuard = null;
+        }
+
         if (current is null)
         {
             current = node;
@@ -111,14 +140,17 @@ internal sealed class LibraDexConditionNode
     private readonly LibraDexConditionLeafDescriptor? leaf;
     private readonly Func<LibraDexExternalIdentityContext, bool>? externalIdentityFilter;
     private readonly Func<IEnumerable<object>>? externalIdentitySource;
+    private readonly LibraDexConditionIndexSelector? availabilityGuard;
     private readonly LibraDexConditionNode? left;
     private readonly LibraDexConditionNode? right;
+    private readonly bool hasExplicitParameters;
 
     private LibraDexConditionNode(
         LibraDexConditionNodeKind kind,
         LibraDexConditionLeafDescriptor? leaf,
         Func<LibraDexExternalIdentityContext, bool>? externalIdentityFilter,
         Func<IEnumerable<object>>? externalIdentitySource,
+        LibraDexConditionIndexSelector? availabilityGuard,
         LibraDexConditionNode? left,
         LibraDexConditionNode? right)
     {
@@ -126,31 +158,61 @@ internal sealed class LibraDexConditionNode
         this.leaf = leaf;
         this.externalIdentityFilter = externalIdentityFilter;
         this.externalIdentitySource = externalIdentitySource;
+        this.availabilityGuard = availabilityGuard;
         this.left = left;
         this.right = right;
+        hasExplicitParameters = kind switch
+        {
+            LibraDexConditionNodeKind.Leaf => LeafHasExplicitParameters(leaf!),
+            LibraDexConditionNodeKind.Guarded => availabilityGuard!.HasExplicitParameter || left!.hasExplicitParameters,
+            LibraDexConditionNodeKind.Not => left!.hasExplicitParameters,
+            LibraDexConditionNodeKind.And or LibraDexConditionNodeKind.Or => left!.hasExplicitParameters || right!.hasExplicitParameters,
+            _ => false
+        };
     }
 
     internal LibraDexConditionNodeKind Kind { get; }
 
+    private static bool LeafHasExplicitParameters(LibraDexConditionLeafDescriptor descriptor)
+    {
+        if (descriptor.IndexSelector.HasExplicitParameter)
+            return true;
+
+        for (int i = 0; i < descriptor.Operands.Count; i++)
+        {
+            if (descriptor.Operands[i].HasExplicitParameter)
+                return true;
+        }
+
+        return false;
+    }
+
     internal static LibraDexConditionNode Leaf(LibraDexConditionLeafDescriptor leaf)
-        => new LibraDexConditionNode(LibraDexConditionNodeKind.Leaf, leaf, externalIdentityFilter: null, externalIdentitySource: null, left: null, right: null);
+        => new LibraDexConditionNode(LibraDexConditionNodeKind.Leaf, leaf, externalIdentityFilter: null, externalIdentitySource: null, availabilityGuard: null, left: null, right: null);
 
     internal static LibraDexConditionNode External(Func<LibraDexExternalIdentityContext, bool> filter)
     {
         ArgumentNullException.ThrowIfNull(filter);
-        return new LibraDexConditionNode(LibraDexConditionNodeKind.External, leaf: null, filter, externalIdentitySource: null, left: null, right: null);
+        return new LibraDexConditionNode(LibraDexConditionNodeKind.External, leaf: null, filter, externalIdentitySource: null, availabilityGuard: null, left: null, right: null);
     }
 
     internal static LibraDexConditionNode ExternalSource(Func<IEnumerable<object>> source)
     {
         ArgumentNullException.ThrowIfNull(source);
-        return new LibraDexConditionNode(LibraDexConditionNodeKind.External, leaf: null, externalIdentityFilter: null, source, left: null, right: null);
+        return new LibraDexConditionNode(LibraDexConditionNodeKind.External, leaf: null, externalIdentityFilter: null, source, availabilityGuard: null, left: null, right: null);
+    }
+
+    internal static LibraDexConditionNode Guarded(LibraDexConditionIndexSelector indexSelector, LibraDexConditionNode child)
+    {
+        ArgumentNullException.ThrowIfNull(indexSelector);
+        ArgumentNullException.ThrowIfNull(child);
+        return new LibraDexConditionNode(LibraDexConditionNodeKind.Guarded, leaf: null, externalIdentityFilter: null, externalIdentitySource: null, indexSelector, left: child, right: null);
     }
 
     internal static LibraDexConditionNode Not(LibraDexConditionNode child)
     {
         ArgumentNullException.ThrowIfNull(child);
-        return new LibraDexConditionNode(LibraDexConditionNodeKind.Not, leaf: null, externalIdentityFilter: null, externalIdentitySource: null, left: child, right: null);
+        return new LibraDexConditionNode(LibraDexConditionNodeKind.Not, leaf: null, externalIdentityFilter: null, externalIdentitySource: null, availabilityGuard: null, left: child, right: null);
     }
 
     internal static LibraDexConditionNode Compose(
@@ -158,12 +220,12 @@ internal sealed class LibraDexConditionNode
         LibraDexConditionNode left,
         LibraDexConditionNode right)
     {
-        if (kind is LibraDexConditionNodeKind.Leaf or LibraDexConditionNodeKind.External or LibraDexConditionNodeKind.Not)
+        if (kind is LibraDexConditionNodeKind.Leaf or LibraDexConditionNodeKind.External or LibraDexConditionNodeKind.Guarded or LibraDexConditionNodeKind.Not)
         {
             throw new ArgumentOutOfRangeException(nameof(kind));
         }
 
-        return new LibraDexConditionNode(kind, leaf: null, externalIdentityFilter: null, externalIdentitySource: null, left, right);
+        return new LibraDexConditionNode(kind, leaf: null, externalIdentityFilter: null, externalIdentitySource: null, availabilityGuard: null, left, right);
     }
 
     internal IReadOnlyList<LibraDexConditionLeafDescriptor> GetLeaves()
@@ -173,16 +235,68 @@ internal sealed class LibraDexConditionNode
         return leaves;
     }
 
-    internal LibraDexConditionNode Rewrite(Func<LibraDexConditionLeafDescriptor, LibraDexConditionLeafDescriptor> rewriteLeaf)
+    internal bool HasExternalNode()
+    {
+        if (Kind == LibraDexConditionNodeKind.External)
+            return true;
+        if (Kind == LibraDexConditionNodeKind.Leaf)
+            return false;
+        if (RequireLeft().HasExternalNode())
+            return true;
+
+        return Kind is not (LibraDexConditionNodeKind.Not or LibraDexConditionNodeKind.Guarded) && RequireRight().HasExternalNode();
+    }
+
+    internal string GetStructureShape()
     {
         return Kind switch
         {
-            LibraDexConditionNodeKind.Leaf => Leaf(rewriteLeaf(RequireLeaf())),
+            LibraDexConditionNodeKind.Leaf => LeafShape(RequireLeaf()),
+            LibraDexConditionNodeKind.External => "External",
+            LibraDexConditionNodeKind.Guarded => $"GuardExists({RequireAvailabilityGuard().GetIndexName()},{RequireLeft().GetStructureShape()})",
+            LibraDexConditionNodeKind.Not => $"Not({RequireLeft().GetStructureShape()})",
+            LibraDexConditionNodeKind.And => $"({RequireLeft().GetStructureShape()} And {RequireRight().GetStructureShape()})",
+            LibraDexConditionNodeKind.Or => $"({RequireLeft().GetStructureShape()} Or {RequireRight().GetStructureShape()})",
+            _ => throw new InvalidOperationException($"Unsupported condition node kind {Kind}.")
+        };
+
+        static string LeafShape(LibraDexConditionLeafDescriptor leaf)
+            => $"{leaf.IndexName}:{leaf.ValueKind}.{leaf.Operator}";
+    }
+
+    internal LibraDexConditionNode FreezeLeaves(Func<LibraDexConditionLeafDescriptor, LibraDexConditionLeafDescriptor> freezeLeaf)
+    {
+        return Kind switch
+        {
+            LibraDexConditionNodeKind.Leaf => Leaf(freezeLeaf(RequireLeaf())),
             LibraDexConditionNodeKind.External when externalIdentitySource is not null => ExternalSource(RequireExternalIdentitySource()),
             LibraDexConditionNodeKind.External => External(RequireExternalIdentityFilter()),
-            LibraDexConditionNodeKind.Not => Not(RequireLeft().Rewrite(rewriteLeaf)),
-            LibraDexConditionNodeKind.And => Compose(LibraDexConditionNodeKind.And, RequireLeft().Rewrite(rewriteLeaf), RequireRight().Rewrite(rewriteLeaf)),
-            LibraDexConditionNodeKind.Or => Compose(LibraDexConditionNodeKind.Or, RequireLeft().Rewrite(rewriteLeaf), RequireRight().Rewrite(rewriteLeaf)),
+            LibraDexConditionNodeKind.Guarded => Guarded(RequireAvailabilityGuard(), RequireLeft().FreezeLeaves(freezeLeaf)),
+            LibraDexConditionNodeKind.Not => Not(RequireLeft().FreezeLeaves(freezeLeaf)),
+            LibraDexConditionNodeKind.And => Compose(LibraDexConditionNodeKind.And, RequireLeft().FreezeLeaves(freezeLeaf), RequireRight().FreezeLeaves(freezeLeaf)),
+            LibraDexConditionNodeKind.Or => Compose(LibraDexConditionNodeKind.Or, RequireLeft().FreezeLeaves(freezeLeaf), RequireRight().FreezeLeaves(freezeLeaf)),
+            _ => throw new InvalidOperationException($"Unsupported condition node kind {Kind}.")
+        };
+    }
+
+    /// <summary>
+    /// Freezes index selectors in ordinary leaves and structural guards while preserving the condition tree shape.<br/>
+    /// Bookmark capture uses this path to snapshot reusable guarded conditions.<br/>
+    /// </summary>
+    /// <param name="freezeSelector">Function that returns each frozen selector.</param>
+    /// <returns>A frozen immutable condition node tree.</returns>
+    internal LibraDexConditionNode FreezeIndexSelectors(Func<LibraDexConditionIndexSelector, LibraDexConditionIndexSelector> freezeSelector)
+    {
+        ArgumentNullException.ThrowIfNull(freezeSelector);
+        return Kind switch
+        {
+            LibraDexConditionNodeKind.Leaf => Leaf(RequireLeaf().WithIndexSelector(freezeSelector(RequireLeaf().IndexSelector))),
+            LibraDexConditionNodeKind.External when externalIdentitySource is not null => ExternalSource(RequireExternalIdentitySource()),
+            LibraDexConditionNodeKind.External => External(RequireExternalIdentityFilter()),
+            LibraDexConditionNodeKind.Guarded => Guarded(freezeSelector(RequireAvailabilityGuard()), RequireLeft().FreezeIndexSelectors(freezeSelector)),
+            LibraDexConditionNodeKind.Not => Not(RequireLeft().FreezeIndexSelectors(freezeSelector)),
+            LibraDexConditionNodeKind.And => Compose(LibraDexConditionNodeKind.And, RequireLeft().FreezeIndexSelectors(freezeSelector), RequireRight().FreezeIndexSelectors(freezeSelector)),
+            LibraDexConditionNodeKind.Or => Compose(LibraDexConditionNodeKind.Or, RequireLeft().FreezeIndexSelectors(freezeSelector), RequireRight().FreezeIndexSelectors(freezeSelector)),
             _ => throw new InvalidOperationException($"Unsupported condition node kind {Kind}.")
         };
     }
@@ -190,16 +304,55 @@ internal sealed class LibraDexConditionNode
     internal IIdentityCriterion Materialize(
         string group,
         Func<string, IIndex> resolveIndex,
-        Func<LibraDexConditionLeafDescriptor, LibraDexConditionLeafClassification, IIndex?>? resolveProjectionIndex)
+        Func<LibraDexConditionLeafDescriptor, LibraDexConditionLeafClassification, IIndex?>? resolveProjectionIndex,
+        Func<string, IIndex?>? tryResolveIndex = null)
+    {
+        LibraDexParameterSnapshot parameterSnapshot = hasExplicitParameters
+            ? new LibraDexParameterSnapshot()
+            : LibraDexParameterSnapshot.Empty;
+        if (hasExplicitParameters)
+            CaptureParameters(parameterSnapshot);
+        return MaterializeCore(group, resolveIndex, resolveProjectionIndex, tryResolveIndex, parameterSnapshot);
+    }
+
+    private void CaptureParameters(LibraDexParameterSnapshot parameterSnapshot)
+    {
+        if (Kind == LibraDexConditionNodeKind.Leaf)
+        {
+            LibraDexConditionLeafDescriptor descriptor = RequireLeaf();
+            descriptor.IndexSelector.CaptureParameter(parameterSnapshot);
+            for (int i = 0; i < descriptor.Operands.Count; i++)
+                descriptor.Operands[i].CaptureParameter(parameterSnapshot);
+            return;
+        }
+
+        if (Kind == LibraDexConditionNodeKind.External)
+            return;
+
+        if (Kind == LibraDexConditionNodeKind.Guarded)
+            RequireAvailabilityGuard().CaptureParameter(parameterSnapshot);
+
+        RequireLeft().CaptureParameters(parameterSnapshot);
+        if (Kind is not (LibraDexConditionNodeKind.Not or LibraDexConditionNodeKind.Guarded))
+            RequireRight().CaptureParameters(parameterSnapshot);
+    }
+
+    private IIdentityCriterion MaterializeCore(
+        string group,
+        Func<string, IIndex> resolveIndex,
+        Func<LibraDexConditionLeafDescriptor, LibraDexConditionLeafClassification, IIndex?>? resolveProjectionIndex,
+        Func<string, IIndex?>? tryResolveIndex,
+        LibraDexParameterSnapshot parameterSnapshot)
     {
         return Kind switch
         {
-            LibraDexConditionNodeKind.Leaf => MaterializeLeaf(group, resolveIndex, resolveProjectionIndex),
+            LibraDexConditionNodeKind.Leaf => MaterializeLeaf(group, resolveIndex, resolveProjectionIndex, parameterSnapshot),
             LibraDexConditionNodeKind.External when externalIdentitySource is not null => LibraDexIdentityCriterion.ExternalSource(group, RequireExternalIdentitySource()),
             LibraDexConditionNodeKind.External => LibraDexIdentityCriterion.External(group, RequireExternalIdentityFilter()),
-            LibraDexConditionNodeKind.Not => RequireLeft().Materialize(group, resolveIndex, resolveProjectionIndex).Not(),
-            LibraDexConditionNodeKind.And => RequireLeft().Materialize(group, resolveIndex, resolveProjectionIndex).And(RequireRight().Materialize(group, resolveIndex, resolveProjectionIndex)),
-            LibraDexConditionNodeKind.Or => RequireLeft().Materialize(group, resolveIndex, resolveProjectionIndex).Or(RequireRight().Materialize(group, resolveIndex, resolveProjectionIndex)),
+            LibraDexConditionNodeKind.Guarded => MaterializeGuarded(group, resolveIndex, resolveProjectionIndex, tryResolveIndex, parameterSnapshot),
+            LibraDexConditionNodeKind.Not => RequireLeft().MaterializeCore(group, resolveIndex, resolveProjectionIndex, tryResolveIndex, parameterSnapshot).Not(),
+            LibraDexConditionNodeKind.And => RequireLeft().MaterializeCore(group, resolveIndex, resolveProjectionIndex, tryResolveIndex, parameterSnapshot).And(RequireRight().MaterializeCore(group, resolveIndex, resolveProjectionIndex, tryResolveIndex, parameterSnapshot)),
+            LibraDexConditionNodeKind.Or => RequireLeft().MaterializeCore(group, resolveIndex, resolveProjectionIndex, tryResolveIndex, parameterSnapshot).Or(RequireRight().MaterializeCore(group, resolveIndex, resolveProjectionIndex, tryResolveIndex, parameterSnapshot)),
             _ => throw new InvalidOperationException($"Unsupported condition node kind {Kind}.")
         };
     }
@@ -218,26 +371,60 @@ internal sealed class LibraDexConditionNode
         }
 
         RequireLeft().AddLeaves(leaves);
-        if (Kind != LibraDexConditionNodeKind.Not)
+        if (Kind is not (LibraDexConditionNodeKind.Not or LibraDexConditionNodeKind.Guarded))
         {
             RequireRight().AddLeaves(leaves);
         }
     }
 
+    /// <summary>
+    /// Materializes a structural availability guard without resolving its dependent clause when the guarded index is absent.<br/>
+    /// A present guarded index is reused by matching child leaves so one guard does not reopen the same handle immediately.<br/>
+    /// </summary>
+    /// <param name="group">The owning identity group.</param>
+    /// <param name="resolveIndex">The strict resolver for unguarded or sibling leaves.</param>
+    /// <param name="resolveProjectionIndex">The optional maintained-projection resolver.</param>
+    /// <param name="tryResolveIndex">The non-throwing guard resolver.</param>
+    /// <returns>The dependent criterion, or an empty identity source when the guarded definition is absent.</returns>
+    private IIdentityCriterion MaterializeGuarded(
+        string group,
+        Func<string, IIndex> resolveIndex,
+        Func<LibraDexConditionLeafDescriptor, LibraDexConditionLeafClassification, IIndex?>? resolveProjectionIndex,
+        Func<string, IIndex?>? tryResolveIndex,
+        LibraDexParameterSnapshot parameterSnapshot)
+    {
+        string indexName = RequireAvailabilityGuard().GetIndexName(parameterSnapshot, group);
+        IIndex? guardedIndex = tryResolveIndex?.Invoke(indexName);
+        if (guardedIndex is null)
+        {
+            return LibraDexIdentityCriterion.ExternalSource(group, static () => Array.Empty<object>());
+        }
+
+        return RequireLeft().MaterializeCore(
+            group,
+            requestedName => string.Equals(requestedName, indexName, StringComparison.Ordinal) ? guardedIndex : resolveIndex(requestedName),
+            resolveProjectionIndex,
+            tryResolveIndex,
+            parameterSnapshot);
+    }
+
     private IIdentityCriterion MaterializeLeaf(
         string group,
         Func<string, IIndex> resolveIndex,
-        Func<LibraDexConditionLeafDescriptor, LibraDexConditionLeafClassification, IIndex?>? resolveProjectionIndex)
+        Func<LibraDexConditionLeafDescriptor, LibraDexConditionLeafClassification, IIndex?>? resolveProjectionIndex,
+        LibraDexParameterSnapshot parameterSnapshot)
     {
         LibraDexConditionLeafDescriptor descriptor = RequireLeaf();
-        IIndex index = resolveIndex(descriptor.IndexName);
+        string indexName = descriptor.IndexSelector.GetIndexName(parameterSnapshot, group);
+        descriptor = descriptor.WithIndexSelector(LibraDexConditionIndexSelector.Static(indexName, descriptor.IndexSelector.Name));
+        IIndex index = resolveIndex(indexName);
         if (index.Group.Length != 0 && !string.Equals(index.Group, group, StringComparison.Ordinal))
         {
             throw new InvalidOperationException($"Resolved index '{descriptor.IndexName}' belongs to group '{index.Group}', not condition group '{group}'.");
         }
 
         LibraDexConditionLeafClassification classification = LibraDexConditionEndCondition.ClassifyResolvedLeaf(group, descriptor, index);
-        object?[] values = MaterializeOperandValues(descriptor);
+        object?[] values = MaterializeOperandValues(descriptor, parameterSnapshot);
         if (classification.ExecutionClass == LibraDexConditionExecutionClass.ProjectionBacked)
         {
             if (resolveProjectionIndex is null)
@@ -345,7 +532,9 @@ internal sealed class LibraDexConditionNode
     /// </summary>
     /// <param name="descriptor">The leaf descriptor whose operands should be evaluated.</param>
     /// <returns>The materialized operand values.</returns>
-    private static object?[] MaterializeOperandValues(LibraDexConditionLeafDescriptor descriptor)
+    private static object?[] MaterializeOperandValues(
+        LibraDexConditionLeafDescriptor descriptor,
+        LibraDexParameterSnapshot parameterSnapshot)
     {
         if (descriptor.Operands.Count == 0)
         {
@@ -355,7 +544,7 @@ internal sealed class LibraDexConditionNode
         object?[] values = new object?[descriptor.Operands.Count];
         for (int i = 0; i < values.Length; i++)
         {
-            values[i] = descriptor.Operands[i].GetValue();
+            values[i] = descriptor.Operands[i].GetValue(parameterSnapshot);
         }
 
         return values;
@@ -403,6 +592,15 @@ internal sealed class LibraDexConditionNode
     /// <returns><see langword="true"/> when the operator was handled.</returns>
     private static bool TryMaterializeCorePrimitiveLeaf(IIndex index, object?[] values, LibraDexConditionLeafDescriptor descriptor, out IIdentityCriterion? criterion)
     {
+        if (descriptor.NumericTransform is LibraDexNumericTransformDescriptor transform)
+        {
+            criterion = MaterializeNumericTransformLeaf(index, values, descriptor, transform);
+            return true;
+        }
+
+        if (TryMaterializeFloatingNaNOrderedLeaf(index, values, descriptor, out criterion))
+            return true;
+
         criterion = descriptor.Operator switch
         {
             LibraDexConditionOperatorKind.All => CreateConditionLeaf(index, LibraDexCriteriaKind.All),
@@ -430,7 +628,97 @@ internal sealed class LibraDexConditionNode
             LibraDexConditionOperatorKind.BitAndNotEqualTo => MaterializeBitmaskLeaf(index, values, descriptor, LibraDexBitmaskComparisonMode.NotEqualTo),
             LibraDexConditionOperatorKind.InSet => CreateMembershipLeaf(index, values, descriptor),
             LibraDexConditionOperatorKind.NotInSet => CreateMembershipLeaf(index, values, descriptor).Not(),
+            LibraDexConditionOperatorKind.KeysExistAll => CreateAllKeysExistLeaf(index, values, descriptor),
             LibraDexConditionOperatorKind.ScalarNullState => CreateConditionLeaf(index, LibraDexCriteriaKind.ScalarNull, RequireEnum<ScalarNull>(values, 0, descriptor)),
+            LibraDexConditionOperatorKind.NullState => MaterializeNullState(index, values, descriptor),
+            _ => null
+        };
+
+        return criterion is not null;
+    }
+
+    /// <summary>
+    /// Materializes a value-family-neutral null-state leaf against the resolved logical index.<br/>
+    /// String and blob families use their distinct null-key route; scalar, GUID, date, and BigInteger families use the scalar-null router.<br/>
+    /// Composite and unknown families are rejected because they do not expose one whole-key null-state contract.<br/>
+    /// </summary>
+    /// <param name="index">The resolved logical index that owns the maintained null route.<br/></param>
+    /// <param name="values">The materialized descriptor operands containing the requested null polarity.<br/></param>
+    /// <param name="descriptor">The source condition leaf descriptor.<br/></param>
+    /// <returns>An executable null or non-null identity criterion.<br/></returns>
+    private static IIdentityCriterion MaterializeNullState(
+        IIndex index,
+        object?[] values,
+        LibraDexConditionLeafDescriptor descriptor)
+    {
+        if (RequireValue(values, 0, descriptor) is not bool matchNull)
+            throw new InvalidOperationException($"Condition leaf '{descriptor.IndexName}' operator '{descriptor.Operator}' requires Boolean operand 0.");
+
+        CatalogIndexKeyFamily family = index.LogicalShape?.KeyFamily ?? index.KeyFamily;
+        if (family is CatalogIndexKeyFamily.String or CatalogIndexKeyFamily.Blob)
+        {
+            IIdentityCriterion nullCriterion = CreateConditionLeaf(index, LibraDexCriteriaKind.KeyState, NullKey.Null);
+            return matchNull ? nullCriterion : nullCriterion.Not();
+        }
+
+        if (family is CatalogIndexKeyFamily.Scalar or
+            CatalogIndexKeyFamily.Guid or
+            CatalogIndexKeyFamily.Date or
+            CatalogIndexKeyFamily.BigInt)
+        {
+            ScalarNull state = matchNull ? ScalarNull.Null : ScalarNull.NonNull;
+            return CreateConditionLeaf(index, LibraDexCriteriaKind.ScalarNull, state);
+        }
+
+        throw new NotSupportedException(
+            $"Condition operator {descriptor.Operator} cannot resolve a whole-key null route for index '{index.Name}' key family {family}.");
+    }
+
+    /// <summary>
+    /// Materializes ordered floating-point predicates whose boundary includes NaN.<br/>
+    /// NaN is an exact/set-selectable key but is outside the ordinary numeric order domain, so numeric comparisons with a NaN boundary become empty and their range complements become the complete infinity-bounded numeric domain.<br/>
+    /// </summary>
+    /// <param name="index">The resolved Single- or Double-key index.<br/></param>
+    /// <param name="values">The already materialized condition operands.<br/></param>
+    /// <param name="descriptor">The adopted condition leaf descriptor.<br/></param>
+    /// <param name="criterion">Receives the normalized numeric criterion when the leaf contains a NaN ordered boundary.<br/></param>
+    /// <returns><see langword="true"/> when the floating-point NaN boundary was handled; otherwise <see langword="false"/>.<br/></returns>
+    private static bool TryMaterializeFloatingNaNOrderedLeaf(
+        IIndex index,
+        object?[] values,
+        LibraDexConditionLeafDescriptor descriptor,
+        out IIdentityCriterion? criterion)
+    {
+        criterion = null;
+        bool single = index.KeyType == typeof(float);
+        if (!single && index.KeyType != typeof(double))
+            return false;
+
+        bool hasNaN = false;
+        for (int i = 0; i < values.Length; i++)
+        {
+            if ((single && values[i] is float singleValue && float.IsNaN(singleValue)) ||
+                (!single && values[i] is double doubleValue && double.IsNaN(doubleValue)))
+            {
+                hasNaN = true;
+                break;
+            }
+        }
+
+        if (!hasNaN)
+            return false;
+
+        object minimum = single ? (object)float.NegativeInfinity : double.NegativeInfinity;
+        object maximum = single ? (object)float.PositiveInfinity : double.PositiveInfinity;
+        criterion = descriptor.Operator switch
+        {
+            LibraDexConditionOperatorKind.NotEqualTo or
+            LibraDexConditionOperatorKind.NotBetween => CreateConditionLeaf(index, LibraDexCriteriaKind.Between, minimum, maximum),
+            LibraDexConditionOperatorKind.GreaterThan or
+            LibraDexConditionOperatorKind.GreaterOrEqual or
+            LibraDexConditionOperatorKind.LessThan or
+            LibraDexConditionOperatorKind.LessOrEqual or
+            LibraDexConditionOperatorKind.Between => CreateConditionLeaf(index, LibraDexCriteriaKind.Before, minimum),
             _ => null
         };
 
@@ -472,8 +760,11 @@ internal sealed class LibraDexConditionNode
             LibraDexConditionOperatorKind.BinaryTypedSliceBitAndNotEqualTo when descriptor.ValueKind == LibraDexConditionValueKind.Binary => MaterializeBinaryTypedSliceLeaf(index, values, descriptor),
             LibraDexConditionOperatorKind.CompositeMatch when descriptor.ValueKind == LibraDexConditionValueKind.Composite => MaterializeCompositeLeaf(index, values, descriptor),
             LibraDexConditionOperatorKind.StartsWith or
+            LibraDexConditionOperatorKind.NotStartsWith or
             LibraDexConditionOperatorKind.EndsWith or
+            LibraDexConditionOperatorKind.NotEndsWith or
             LibraDexConditionOperatorKind.Contains or
+            LibraDexConditionOperatorKind.NotContains or
             LibraDexConditionOperatorKind.MatchesPattern or
             LibraDexConditionOperatorKind.NotMatchesPattern or
             LibraDexConditionOperatorKind.RegexMatches or
@@ -483,8 +774,11 @@ internal sealed class LibraDexConditionNode
             LibraDexConditionOperatorKind.MatchesInSet or
             LibraDexConditionOperatorKind.NotMatchesInSet when descriptor.ValueKind == LibraDexConditionValueKind.String => MaterializeStringPatternLeaf(index, values, descriptor),
             LibraDexConditionOperatorKind.StartsWith or
+            LibraDexConditionOperatorKind.NotStartsWith or
             LibraDexConditionOperatorKind.EndsWith or
+            LibraDexConditionOperatorKind.NotEndsWith or
             LibraDexConditionOperatorKind.Contains or
+            LibraDexConditionOperatorKind.NotContains or
             LibraDexConditionOperatorKind.MatchesPattern or
             LibraDexConditionOperatorKind.NotMatchesPattern or
             LibraDexConditionOperatorKind.RegexMatches or
@@ -787,6 +1081,59 @@ internal sealed class LibraDexConditionNode
     }
 
     /// <summary>
+    /// Materializes an all-keys existence condition as an intersection of distinct exact-key membership leaves.<br/>
+    /// The source enumerable is consumed once per materialization, and single-key-per-identity indexes short-circuit impossible multi-key requests before any index walk begins.<br/>
+    /// </summary>
+    /// <param name="index">The resolved logical index that owns the key routes.</param>
+    /// <param name="values">The materialized condition operands containing one enumerable.</param>
+    /// <param name="descriptor">The source condition leaf descriptor.</param>
+    /// <returns>An identity criterion matching identities associated with every distinct supplied key.</returns>
+    private static IIdentityCriterion CreateAllKeysExistLeaf(
+        IIndex index,
+        object?[] values,
+        LibraDexConditionLeafDescriptor descriptor)
+    {
+        object source = RequireValue(values, 0, descriptor);
+        if (source is string || source is not IEnumerable enumerable)
+        {
+            throw new InvalidOperationException($"Condition leaf '{descriptor.IndexName}' operator '{descriptor.Operator}' requires an enumerable key operand.");
+        }
+
+        List<object?> distinct = new();
+        HashSet<object> seen = new(LibraDexObjectValueComparer.Instance);
+        bool sawNull = false;
+        foreach (object? item in enumerable)
+        {
+            if (item is null)
+            {
+                if (!sawNull)
+                {
+                    distinct.Add(null);
+                    sawNull = true;
+                }
+            }
+            else if (seen.Add(item))
+                distinct.Add(item);
+        }
+
+        if (distinct.Count == 0)
+            return CreateConditionLeaf(index, LibraDexCriteriaKind.All);
+
+        if (distinct.Count > 1 && index.IdentityKeyMultiplicity == IdentityKeyMultiplicity.SingleKeyPerIdentity)
+            return LibraDexIdentityCriterion.ExternalSource(index.Group, static () => Array.Empty<object>());
+
+        IIdentityCriterion? criterion = null;
+        for (int i = 0; i < distinct.Count; i++)
+        {
+            object?[] oneKey = [distinct[i]];
+            IIdentityCriterion keyCriterion = CreateMembershipLeaf(index, [oneKey], descriptor);
+            criterion = criterion is null ? keyCriterion : criterion.And(keyCriterion);
+        }
+
+        return criterion ?? throw new InvalidOperationException("All-key existence materialization did not create a criterion.");
+    }
+
+    /// <summary>
     /// Materializes a numeric bitmask condition as an explicit compact-index scan predicate.<br/>
     /// The predicate normalizes the mask and comparison value once against the resolved key type, then the primitive executor applies `(key &amp; mask)` to decoded scalar keys.<br/>
     /// </summary>
@@ -809,6 +1156,88 @@ internal sealed class LibraDexConditionNode
         object mask = RequireValue(values, 0, descriptor);
         object compareValue = RequireValue(values, 1, descriptor);
         return CreateConditionLeaf(index, LibraDexCriteriaKind.Bitmask, LibraDexBitmaskPredicate.Create(index.KeyType, mask, compareValue, mode));
+    }
+
+    /// <summary>
+    /// Materializes a Decimal, Single, or Double transform comparison as an explicit compact-index scan predicate.<br/>
+    /// Operand validation occurs before execution begins so a transformed condition cannot defer a key-type mismatch until an arbitrary row is scanned.<br/>
+    /// </summary>
+    /// <param name="index">The resolved numeric scalar index selected by the condition.</param>
+    /// <param name="values">The materialized comparison operands.</param>
+    /// <param name="descriptor">The source condition leaf descriptor.</param>
+    /// <param name="transform">The native numeric transform to apply before comparison.</param>
+    /// <returns>An identity criterion leaf for transformed numeric execution.</returns>
+    private static IIdentityCriterion MaterializeNumericTransformLeaf(
+        IIndex index,
+        object?[] values,
+        LibraDexConditionLeafDescriptor descriptor,
+        LibraDexNumericTransformDescriptor transform)
+    {
+        if (descriptor.ValueKind != LibraDexConditionValueKind.Numeric ||
+            (index.KeyType != typeof(decimal) && index.KeyType != typeof(float) && index.KeyType != typeof(double)))
+        {
+            throw new NotSupportedException(
+                $"Numeric transforms require a Decimal, Single, or Double scalar index; received {index.KeyType.FullName}.");
+        }
+
+        if (transform.Kind == LibraDexNumericTransformKind.Round &&
+            !Enum.IsDefined(transform.MidpointRounding))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(transform),
+                transform.MidpointRounding,
+                "Round requires a defined MidpointRounding value.");
+        }
+
+        switch (descriptor.Operator)
+        {
+            case LibraDexConditionOperatorKind.EqualTo:
+            case LibraDexConditionOperatorKind.NotEqualTo:
+            case LibraDexConditionOperatorKind.GreaterThan:
+            case LibraDexConditionOperatorKind.GreaterOrEqual:
+            case LibraDexConditionOperatorKind.LessThan:
+            case LibraDexConditionOperatorKind.LessOrEqual:
+                _ = ValidateConditionLeafValue(index, LibraDexCriteriaKind.Find, RequireValue(values, 0, descriptor));
+                break;
+            case LibraDexConditionOperatorKind.Between:
+            case LibraDexConditionOperatorKind.NotBetween:
+                _ = ValidateConditionLeafValue(index, LibraDexCriteriaKind.Find, RequireValue(values, 0, descriptor));
+                _ = ValidateConditionLeafValue(index, LibraDexCriteriaKind.Find, RequireValue(values, 1, descriptor));
+                break;
+            case LibraDexConditionOperatorKind.InSet:
+            case LibraDexConditionOperatorKind.NotInSet:
+                ValidateNumericTransformMembership(index, RequireValue(values, 0, descriptor));
+                break;
+            default:
+                throw new NotSupportedException(
+                    $"Numeric transform {transform.Kind} cannot be combined with condition operator {descriptor.Operator}.");
+        }
+
+        return CreateConditionLeaf(
+            index,
+            LibraDexCriteriaKind.NumericTransform,
+            new LibraDexNumericTransformPredicate(index.KeyType, transform, descriptor.Operator, values));
+    }
+
+    /// <summary>
+    /// Validates every transformed numeric membership value against the resolved key type while preserving the original enumerable for execution.<br/>
+    /// </summary>
+    /// <param name="index">The resolved numeric scalar index.</param>
+    /// <param name="source">The membership enumerable supplied by the condition.</param>
+    private static void ValidateNumericTransformMembership(IIndex index, object source)
+    {
+        if (source is string || source is not IEnumerable enumerable)
+        {
+            throw new InvalidOperationException("Numeric transform membership requires an enumerable operand.");
+        }
+
+        foreach (object? item in enumerable)
+        {
+            _ = ValidateConditionLeafValue(
+                index,
+                LibraDexCriteriaKind.Find,
+                item ?? throw new InvalidOperationException("Numeric transform membership does not allow null keys."));
+        }
     }
 
     /// <summary>
@@ -854,6 +1283,7 @@ internal sealed class LibraDexConditionNode
             LibraDexCriteriaKind.BinaryTypedSlice => LibraDexExecutionKind.Scan,
             LibraDexCriteriaKind.StringPattern => LibraDexExecutionKind.Scan,
             LibraDexCriteriaKind.Bitmask => LibraDexExecutionKind.Scan,
+            LibraDexCriteriaKind.NumericTransform => LibraDexExecutionKind.Scan,
             LibraDexCriteriaKind.CompositeMatch => LibraDexExecutionKind.FastPath,
             _ => LibraDexExecutionKind.FastPath
         };
@@ -916,6 +1346,13 @@ internal sealed class LibraDexConditionNode
             return value is LibraDexBitmaskPredicate
                 ? value
                 : throw new ArgumentException("Bitmask conditions require a compiled bitmask predicate.");
+        }
+
+        if (criteriaKind == LibraDexCriteriaKind.NumericTransform)
+        {
+            return value is LibraDexNumericTransformPredicate
+                ? value
+                : throw new ArgumentException("Numeric transform conditions require a compiled numeric transform predicate.");
         }
 
         if (criteriaKind == LibraDexCriteriaKind.ScalarNull)
@@ -1082,6 +1519,9 @@ internal sealed class LibraDexConditionNode
             LibraDexConditionOperatorKind.StartsWith => LibraDexStringPatternMode.StartsWith,
             LibraDexConditionOperatorKind.EndsWith => LibraDexStringPatternMode.EndsWith,
             LibraDexConditionOperatorKind.Contains => LibraDexStringPatternMode.Contains,
+            LibraDexConditionOperatorKind.NotStartsWith => LibraDexStringPatternMode.NotStartsWith,
+            LibraDexConditionOperatorKind.NotEndsWith => LibraDexStringPatternMode.NotEndsWith,
+            LibraDexConditionOperatorKind.NotContains => LibraDexStringPatternMode.NotContains,
             LibraDexConditionOperatorKind.MatchesPattern => LibraDexStringPatternMode.MatchesPattern,
             LibraDexConditionOperatorKind.NotMatchesPattern => LibraDexStringPatternMode.NotMatchesPattern,
             LibraDexConditionOperatorKind.RegexMatches => LibraDexStringPatternMode.RegexMatches,
@@ -1100,8 +1540,8 @@ internal sealed class LibraDexConditionNode
                 index,
                 LibraDexCriteriaKind.StringPattern,
                 pattern is Regex regex
-                    ? LibraDexStringPatternPredicate.CreateRegex(mode, regex, policy)
-                    : LibraDexStringPatternPredicate.CreateRegex(mode, (string)pattern, policy));
+                    ? LibraDexStringPatternPredicate.CreateRegex(mode, regex, policy, descriptor.TextNormalization)
+                    : LibraDexStringPatternPredicate.CreateRegex(mode, (string)pattern, policy, descriptor.TextNormalization));
         }
 
         if (descriptor.Operator is LibraDexConditionOperatorKind.MatchesWith or LibraDexConditionOperatorKind.NotMatchesWith)
@@ -1151,7 +1591,11 @@ internal sealed class LibraDexConditionNode
         return CreateConditionLeaf(
             index,
             LibraDexCriteriaKind.StringPattern,
-                LibraDexStringPatternPredicate.Create(mode, RequireNonNullString(values, 0, descriptor), ResolveStringComparisonPolicy(descriptor, index)));
+            LibraDexStringPatternPredicate.Create(
+                mode,
+                RequireNonNullString(values, 0, descriptor),
+                ResolveStringComparisonPolicy(descriptor, index),
+                descriptor.TextNormalization));
     }
 
     /// <summary>
@@ -1206,7 +1650,10 @@ internal sealed class LibraDexConditionNode
 
     private static bool RequiresManagedStringComparison(LibraDexConditionLeafDescriptor descriptor, IIndex index)
     {
-        if (descriptor.IgnoreCase || !string.IsNullOrEmpty(descriptor.Culture) || descriptor.StringComparisonPolicy is not null)
+        if (descriptor.TextNormalization != LibraDexTextNormalization.None ||
+            descriptor.IgnoreCase ||
+            !string.IsNullOrEmpty(descriptor.Culture) ||
+            descriptor.StringComparisonPolicy is not null)
         {
             return true;
         }
@@ -1250,11 +1697,16 @@ internal sealed class LibraDexConditionNode
             ? CreateConditionLeaf(
                 index,
                 LibraDexCriteriaKind.StringPattern,
-                LibraDexStringPatternPredicate.Create(mode, lower, RequireNonNullString(values, 1, descriptor), ResolveStringComparisonPolicy(descriptor, index)))
+                LibraDexStringPatternPredicate.Create(
+                    mode,
+                    lower,
+                    RequireNonNullString(values, 1, descriptor),
+                    ResolveStringComparisonPolicy(descriptor, index),
+                    descriptor.TextNormalization))
             : CreateConditionLeaf(
                 index,
                 LibraDexCriteriaKind.StringPattern,
-                LibraDexStringPatternPredicate.Create(mode, lower, ResolveStringComparisonPolicy(descriptor, index)));
+                LibraDexStringPatternPredicate.Create(mode, lower, ResolveStringComparisonPolicy(descriptor, index), descriptor.TextNormalization));
     }
 
     /// <summary>
@@ -1284,7 +1736,11 @@ internal sealed class LibraDexConditionNode
         return CreateConditionLeaf(
             index,
             LibraDexCriteriaKind.StringPattern,
-            LibraDexStringPatternPredicate.CreateSet(mode, RequireNonNullStringEnumerable(values, 0, descriptor), ResolveStringComparisonPolicy(descriptor, index)));
+            LibraDexStringPatternPredicate.CreateSet(
+                mode,
+                RequireNonNullStringEnumerable(values, 0, descriptor),
+                ResolveStringComparisonPolicy(descriptor, index),
+                descriptor.TextNormalization));
     }
 
     /// <summary>
@@ -1368,12 +1824,34 @@ internal sealed class LibraDexConditionNode
             LibraDexConditionOperatorKind.BinaryTypedSliceBitAndNotEqualTo
             ? RequireValue(values, 4, descriptor)
             : null;
-        Encoding? encoding = valueKind == LibraDexBinarySliceValueKind.CustomEncodingString
-            ? RequireValue(values, descriptor.Operator is LibraDexConditionOperatorKind.BinaryTypedSliceBetween or
-                LibraDexConditionOperatorKind.BinaryTypedSliceBitAndEqualTo or
-                LibraDexConditionOperatorKind.BinaryTypedSliceBitAndNotEqualTo ? 5 : 4, descriptor) as Encoding
-                ?? throw new InvalidOperationException($"Condition leaf '{descriptor.IndexName}' operator '{descriptor.Operator}' requires an Encoding operand for custom encoded binary string slices.")
+        int trailingIndex = upperValue is null ? 4 : 5;
+        Coercion.Numeric numericCoercion = trailingIndex < values.Length &&
+            values[trailingIndex] is Coercion.Numeric selectedNumericCoercion
+                ? selectedNumericCoercion
+                : Coercion.Numeric.DotNet;
+        Coercion.Text textCoercion = trailingIndex < values.Length &&
+            values[trailingIndex] is Coercion.Text selectedTextCoercion
+                ? selectedTextCoercion
+                : Coercion.Text.Strict;
+        object? encodingOperand = valueKind == LibraDexBinarySliceValueKind.CustomEncodingString
+            ? RequireValue(
+                values,
+                descriptor.Operator is LibraDexConditionOperatorKind.BinaryTypedSliceBetween or
+                    LibraDexConditionOperatorKind.BinaryTypedSliceBitAndEqualTo or
+                    LibraDexConditionOperatorKind.BinaryTypedSliceBitAndNotEqualTo
+                        ? 5
+                        : 4,
+                descriptor)
             : null;
+        Encoding? encoding = encodingOperand as Encoding;
+        LibraDexTextEncoding? stableEncoding = encodingOperand as LibraDexTextEncoding;
+        if (valueKind == LibraDexBinarySliceValueKind.CustomEncodingString &&
+            encoding is null &&
+            stableEncoding is null)
+        {
+            throw new InvalidOperationException(
+                $"Condition leaf '{descriptor.IndexName}' operator '{descriptor.Operator}' requires an Encoding or LibraDexTextEncoding operand for custom encoded binary string slices.");
+        }
         LibraDexBinarySliceComparisonKind comparisonKind = descriptor.Operator switch
         {
             LibraDexConditionOperatorKind.BinaryTypedSliceEqualTo => LibraDexBinarySliceComparisonKind.EqualTo,
@@ -1391,7 +1869,17 @@ internal sealed class LibraDexConditionNode
         return CreateConditionLeaf(
             index,
             LibraDexCriteriaKind.BinaryTypedSlice,
-            LibraDexBinaryTypedSlicePredicate.Create(valueKind, comparisonKind, offset, length, value, upperValue, encoding));
+            LibraDexBinaryTypedSlicePredicate.Create(
+                valueKind,
+                comparisonKind,
+                offset,
+                length,
+                value,
+                upperValue,
+                encoding,
+                numericCoercion,
+                textCoercion,
+                stableEncoding));
     }
 
     /// <summary>
@@ -2330,6 +2818,7 @@ internal sealed class LibraDexConditionNode
             LibraDexIndexProjectionKind.Exact => MaterializeExactProjectionLeaf(group, projectionIndex, descriptor, values),
             LibraDexIndexProjectionKind.SortKey => MaterializeSortKeyProjectionLeaf(projectionIndex, descriptor, values),
             LibraDexIndexProjectionKind.FoldedText => MaterializeFoldedTextProjectionLeaf(projectionIndex, descriptor, values),
+            LibraDexIndexProjectionKind.NormalizedText => MaterializeNormalizedTextProjectionLeaf(projectionIndex, descriptor, values),
             _ => throw new NotSupportedException($"Projection bridge for condition operator {descriptor.Operator} with projection {classification.ProjectionKind} is not connected yet.")
         };
     }
@@ -2505,38 +2994,100 @@ internal sealed class LibraDexConditionNode
             throw new NotSupportedException("Folded-text projection conditions currently require a string projection index so prefix bounds can stay ordered.");
         }
 
+        LibraDexTextNormalization normalization = projectionIndex is ILibraDexTextProjectionNormalizationProvider provider
+            ? provider.TextNormalization
+            : LibraDexTextNormalization.None;
         return descriptor.Operator switch
         {
-            LibraDexConditionOperatorKind.EqualTo => CreateConditionLeaf(projectionIndex, LibraDexCriteriaKind.Find, CreateFoldedTextProjectionValue(RequireNonNullString(values, 0, descriptor), descriptor)),
-            LibraDexConditionOperatorKind.NotEqualTo => CreateOrderedPointExclusionLeaf(projectionIndex, CreateFoldedTextProjectionValue(RequireNonNullString(values, 0, descriptor), descriptor)),
+            LibraDexConditionOperatorKind.EqualTo => CreateConditionLeaf(projectionIndex, LibraDexCriteriaKind.Find, CreateFoldedTextProjectionValue(RequireNonNullString(values, 0, descriptor), descriptor, normalization)),
+            LibraDexConditionOperatorKind.NotEqualTo => CreateOrderedPointExclusionLeaf(projectionIndex, CreateFoldedTextProjectionValue(RequireNonNullString(values, 0, descriptor), descriptor, normalization)),
             LibraDexConditionOperatorKind.StartsWith => CreateConditionLeaf(
                 projectionIndex,
                 LibraDexCriteriaKind.Between,
-                CreateFoldedTextProjectionValue(RequireNonNullString(values, 0, descriptor), descriptor),
-                CreateFoldedTextPrefixUpperBound(RequireNonNullString(values, 0, descriptor), descriptor)),
+                CreateFoldedTextProjectionValue(RequireNonNullString(values, 0, descriptor), descriptor, normalization),
+                CreateFoldedTextPrefixUpperBound(RequireNonNullString(values, 0, descriptor), descriptor, normalization)),
             LibraDexConditionOperatorKind.EndsWith => CreateConditionLeaf(
                 projectionIndex,
                 LibraDexCriteriaKind.Between,
-                CreateReversedFoldedTextProjectionValue(RequireNonNullString(values, 0, descriptor), descriptor),
-                CreateReversedFoldedTextPrefixUpperBound(RequireNonNullString(values, 0, descriptor), descriptor)),
+                CreateReversedFoldedTextProjectionValue(RequireNonNullString(values, 0, descriptor), descriptor, normalization),
+                CreateReversedFoldedTextPrefixUpperBound(RequireNonNullString(values, 0, descriptor), descriptor, normalization)),
             LibraDexConditionOperatorKind.InSet => CreateProjectionMembershipLeaf(
                 projectionIndex,
-                (object)RequireNonNullStringEnumerable(values, 0, descriptor).Select(value => CreateFoldedTextProjectionValue(value, descriptor)).ToArray()),
+                (object)RequireNonNullStringEnumerable(values, 0, descriptor).Select(value => CreateFoldedTextProjectionValue(value, descriptor, normalization)).ToArray()),
             LibraDexConditionOperatorKind.NotInSet => CreateProjectionMembershipLeaf(
                 projectionIndex,
-                (object)RequireNonNullStringEnumerable(values, 0, descriptor).Select(value => CreateFoldedTextProjectionValue(value, descriptor)).ToArray()).Not(),
+                (object)RequireNonNullStringEnumerable(values, 0, descriptor).Select(value => CreateFoldedTextProjectionValue(value, descriptor, normalization)).ToArray()).Not(),
             _ => throw new NotSupportedException($"Folded-text projection bridge for condition operator {descriptor.Operator} is not connected yet.")
         };
     }
 
     /// <summary>
-    /// Creates one sort-key projection operand using Abraxas-compatible culture selection and ignore-case comparison options.<br/>
+    /// Materializes a case-preserving canonical-text condition through a maintained Form-C projection.<br/>
+    /// Equality and membership become ordinary point operations; prefix and suffix operations become bounded extents over forward or reversed normalized keys.<br/>
+    /// </summary>
+    /// <param name="projectionIndex">The maintained normalized-text projection selected by the caller.<br/></param>
+    /// <param name="descriptor">The source string condition descriptor.<br/></param>
+    /// <param name="values">The original materialized string operands.<br/></param>
+    /// <returns>An identity criterion over canonical Form-C projection keys.<br/></returns>
+    private static IIdentityCriterion MaterializeNormalizedTextProjectionLeaf(
+        IIndex projectionIndex,
+        LibraDexConditionLeafDescriptor descriptor,
+        object?[] values)
+    {
+        if (projectionIndex.KeyType != typeof(string))
+        {
+            throw new NotSupportedException("Normalized-text projection conditions require a string projection index.");
+        }
+
+        return descriptor.Operator switch
+        {
+            LibraDexConditionOperatorKind.EqualTo => CreateConditionLeaf(projectionIndex, LibraDexCriteriaKind.Find, NormalizeCanonicalText(RequireNonNullString(values, 0, descriptor))),
+            LibraDexConditionOperatorKind.NotEqualTo => CreateOrderedPointExclusionLeaf(projectionIndex, NormalizeCanonicalText(RequireNonNullString(values, 0, descriptor))),
+            LibraDexConditionOperatorKind.GreaterThan => CreateConditionLeaf(projectionIndex, LibraDexCriteriaKind.After, NormalizeCanonicalText(RequireNonNullString(values, 0, descriptor))),
+            LibraDexConditionOperatorKind.GreaterOrEqual => CreateConditionLeaf(projectionIndex, LibraDexCriteriaKind.AtOrAfter, NormalizeCanonicalText(RequireNonNullString(values, 0, descriptor))),
+            LibraDexConditionOperatorKind.LessThan => CreateConditionLeaf(projectionIndex, LibraDexCriteriaKind.Before, NormalizeCanonicalText(RequireNonNullString(values, 0, descriptor))),
+            LibraDexConditionOperatorKind.LessOrEqual => CreateConditionLeaf(projectionIndex, LibraDexCriteriaKind.AtOrBefore, NormalizeCanonicalText(RequireNonNullString(values, 0, descriptor))),
+            LibraDexConditionOperatorKind.Between => CreateConditionLeaf(
+                projectionIndex,
+                LibraDexCriteriaKind.Between,
+                NormalizeCanonicalText(RequireNonNullString(values, 0, descriptor)),
+                NormalizeCanonicalText(RequireNonNullString(values, 1, descriptor))),
+            LibraDexConditionOperatorKind.NotBetween => CreateOrderedRangeExclusionLeaf(
+                projectionIndex,
+                NormalizeCanonicalText(RequireNonNullString(values, 0, descriptor)),
+                NormalizeCanonicalText(RequireNonNullString(values, 1, descriptor))),
+            LibraDexConditionOperatorKind.StartsWith => CreateConditionLeaf(
+                projectionIndex,
+                LibraDexCriteriaKind.Between,
+                NormalizeCanonicalText(RequireNonNullString(values, 0, descriptor)),
+                NormalizeCanonicalText(RequireNonNullString(values, 0, descriptor)) + '\uffff'),
+            LibraDexConditionOperatorKind.EndsWith => CreateConditionLeaf(
+                projectionIndex,
+                LibraDexCriteriaKind.Between,
+                CreateReversedExactTextProjectionValue(NormalizeCanonicalText(RequireNonNullString(values, 0, descriptor))),
+                CreateReversedExactTextProjectionValue(NormalizeCanonicalText(RequireNonNullString(values, 0, descriptor))) + '\uffff'),
+            LibraDexConditionOperatorKind.InSet => CreateProjectionMembershipLeaf(
+                projectionIndex,
+                (object)RequireNonNullStringEnumerable(values, 0, descriptor).Select(NormalizeCanonicalText).ToArray()),
+            LibraDexConditionOperatorKind.NotInSet => CreateProjectionMembershipLeaf(
+                projectionIndex,
+                (object)RequireNonNullStringEnumerable(values, 0, descriptor).Select(NormalizeCanonicalText).ToArray()).Not(),
+            _ => throw new NotSupportedException($"Normalized-text projection bridge for condition operator {descriptor.Operator} is not connected yet.")
+        };
+    }
+
+    /// <summary>
+    /// Creates one sort-key projection operand using the descriptor's exact culture and comparison-options profile.<br/>
     /// </summary>
     /// <param name="value">The original string value.</param>
     /// <param name="descriptor">The source descriptor carrying the optional culture name.</param>
     /// <returns>The stable sort-key bytes for the supplied string.</returns>
     private static byte[] CreateSortKeyProjectionValue(string value, LibraDexConditionLeafDescriptor descriptor)
-        => ResolveConditionCulture(descriptor).CompareInfo.GetSortKey(value, CompareOptions.IgnoreCase).KeyData;
+    {
+        CompareOptions compareOptions = descriptor.StringComparisonPolicy?.CompareOptions ??
+            (descriptor.IgnoreCase ? CompareOptions.IgnoreCase : CompareOptions.None);
+        return ResolveConditionCulture(descriptor).CompareInfo.GetSortKey(value, compareOptions).KeyData;
+    }
 
     /// <summary>
     /// Creates one folded-text projection operand using Abraxas-compatible invariant-or-named culture lower-casing.<br/>
@@ -2544,8 +3095,19 @@ internal sealed class LibraDexConditionNode
     /// <param name="value">The original string value.</param>
     /// <param name="descriptor">The source descriptor carrying the optional culture name.</param>
     /// <returns>The folded string value.</returns>
-    private static string CreateFoldedTextProjectionValue(string value, LibraDexConditionLeafDescriptor descriptor)
-        => value.ToLower(ResolveConditionCulture(descriptor));
+    private static string CreateFoldedTextProjectionValue(
+        string value,
+        LibraDexConditionLeafDescriptor descriptor,
+        LibraDexTextNormalization normalization)
+    {
+        string source = normalization == LibraDexTextNormalization.FormC
+            ? NormalizeCanonicalText(value)
+            : value;
+        string folded = source.ToLower(ResolveConditionCulture(descriptor));
+        return normalization == LibraDexTextNormalization.FormC
+            ? NormalizeCanonicalText(folded)
+            : folded;
+    }
 
     /// <summary>
     /// Creates the exclusive-like upper sentinel used to represent a folded-text prefix as an inclusive LibraDex range leaf.<br/>
@@ -2554,8 +3116,8 @@ internal sealed class LibraDexConditionNode
     /// <param name="value">The original prefix value.</param>
     /// <param name="descriptor">The source descriptor carrying the optional culture name.</param>
     /// <returns>The folded prefix plus the high sentinel character.</returns>
-    private static string CreateFoldedTextPrefixUpperBound(string value, LibraDexConditionLeafDescriptor descriptor)
-        => CreateFoldedTextProjectionValue(value, descriptor) + '\uffff';
+    private static string CreateFoldedTextPrefixUpperBound(string value, LibraDexConditionLeafDescriptor descriptor, LibraDexTextNormalization normalization)
+        => CreateFoldedTextProjectionValue(value, descriptor, normalization) + '\uffff';
 
     /// <summary>
     /// Creates one reversed folded-text projection operand for suffix matching.<br/>
@@ -2564,9 +3126,9 @@ internal sealed class LibraDexConditionNode
     /// <param name="value">The original suffix value.</param>
     /// <param name="descriptor">The source descriptor carrying the optional culture name.</param>
     /// <returns>The reversed folded suffix value.</returns>
-    private static string CreateReversedFoldedTextProjectionValue(string value, LibraDexConditionLeafDescriptor descriptor)
+    private static string CreateReversedFoldedTextProjectionValue(string value, LibraDexConditionLeafDescriptor descriptor, LibraDexTextNormalization normalization)
     {
-        string folded = CreateFoldedTextProjectionValue(value, descriptor);
+        string folded = CreateFoldedTextProjectionValue(value, descriptor, normalization);
         return string.Create(folded.Length, folded, static (destination, source) =>
         {
             for (int i = 0; i < source.Length; i++)
@@ -2609,8 +3171,31 @@ internal sealed class LibraDexConditionNode
     /// <param name="value">The original suffix value.</param>
     /// <param name="descriptor">The source descriptor carrying the optional culture name.</param>
     /// <returns>The reversed folded suffix plus the high sentinel character.</returns>
-    private static string CreateReversedFoldedTextPrefixUpperBound(string value, LibraDexConditionLeafDescriptor descriptor)
-        => CreateReversedFoldedTextProjectionValue(value, descriptor) + '\uffff';
+    private static string CreateReversedFoldedTextPrefixUpperBound(string value, LibraDexConditionLeafDescriptor descriptor, LibraDexTextNormalization normalization)
+        => CreateReversedFoldedTextProjectionValue(value, descriptor, normalization) + '\uffff';
+
+    /// <summary>
+    /// Returns case-preserving Unicode canonical composition Form C for one condition operand.<br/>
+    /// ASCII and already-normalized operands reuse the original instance so the common condition-materialization path remains allocation-light.<br/>
+    /// </summary>
+    /// <param name="value">The non-null condition operand.<br/></param>
+    /// <returns>The original value when already canonical, otherwise its Form-C representation.<br/></returns>
+    private static string NormalizeCanonicalText(string value)
+    {
+        bool ascii = true;
+        for (int i = 0; i < value.Length; i++)
+        {
+            if (value[i] > 0x7F)
+            {
+                ascii = false;
+                break;
+            }
+        }
+
+        return ascii || value.IsNormalized(NormalizationForm.FormC)
+            ? value
+            : value.Normalize(NormalizationForm.FormC);
+    }
 
     /// <summary>
     /// Resolves the culture metadata captured by a string condition descriptor.<br/>
@@ -3072,6 +3657,9 @@ internal sealed class LibraDexConditionNode
 
     private Func<IEnumerable<object>> RequireExternalIdentitySource()
         => externalIdentitySource ?? throw new InvalidOperationException("Condition node is not an external identity source.");
+
+    private LibraDexConditionIndexSelector RequireAvailabilityGuard()
+        => availabilityGuard ?? throw new InvalidOperationException("Condition node is not an index-availability guard.");
 
     private LibraDexConditionNode RequireLeft()
         => left ?? throw new InvalidOperationException("Condition node is missing its left child.");

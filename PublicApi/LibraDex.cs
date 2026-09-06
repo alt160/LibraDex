@@ -45,7 +45,14 @@ internal static class Indexes
             _ => throw new ArgumentOutOfRangeException(nameof(backingKind), backingKind, "Unsupported LibraDex backing kind.")
         };
 
-        return CreateGenericIndexInSession<TKey, TIdentity>(session, slotIndex, name, ownsSession: true, keyWidth, identityWidth);
+        return CreateGenericIndexInSession<TKey, TIdentity>(
+            session,
+            backingKind == DataKernelBackingKind.File ? path : null,
+            slotIndex,
+            name,
+            ownsSession: true,
+            keyWidth,
+            identityWidth);
     }
 
     /// <summary>
@@ -90,7 +97,17 @@ internal static class Indexes
             }
 
             LibraDexGenericScalarShape shape = ResolveGenericShape<TKey, TIdentity>(keyWidth, identityWidth);
-            return new LibraDexIndex<TKey, TIdentity>(session, slotIndex, slot.Name, slot.RootRouterOffset, shape, ownsSession: true);
+            Catalog catalog = Catalog.Attach(session, path);
+            return new LibraDexIndex<TKey, TIdentity>(
+                session,
+                slotIndex,
+                slot.Name,
+                slot.RootRouterOffset,
+                shape,
+                ownsSession: false,
+                catalog: catalog,
+                group: "raw-harness",
+                ownsCatalog: true);
         }
         catch
         {
@@ -145,10 +162,27 @@ internal static class Indexes
             if (TryFindSlot(session, slotIndex, out IndexDirectorySlotSnapshot slot))
             {
                 LibraDexGenericScalarShape shape = ResolveGenericShape<TKey, TIdentity>(keyWidth, identityWidth);
-                return new LibraDexIndex<TKey, TIdentity>(session, slotIndex, slot.Name, slot.RootRouterOffset, shape, ownsSession: true);
+                Catalog catalog = Catalog.Attach(session, requiredPath);
+                return new LibraDexIndex<TKey, TIdentity>(
+                    session,
+                    slotIndex,
+                    slot.Name,
+                    slot.RootRouterOffset,
+                    shape,
+                    ownsSession: false,
+                    catalog: catalog,
+                    group: "raw-harness",
+                    ownsCatalog: true);
             }
 
-            return CreateGenericIndexInSession<TKey, TIdentity>(session, slotIndex, name, ownsSession: true, keyWidth, identityWidth);
+            return CreateGenericIndexInSession<TKey, TIdentity>(
+                session,
+                requiredPath,
+                slotIndex,
+                name,
+                ownsSession: true,
+                keyWidth,
+                identityWidth);
         }
         catch
         {
@@ -159,6 +193,7 @@ internal static class Indexes
 
     private static LibraDexIndex<TKey, TIdentity> CreateGenericIndexInSession<TKey, TIdentity>(
         LibraDexFileSession session,
+        string? path,
         int slotIndex,
         string name,
         bool ownsSession,
@@ -174,7 +209,17 @@ internal static class Indexes
 
             LibraDexGenericScalarShape shape = ResolveGenericShape<TKey, TIdentity>(keyWidth, identityWidth);
             (RouterSnapshot root, _) = session.CreateRootRouterIndex(CreateGenericSlot(slotIndex, name));
-            return new LibraDexIndex<TKey, TIdentity>(session, slotIndex, name, root.Offset, shape, ownsSession);
+            Catalog catalog = Catalog.Attach(session, path);
+            return new LibraDexIndex<TKey, TIdentity>(
+                session,
+                slotIndex,
+                name,
+                root.Offset,
+                shape,
+                ownsSession: false,
+                catalog: catalog,
+                group: "raw-harness",
+                ownsCatalog: ownsSession);
         }
         catch
         {

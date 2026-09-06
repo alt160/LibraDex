@@ -39,7 +39,13 @@ public enum LibraDexStringComparisonPolicyKind
     /// Uses a caller-supplied runtime comparer.<br/>
     /// Custom comparer instances are not serialized; persisted metadata should record only that a custom policy was used and, when useful, the comparer type name.<br/>
     /// </summary>
-    Custom = 5
+    Custom = 5,
+
+    /// <summary>
+    /// Folds operands with invariant or named-culture lower casing and then applies ordinal comparison.<br/>
+    /// This preserves maintained folded-text projection semantics when the same condition must scan an exact source-key index.<br/>
+    /// </summary>
+    FoldedOrdinal = 6
 }
 
 /// <summary>
@@ -92,6 +98,19 @@ public sealed class LibraDexStringComparisonPolicy
     public static LibraDexStringComparisonPolicy OrdinalIgnoreCase { get; } = new(LibraDexStringComparisonPolicyKind.OrdinalIgnoreCase, compareOptions: CompareOptions.IgnoreCase, equalityComparer: StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
+    /// Creates the folded-ordinal policy used when a logical folded-text condition falls back to exact source-key scanning.<br/>
+    /// Candidate and operand strings are lower-cased with the selected culture exactly once per comparison input and are then compared ordinally, matching the keys maintained by a folded-text projection.<br/>
+    /// </summary>
+    /// <param name="cultureName">Optional .NET culture name; null or empty selects the invariant culture.<br/></param>
+    /// <returns>A stable folded-ordinal comparison policy.<br/></returns>
+    public static LibraDexStringComparisonPolicy ForFoldedOrdinal(string? cultureName = null)
+        => new(
+            LibraDexStringComparisonPolicyKind.FoldedOrdinal,
+            cultureName,
+            CompareOptions.None,
+            StringComparer.Ordinal);
+
+    /// <summary>
     /// Gets the stable policy kind.<br/>
     /// </summary>
     public LibraDexStringComparisonPolicyKind Kind { get; }
@@ -123,6 +142,7 @@ public sealed class LibraDexStringComparisonPolicy
     /// Gets whether this policy includes case-insensitive comparison options.<br/>
     /// </summary>
     public bool IgnoreCase => (CompareOptions & CompareOptions.IgnoreCase) != 0 ||
+        Kind == LibraDexStringComparisonPolicyKind.FoldedOrdinal ||
         ReferenceEquals(EqualityComparer, StringComparer.OrdinalIgnoreCase) ||
         ReferenceEquals(EqualityComparer, StringComparer.InvariantCultureIgnoreCase) ||
         ReferenceEquals(EqualityComparer, StringComparer.CurrentCultureIgnoreCase);
@@ -189,6 +209,7 @@ public sealed class LibraDexStringComparisonPolicy
             LibraDexStringComparisonPolicyKind.OrdinalIgnoreCase => OrdinalIgnoreCase,
             LibraDexStringComparisonPolicyKind.Culture => ForCulture(string.IsNullOrEmpty(cultureName) ? CultureInfo.InvariantCulture.Name : cultureName, compareOptions),
             LibraDexStringComparisonPolicyKind.Custom => null,
+            LibraDexStringComparisonPolicyKind.FoldedOrdinal => ForFoldedOrdinal(cultureName),
             _ => null
         };
     }
@@ -202,6 +223,20 @@ public sealed class LibraDexStringComparisonPolicy
         return string.IsNullOrEmpty(CultureName)
             ? CultureInfo.InvariantCulture
             : CultureInfo.GetCultureInfo(CultureName);
+    }
+
+    /// <summary>
+    /// Prepares one condition operand or exact-index candidate for this policy's residual comparison contract.<br/>
+    /// Ordinary policies reuse the original string; folded-ordinal comparison lower-cases with the configured culture so exact-key scans reproduce maintained folded-text projection semantics.<br/>
+    /// </summary>
+    /// <param name="value">The non-null string to prepare.<br/></param>
+    /// <returns>The original string for ordinary policies, or its culture-folded representation for folded-ordinal comparison.<br/></returns>
+    internal string PrepareForComparison(string value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        return Kind == LibraDexStringComparisonPolicyKind.FoldedOrdinal
+            ? value.ToLower(ResolveCulture())
+            : value;
     }
 
     /// <summary>
@@ -222,6 +257,7 @@ public sealed class LibraDexStringComparisonPolicy
             LibraDexStringComparisonPolicyKind.InvariantIgnoreCase => StringComparer.InvariantCultureIgnoreCase,
             LibraDexStringComparisonPolicyKind.Ordinal => StringComparer.Ordinal,
             LibraDexStringComparisonPolicyKind.OrdinalIgnoreCase => StringComparer.OrdinalIgnoreCase,
+            LibraDexStringComparisonPolicyKind.FoldedOrdinal => StringComparer.Ordinal,
             _ => StringComparer.InvariantCulture
         };
     }

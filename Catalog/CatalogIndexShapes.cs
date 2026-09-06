@@ -106,7 +106,18 @@ public enum LibraDexIndexProjectionKind
     /// <summary>
     /// Stores fixed-width sortable BigInteger bytes with variable-length raw identity bytes.<br/>
     /// </summary>
-    BigIntFixedVarIdentity = 8
+    BigIntFixedVarIdentity = 8,
+
+    /// <summary>
+    /// Stores exact variable-length raw blob keys with an explicit logical payload-byte cap.<br/>
+    /// This discriminator keeps metadata-driven reopen from confusing bounded variable blobs with fixed 8-, 16-, or 32-byte blob keys.<br/>
+    /// </summary>
+    VariableBlobExact = 9,
+
+    /// <summary>
+    /// Stores canonically equivalent Unicode text in case-preserving Form-C representation.<br/>
+    /// </summary>
+    NormalizedText = 10
 }
 
 /// <summary>
@@ -132,6 +143,7 @@ public readonly record struct LibraDexIndexProjectionSpec(
 /// <param name="GuidKeys">GUID projection flags for GUID parts.</param>
 /// <param name="DateKeys">Date projection flags for date parts.</param>
 /// <param name="DateTimeKeyEncoding">The DateTime-like key encoding contract for date parts.</param>
+/// <param name="SortOrder">The physical comparison direction for this composite part.</param>
 public readonly record struct LibraDexCompositeKeyPartSpec(
     string Name,
     Type KeyType,
@@ -139,7 +151,8 @@ public readonly record struct LibraDexCompositeKeyPartSpec(
     StringKeys StringKeys,
     GuidKeys GuidKeys,
     DateKeys DateKeys,
-    DateTimeKeyEncoding DateTimeKeyEncoding = DateTimeKeyEncoding.CalendarSdt);
+    DateTimeKeyEncoding DateTimeKeyEncoding = DateTimeKeyEncoding.CalendarSdt,
+    LibraDexIndexSortOrder SortOrder = LibraDexIndexSortOrder.Ascending);
 
 /// <summary>
 /// Describes one runtime value supplied for a composite key.<br/>
@@ -438,24 +451,29 @@ internal static class LibraDexCompositeKeyValueSemantics
     {
         int leftRank = GetRouteRank(part, left);
         int rightRank = GetRouteRank(part, right);
+        int comparison;
         if (leftRank != rightRank)
         {
-            return leftRank.CompareTo(rightRank);
+            comparison = leftRank.CompareTo(rightRank);
         }
-
-        if (left is string leftText && right is string rightText)
+        else if (left is string leftText && right is string rightText)
         {
-            return string.CompareOrdinal(leftText, rightText);
+            comparison = string.CompareOrdinal(leftText, rightText);
         }
-
-        if (left is byte[] leftBytes && right is byte[] rightBytes)
+        else if (left is byte[] leftBytes && right is byte[] rightBytes)
         {
-            return leftBytes.AsSpan().SequenceCompareTo(rightBytes);
+            comparison = leftBytes.AsSpan().SequenceCompareTo(rightBytes);
+        }
+        else
+        {
+            comparison = left is IComparable comparable
+                ? comparable.CompareTo(right)
+                : string.CompareOrdinal(left.ToString(), right.ToString());
         }
 
-        return left is IComparable comparable
-            ? comparable.CompareTo(right)
-            : string.CompareOrdinal(left.ToString(), right.ToString());
+        return part.SortOrder == LibraDexIndexSortOrder.Descending
+            ? comparison > 0 ? -1 : comparison < 0 ? 1 : 0
+            : comparison;
     }
 
     /// <summary>
@@ -684,6 +702,39 @@ public static class C
     public static LibraDexCompositeKeyPartSpec Int64(string name)
     {
         return LibraDexCompositeKeyPart.Scalar<long>(name);
+    }
+
+    /// <summary>
+    /// Creates an exact Decimal scalar composite-key part descriptor.<br/>
+    /// Decimal parts use the same canonical ordered scalar-16 representation as standalone Decimal indexes.<br/>
+    /// </summary>
+    /// <param name="name">The logical part name.<br/></param>
+    /// <returns>A Decimal composite-key part descriptor.<br/></returns>
+    public static LibraDexCompositeKeyPartSpec Decimal(string name)
+    {
+        return LibraDexCompositeKeyPart.Scalar<decimal>(name);
+    }
+
+    /// <summary>
+    /// Creates a native Single scalar composite-key part descriptor.<br/>
+    /// Single parts use the canonical ordered scalar-8 representation, including one NaN key and one zero key.<br/>
+    /// </summary>
+    /// <param name="name">The logical part name.<br/></param>
+    /// <returns>A Single composite-key part descriptor.<br/></returns>
+    public static LibraDexCompositeKeyPartSpec Single(string name)
+    {
+        return LibraDexCompositeKeyPart.Scalar<float>(name);
+    }
+
+    /// <summary>
+    /// Creates a native Double scalar composite-key part descriptor.<br/>
+    /// Double parts use the canonical ordered scalar-8 representation, including one NaN key and one zero key.<br/>
+    /// </summary>
+    /// <param name="name">The logical part name.<br/></param>
+    /// <returns>A Double composite-key part descriptor.<br/></returns>
+    public static LibraDexCompositeKeyPartSpec Double(string name)
+    {
+        return LibraDexCompositeKeyPart.Scalar<double>(name);
     }
 
     /// <summary>
@@ -974,16 +1025,19 @@ public sealed class CatalogNamedIndexShapeBuilder
         ValidateStringKeys(stringKeys);
         kinds.Add(LibraDexIndexProjectionKind.Exact);
 
-        if (stringKeys == StringKeys.ExactAndFolded ||
-            stringKeys == StringKeys.ExactFoldedAndSortKey)
+        if ((stringKeys & StringKeys.Folded) != 0)
         {
             kinds.Add(LibraDexIndexProjectionKind.FoldedText);
         }
 
-        if (stringKeys == StringKeys.ExactAndSortKey ||
-            stringKeys == StringKeys.ExactFoldedAndSortKey)
+        if ((stringKeys & StringKeys.SortKey) != 0)
         {
             kinds.Add(LibraDexIndexProjectionKind.SortKey);
+        }
+
+        if ((stringKeys & StringKeys.Normalized) != 0)
+        {
+            kinds.Add(LibraDexIndexProjectionKind.NormalizedText);
         }
 
         return Create(
@@ -1003,10 +1057,8 @@ public sealed class CatalogNamedIndexShapeBuilder
 
     private static void ValidateStringKeys(StringKeys stringKeys)
     {
-        if (stringKeys != StringKeys.Exact &&
-            stringKeys != StringKeys.ExactAndFolded &&
-            stringKeys != StringKeys.ExactAndSortKey &&
-            stringKeys != StringKeys.ExactFoldedAndSortKey)
+        const StringKeys supported = StringKeys.Exact | StringKeys.Folded | StringKeys.SortKey | StringKeys.Normalized;
+        if ((stringKeys & StringKeys.Exact) == 0 || (stringKeys & ~supported) != 0)
         {
             throw new ArgumentOutOfRangeException(nameof(stringKeys), stringKeys, "The string-key profile is not supported by the string shape descriptor.");
         }

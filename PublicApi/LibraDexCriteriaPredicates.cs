@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -26,7 +27,10 @@ internal enum LibraDexStringPatternMode
     NotMatchesInSet = 17,
     RegexMatches = 18,
     NotRegexMatches = 19,
-    NotMatchesPattern = 20
+    NotMatchesPattern = 20,
+    NotStartsWith = 21,
+    NotEndsWith = 22,
+    NotContains = 23
 }
 
 internal enum LibraDexBitmaskComparisonMode
@@ -149,8 +153,10 @@ internal sealed class LibraDexStringPatternPredicate
     private readonly IReadOnlyCollection<string>? setValues;
     private readonly ISet<string>? membershipSet;
     private readonly LibraDexStringComparisonPolicy policy;
+    private readonly LibraDexTextNormalization textNormalization;
     private readonly int? matchGroupNumber;
     private readonly Regex? regex;
+    private readonly LibraDexWildcardPattern? wildcard;
 
     private LibraDexStringPatternPredicate(
         LibraDexStringPatternMode mode,
@@ -160,7 +166,9 @@ internal sealed class LibraDexStringPatternPredicate
         ISet<string>? membershipSet,
         LibraDexStringComparisonPolicy policy,
         int? matchGroupNumber,
-        Regex? regex)
+        Regex? regex,
+        LibraDexTextNormalization textNormalization = LibraDexTextNormalization.None,
+        LibraDexWildcardPattern? wildcard = null)
     {
         this.mode = mode;
         this.value = value;
@@ -168,17 +176,27 @@ internal sealed class LibraDexStringPatternPredicate
         this.setValues = setValues;
         this.membershipSet = membershipSet;
         this.policy = policy ?? throw new ArgumentNullException(nameof(policy));
+        this.textNormalization = textNormalization;
         this.matchGroupNumber = matchGroupNumber;
         this.regex = regex;
+        this.wildcard = wildcard;
     }
 
     internal static LibraDexStringPatternPredicate Create(LibraDexStringPatternMode mode, string value, bool ignoreCase, string? culture)
         => Create(mode, value, LibraDexStringComparisonPolicy.FromLegacy(ignoreCase, culture));
 
-    internal static LibraDexStringPatternPredicate Create(LibraDexStringPatternMode mode, string value, LibraDexStringComparisonPolicy policy)
+    internal static LibraDexStringPatternPredicate Create(
+        LibraDexStringPatternMode mode,
+        string value,
+        LibraDexStringComparisonPolicy policy,
+        LibraDexTextNormalization textNormalization = LibraDexTextNormalization.None)
     {
         ArgumentNullException.ThrowIfNull(value);
-        return new LibraDexStringPatternPredicate(mode, value, null, null, null, policy, matchGroupNumber: null, regex: null);
+        string prepared = PrepareForComparison(value, policy, textNormalization);
+        LibraDexWildcardPattern? wildcard = mode is LibraDexStringPatternMode.MatchesPattern or LibraDexStringPatternMode.NotMatchesPattern
+            ? LibraDexWildcardPattern.Create(prepared, policy)
+            : null;
+        return new LibraDexStringPatternPredicate(mode, prepared, null, null, null, policy, matchGroupNumber: null, regex: null, textNormalization, wildcard);
     }
 
     /// <summary>
@@ -194,11 +212,25 @@ internal sealed class LibraDexStringPatternPredicate
     internal static LibraDexStringPatternPredicate Create(LibraDexStringPatternMode mode, string value, string upperValue, bool ignoreCase, string? culture)
         => Create(mode, value, upperValue, LibraDexStringComparisonPolicy.FromLegacy(ignoreCase, culture));
 
-    internal static LibraDexStringPatternPredicate Create(LibraDexStringPatternMode mode, string value, string upperValue, LibraDexStringComparisonPolicy policy)
+    internal static LibraDexStringPatternPredicate Create(
+        LibraDexStringPatternMode mode,
+        string value,
+        string upperValue,
+        LibraDexStringComparisonPolicy policy,
+        LibraDexTextNormalization textNormalization = LibraDexTextNormalization.None)
     {
         ArgumentNullException.ThrowIfNull(value);
         ArgumentNullException.ThrowIfNull(upperValue);
-        return new LibraDexStringPatternPredicate(mode, value, upperValue, null, null, policy, matchGroupNumber: null, regex: null);
+        return new LibraDexStringPatternPredicate(
+            mode,
+            PrepareForComparison(value, policy, textNormalization),
+            PrepareForComparison(upperValue, policy, textNormalization),
+            null,
+            null,
+            policy,
+            matchGroupNumber: null,
+            regex: null,
+            textNormalization);
     }
 
     /// <summary>
@@ -212,11 +244,15 @@ internal sealed class LibraDexStringPatternPredicate
     internal static LibraDexStringPatternPredicate CreateRegex(
         LibraDexStringPatternMode mode,
         string pattern,
-        LibraDexStringComparisonPolicy policy)
+        LibraDexStringComparisonPolicy policy,
+        LibraDexTextNormalization textNormalization = LibraDexTextNormalization.None)
     {
         ArgumentNullException.ThrowIfNull(pattern);
         ArgumentNullException.ThrowIfNull(policy);
-        return new LibraDexStringPatternPredicate(mode, pattern, null, null, null, policy, matchGroupNumber: null, regex: null);
+        Regex regex = new(
+            pattern,
+            CreateRegexOptions(policy.CompareOptions) | RegexOptions.Compiled);
+        return new LibraDexStringPatternPredicate(mode, pattern, null, null, null, policy, matchGroupNumber: null, regex, textNormalization);
     }
 
     /// <summary>
@@ -230,11 +266,12 @@ internal sealed class LibraDexStringPatternPredicate
     internal static LibraDexStringPatternPredicate CreateRegex(
         LibraDexStringPatternMode mode,
         Regex regex,
-        LibraDexStringComparisonPolicy policy)
+        LibraDexStringComparisonPolicy policy,
+        LibraDexTextNormalization textNormalization = LibraDexTextNormalization.None)
     {
         ArgumentNullException.ThrowIfNull(regex);
         ArgumentNullException.ThrowIfNull(policy);
-        return new LibraDexStringPatternPredicate(mode, regex.ToString(), null, null, null, policy, matchGroupNumber: null, regex);
+        return new LibraDexStringPatternPredicate(mode, regex.ToString(), null, null, null, policy, matchGroupNumber: null, regex, textNormalization);
     }
 
     /// <summary>
@@ -256,8 +293,12 @@ internal sealed class LibraDexStringPatternPredicate
     {
         ArgumentNullException.ThrowIfNull(pattern);
         ArgumentNullException.ThrowIfNull(expectedValue);
+        ArgumentNullException.ThrowIfNull(policy);
         ValidateRegexGroupNumber(groupNumber);
-        return new LibraDexStringPatternPredicate(mode, pattern, expectedValue, null, null, policy, groupNumber, regex: null);
+        Regex regex = new(
+            pattern,
+            CreateRegexOptions(policy.CompareOptions) | RegexOptions.Compiled);
+        return new LibraDexStringPatternPredicate(mode, pattern, expectedValue, null, null, policy, groupNumber, regex);
     }
 
     /// <summary>
@@ -316,7 +357,10 @@ internal sealed class LibraDexStringPatternPredicate
             throw new ArgumentException("Regex capture membership predicates require at least one expected value.", nameof(expectedValues));
         }
 
-        return new LibraDexStringPatternPredicate(mode, pattern, null, prepared, prepared, policy, groupNumber, regex: null);
+        Regex regex = new(
+            pattern,
+            CreateRegexOptions(policy.CompareOptions) | RegexOptions.Compiled);
+        return new LibraDexStringPatternPredicate(mode, pattern, null, prepared, prepared, policy, groupNumber, regex);
     }
 
     /// <summary>
@@ -367,13 +411,19 @@ internal sealed class LibraDexStringPatternPredicate
     internal static LibraDexStringPatternPredicate CreateSet(LibraDexStringPatternMode mode, IReadOnlyList<string> values, bool ignoreCase, string? culture)
         => CreateSet(mode, values, LibraDexStringComparisonPolicy.FromLegacy(ignoreCase, culture));
 
-    internal static LibraDexStringPatternPredicate CreateSet(LibraDexStringPatternMode mode, IEnumerable<string> values, LibraDexStringComparisonPolicy policy)
+    internal static LibraDexStringPatternPredicate CreateSet(
+        LibraDexStringPatternMode mode,
+        IEnumerable<string> values,
+        LibraDexStringComparisonPolicy policy,
+        LibraDexTextNormalization textNormalization = LibraDexTextNormalization.None)
     {
         ArgumentNullException.ThrowIfNull(values);
         ArgumentNullException.ThrowIfNull(policy);
         ISet<string>? membershipSet = null;
         IReadOnlyCollection<string> captured;
-        if (values is HashSet<string> hashSet && policy.IsCompatible(hashSet.Comparer))
+        if (textNormalization == LibraDexTextNormalization.None &&
+            values is HashSet<string> hashSet &&
+            policy.IsCompatible(hashSet.Comparer))
         {
             membershipSet = hashSet;
             captured = hashSet;
@@ -384,7 +434,7 @@ internal sealed class LibraDexStringPatternPredicate
             foreach (string value in values)
             {
                 ArgumentNullException.ThrowIfNull(value);
-                prepared.Add(value);
+                prepared.Add(PrepareForComparison(value, policy, textNormalization));
             }
 
             membershipSet = prepared;
@@ -396,15 +446,43 @@ internal sealed class LibraDexStringPatternPredicate
             throw new ArgumentException("String membership predicates require at least one value.", nameof(values));
         }
 
-        return new LibraDexStringPatternPredicate(mode, captured.First(), null, captured, membershipSet, policy, matchGroupNumber: null, regex: null);
+        return new LibraDexStringPatternPredicate(mode, captured.First(), null, captured, membershipSet, policy, matchGroupNumber: null, regex: null, textNormalization);
     }
 
     internal IReadOnlyList<(string Lower, string Upper)> CreateCandidateRanges()
     {
+        if (textNormalization != LibraDexTextNormalization.None)
+        {
+            return Array.Empty<(string Lower, string Upper)>();
+        }
+
+        // Culture folding is not confined to ASCII upper/lower pairs.  Unicode
+        // characters such as the Kelvin sign can fold onto an ordinal prefix whose
+        // original exact bytes occupy a completely different routed range.  A
+        // folded-ordinal predicate therefore scans the complete exact key space
+        // unless a maintained folded projection is selected before this fallback.
+        if (policy.Kind == LibraDexStringComparisonPolicyKind.FoldedOrdinal)
+        {
+            return Array.Empty<(string Lower, string Upper)>();
+        }
+
+        // An ignore-case Regex can match text whose ordinal UTF-8 prefix differs from the
+        // pattern's literal prefix (for example, Turkish "i" and "İ").  Exact indexes are
+        // ordered by the stored bytes, so narrowing that regex to literal-prefix shelves
+        // would discard valid candidates before the preserved Regex evaluates them.
+        // Scan the complete exact-key space for semantic safety; case-sensitive regexes
+        // can continue using their anchored literal prefix as an ordinal candidate range.
+        if (mode == LibraDexStringPatternMode.RegexMatches &&
+            regex is not null &&
+            (regex.Options & RegexOptions.IgnoreCase) != 0)
+        {
+            return Array.Empty<(string Lower, string Upper)>();
+        }
+
         bool ignoreCase = policy.IgnoreCase;
         string prefix = mode switch
         {
-            LibraDexStringPatternMode.MatchesPattern => GetLeadingLiteralPrefix(value),
+            LibraDexStringPatternMode.MatchesPattern => wildcard?.LeadingLiteral ?? string.Empty,
             LibraDexStringPatternMode.NotMatchesPattern => string.Empty,
             LibraDexStringPatternMode.RegexMatches => GetAnchoredRegexLiteralPrefix(value),
             LibraDexStringPatternMode.NotRegexMatches => string.Empty,
@@ -459,15 +537,25 @@ internal sealed class LibraDexStringPatternPredicate
     internal bool Matches(string candidate)
     {
         ArgumentNullException.ThrowIfNull(candidate);
+        if (TryMatchInvariantAsciiFoldedPattern(candidate, out bool asciiMatch))
+        {
+            return asciiMatch;
+        }
+
+        candidate = PrepareForComparison(candidate, policy, textNormalization);
         CompareInfo compareInfo = policy.ResolveCulture().CompareInfo;
         CompareOptions options = policy.CompareOptions;
+        bool foldedOrdinal = policy.Kind == LibraDexStringComparisonPolicyKind.FoldedOrdinal;
         return mode switch
         {
-            LibraDexStringPatternMode.StartsWith => compareInfo.IsPrefix(candidate, value, options),
-            LibraDexStringPatternMode.EndsWith => compareInfo.IsSuffix(candidate, value, options),
-            LibraDexStringPatternMode.Contains => compareInfo.IndexOf(candidate, value, options) >= 0,
-            LibraDexStringPatternMode.MatchesPattern => MatchesWildcard(candidate, value, compareInfo, options),
-            LibraDexStringPatternMode.NotMatchesPattern => !MatchesWildcard(candidate, value, compareInfo, options),
+            LibraDexStringPatternMode.StartsWith => foldedOrdinal ? candidate.StartsWith(value, StringComparison.Ordinal) : compareInfo.IsPrefix(candidate, value, options),
+            LibraDexStringPatternMode.EndsWith => foldedOrdinal ? candidate.EndsWith(value, StringComparison.Ordinal) : compareInfo.IsSuffix(candidate, value, options),
+            LibraDexStringPatternMode.Contains => foldedOrdinal ? candidate.Contains(value, StringComparison.Ordinal) : compareInfo.IndexOf(candidate, value, options) >= 0,
+            LibraDexStringPatternMode.NotStartsWith => foldedOrdinal ? !candidate.StartsWith(value, StringComparison.Ordinal) : !compareInfo.IsPrefix(candidate, value, options),
+            LibraDexStringPatternMode.NotEndsWith => foldedOrdinal ? !candidate.EndsWith(value, StringComparison.Ordinal) : !compareInfo.IsSuffix(candidate, value, options),
+            LibraDexStringPatternMode.NotContains => foldedOrdinal ? !candidate.Contains(value, StringComparison.Ordinal) : compareInfo.IndexOf(candidate, value, options) < 0,
+            LibraDexStringPatternMode.MatchesPattern => wildcard is not null && (foldedOrdinal ? wildcard.MatchesOrdinal(candidate) : wildcard.Matches(candidate, compareInfo, options)),
+            LibraDexStringPatternMode.NotMatchesPattern => wildcard is null || !(foldedOrdinal ? wildcard.MatchesOrdinal(candidate) : wildcard.Matches(candidate, compareInfo, options)),
             LibraDexStringPatternMode.EqualTo => policy.EqualityComparer.Equals(candidate, value),
             LibraDexStringPatternMode.NotEqualTo => !policy.EqualityComparer.Equals(candidate, value),
             LibraDexStringPatternMode.GreaterThan => Compare(candidate, value, compareInfo, options) > 0,
@@ -491,14 +579,168 @@ internal sealed class LibraDexStringPatternPredicate
     }
 
     /// <summary>
+    /// Attempts to evaluate one UTF-8 index-key payload through the retained compiled regular expression without allocating a managed string per key.<br/>
+    /// The method applies only to direct positive or negated regex predicates with no canonical text normalization; all culture, normalization, capture, wildcard, and non-regex shapes fail closed to the established managed-string path.<br/>
+    /// Small decoded keys use stack storage, larger keys rent one temporary character buffer, and the supplied UTF-8 bytes are never retained after the call.<br/>
+    /// </summary>
+    /// <param name="utf8Candidate">UTF-8 bytes for one logical string candidate, excluding LibraDex's key-state marker.<br/></param>
+    /// <param name="matches">Receives the complete regex result when this method returns <see langword="true"/>.<br/></param>
+    /// <returns><see langword="true"/> when span-native regex evaluation preserved the complete predicate semantics; otherwise <see langword="false"/> so the caller can use managed-string evaluation.<br/></returns>
+    internal bool TryMatchUtf8Regex(ReadOnlySpan<byte> utf8Candidate, out bool matches)
+    {
+        matches = false;
+        if (regex is null ||
+            textNormalization != LibraDexTextNormalization.None ||
+            mode is not (LibraDexStringPatternMode.RegexMatches or LibraDexStringPatternMode.NotRegexMatches))
+        {
+            return false;
+        }
+
+        const int StackCharacterLimit = 512;
+        int characterCount = Encoding.UTF8.GetCharCount(utf8Candidate);
+        char[]? rented = null;
+        Span<char> characters = characterCount <= StackCharacterLimit
+            ? stackalloc char[characterCount]
+            : (rented = ArrayPool<char>.Shared.Rent(characterCount));
+        try
+        {
+            int written = Encoding.UTF8.GetChars(utf8Candidate, characters);
+            bool regexMatch = regex.IsMatch(characters[..written]);
+            matches = mode == LibraDexStringPatternMode.RegexMatches
+                ? regexMatch
+                : !regexMatch;
+            return true;
+        }
+        finally
+        {
+            if (rented is not null)
+                ArrayPool<char>.Shared.Return(rented);
+        }
+    }
+
+    /// <summary>
+    /// Creates the execution-local predicate instance used by one dedicated parallel index worker.<br/>
+    /// Non-regex predicates are immutable and safely reuse this instance; regex predicates clone only the <see cref="Regex"/> runner owner while sharing immutable operands, comparison policy, membership data, and wildcard metadata.<br/>
+    /// This prevents concurrent workers from exhausting one compiled regex's small internal runner cache and allocating replacement runners throughout a large key scan, while preserving the original pattern, options, and timeout exactly.<br/>
+    /// </summary>
+    /// <returns>This immutable predicate when it has no regex, or a semantically equivalent predicate with a worker-owned regex instance.<br/></returns>
+    internal LibraDexStringPatternPredicate CreateParallelWorkerCopy()
+    {
+        if (regex is null)
+            return this;
+
+        Regex workerRegex = new(regex.ToString(), regex.Options, regex.MatchTimeout);
+        return new LibraDexStringPatternPredicate(
+            mode,
+            value,
+            upperValue,
+            setValues,
+            membershipSet,
+            policy,
+            matchGroupNumber,
+            workerRegex,
+            textNormalization,
+            wildcard);
+    }
+
+    /// <summary>
+    /// Attempts one allocation-free folded-ordinal pattern comparison for invariant ASCII operands and candidates.<br/>
+    /// Invariant lower-case-plus-ordinal semantics are identical to ordinal-ignore-case for ASCII, so simple positive and negated pattern operators can avoid allocating a folded candidate string.<br/>
+    /// Non-ASCII text, explicit cultures, canonical normalization, and complex pattern modes return <see langword="false"/> so the established managed preparation path remains authoritative.<br/>
+    /// </summary>
+    /// <param name="candidate">The decoded exact-index key before comparison preparation.<br/></param>
+    /// <param name="matches">Receives the simple-pattern result when the fast path applies.<br/></param>
+    /// <returns><see langword="true"/> when <paramref name="matches"/> contains the final result; otherwise <see langword="false"/>.<br/></returns>
+    private bool TryMatchInvariantAsciiFoldedPattern(string candidate, out bool matches)
+    {
+        matches = false;
+        if (policy.Kind != LibraDexStringComparisonPolicyKind.FoldedOrdinal ||
+            !string.IsNullOrEmpty(policy.CultureName) ||
+            textNormalization != LibraDexTextNormalization.None ||
+            !IsAscii(value) ||
+            !IsAscii(candidate))
+        {
+            return false;
+        }
+
+        switch (mode)
+        {
+            case LibraDexStringPatternMode.StartsWith:
+                matches = candidate.StartsWith(value, StringComparison.OrdinalIgnoreCase);
+                return true;
+            case LibraDexStringPatternMode.EndsWith:
+                matches = candidate.EndsWith(value, StringComparison.OrdinalIgnoreCase);
+                return true;
+            case LibraDexStringPatternMode.Contains:
+                matches = candidate.Contains(value, StringComparison.OrdinalIgnoreCase);
+                return true;
+            case LibraDexStringPatternMode.NotStartsWith:
+                matches = !candidate.StartsWith(value, StringComparison.OrdinalIgnoreCase);
+                return true;
+            case LibraDexStringPatternMode.NotEndsWith:
+                matches = !candidate.EndsWith(value, StringComparison.OrdinalIgnoreCase);
+                return true;
+            case LibraDexStringPatternMode.NotContains:
+                matches = !candidate.Contains(value, StringComparison.OrdinalIgnoreCase);
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    /// <summary>
+    /// Determines whether a prepared operand or exact-index candidate contains only ASCII UTF-16 code units.<br/>
+    /// The check is deliberately local and allocation-free because it runs only while considering the invariant folded-pattern fast path.<br/>
+    /// </summary>
+    /// <param name="source">The string to inspect.<br/></param>
+    /// <returns><see langword="true"/> when the entire string is ASCII; otherwise <see langword="false"/>.<br/></returns>
+    private static bool IsAscii(string source)
+    {
+        for (int index = 0; index < source.Length; index++)
+        {
+            if (source[index] > 0x7f)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Applies the selector-level normalization contract while returning already-normalized strings without allocation.<br/>
+    /// </summary>
+    /// <param name="source">The developer-facing or exact-index string.</param>
+    /// <param name="normalization">The canonical normalization contract.</param>
+    /// <returns>The normalized string, or the original instance when no transformation is required.</returns>
+    private static string Normalize(string source, LibraDexTextNormalization normalization)
+        => normalization == LibraDexTextNormalization.FormC && !source.IsNormalized(NormalizationForm.FormC)
+            ? source.Normalize(NormalizationForm.FormC)
+            : source;
+
+    /// <summary>
+    /// Applies selector-level canonical normalization followed by the selected residual comparison preparation.<br/>
+    /// Folded-ordinal policies lower-case after Form-C normalization, matching the maintained folded projection's transform order while ordinary policies retain the previous allocation-free fast path.<br/>
+    /// </summary>
+    /// <param name="source">The developer-facing operand or decoded exact-index key.<br/></param>
+    /// <param name="policy">The residual string comparison policy.<br/></param>
+    /// <param name="normalization">Optional selector-level canonical normalization.<br/></param>
+    /// <returns>The prepared comparison value.<br/></returns>
+    private static string PrepareForComparison(
+        string source,
+        LibraDexStringComparisonPolicy policy,
+        LibraDexTextNormalization normalization)
+        => policy.PrepareForComparison(Normalize(source, normalization));
+
+    /// <summary>
     /// Attempts to compile this string predicate into an ordinal UTF-8 byte predicate.<br/>
     /// The caller supplies the same operand transform used by the selected physical projection, allowing folded-text scans to compare already-folded key bytes against already-folded criteria bytes without decoding each candidate key.<br/>
     /// Predicates that require regex, wildcard, capture, custom managed comparison, or unnormalized ignore-case exact-index semantics return <see langword="false"/> so the executor can keep the existing managed string fallback.<br/>
     /// </summary>
-    /// <param name="operandTransform">Transforms developer-facing operands into the bytes stored by the selected string projection.</param>
-    /// <param name="allowCaseNormalizedBytes">True when the selected projection already stores keys normalized for the predicate's case policy.</param>
-    /// <param name="matcher">Receives the compiled byte matcher when the predicate can execute over UTF-8 bytes.</param>
-    /// <returns><see langword="true"/> when byte-native residual comparison is safe for this predicate.</returns>
+    /// <param name="operandTransform">Transforms developer-facing operands into the bytes stored by the selected string projection.<br/></param>
+    /// <param name="allowCaseNormalizedBytes">True when the selected projection already stores keys normalized for the predicate's case policy.<br/></param>
+    /// <param name="matcher">Receives the compiled byte matcher when the predicate can execute over UTF-8 bytes.<br/></param>
+    /// <returns><see langword="true"/> when byte-native residual comparison is safe for this predicate.<br/></returns>
     internal bool TryCreateUtf8ByteMatcher(
         Func<string?, string?> operandTransform,
         bool allowCaseNormalizedBytes,
@@ -506,7 +748,11 @@ internal sealed class LibraDexStringPatternPredicate
     {
         ArgumentNullException.ThrowIfNull(operandTransform);
         matcher = null;
-        if (!CanUseUtf8ByteMatcher(allowCaseNormalizedBytes))
+        if (TryCreateLiteralRegexUtf8ByteMatcher(operandTransform, allowCaseNormalizedBytes, out matcher))
+            return true;
+
+        bool requiresInvariantAsciiManagedFallback = CanUseInvariantAsciiExactKeyMatcher(allowCaseNormalizedBytes);
+        if (!CanUseUtf8ByteMatcher(allowCaseNormalizedBytes) && !requiresInvariantAsciiManagedFallback)
         {
             return false;
         }
@@ -524,8 +770,82 @@ internal sealed class LibraDexStringPatternPredicate
             }
         }
 
-        matcher = new LibraDexUtf8StringPatternPredicate(mode, expected, upper, set);
+        matcher = new LibraDexUtf8StringPatternPredicate(
+            mode,
+            expected,
+            upper,
+            set,
+            requiresInvariantAsciiManagedFallback);
         return true;
+    }
+
+    /// <summary>
+    /// Attempts to reduce a semantically plain regular expression to an exact-index UTF-8 contains predicate.<br/>
+    /// A pattern containing no regex metacharacters has the same existence semantics as substring search; case-sensitive literals can compare all UTF-8 keys directly, while culture-invariant ignore-case ASCII literals compare ASCII keys directly and defer Unicode keys to the retained regex.<br/>
+    /// Folded projections, canonical normalization, culture-sensitive ignore-case behavior, ignore-pattern-whitespace, and every metacharacter-bearing pattern fail closed to normal regex evaluation.<br/>
+    /// This optimization changes only candidate evaluation mechanics: empty/null key-state handling and the original regex remain authoritative wherever the byte matcher returns a managed-fallback request.<br/>
+    /// </summary>
+    /// <param name="operandTransform">The exact projection transform applied to the literal once.<br/></param>
+    /// <param name="allowCaseNormalizedBytes">Whether the selected projection stores transformed case-normalized bytes.<br/></param>
+    /// <param name="matcher">Receives the semantically equivalent UTF-8 contains matcher when the reduction is safe.<br/></param>
+    /// <returns><see langword="true"/> only when the regex is a plain literal whose semantics are preserved by the returned matcher.<br/></returns>
+    private bool TryCreateLiteralRegexUtf8ByteMatcher(
+        Func<string?, string?> operandTransform,
+        bool allowCaseNormalizedBytes,
+        out LibraDexUtf8StringPatternPredicate? matcher)
+    {
+        matcher = null;
+        if (allowCaseNormalizedBytes ||
+            regex is null ||
+            textNormalization != LibraDexTextNormalization.None ||
+            mode is not (LibraDexStringPatternMode.RegexMatches or LibraDexStringPatternMode.NotRegexMatches) ||
+            (regex.Options & RegexOptions.IgnorePatternWhitespace) != 0 ||
+            value.IndexOfAny(['.', '$', '^', '{', '[', '(', '|', ')', '*', '+', '?', '\\']) >= 0)
+        {
+            return false;
+        }
+
+        bool ignoreCase = (regex.Options & RegexOptions.IgnoreCase) != 0;
+        if (ignoreCase &&
+            ((regex.Options & RegexOptions.CultureInvariant) == 0 || !IsAscii(value)))
+        {
+            return false;
+        }
+
+        matcher = new LibraDexUtf8StringPatternPredicate(
+            mode == LibraDexStringPatternMode.RegexMatches
+                ? LibraDexStringPatternMode.Contains
+                : LibraDexStringPatternMode.NotContains,
+            EncodeTransformedOperand(operandTransform, value),
+            upperValue: null,
+            setValues: null,
+            requiresInvariantAsciiManagedFallback: ignoreCase);
+        return true;
+    }
+
+    /// <summary>
+    /// Determines whether an exact-key folded-ordinal predicate can compare ASCII key bytes while explicitly deferring Unicode keys to managed semantics.<br/>
+    /// Only invariant, non-normalizing simple pattern operators qualify; explicit cultures and non-ASCII operands retain decoded-string evaluation for every key.<br/>
+    /// </summary>
+    /// <param name="allowCaseNormalizedBytes">Whether the selected physical projection already stores case-normalized bytes.<br/></param>
+    /// <returns><see langword="true"/> when ASCII candidates can be decided byte-natively and other candidates require managed evaluation.<br/></returns>
+    private bool CanUseInvariantAsciiExactKeyMatcher(bool allowCaseNormalizedBytes)
+    {
+        if (allowCaseNormalizedBytes ||
+            textNormalization != LibraDexTextNormalization.None ||
+            policy.Kind != LibraDexStringComparisonPolicyKind.FoldedOrdinal ||
+            !string.IsNullOrEmpty(policy.CultureName) ||
+            !IsAscii(value))
+        {
+            return false;
+        }
+
+        return mode is LibraDexStringPatternMode.StartsWith or
+            LibraDexStringPatternMode.EndsWith or
+            LibraDexStringPatternMode.Contains or
+            LibraDexStringPatternMode.NotStartsWith or
+            LibraDexStringPatternMode.NotEndsWith or
+            LibraDexStringPatternMode.NotContains;
     }
 
     /// <summary>
@@ -536,6 +856,11 @@ internal sealed class LibraDexStringPatternPredicate
     /// <returns><see langword="true"/> when the byte matcher can preserve the intended comparison contract.</returns>
     private bool CanUseUtf8ByteMatcher(bool allowCaseNormalizedBytes)
     {
+        if (textNormalization != LibraDexTextNormalization.None && !allowCaseNormalizedBytes)
+        {
+            return false;
+        }
+
         if (mode is LibraDexStringPatternMode.MatchesPattern or
             LibraDexStringPatternMode.NotMatchesPattern or
             LibraDexStringPatternMode.RegexMatches or
@@ -673,8 +998,10 @@ internal sealed class LibraDexStringPatternPredicate
     /// <param name="compareInfo">The culture-specific comparison engine.</param>
     /// <param name="options">The comparison options selected by the condition.</param>
     /// <returns>The .NET comparison result.</returns>
-    private static int Compare(string candidate, string expected, CompareInfo compareInfo, CompareOptions options)
-        => compareInfo.Compare(candidate, expected, options);
+    private int Compare(string candidate, string expected, CompareInfo compareInfo, CompareOptions options)
+        => policy.Kind == LibraDexStringComparisonPolicyKind.FoldedOrdinal
+            ? string.CompareOrdinal(candidate, expected)
+            : compareInfo.Compare(candidate, expected, options);
 
     /// <summary>
     /// Determines whether one decoded exact-index string key is present in a condition membership set.<br/>
@@ -865,52 +1192,297 @@ internal sealed class LibraDexStringPatternPredicate
     private static bool IsRegexMeta(char value)
         => value is '.' or '$' or '^' or '{' or '[' or '(' or '|' or ')' or '*' or '+' or '?' or '\\';
 
-    private static bool MatchesWildcard(string candidate, string pattern, CompareInfo compareInfo, CompareOptions options)
-        => MatchesWildcardCore(candidate, 0, pattern, 0, compareInfo, options);
+}
 
-    private static bool MatchesWildcardCore(string candidate, int candidateIndex, string pattern, int patternIndex, CompareInfo compareInfo, CompareOptions options)
+internal enum LibraDexWildcardShape
+{
+    Exact,
+    StartsWith,
+    EndsWith,
+    Contains,
+    Complex
+}
+
+internal readonly record struct LibraDexWildcardToken(char Value, bool IsWildcard)
+{
+    internal bool IsStar => IsWildcard && Value == '*';
+    internal bool IsQuestion => IsWildcard && Value == '?';
+}
+
+internal sealed class LibraDexWildcardPattern
+{
+    private readonly LibraDexWildcardToken[] tokens;
+    private readonly Regex? regex;
+
+    private LibraDexWildcardPattern(
+        LibraDexWildcardToken[] tokens,
+        LibraDexWildcardShape shape,
+        string literal,
+        string leadingLiteral,
+        Regex? regex)
     {
-        while (patternIndex < pattern.Length)
+        this.tokens = tokens;
+        Shape = shape;
+        Literal = literal;
+        LeadingLiteral = leadingLiteral;
+        this.regex = regex;
+    }
+
+    internal LibraDexWildcardShape Shape { get; }
+    internal string Literal { get; }
+    internal string LeadingLiteral { get; }
+
+    internal static LibraDexWildcardPattern Create(
+        string pattern,
+        LibraDexStringComparisonPolicy policy,
+        bool compileComplex = true)
+    {
+        ArgumentNullException.ThrowIfNull(pattern);
+        ArgumentNullException.ThrowIfNull(policy);
+
+        List<LibraDexWildcardToken> parsed = new(pattern.Length);
+        for (int i = 0; i < pattern.Length; i++)
         {
-            char token = pattern[patternIndex];
-            if (token == '*')
+            char value = pattern[i];
+            if (value == '\\' && i + 1 < pattern.Length)
             {
-                while (patternIndex + 1 < pattern.Length && pattern[patternIndex + 1] == '*')
+                char next = pattern[i + 1];
+                if (next is '*' or '?')
                 {
-                    patternIndex++;
+                    parsed.Add(new LibraDexWildcardToken(next, IsWildcard: false));
+                    i++;
+                    continue;
                 }
 
-                if (patternIndex + 1 == pattern.Length)
+                if (next == '\\' && i + 2 < pattern.Length && pattern[i + 2] is '*' or '?')
                 {
-                    return true;
+                    parsed.Add(new LibraDexWildcardToken('\\', IsWildcard: false));
+                    i++;
+                    continue;
                 }
-
-                for (int i = candidateIndex; i <= candidate.Length; i++)
-                {
-                    if (MatchesWildcardCore(candidate, i, pattern, patternIndex + 1, compareInfo, options))
-                    {
-                        return true;
-                    }
-                }
-
-                return false;
             }
 
-            if (candidateIndex >= candidate.Length)
-            {
-                return false;
-            }
+            if (value == '*' && parsed.Count != 0 && parsed[^1].IsStar)
+                continue;
 
-            if (token != '?' && compareInfo.Compare(candidate.AsSpan(candidateIndex, 1).ToString(), token.ToString(), options) != 0)
-            {
-                return false;
-            }
-
-            candidateIndex++;
-            patternIndex++;
+            parsed.Add(new LibraDexWildcardToken(value, value is '*' or '?'));
         }
 
-        return candidateIndex == candidate.Length;
+        LibraDexWildcardToken[] tokens = parsed.ToArray();
+        int firstWildcard = Array.FindIndex(tokens, static token => token.IsWildcard);
+        string leadingLiteral = firstWildcard < 0
+            ? TokensToString(tokens, 0, tokens.Length)
+            : TokensToString(tokens, 0, firstWildcard);
+        LibraDexWildcardShape shape;
+        string literal;
+        if (firstWildcard < 0)
+        {
+            shape = LibraDexWildcardShape.Exact;
+            literal = leadingLiteral;
+        }
+        else if (tokens[^1].IsStar && firstWildcard == tokens.Length - 1)
+        {
+            shape = LibraDexWildcardShape.StartsWith;
+            literal = leadingLiteral;
+        }
+        else if (tokens[0].IsStar && !HasWildcard(tokens, 1, tokens.Length - 1))
+        {
+            shape = LibraDexWildcardShape.EndsWith;
+            literal = TokensToString(tokens, 1, tokens.Length - 1);
+        }
+        else if (tokens.Length >= 2 && tokens[0].IsStar && tokens[^1].IsStar &&
+            !HasWildcard(tokens, 1, tokens.Length - 2))
+        {
+            shape = LibraDexWildcardShape.Contains;
+            literal = TokensToString(tokens, 1, tokens.Length - 2);
+        }
+        else
+        {
+            shape = LibraDexWildcardShape.Complex;
+            literal = string.Empty;
+        }
+
+        Regex? regex = null;
+        if (compileComplex &&
+            shape == LibraDexWildcardShape.Complex &&
+            string.IsNullOrEmpty(policy.CultureName) &&
+            policy.Kind != LibraDexStringComparisonPolicyKind.Custom &&
+            (policy.CompareOptions & ~CompareOptions.IgnoreCase) == 0)
+        {
+            var expression = new StringBuilder(pattern.Length + 8);
+            expression.Append("\\A");
+            foreach (LibraDexWildcardToken token in tokens)
+            {
+                if (token.IsStar)
+                    expression.Append("[\\s\\S]*");
+                else if (token.IsQuestion)
+                    expression.Append("[\\s\\S]");
+                else
+                    expression.Append(Regex.Escape(token.Value.ToString()));
+            }
+            expression.Append("\\z");
+
+            RegexOptions options = RegexOptions.Compiled | RegexOptions.CultureInvariant;
+            if (policy.IgnoreCase)
+                options |= RegexOptions.IgnoreCase;
+            regex = new Regex(expression.ToString(), options);
+        }
+
+        return new LibraDexWildcardPattern(tokens, shape, literal, leadingLiteral, regex);
+    }
+
+    internal bool Matches(string candidate, CompareInfo compareInfo, CompareOptions options)
+    {
+        return Shape switch
+        {
+            LibraDexWildcardShape.Exact => compareInfo.Compare(candidate, Literal, options) == 0,
+            LibraDexWildcardShape.StartsWith => compareInfo.IsPrefix(candidate, Literal, options),
+            LibraDexWildcardShape.EndsWith => compareInfo.IsSuffix(candidate, Literal, options),
+            LibraDexWildcardShape.Contains => compareInfo.IndexOf(candidate, Literal, options) >= 0,
+            _ when regex is not null => regex.IsMatch(candidate),
+            _ => MatchesCultureAware(candidate, compareInfo, options)
+        };
+    }
+
+    /// <summary>
+    /// Evaluates this already-prepared wildcard against an already-prepared candidate using ordinal character semantics.<br/>
+    /// Folded-ordinal exact-index fallbacks use this path after both pattern literals and candidate text have been lower-cased with the same culture, reproducing the maintained folded projection contract without broadening comparison through culture collation.<br/>
+    /// </summary>
+    /// <param name="candidate">The non-null candidate prepared by the owning comparison policy.<br/></param>
+    /// <returns><see langword="true"/> when the candidate satisfies the wildcard pattern.<br/></returns>
+    internal bool MatchesOrdinal(string candidate)
+    {
+        ArgumentNullException.ThrowIfNull(candidate);
+        return Shape switch
+        {
+            LibraDexWildcardShape.Exact => string.Equals(candidate, Literal, StringComparison.Ordinal),
+            LibraDexWildcardShape.StartsWith => candidate.StartsWith(Literal, StringComparison.Ordinal),
+            LibraDexWildcardShape.EndsWith => candidate.EndsWith(Literal, StringComparison.Ordinal),
+            LibraDexWildcardShape.Contains => candidate.Contains(Literal, StringComparison.Ordinal),
+            _ when regex is not null => regex.IsMatch(candidate),
+            _ => MatchesOrdinalCore(candidate)
+        };
+    }
+
+    private bool MatchesCultureAware(string candidate, CompareInfo compareInfo, CompareOptions options)
+    {
+        int candidateIndex = 0;
+        int patternIndex = 0;
+        int starIndex = -1;
+        int starCandidateIndex = -1;
+        Span<char> literal = stackalloc char[1];
+        while (candidateIndex < candidate.Length)
+        {
+            if (patternIndex < tokens.Length && tokens[patternIndex].IsQuestion)
+            {
+                candidateIndex++;
+                patternIndex++;
+                continue;
+            }
+
+            if (patternIndex < tokens.Length && !tokens[patternIndex].IsWildcard)
+            {
+                literal[0] = tokens[patternIndex].Value;
+                if (compareInfo.Compare(candidate.AsSpan(candidateIndex, 1), literal, options) == 0)
+                {
+                    candidateIndex++;
+                    patternIndex++;
+                    continue;
+                }
+            }
+
+            if (patternIndex < tokens.Length && tokens[patternIndex].IsStar)
+            {
+                starIndex = patternIndex++;
+                starCandidateIndex = candidateIndex;
+                continue;
+            }
+
+            if (starIndex >= 0)
+            {
+                patternIndex = starIndex + 1;
+                candidateIndex = ++starCandidateIndex;
+                continue;
+            }
+
+            return false;
+        }
+
+        while (patternIndex < tokens.Length && tokens[patternIndex].IsStar)
+            patternIndex++;
+        return patternIndex == tokens.Length;
+    }
+
+    /// <summary>
+    /// Applies the complex wildcard token program with ordinal character equality.<br/>
+    /// The algorithm mirrors the culture-aware star backtracking path but avoids collation after folded-ordinal preparation has already established the comparison representation.<br/>
+    /// </summary>
+    /// <param name="candidate">The prepared candidate string.<br/></param>
+    /// <returns><see langword="true"/> when every literal, question mark, and star token is satisfied.<br/></returns>
+    private bool MatchesOrdinalCore(string candidate)
+    {
+        int candidateIndex = 0;
+        int patternIndex = 0;
+        int starIndex = -1;
+        int starCandidateIndex = -1;
+        while (candidateIndex < candidate.Length)
+        {
+            if (patternIndex < tokens.Length && tokens[patternIndex].IsQuestion)
+            {
+                candidateIndex++;
+                patternIndex++;
+                continue;
+            }
+
+            if (patternIndex < tokens.Length &&
+                !tokens[patternIndex].IsWildcard &&
+                candidate[candidateIndex] == tokens[patternIndex].Value)
+            {
+                candidateIndex++;
+                patternIndex++;
+                continue;
+            }
+
+            if (patternIndex < tokens.Length && tokens[patternIndex].IsStar)
+            {
+                starIndex = patternIndex++;
+                starCandidateIndex = candidateIndex;
+                continue;
+            }
+
+            if (starIndex >= 0)
+            {
+                patternIndex = starIndex + 1;
+                candidateIndex = ++starCandidateIndex;
+                continue;
+            }
+
+            return false;
+        }
+
+        while (patternIndex < tokens.Length && tokens[patternIndex].IsStar)
+            patternIndex++;
+        return patternIndex == tokens.Length;
+    }
+
+    private static string TokensToString(LibraDexWildcardToken[] tokens, int start, int length)
+    {
+        return string.Create(length, (tokens, start), static (destination, state) =>
+        {
+            for (int i = 0; i < destination.Length; i++)
+                destination[i] = state.tokens[state.start + i].Value;
+        });
+    }
+
+    private static bool HasWildcard(LibraDexWildcardToken[] tokens, int start, int length)
+    {
+        int end = start + length;
+        for (int i = start; i < end; i++)
+        {
+            if (tokens[i].IsWildcard)
+                return true;
+        }
+        return false;
     }
 }
 
@@ -924,40 +1496,84 @@ internal sealed class LibraDexUtf8StringPatternPredicate
     private readonly byte[] value;
     private readonly byte[]? upperValue;
     private readonly byte[][]? setValues;
+    private readonly bool requiresInvariantAsciiManagedFallback;
 
     /// <summary>
     /// Initializes a byte-native string pattern predicate from projection-compatible UTF-8 operands.<br/>
     /// The caller prepares operands once per query using the same transform as the selected physical projection; execution then compares candidate bytes directly.<br/>
     /// </summary>
-    /// <param name="mode">The string predicate mode.</param>
-    /// <param name="value">The primary operand bytes.</param>
-    /// <param name="upperValue">The upper operand bytes for between-style predicates.</param>
-    /// <param name="setValues">The membership operand bytes for set-style predicates.</param>
+    /// <param name="mode">The string predicate mode.<br/></param>
+    /// <param name="value">The primary operand bytes.<br/></param>
+    /// <param name="upperValue">The upper operand bytes for between-style predicates.<br/></param>
+    /// <param name="setValues">The membership operand bytes for set-style predicates.<br/></param>
+    /// <param name="requiresInvariantAsciiManagedFallback">Whether non-ASCII candidates require decoded managed evaluation.<br/></param>
     internal LibraDexUtf8StringPatternPredicate(
         LibraDexStringPatternMode mode,
         byte[] value,
         byte[]? upperValue,
-        byte[][]? setValues)
+        byte[][]? setValues,
+        bool requiresInvariantAsciiManagedFallback = false)
     {
         this.mode = mode;
         this.value = value;
         this.upperValue = upperValue;
         this.setValues = setValues;
+        this.requiresInvariantAsciiManagedFallback = requiresInvariantAsciiManagedFallback;
     }
 
     /// <summary>
     /// Tests one UTF-8 key payload against this compiled byte predicate.<br/>
     /// The candidate span must exclude LibraDex's string sentinel byte and represent the same exact or folded projection selected when the matcher was created.<br/>
     /// </summary>
-    /// <param name="candidate">The candidate UTF-8 payload bytes.</param>
-    /// <returns><see langword="true"/> when the candidate satisfies the predicate.</returns>
+    /// <param name="candidate">The candidate UTF-8 payload bytes.<br/></param>
+    /// <returns><see langword="true"/> when the candidate satisfies the predicate.<br/></returns>
     internal bool Matches(ReadOnlySpan<byte> candidate)
     {
-        return mode switch
+        LibraDexUtf8MatchResult result = Evaluate(candidate);
+        if (result == LibraDexUtf8MatchResult.RequiresManaged)
+        {
+            throw new InvalidOperationException("The UTF-8 string predicate requires its managed Unicode fallback for this candidate.");
+        }
+
+        return result == LibraDexUtf8MatchResult.Match;
+    }
+
+    /// <summary>
+    /// Evaluates one UTF-8 key payload and distinguishes a final byte result from a required managed Unicode fallback.<br/>
+    /// Projection-normalized and case-sensitive predicates always return a final result; invariant folded exact-key predicates defer only non-ASCII candidates.<br/>
+    /// </summary>
+    /// <param name="candidate">The UTF-8 key payload without LibraDex's leading string sentinel.<br/></param>
+    /// <returns>The final byte result or an explicit managed-fallback request.<br/></returns>
+    internal LibraDexUtf8MatchResult Evaluate(ReadOnlySpan<byte> candidate)
+    {
+        if (requiresInvariantAsciiManagedFallback)
+        {
+            if (!IsAscii(candidate))
+            {
+                return LibraDexUtf8MatchResult.RequiresManaged;
+            }
+
+            bool asciiMatch = mode switch
+            {
+                LibraDexStringPatternMode.StartsWith => StartsWithAsciiIgnoreCase(candidate, value),
+                LibraDexStringPatternMode.EndsWith => EndsWithAsciiIgnoreCase(candidate, value),
+                LibraDexStringPatternMode.Contains => IndexOfAsciiIgnoreCase(candidate, value) >= 0,
+                LibraDexStringPatternMode.NotStartsWith => !StartsWithAsciiIgnoreCase(candidate, value),
+                LibraDexStringPatternMode.NotEndsWith => !EndsWithAsciiIgnoreCase(candidate, value),
+                LibraDexStringPatternMode.NotContains => IndexOfAsciiIgnoreCase(candidate, value) < 0,
+                _ => false
+            };
+            return asciiMatch ? LibraDexUtf8MatchResult.Match : LibraDexUtf8MatchResult.NoMatch;
+        }
+
+        bool matches = mode switch
         {
             LibraDexStringPatternMode.StartsWith => candidate.StartsWith(value),
             LibraDexStringPatternMode.EndsWith => candidate.EndsWith(value),
             LibraDexStringPatternMode.Contains => candidate.IndexOf(value) >= 0,
+            LibraDexStringPatternMode.NotStartsWith => !candidate.StartsWith(value),
+            LibraDexStringPatternMode.NotEndsWith => !candidate.EndsWith(value),
+            LibraDexStringPatternMode.NotContains => candidate.IndexOf(value) < 0,
             LibraDexStringPatternMode.EqualTo => candidate.SequenceEqual(value),
             LibraDexStringPatternMode.NotEqualTo => !candidate.SequenceEqual(value),
             LibraDexStringPatternMode.GreaterThan => candidate.SequenceCompareTo(value) > 0,
@@ -972,7 +1588,120 @@ internal sealed class LibraDexUtf8StringPatternPredicate
             LibraDexStringPatternMode.NotInSet => !MatchesSet(candidate),
             _ => false
         };
+        return matches ? LibraDexUtf8MatchResult.Match : LibraDexUtf8MatchResult.NoMatch;
     }
+
+    /// <summary>
+    /// Tests whether one UTF-8 payload contains only single-byte ASCII values.<br/>
+    /// A high-bit byte identifies a multi-byte or otherwise non-ASCII sequence and therefore requests the managed Unicode path.<br/>
+    /// </summary>
+    /// <param name="candidate">The UTF-8 payload to inspect.<br/></param>
+    /// <returns><see langword="true"/> when every byte is ASCII; otherwise <see langword="false"/>.<br/></returns>
+    private static bool IsAscii(ReadOnlySpan<byte> candidate)
+    {
+        for (int index = 0; index < candidate.Length; index++)
+        {
+            if ((candidate[index] & 0x80) != 0)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Tests an ASCII prefix under invariant folded semantics without decoded or lower-cased string allocation.<br/>
+    /// </summary>
+    /// <param name="candidate">The ASCII candidate payload.<br/></param>
+    /// <param name="prefix">The ASCII prefix payload.<br/></param>
+    /// <returns><see langword="true"/> when the folded prefix matches.<br/></returns>
+    private static bool StartsWithAsciiIgnoreCase(ReadOnlySpan<byte> candidate, ReadOnlySpan<byte> prefix)
+        => candidate.Length >= prefix.Length && EqualsAsciiIgnoreCase(candidate[..prefix.Length], prefix);
+
+    /// <summary>
+    /// Tests an ASCII suffix under invariant folded semantics without decoded or lower-cased string allocation.<br/>
+    /// </summary>
+    /// <param name="candidate">The ASCII candidate payload.<br/></param>
+    /// <param name="suffix">The ASCII suffix payload.<br/></param>
+    /// <returns><see langword="true"/> when the folded suffix matches.<br/></returns>
+    private static bool EndsWithAsciiIgnoreCase(ReadOnlySpan<byte> candidate, ReadOnlySpan<byte> suffix)
+        => candidate.Length >= suffix.Length && EqualsAsciiIgnoreCase(candidate[^suffix.Length..], suffix);
+
+    /// <summary>
+    /// Finds an ASCII value inside another ASCII payload using invariant folded comparison.<br/>
+    /// Empty values match at offset zero, matching ordinary string containment semantics.<br/>
+    /// </summary>
+    /// <param name="candidate">The ASCII candidate payload.<br/></param>
+    /// <param name="value">The ASCII value to locate.<br/></param>
+    /// <returns>The first matching offset, or -1 when no folded match exists.<br/></returns>
+    private static int IndexOfAsciiIgnoreCase(ReadOnlySpan<byte> candidate, ReadOnlySpan<byte> value)
+    {
+        if (value.Length == 0)
+        {
+            return 0;
+        }
+
+        int last = candidate.Length - value.Length;
+        byte foldedFirst = FoldAscii(value[0]);
+        byte alternateFirst = foldedFirst is >= (byte)'a' and <= (byte)'z'
+            ? (byte)(foldedFirst - ('a' - 'A'))
+            : foldedFirst;
+        int searchOffset = 0;
+        while (searchOffset <= last)
+        {
+            ReadOnlySpan<byte> remainingStarts = candidate.Slice(searchOffset, last - searchOffset + 1);
+            int relative = foldedFirst == alternateFirst
+                ? remainingStarts.IndexOf(foldedFirst)
+                : remainingStarts.IndexOfAny(foldedFirst, alternateFirst);
+            if (relative < 0)
+                return -1;
+
+            int offset = searchOffset + relative;
+            if (EqualsAsciiIgnoreCase(candidate.Slice(offset, value.Length), value))
+            {
+                return offset;
+            }
+
+            searchOffset = offset + 1;
+        }
+
+        return -1;
+    }
+
+    /// <summary>
+    /// Compares equal-length ASCII payloads after folding only uppercase ASCII letters.<br/>
+    /// </summary>
+    /// <param name="left">The first ASCII payload.<br/></param>
+    /// <param name="right">The second ASCII payload.<br/></param>
+    /// <returns><see langword="true"/> when both payloads are equal under invariant ASCII folding.<br/></returns>
+    private static bool EqualsAsciiIgnoreCase(ReadOnlySpan<byte> left, ReadOnlySpan<byte> right)
+    {
+        if (left.Length != right.Length)
+        {
+            return false;
+        }
+
+        for (int index = 0; index < left.Length; index++)
+        {
+            if (FoldAscii(left[index]) != FoldAscii(right[index]))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Folds one uppercase ASCII letter to lowercase while returning every other byte unchanged.<br/>
+    /// </summary>
+    /// <param name="value">The ASCII byte to fold.<br/></param>
+    /// <returns>The invariant folded ASCII byte.<br/></returns>
+    private static byte FoldAscii(byte value)
+        => value is >= (byte)'A' and <= (byte)'Z'
+            ? (byte)(value + ('a' - 'A'))
+            : value;
 
     /// <summary>
     /// Returns the required upper byte operand for between-style comparisons.<br/>
@@ -1001,6 +1730,21 @@ internal sealed class LibraDexUtf8StringPatternPredicate
 
         return false;
     }
+}
+
+/// <summary>
+/// Reports whether a UTF-8 residual predicate produced a final result or must defer to decoded managed semantics.<br/>
+/// </summary>
+internal enum LibraDexUtf8MatchResult
+{
+    /// <summary>The candidate definitively does not match.<br/></summary>
+    NoMatch = 0,
+
+    /// <summary>The candidate definitively matches.<br/></summary>
+    Match = 1,
+
+    /// <summary>The candidate requires managed Unicode or culture-aware evaluation.<br/></summary>
+    RequiresManaged = 2
 }
 
 /// <summary>
@@ -1297,7 +2041,16 @@ internal enum LibraDexBinarySliceValueKind
     Latin1String = 24,
     CharUtf16 = 25,
     RuneUtf32 = 26,
-    CustomEncodingString = 27
+    CustomEncodingString = 27,
+    StructuredDateTimeCalendar = 28,
+    StructuredDateTimePrecision = 29,
+    StructuredDateOnlyCalendar = 30,
+    StructuredDateOnlyPrecision = 31,
+    StructuredTimeOnlyCalendar = 32,
+    StructuredTimeOnlyPrecision = 33,
+    StructuredDateTimeOffsetCalendarUtc = 34,
+    StructuredDateTimeOffsetPrecisionUtc = 35,
+    OrderedTimeSpanTicks = 36
 }
 
 /// <summary>
@@ -1324,6 +2077,10 @@ internal enum LibraDexBinarySliceComparisonKind
 /// </summary>
 internal sealed class LibraDexBinaryTypedSlicePredicate
 {
+    private static readonly System.Text.Encoding StrictUtf8 = new System.Text.UTF8Encoding(false, true);
+    private static readonly System.Text.Encoding StrictUtf16 = new System.Text.UnicodeEncoding(false, false, true);
+    private static readonly System.Text.Encoding StrictUtf32 = new System.Text.UTF32Encoding(false, false, true);
+
     private readonly LibraDexBinarySliceValueKind valueKind;
     private readonly LibraDexBinarySliceComparisonKind comparisonKind;
     private readonly int offset;
@@ -1331,6 +2088,11 @@ internal sealed class LibraDexBinaryTypedSlicePredicate
     private readonly object value;
     private readonly object? upperValue;
     private readonly System.Text.Encoding? encoding;
+    private readonly LibraDexTextEncoding? stableEncoding;
+    private readonly Coercion.Numeric numericCoercion;
+    private readonly Coercion.Text textCoercion;
+    private readonly byte[]? encodedTextValue;
+    private readonly int encodedTextUnitSize;
 
     private LibraDexBinaryTypedSlicePredicate(
         LibraDexBinarySliceValueKind valueKind,
@@ -1339,15 +2101,22 @@ internal sealed class LibraDexBinaryTypedSlicePredicate
         int length,
         object value,
         object? upperValue,
-        System.Text.Encoding? encoding)
+        System.Text.Encoding? encoding,
+        Coercion.Numeric numericCoercion,
+        Coercion.Text textCoercion,
+        LibraDexTextEncoding? stableEncoding)
     {
         this.valueKind = valueKind;
         this.comparisonKind = comparisonKind;
         this.offset = offset;
         this.length = length;
-        this.value = value;
-        this.upperValue = upperValue;
+        this.value = NormalizeOperand(valueKind, value);
+        this.upperValue = upperValue is null ? null : NormalizeOperand(valueKind, upperValue);
         this.encoding = encoding;
+        this.stableEncoding = stableEncoding;
+        this.numericCoercion = numericCoercion;
+        this.textCoercion = textCoercion;
+        encodedTextValue = TryEncodeOrdinalText(valueKind, value, out encodedTextUnitSize);
     }
 
     /// <summary>
@@ -1361,6 +2130,9 @@ internal sealed class LibraDexBinaryTypedSlicePredicate
     /// <param name="value">The first comparison value.</param>
     /// <param name="upperValue">The optional upper comparison value for between predicates.</param>
     /// <param name="encoding">The optional caller-supplied text encoding for custom encoded string slices.</param>
+    /// <param name="numericCoercion">The physical numeric representation used by numeric slice kinds.</param>
+    /// <param name="textCoercion">The malformed-input policy used by deterministic encoded-text slice kinds.</param>
+    /// <param name="stableEncoding">The optional stable code-page contract for custom encoded string slices.<br/></param>
     /// <returns>The compiled typed binary slice predicate.</returns>
     internal static LibraDexBinaryTypedSlicePredicate Create(
         LibraDexBinarySliceValueKind valueKind,
@@ -1369,24 +2141,57 @@ internal sealed class LibraDexBinaryTypedSlicePredicate
         int length,
         object value,
         object? upperValue = null,
-        System.Text.Encoding? encoding = null)
+        System.Text.Encoding? encoding = null,
+        Coercion.Numeric numericCoercion = Coercion.Numeric.DotNet,
+        Coercion.Text textCoercion = Coercion.Text.Strict,
+        LibraDexTextEncoding? stableEncoding = null)
     {
         if (offset < 0)
         {
             throw new ArgumentOutOfRangeException(nameof(offset), offset, "Binary slice offset cannot be negative.");
         }
 
-        if (length <= 0)
+        bool isString = valueKind is LibraDexBinarySliceValueKind.Utf8String or
+            LibraDexBinarySliceValueKind.Utf16String or
+            LibraDexBinarySliceValueKind.Utf32String or
+            LibraDexBinarySliceValueKind.AsciiString or
+            LibraDexBinarySliceValueKind.Latin1String or
+            LibraDexBinarySliceValueKind.CustomEncodingString;
+        if (length != LibraDexBinaryStringSliceConditionOperator.RemainingLength && length <= 0)
         {
             throw new ArgumentOutOfRangeException(nameof(length), length, "Binary slice length must be positive.");
         }
 
-        if (valueKind == LibraDexBinarySliceValueKind.CustomEncodingString && encoding is null)
+        if (length == LibraDexBinaryStringSliceConditionOperator.RemainingLength && !isString)
         {
-            throw new ArgumentNullException(nameof(encoding), "Custom encoded binary string slices require a caller-supplied Encoding instance.");
+            throw new ArgumentOutOfRangeException(nameof(length), length, "Only binary string slices can extend through the end of a key.");
         }
 
-        return new LibraDexBinaryTypedSlicePredicate(valueKind, comparisonKind, offset, length, value, upperValue, encoding);
+        if (valueKind == LibraDexBinarySliceValueKind.CustomEncodingString &&
+            encoding is null &&
+            stableEncoding is null)
+        {
+            throw new ArgumentNullException(
+                nameof(encoding),
+                "Custom encoded binary string slices require a caller-supplied Encoding instance or stable LibraDexTextEncoding contract.");
+        }
+
+        if (!Enum.IsDefined(textCoercion))
+        {
+            throw new ArgumentOutOfRangeException(nameof(textCoercion), textCoercion, "Unknown binary text-slice coercion policy.");
+        }
+
+        return new LibraDexBinaryTypedSlicePredicate(
+            valueKind,
+            comparisonKind,
+            offset,
+            length,
+            value,
+            upperValue,
+            encoding,
+            numericCoercion,
+            textCoercion,
+            stableEncoding);
     }
 
     /// <summary>
@@ -1397,46 +2202,56 @@ internal sealed class LibraDexBinaryTypedSlicePredicate
     /// <returns><see langword="true"/> when the typed slice satisfies the predicate.</returns>
     internal bool Matches(ReadOnlySpan<byte> encodedKey)
     {
-        if (offset > encodedKey.Length || length > encodedKey.Length - offset)
+        if (offset > encodedKey.Length)
         {
             return false;
         }
 
+        int sliceLength = length == LibraDexBinaryStringSliceConditionOperator.RemainingLength
+            ? encodedKey.Length - offset
+            : length;
+        if (sliceLength > encodedKey.Length - offset)
+            return false;
+
         try
         {
-            ReadOnlySpan<byte> slice = encodedKey.Slice(offset, length);
+            ReadOnlySpan<byte> slice = encodedKey.Slice(offset, sliceLength);
+            if (TryGetNumericType(valueKind, out Type? numericType))
+            {
+                object numericValue = LibraDexDuplicateExecution.ProjectNumeric(slice, numericType!, numericCoercion);
+                return CompareNumeric(numericValue, value, upperValue);
+            }
+
             return valueKind switch
             {
-                LibraDexBinarySliceValueKind.Int32 => CompareValue(System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(slice), value, upperValue),
-                LibraDexBinarySliceValueKind.Int64 => CompareValue(System.Buffers.Binary.BinaryPrimitives.ReadInt64LittleEndian(slice), value, upperValue),
                 LibraDexBinarySliceValueKind.Guid => CompareValue(new Guid(slice[..16]), value, upperValue),
-                LibraDexBinarySliceValueKind.DateTimeTicks => CompareValue(new DateTime(System.Buffers.Binary.BinaryPrimitives.ReadInt64LittleEndian(slice), DateTimeKind.Utc), value, upperValue),
-                LibraDexBinarySliceValueKind.Utf8String => CompareString(System.Text.Encoding.UTF8.GetString(slice), value),
-                LibraDexBinarySliceValueKind.Int8 => CompareValue(unchecked((sbyte)slice[0]), value, upperValue),
-                LibraDexBinarySliceValueKind.UInt8 => CompareValue(slice[0], value, upperValue),
-                LibraDexBinarySliceValueKind.Int16 => CompareValue(System.Buffers.Binary.BinaryPrimitives.ReadInt16LittleEndian(slice), value, upperValue),
-                LibraDexBinarySliceValueKind.UInt16 => CompareValue(System.Buffers.Binary.BinaryPrimitives.ReadUInt16LittleEndian(slice), value, upperValue),
-                LibraDexBinarySliceValueKind.UInt32 => CompareValue(System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(slice), value, upperValue),
-                LibraDexBinarySliceValueKind.UInt64 => CompareValue(System.Buffers.Binary.BinaryPrimitives.ReadUInt64LittleEndian(slice), value, upperValue),
-                LibraDexBinarySliceValueKind.Single => CompareValue(BitConverter.Int32BitsToSingle(System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(slice)), value, upperValue),
-                LibraDexBinarySliceValueKind.Double => CompareValue(BitConverter.Int64BitsToDouble(System.Buffers.Binary.BinaryPrimitives.ReadInt64LittleEndian(slice)), value, upperValue),
-                LibraDexBinarySliceValueKind.Decimal => CompareValue(System.Runtime.InteropServices.MemoryMarshal.Read<decimal>(slice), value, upperValue),
-                LibraDexBinarySliceValueKind.Int128 => CompareValue(System.Runtime.InteropServices.MemoryMarshal.Read<Int128>(slice), value, upperValue),
-                LibraDexBinarySliceValueKind.UInt128 => CompareValue(System.Runtime.InteropServices.MemoryMarshal.Read<UInt128>(slice), value, upperValue),
-                LibraDexBinarySliceValueKind.BigInteger => CompareValue(new System.Numerics.BigInteger(slice), value, upperValue),
-                LibraDexBinarySliceValueKind.DateOnly => CompareValue(DateOnly.FromDayNumber(System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(slice)), value, upperValue),
-                LibraDexBinarySliceValueKind.TimeOnly => CompareValue(TimeOnly.FromTimeSpan(TimeSpan.FromTicks(System.Buffers.Binary.BinaryPrimitives.ReadInt64LittleEndian(slice))), value, upperValue),
-                LibraDexBinarySliceValueKind.TimeSpanTicks => CompareValue(TimeSpan.FromTicks(System.Buffers.Binary.BinaryPrimitives.ReadInt64LittleEndian(slice)), value, upperValue),
-                LibraDexBinarySliceValueKind.DateTimeOffsetPair => CompareValue(new DateTimeOffset(
-                    System.Buffers.Binary.BinaryPrimitives.ReadInt64LittleEndian(slice),
-                    TimeSpan.FromTicks(System.Buffers.Binary.BinaryPrimitives.ReadInt64LittleEndian(slice[8..]))), value, upperValue),
-                LibraDexBinarySliceValueKind.Utf16String => CompareString(System.Text.Encoding.Unicode.GetString(slice), value),
-                LibraDexBinarySliceValueKind.Utf32String => CompareString(System.Text.Encoding.UTF32.GetString(slice), value),
-                LibraDexBinarySliceValueKind.AsciiString => CompareString(System.Text.Encoding.ASCII.GetString(slice), value),
-                LibraDexBinarySliceValueKind.Latin1String => CompareString(System.Text.Encoding.Latin1.GetString(slice), value),
+                LibraDexBinarySliceValueKind.DateTimeTicks => CompareValue(System.Buffers.Binary.BinaryPrimitives.ReadInt64LittleEndian(slice), value, upperValue),
+                LibraDexBinarySliceValueKind.Utf8String => CompareEncodedOrDecodedString(slice, System.Text.Encoding.UTF8),
+                LibraDexBinarySliceValueKind.DateOnly => CompareValue(System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(slice), value, upperValue),
+                LibraDexBinarySliceValueKind.TimeOnly => CompareValue(System.Buffers.Binary.BinaryPrimitives.ReadInt64LittleEndian(slice), value, upperValue),
+                LibraDexBinarySliceValueKind.TimeSpanTicks => CompareValue(System.Buffers.Binary.BinaryPrimitives.ReadInt64LittleEndian(slice), value, upperValue),
+                LibraDexBinarySliceValueKind.DateTimeOffsetPair => TryReadDateTimeOffsetUtcTicks(slice, out long utcTicks) && CompareValue(utcTicks, value, upperValue),
+                LibraDexBinarySliceValueKind.Utf16String => CompareEncodedOrDecodedString(slice, System.Text.Encoding.Unicode),
+                LibraDexBinarySliceValueKind.Utf32String => CompareEncodedOrDecodedString(slice, System.Text.Encoding.UTF32),
+                LibraDexBinarySliceValueKind.AsciiString => CompareEncodedOrDecodedString(slice, System.Text.Encoding.ASCII),
+                LibraDexBinarySliceValueKind.Latin1String => CompareEncodedOrDecodedString(slice, System.Text.Encoding.Latin1),
                 LibraDexBinarySliceValueKind.CharUtf16 => CompareString(System.Runtime.InteropServices.MemoryMarshal.Read<char>(slice).ToString(), value),
                 LibraDexBinarySliceValueKind.RuneUtf32 => CompareString(char.ConvertFromUtf32(System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(slice)), value),
-                LibraDexBinarySliceValueKind.CustomEncodingString => CompareString((encoding ?? throw new InvalidOperationException("Custom encoded binary string slices require an Encoding instance.")).GetString(slice), value),
+                LibraDexBinarySliceValueKind.CustomEncodingString => CompareString(
+                    stableEncoding is not null
+                        ? stableEncoding.Decode(slice)
+                        : (encoding ?? throw new InvalidOperationException(
+                            "Custom encoded binary string slices require an Encoding instance or stable LibraDexTextEncoding contract.")).GetString(slice),
+                    value),
+                LibraDexBinarySliceValueKind.StructuredDateTimeCalendar or
+                LibraDexBinarySliceValueKind.StructuredDateTimePrecision or
+                LibraDexBinarySliceValueKind.StructuredDateOnlyCalendar or
+                LibraDexBinarySliceValueKind.StructuredDateOnlyPrecision or
+                LibraDexBinarySliceValueKind.StructuredTimeOnlyCalendar or
+                LibraDexBinarySliceValueKind.StructuredTimeOnlyPrecision or
+                LibraDexBinarySliceValueKind.StructuredDateTimeOffsetCalendarUtc or
+                LibraDexBinarySliceValueKind.StructuredDateTimeOffsetPrecisionUtc or
+                LibraDexBinarySliceValueKind.OrderedTimeSpanTicks => CompareValue(System.Buffers.Binary.BinaryPrimitives.ReadUInt64BigEndian(slice), value, upperValue),
                 _ => throw new InvalidOperationException($"Unknown binary slice value kind {valueKind}.")
             };
         }
@@ -1444,6 +2259,130 @@ internal sealed class LibraDexBinaryTypedSlicePredicate
         {
             return false;
         }
+        catch (OverflowException)
+        {
+            return false;
+        }
+    }
+
+    private static bool TryGetNumericType(
+        LibraDexBinarySliceValueKind kind,
+        out Type? type)
+    {
+        type = kind switch
+        {
+            LibraDexBinarySliceValueKind.Int8 => typeof(sbyte),
+            LibraDexBinarySliceValueKind.UInt8 => typeof(byte),
+            LibraDexBinarySliceValueKind.Int16 => typeof(short),
+            LibraDexBinarySliceValueKind.UInt16 => typeof(ushort),
+            LibraDexBinarySliceValueKind.Int32 => typeof(int),
+            LibraDexBinarySliceValueKind.UInt32 => typeof(uint),
+            LibraDexBinarySliceValueKind.Int64 => typeof(long),
+            LibraDexBinarySliceValueKind.UInt64 => typeof(ulong),
+            LibraDexBinarySliceValueKind.Int128 => typeof(Int128),
+            LibraDexBinarySliceValueKind.UInt128 => typeof(UInt128),
+            LibraDexBinarySliceValueKind.Single => typeof(float),
+            LibraDexBinarySliceValueKind.Double => typeof(double),
+            LibraDexBinarySliceValueKind.Decimal => typeof(decimal),
+            LibraDexBinarySliceValueKind.BigInteger => typeof(System.Numerics.BigInteger),
+            _ => null
+        };
+        return type is not null;
+    }
+
+    private bool CompareNumeric(object candidate, object expected, object? upper)
+    {
+        return candidate switch
+        {
+            byte value => CompareValue(value, expected, upper),
+            sbyte value => CompareValue(value, expected, upper),
+            short value => CompareValue(value, expected, upper),
+            ushort value => CompareValue(value, expected, upper),
+            int value => CompareValue(value, expected, upper),
+            uint value => CompareValue(value, expected, upper),
+            long value => CompareValue(value, expected, upper),
+            ulong value => CompareValue(value, expected, upper),
+            Int128 value => CompareValue(value, expected, upper),
+            UInt128 value => CompareValue(value, expected, upper),
+            float value => CompareValue(value, expected, upper),
+            double value => CompareValue(value, expected, upper),
+            decimal value => CompareValue(value, expected, upper),
+            System.Numerics.BigInteger value => CompareValue(value, expected, upper),
+            _ => throw new NotSupportedException($"Binary numeric slice comparison does not support '{candidate.GetType().FullName}'.")
+        };
+    }
+
+    private static object NormalizeOperand(LibraDexBinarySliceValueKind valueKind, object operand)
+    {
+        return valueKind switch
+        {
+            LibraDexBinarySliceValueKind.DateTimeTicks => operand is DateTime dateTime
+                ? dateTime.Ticks
+                : throw OperandTypeException(valueKind, operand, typeof(DateTime)),
+            LibraDexBinarySliceValueKind.StructuredDateTimeCalendar => operand is DateTime calendarDateTime
+                ? LibraDexStructuredDateCodec.Encode(calendarDateTime, DateTimeKeyEncoding.CalendarSdt)
+                : throw OperandTypeException(valueKind, operand, typeof(DateTime)),
+            LibraDexBinarySliceValueKind.StructuredDateTimePrecision => operand is DateTime precisionDateTime
+                ? LibraDexStructuredDateCodec.Encode(precisionDateTime, DateTimeKeyEncoding.PrecisionSdt)
+                : throw OperandTypeException(valueKind, operand, typeof(DateTime)),
+            LibraDexBinarySliceValueKind.DateOnly => operand is DateOnly dateOnly
+                ? dateOnly.DayNumber
+                : throw OperandTypeException(valueKind, operand, typeof(DateOnly)),
+            LibraDexBinarySliceValueKind.StructuredDateOnlyCalendar => operand is DateOnly calendarDateOnly
+                ? LibraDexStructuredDateCodec.Encode(calendarDateOnly, DateTimeKeyEncoding.CalendarSdt)
+                : throw OperandTypeException(valueKind, operand, typeof(DateOnly)),
+            LibraDexBinarySliceValueKind.StructuredDateOnlyPrecision => operand is DateOnly precisionDateOnly
+                ? LibraDexStructuredDateCodec.Encode(precisionDateOnly, DateTimeKeyEncoding.PrecisionSdt)
+                : throw OperandTypeException(valueKind, operand, typeof(DateOnly)),
+            LibraDexBinarySliceValueKind.TimeOnly => operand is TimeOnly timeOnly
+                ? timeOnly.Ticks
+                : throw OperandTypeException(valueKind, operand, typeof(TimeOnly)),
+            LibraDexBinarySliceValueKind.StructuredTimeOnlyCalendar => operand is TimeOnly calendarTimeOnly
+                ? LibraDexStructuredDateCodec.Encode(calendarTimeOnly, DateTimeKeyEncoding.CalendarSdt)
+                : throw OperandTypeException(valueKind, operand, typeof(TimeOnly)),
+            LibraDexBinarySliceValueKind.StructuredTimeOnlyPrecision => operand is TimeOnly precisionTimeOnly
+                ? LibraDexStructuredDateCodec.Encode(precisionTimeOnly, DateTimeKeyEncoding.PrecisionSdt)
+                : throw OperandTypeException(valueKind, operand, typeof(TimeOnly)),
+            LibraDexBinarySliceValueKind.TimeSpanTicks => operand is TimeSpan timeSpan
+                ? timeSpan.Ticks
+                : throw OperandTypeException(valueKind, operand, typeof(TimeSpan)),
+            LibraDexBinarySliceValueKind.OrderedTimeSpanTicks => operand is TimeSpan orderedTimeSpan
+                ? unchecked((ulong)(orderedTimeSpan.Ticks ^ long.MinValue))
+                : throw OperandTypeException(valueKind, operand, typeof(TimeSpan)),
+            LibraDexBinarySliceValueKind.DateTimeOffsetPair => operand is DateTimeOffset dateTimeOffset
+                ? dateTimeOffset.UtcTicks
+                : throw OperandTypeException(valueKind, operand, typeof(DateTimeOffset)),
+            LibraDexBinarySliceValueKind.StructuredDateTimeOffsetCalendarUtc => operand is DateTimeOffset calendarDateTimeOffset
+                ? LibraDexStructuredDateCodec.Encode(calendarDateTimeOffset, DateTimeKeyEncoding.CalendarSdt)
+                : throw OperandTypeException(valueKind, operand, typeof(DateTimeOffset)),
+            LibraDexBinarySliceValueKind.StructuredDateTimeOffsetPrecisionUtc => operand is DateTimeOffset precisionDateTimeOffset
+                ? LibraDexStructuredDateCodec.Encode(precisionDateTimeOffset, DateTimeKeyEncoding.PrecisionSdt)
+                : throw OperandTypeException(valueKind, operand, typeof(DateTimeOffset)),
+            _ => operand
+        };
+    }
+
+    private static ArgumentException OperandTypeException(LibraDexBinarySliceValueKind valueKind, object operand, Type expectedType)
+    {
+        return new ArgumentException(
+            $"Binary slice kind {valueKind} requires a {expectedType.FullName} comparison operand, not {operand.GetType().FullName}.",
+            nameof(operand));
+    }
+
+    private static bool TryReadDateTimeOffsetUtcTicks(ReadOnlySpan<byte> slice, out long utcTicks)
+    {
+        long localTicks = System.Buffers.Binary.BinaryPrimitives.ReadInt64LittleEndian(slice);
+        long offsetTicks = System.Buffers.Binary.BinaryPrimitives.ReadInt64LittleEndian(slice[sizeof(long)..]);
+        if (localTicks < DateTime.MinValue.Ticks || localTicks > DateTime.MaxValue.Ticks ||
+            offsetTicks < -14 * TimeSpan.TicksPerHour || offsetTicks > 14 * TimeSpan.TicksPerHour ||
+            offsetTicks % TimeSpan.TicksPerMinute != 0)
+        {
+            utcTicks = 0;
+            return false;
+        }
+
+        utcTicks = checked(localTicks - offsetTicks);
+        return utcTicks >= DateTime.MinValue.Ticks && utcTicks <= DateTime.MaxValue.Ticks;
     }
 
     private bool CompareString(string candidate, object expected)
@@ -1457,6 +2396,120 @@ internal sealed class LibraDexBinaryTypedSlicePredicate
             LibraDexBinarySliceComparisonKind.Contains => candidate.Contains(text, StringComparison.Ordinal),
             _ => throw new InvalidOperationException($"Binary UTF-8 slice comparison {comparisonKind} is not supported.")
         };
+    }
+
+    private bool CompareEncodedOrDecodedString(ReadOnlySpan<byte> candidate, System.Text.Encoding decoder)
+    {
+        if (encodedTextValue is null)
+            return CompareString(decoder.GetString(candidate), value);
+
+        if (!IsValidEncodedText(candidate))
+        {
+            return textCoercion == Coercion.Text.DotNetReplacement &&
+                CompareString(decoder.GetString(candidate), value);
+        }
+
+        ReadOnlySpan<byte> expected = encodedTextValue;
+        return comparisonKind switch
+        {
+            LibraDexBinarySliceComparisonKind.EqualTo => candidate.SequenceEqual(expected),
+            LibraDexBinarySliceComparisonKind.StartsWith => candidate.StartsWith(expected),
+            LibraDexBinarySliceComparisonKind.Contains => IndexOfAligned(candidate, expected, encodedTextUnitSize) >= 0,
+            _ => throw new InvalidOperationException($"Binary string slice comparison {comparisonKind} is not supported.")
+        };
+    }
+
+    private bool IsValidEncodedText(ReadOnlySpan<byte> candidate)
+    {
+        if (valueKind == LibraDexBinarySliceValueKind.Latin1String)
+            return true;
+
+        if (valueKind == LibraDexBinarySliceValueKind.AsciiString)
+        {
+            for (int i = 0; i < candidate.Length; i++)
+            {
+                if (candidate[i] > 0x7F)
+                    return false;
+            }
+
+            return true;
+        }
+
+        System.Text.Encoding strict = valueKind switch
+        {
+            LibraDexBinarySliceValueKind.Utf8String => StrictUtf8,
+            LibraDexBinarySliceValueKind.Utf16String => StrictUtf16,
+            LibraDexBinarySliceValueKind.Utf32String => StrictUtf32,
+            _ => throw new InvalidOperationException($"Binary string slice kind {valueKind} has no byte-native validator.")
+        };
+        try
+        {
+            _ = strict.GetCharCount(candidate);
+            return true;
+        }
+        catch (System.Text.DecoderFallbackException)
+        {
+            return false;
+        }
+    }
+
+    private static byte[]? TryEncodeOrdinalText(LibraDexBinarySliceValueKind valueKind, object value, out int unitSize)
+    {
+        unitSize = 1;
+        if (value is not string text)
+            return null;
+
+        try
+        {
+            switch (valueKind)
+            {
+                case LibraDexBinarySliceValueKind.Utf8String:
+                    return StrictUtf8.GetBytes(text);
+                case LibraDexBinarySliceValueKind.Utf16String:
+                    unitSize = 2;
+                    return StrictUtf16.GetBytes(text);
+                case LibraDexBinarySliceValueKind.Utf32String:
+                    unitSize = 4;
+                    return StrictUtf32.GetBytes(text);
+                case LibraDexBinarySliceValueKind.AsciiString:
+                    for (int i = 0; i < text.Length; i++)
+                    {
+                        if (text[i] > 0x7F)
+                            return null;
+                    }
+
+                    return System.Text.Encoding.ASCII.GetBytes(text);
+                case LibraDexBinarySliceValueKind.Latin1String:
+                    for (int i = 0; i < text.Length; i++)
+                    {
+                        if (text[i] > 0xFF)
+                            return null;
+                    }
+
+                    return System.Text.Encoding.Latin1.GetBytes(text);
+                default:
+                    return null;
+            }
+        }
+        catch (System.Text.EncoderFallbackException)
+        {
+            return null;
+        }
+    }
+
+    private static int IndexOfAligned(ReadOnlySpan<byte> candidate, ReadOnlySpan<byte> expected, int unitSize)
+    {
+        if (expected.Length == 0)
+            return 0;
+
+        int last = candidate.Length - expected.Length;
+        for (int i = 0; i <= last; i += unitSize)
+        {
+            if (candidate.Slice(i, expected.Length).SequenceEqual(expected))
+                return i;
+        }
+
+        return -1;
     }
 
     private bool CompareValue<TValue>(TValue candidate, object expected, object? upper)
@@ -1583,6 +2636,8 @@ internal enum LibraDexGuidPatternMode
 /// </summary>
 internal sealed class LibraDexGuidPatternPredicate
 {
+    private const byte WildcardNibble = byte.MaxValue;
+
     private static readonly int[] CanonicalNibbleToStorageNibble =
     {
         6, 7, 4, 5, 2, 3, 0, 1,
@@ -1594,16 +2649,27 @@ internal sealed class LibraDexGuidPatternPredicate
 
     private readonly ulong comparedStorageNibbleBits;
     private readonly byte[] targetStorageNibbles;
+    private readonly byte[]? containedNibbles;
+    private readonly bool containsInCanonicalOrder;
+    private readonly int containsStartStep;
 
-    private LibraDexGuidPatternPredicate(ulong comparedStorageNibbleBits, byte[] targetStorageNibbles)
+    private LibraDexGuidPatternPredicate(
+        ulong comparedStorageNibbleBits,
+        byte[] targetStorageNibbles,
+        byte[]? containedNibbles = null,
+        bool containsInCanonicalOrder = false,
+        int containsStartStep = 1)
     {
         this.comparedStorageNibbleBits = comparedStorageNibbleBits;
         this.targetStorageNibbles = targetStorageNibbles;
+        this.containedNibbles = containedNibbles;
+        this.containsInCanonicalOrder = containsInCanonicalOrder;
+        this.containsStartStep = containsStartStep;
     }
 
     /// <summary>
-    /// Creates a GUID pattern predicate from Abraxas-compatible text input.<br/>
-    /// Dashes, braces, and other non-hex/non-wildcard characters are ignored, and `x` means wildcard for explicit patterns.<br/>
+    /// Creates a GUID pattern predicate from canonical GUID text input.<br/>
+    /// Ordinary GUID punctuation is ignored, `x` is the only wildcard token, and all other characters are rejected instead of being silently discarded.<br/>
     /// </summary>
     /// <param name="value">The caller-supplied GUID text, partial text, or wildcard pattern.</param>
     /// <param name="mode">The comparison mode.</param>
@@ -1612,6 +2678,15 @@ internal sealed class LibraDexGuidPatternPredicate
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(value);
         string core = Clean(value);
+        if (mode == LibraDexGuidPatternMode.Contains)
+        {
+            return new LibraDexGuidPatternPredicate(
+                0,
+                Array.Empty<byte>(),
+                ParseNibbles(core),
+                containsInCanonicalOrder: true);
+        }
+
         string pattern = Normalize(core, mode);
         ulong compared = 0;
         byte[] target = new byte[32];
@@ -1658,11 +2733,24 @@ internal sealed class LibraDexGuidPatternPredicate
             throw new FormatException("GUID byte pattern must contain exactly 16 bytes for MatchesPattern.");
         }
 
+        if (mode == LibraDexGuidPatternMode.Contains)
+        {
+            byte[] contained = new byte[comparedNibbleCount];
+            for (int valueNibble = 0; valueNibble < comparedNibbleCount; valueNibble++)
+            {
+                byte source = value[valueNibble >> 1];
+                contained[valueNibble] = (valueNibble & 1) == 0
+                    ? (byte)(source >> 4)
+                    : (byte)(source & 0xF);
+            }
+
+            return new LibraDexGuidPatternPredicate(0, Array.Empty<byte>(), contained, containsStartStep: 2);
+        }
+
         int startNibble = mode switch
         {
             LibraDexGuidPatternMode.StartsWith or LibraDexGuidPatternMode.MatchesPattern => 0,
             LibraDexGuidPatternMode.EndsWith => 32 - comparedNibbleCount,
-            LibraDexGuidPatternMode.Contains => (32 - comparedNibbleCount) / 2,
             _ => throw new ArgumentOutOfRangeException(nameof(mode), mode, "Unknown GUID pattern mode.")
         };
 
@@ -1683,6 +2771,55 @@ internal sealed class LibraDexGuidPatternPredicate
     }
 
     /// <summary>
+    /// Creates an equality predicate over one canonical GUID nibble slice.<br/>
+    /// Slice ordinals follow the familiar 32 hexadecimal digits shown by `Guid.ToString("N")`, never the mixed-endian byte order returned by `Guid.TryWriteBytes`.<br/>
+    /// </summary>
+    /// <param name="startNibble">The zero-based canonical nibble at which the slice begins.</param>
+    /// <param name="nibbleCount">The number of canonical nibbles selected by the slice.</param>
+    /// <param name="canonicalNibbles">The exact nibble values expected in canonical order.</param>
+    /// <returns>The compiled GUID slice predicate.</returns>
+    internal static LibraDexGuidPatternPredicate CreateSlice(int startNibble, int nibbleCount, ReadOnlySpan<byte> canonicalNibbles)
+    {
+        ValidateSlice(startNibble, nibbleCount);
+        if (canonicalNibbles.Length != nibbleCount)
+        {
+            throw new FormatException($"GUID slice value must contain exactly {nibbleCount} hexadecimal nibbles.");
+        }
+
+        ulong compared = 0;
+        byte[] target = new byte[32];
+        for (int i = 0; i < nibbleCount; i++)
+        {
+            byte nibble = canonicalNibbles[i];
+            if (nibble > 0xF)
+            {
+                throw new FormatException("GUID slice values must contain hexadecimal nibbles only.");
+            }
+
+            int storageNibble = CanonicalNibbleToStorageNibble[startNibble + i];
+            compared |= 1UL << storageNibble;
+            target[storageNibble] = nibble;
+        }
+
+        return new LibraDexGuidPatternPredicate(compared, target);
+    }
+
+    /// <summary>
+    /// Creates an equality predicate over one canonical GUID nibble slice from hexadecimal text.<br/>
+    /// Hexadecimal letter case is ignored because the text is parsed to nibble values before the condition executes.<br/>
+    /// </summary>
+    /// <param name="startNibble">The zero-based canonical nibble at which the slice begins.</param>
+    /// <param name="nibbleCount">The number of canonical nibbles selected by the slice.</param>
+    /// <param name="value">The exact hexadecimal slice value.</param>
+    /// <returns>The compiled GUID slice predicate.</returns>
+    internal static LibraDexGuidPatternPredicate CreateSlice(int startNibble, int nibbleCount, string value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        string core = Clean(value, allowWildcard: false);
+        return CreateSlice(startNibble, nibbleCount, ParseNibbles(core));
+    }
+
+    /// <summary>
     /// Evaluates this predicate against one encoded GUID key represented as two big-endian scalar lanes.<br/>
     /// The encoded lanes are converted back to the stored byte order, then read through the canonical GUID nibble map.<br/>
     /// </summary>
@@ -1694,6 +2831,63 @@ internal sealed class LibraDexGuidPatternPredicate
         Span<byte> storage = stackalloc byte[16];
         System.Buffers.Binary.BinaryPrimitives.WriteUInt64BigEndian(storage.Slice(0, 8), encodedHigh);
         System.Buffers.Binary.BinaryPrimitives.WriteUInt64BigEndian(storage.Slice(8, 8), encodedLow);
+        return MatchesStorage(storage);
+    }
+
+    /// <summary>
+    /// Evaluates this predicate against one routed composite GUID value without formatting it as text.<br/>
+    /// The GUID is written once to a stack buffer and then evaluated by the same canonical-nibble engine used by ordinary GUID indexes.<br/>
+    /// </summary>
+    /// <param name="value">The candidate GUID value.</param>
+    /// <returns><see langword="true"/> when the GUID satisfies the compiled predicate.</returns>
+    internal bool Matches(Guid value)
+    {
+        Span<byte> storage = stackalloc byte[16];
+        value.TryWriteBytes(storage);
+        return MatchesStorage(storage);
+    }
+
+    /// <summary>
+    /// Evaluates fixed-position and anywhere-containment GUID predicates over stored GUID bytes.<br/>
+    /// Canonical containment maps each candidate nibble to physical storage on demand; byte-domain containment deliberately scans physical stored-byte order.<br/>
+    /// </summary>
+    /// <param name="storage">The 16 bytes in `Guid.TryWriteBytes` order.</param>
+    /// <returns><see langword="true"/> when the stored GUID satisfies the predicate.</returns>
+    private bool MatchesStorage(ReadOnlySpan<byte> storage)
+    {
+        if (containedNibbles is not null)
+        {
+            int lastStart = 32 - containedNibbles.Length;
+            for (int start = 0; start <= lastStart; start += containsStartStep)
+            {
+                bool matches = true;
+                for (int i = 0; i < containedNibbles.Length; i++)
+                {
+                    byte expected = containedNibbles[i];
+                    if (expected == WildcardNibble)
+                    {
+                        continue;
+                    }
+
+                    int sourceNibble = containsInCanonicalOrder
+                        ? CanonicalNibbleToStorageNibble[start + i]
+                        : start + i;
+                    if (ReadStorageNibble(storage, sourceNibble) != expected)
+                    {
+                        matches = false;
+                        break;
+                    }
+                }
+
+                if (matches)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
         for (int storageNibble = 0; storageNibble < 32; storageNibble++)
         {
             if ((comparedStorageNibbleBits & (1UL << storageNibble)) == 0)
@@ -1715,21 +2909,29 @@ internal sealed class LibraDexGuidPatternPredicate
     /// </summary>
     /// <param name="value">The raw user input.</param>
     /// <returns>The cleaned lowercase pattern core.</returns>
-    private static string Clean(string value)
+    private static string Clean(string value, bool allowWildcard = true)
     {
         Span<char> cleaned = stackalloc char[32];
         int count = 0;
         foreach (char c in value)
         {
-            if (Uri.IsHexDigit(c) || c == 'x' || c == 'X')
+            if (Uri.IsHexDigit(c) || (allowWildcard && (c == 'x' || c == 'X')))
             {
                 if (count >= 32)
                 {
-                    break;
+                    throw new FormatException("GUID pattern cannot exceed 32 nibbles.");
                 }
 
                 cleaned[count++] = char.ToLowerInvariant(c);
+                continue;
             }
+
+            if (c is '-' or '{' or '}' or '(' or ')' || char.IsWhiteSpace(c))
+            {
+                continue;
+            }
+
+            throw new FormatException($"GUID pattern character '{c}' is invalid. Use hexadecimal digits and 'x' wildcard nibbles only.");
         }
 
         if (count == 0)
@@ -1738,6 +2940,41 @@ internal sealed class LibraDexGuidPatternPredicate
         }
 
         return new string(cleaned[..count]);
+    }
+
+    /// <summary>
+    /// Parses a cleaned canonical hexadecimal core to nibble values.<br/>
+    /// The internal wildcard marker is retained only for pattern containment; slice callers reject wildcard input before this method is reached.<br/>
+    /// </summary>
+    /// <param name="core">The cleaned lowercase hexadecimal or wildcard core.</param>
+    /// <returns>The canonical nibble sequence.</returns>
+    private static byte[] ParseNibbles(string core)
+    {
+        byte[] nibbles = new byte[core.Length];
+        for (int i = 0; i < core.Length; i++)
+        {
+            nibbles[i] = core[i] == 'x' ? WildcardNibble : HexToNibble(core[i]);
+        }
+
+        return nibbles;
+    }
+
+    /// <summary>
+    /// Validates canonical GUID slice bounds.<br/>
+    /// </summary>
+    /// <param name="startNibble">The zero-based canonical starting nibble.</param>
+    /// <param name="nibbleCount">The positive nibble count.</param>
+    private static void ValidateSlice(int startNibble, int nibbleCount)
+    {
+        if (startNibble is < 0 or > 31)
+        {
+            throw new ArgumentOutOfRangeException(nameof(startNibble), startNibble, "GUID slice start nibble must be 0 through 31.");
+        }
+
+        if (nibbleCount <= 0 || startNibble + nibbleCount > 32)
+        {
+            throw new ArgumentOutOfRangeException(nameof(nibbleCount), nibbleCount, "GUID slice must contain at least one nibble and remain within the 32 canonical GUID nibbles.");
+        }
     }
 
     /// <summary>
@@ -1758,7 +2995,6 @@ internal sealed class LibraDexGuidPatternPredicate
         {
             LibraDexGuidPatternMode.StartsWith => core + new string('x', missing),
             LibraDexGuidPatternMode.EndsWith => new string('x', missing) + core,
-            LibraDexGuidPatternMode.Contains => new string('x', missing / 2) + core + new string('x', missing - (missing / 2)),
             LibraDexGuidPatternMode.MatchesPattern => core.Length == 32 ? core : throw new FormatException("GUID pattern must be 32 nibbles for MatchesPattern."),
             _ => throw new ArgumentOutOfRangeException(nameof(mode), mode, "Unknown GUID pattern mode.")
         };
@@ -1960,6 +3196,183 @@ internal sealed class LibraDexStructuredComponentPredicate
 }
 
 /// <summary>
-/// Identifies a set operation over two LibraDex query streams.<br/>
-/// Set operations are intended to compose ordered query results without forcing callers to materialize and reshape data themselves.<br/>
+/// Evaluates one planner-visible Decimal, Single, or Double transform against a typed comparison.<br/>
+/// The first execution path is an explicit compact-key scan so correctness remains independent of inverse-range boundary derivation.<br/>
 /// </summary>
+internal sealed class LibraDexNumericTransformPredicate
+{
+    private readonly Type keyType;
+    private readonly LibraDexNumericTransformDescriptor transform;
+    private readonly LibraDexConditionOperatorKind comparison;
+    private readonly object?[] operands;
+
+    /// <summary>
+    /// Initializes an executable transformed numeric comparison after materialization has validated its operands.<br/>
+    /// </summary>
+    /// <param name="keyType">The exact Decimal, Single, or Double index key type.<br/></param>
+    /// <param name="transform">The native transform applied before comparison.<br/></param>
+    /// <param name="comparison">The scalar, range, or membership comparison to evaluate.<br/></param>
+    /// <param name="operands">The already materialized typed operands.<br/></param>
+    internal LibraDexNumericTransformPredicate(
+        Type keyType,
+        LibraDexNumericTransformDescriptor transform,
+        LibraDexConditionOperatorKind comparison,
+        object?[] operands)
+    {
+        ArgumentNullException.ThrowIfNull(keyType);
+        ArgumentNullException.ThrowIfNull(operands);
+        if (keyType != typeof(decimal) && keyType != typeof(float) && keyType != typeof(double))
+            throw new NotSupportedException($"Numeric transform predicates require Decimal, Single, or Double keys; received {keyType.FullName}.");
+
+        this.keyType = keyType;
+        this.transform = transform;
+        this.comparison = comparison;
+        this.operands = operands;
+    }
+
+    /// <summary>
+    /// Applies the native transform and evaluates the configured typed comparison for one decoded index key.<br/>
+    /// </summary>
+    /// <param name="value">The decoded Decimal, Single, or Double key.<br/></param>
+    /// <returns><see langword="true"/> when the transformed key satisfies the comparison.<br/></returns>
+    internal bool Matches(object value)
+    {
+        object transformed = value switch
+        {
+            decimal typed when keyType == typeof(decimal) => transform.Kind switch
+            {
+                LibraDexNumericTransformKind.Round => decimal.Round(typed, transform.Digits, transform.MidpointRounding),
+                LibraDexNumericTransformKind.Floor => decimal.Floor(typed),
+                LibraDexNumericTransformKind.Ceiling => decimal.Ceiling(typed),
+                LibraDexNumericTransformKind.Truncate => decimal.Truncate(typed),
+                _ => throw new ArgumentOutOfRangeException(nameof(transform), transform.Kind, "Unknown Decimal transform.")
+            },
+            float typed when keyType == typeof(float) => transform.Kind switch
+            {
+                LibraDexNumericTransformKind.Round => MathF.Round(typed, transform.Digits, transform.MidpointRounding),
+                LibraDexNumericTransformKind.Floor => MathF.Floor(typed),
+                LibraDexNumericTransformKind.Ceiling => MathF.Ceiling(typed),
+                LibraDexNumericTransformKind.Truncate => MathF.Truncate(typed),
+                _ => throw new ArgumentOutOfRangeException(nameof(transform), transform.Kind, "Unknown Single transform.")
+            },
+            double typed when keyType == typeof(double) => transform.Kind switch
+            {
+                LibraDexNumericTransformKind.Round => Math.Round(typed, transform.Digits, transform.MidpointRounding),
+                LibraDexNumericTransformKind.Floor => Math.Floor(typed),
+                LibraDexNumericTransformKind.Ceiling => Math.Ceiling(typed),
+                LibraDexNumericTransformKind.Truncate => Math.Truncate(typed),
+                _ => throw new ArgumentOutOfRangeException(nameof(transform), transform.Kind, "Unknown Double transform.")
+            },
+            _ => throw new InvalidOperationException($"Numeric transform predicate expected {keyType.FullName}, received {value.GetType().FullName}.")
+        };
+
+        return comparison switch
+        {
+            LibraDexConditionOperatorKind.EqualTo => Equal(transformed, RequireOperand(0)),
+            LibraDexConditionOperatorKind.NotEqualTo => !Equal(transformed, RequireOperand(0)),
+            LibraDexConditionOperatorKind.GreaterThan => Compare(transformed, RequireOperand(0), static value => value > 0),
+            LibraDexConditionOperatorKind.GreaterOrEqual => Compare(transformed, RequireOperand(0), static value => value >= 0),
+            LibraDexConditionOperatorKind.LessThan => Compare(transformed, RequireOperand(0), static value => value < 0),
+            LibraDexConditionOperatorKind.LessOrEqual => Compare(transformed, RequireOperand(0), static value => value <= 0),
+            LibraDexConditionOperatorKind.Between => Compare(transformed, RequireOperand(0), static value => value >= 0) &&
+                                                     Compare(transformed, RequireOperand(1), static value => value <= 0),
+            LibraDexConditionOperatorKind.NotBetween => Compare(transformed, RequireOperand(0), static value => value < 0) ||
+                                                        Compare(transformed, RequireOperand(1), static value => value > 0),
+            LibraDexConditionOperatorKind.InSet => InSet(transformed, RequireMembershipOperand()),
+            LibraDexConditionOperatorKind.NotInSet => !InSet(transformed, RequireMembershipOperand()),
+            _ => throw new NotSupportedException($"Numeric transform comparison {comparison} is not supported.")
+        };
+    }
+
+    /// <summary>
+    /// Returns one scalar operand after verifying its presence and exact key type.<br/>
+    /// </summary>
+    /// <param name="index">The zero-based operand position.<br/></param>
+    /// <returns>The validated scalar operand.<br/></returns>
+    private object RequireOperand(int index)
+    {
+        if ((uint)index >= (uint)operands.Length || operands[index] is null)
+            throw new InvalidOperationException($"Numeric transform comparison {comparison} requires non-null operand {index}.");
+
+        object value = operands[index]!;
+        if (value.GetType() != keyType)
+            throw new InvalidOperationException($"Numeric transform comparison expected {keyType.FullName} operand {index}, received {value.GetType().FullName}.");
+
+        return value;
+    }
+
+    /// <summary>
+    /// Returns the non-null enumerable membership operand without confusing its array type with one scalar key.<br/>
+    /// </summary>
+    /// <returns>The captured membership enumerable.<br/></returns>
+    private object RequireMembershipOperand()
+    {
+        if (operands.Length == 0 || operands[0] is null)
+            throw new InvalidOperationException($"Numeric transform comparison {comparison} requires a non-null membership operand.");
+
+        return operands[0]!;
+    }
+
+    /// <summary>
+    /// Evaluates exact CLR equality after requiring the right operand to match the index key type.<br/>
+    /// </summary>
+    /// <param name="left">The transformed key.<br/></param>
+    /// <param name="right">The comparison operand.<br/></param>
+    /// <returns><see langword="true"/> when the values are equal.<br/></returns>
+    private bool Equal(object left, object right)
+    {
+        if (right.GetType() != keyType)
+            throw new InvalidOperationException($"Numeric transform comparison expected {keyType.FullName}, received {right.GetType().FullName}.");
+
+        return left.Equals(right);
+    }
+
+    /// <summary>
+    /// Performs an ordered typed comparison while keeping floating NaN outside ordered relations.<br/>
+    /// </summary>
+    /// <param name="left">The transformed key.<br/></param>
+    /// <param name="right">The comparison operand.<br/></param>
+    /// <param name="accept">The relation applied to the typed comparison result.<br/></param>
+    /// <returns><see langword="true"/> when the requested ordered relation is satisfied.<br/></returns>
+    private bool Compare(object left, object right, Func<int, bool> accept)
+    {
+        if (right.GetType() != keyType)
+            throw new InvalidOperationException($"Numeric transform comparison expected {keyType.FullName}, received {right.GetType().FullName}.");
+        if ((left is float leftSingle && float.IsNaN(leftSingle)) ||
+            (right is float rightSingle && float.IsNaN(rightSingle)) ||
+            (left is double leftDouble && double.IsNaN(leftDouble)) ||
+            (right is double rightDouble && double.IsNaN(rightDouble)))
+        {
+            return false;
+        }
+
+        int value = left switch
+        {
+            decimal typed => typed.CompareTo((decimal)right),
+            float typed => typed.CompareTo((float)right),
+            double typed => typed.CompareTo((double)right),
+            _ => throw new InvalidOperationException($"Numeric transform comparison cannot compare {left.GetType().FullName}.")
+        };
+        return accept(value);
+    }
+
+    /// <summary>
+    /// Tests the transformed key against a validated typed membership enumerable without materializing another set.<br/>
+    /// </summary>
+    /// <param name="transformed">The transformed key value.<br/></param>
+    /// <param name="values">The captured membership enumerable.<br/></param>
+    /// <returns><see langword="true"/> when any member equals the transformed key.<br/></returns>
+    private bool InSet(object transformed, object values)
+    {
+        if (values is not System.Collections.IEnumerable enumerable)
+            throw new InvalidOperationException("Numeric transform membership requires an enumerable operand.");
+
+        foreach (object? value in enumerable)
+        {
+            if (value is not null && Equal(transformed, value))
+                return true;
+        }
+
+        return false;
+    }
+}

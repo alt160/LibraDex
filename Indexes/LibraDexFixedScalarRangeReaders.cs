@@ -37,9 +37,9 @@ internal sealed partial class LibraDexFileSession
             throw new ArgumentOutOfRangeException(nameof(maxRouterHops), maxRouterHops, "The SS8-8 range reader maximum router hop count must be positive.");
         }
 
-        return direction == QueryDirection.Ascending
-            ? new Scalar8Scalar8RangeReader(BuildScalar8Scalar8RangePlan(rootRouterOffset, profile, lowerEncodedKey, upperEncodedKey, maxRouterHops))
-            : new Scalar8Scalar8RangeReader(this, rootRouterOffset, profile, lowerEncodedKey, upperEncodedKey, direction, maxRouterHops);
+        // Both directions discover shelves on demand. Count/ordinal callers can still explicitly
+        // complete discovery through the reader; opening a stream must not retain every shelf.
+        return new Scalar8Scalar8RangeReader(this, rootRouterOffset, profile, lowerEncodedKey, upperEncodedKey, direction, maxRouterHops);
     }
 
     /// <summary>

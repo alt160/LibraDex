@@ -5,7 +5,7 @@ using LibraDex.Views;
 namespace LibraDex;
 
 /// <summary>
-/// Reads `VS8` range results as a forward-only cursor over raw key byte spans and scalar identity values.<br/>
+/// Reads `VS8` range results as a directional cursor over raw key byte spans and scalar identity values.<br/>
 /// The reader owns routed traversal state and loads matching shelf ranges on demand through the owning session, leaving DK/session responsible for cache-backed reads.<br/>
 /// This cursor is the comparison and public-read counterpart to the older identity-copy helper, allowing callers to iterate identities, keys, or full tuples without forced materialization.<br/>
 /// </summary>
@@ -19,11 +19,14 @@ internal sealed class VarKeyScalar8RangeReader : IDisposable
     private byte[]? terminalShelfFlags;
     private byte[][]? terminalIdentityShelves;
     private byte[][]? terminalKeys;
+    private byte[][]? rentedShelfBuffers;
     private long[]? pendingOffsets;
     private int[]? pendingHops;
     private byte[]? pendingFlags;
+    private byte[]? routerScratch;
     private RouteVisitedOffsetSet? visitedShelves;
     private RouteVisitedContextSet? visitedRouters;
+    private DataKernel.CoherentReadLease? coherentRead;
     private LibraDexFileSession? session;
     private byte[]? lowerKey;
     private byte[]? upperKey;
@@ -33,10 +36,14 @@ internal sealed class VarKeyScalar8RangeReader : IDisposable
     private int currentShelfIndex;
     private int currentSlotIndex = -1;
     private int ordinal = -1;
+    private int retiredStreamingRowCount;
     private int maxKeyLength;
     private bool decodeLogicalKeys;
     private bool captureDiagnostics;
+    private bool descendingTraversal;
+    private bool usePooledStreamingShelfReads;
     private bool traversalComplete = true;
+    private bool resumeAtAppendedTarget;
     private bool disposed;
     private long targetsPopped;
     private long targetsQueued;
@@ -72,13 +79,22 @@ internal sealed class VarKeyScalar8RangeReader : IDisposable
         ReadOnlySpan<byte> upperKey,
         int maxRouterHops = 8,
         bool decodeLogicalKeys = false,
-        bool captureDiagnostics = false)
+        bool captureDiagnostics = false,
+        QueryDirection direction = QueryDirection.Ascending,
+        DataKernel.CoherentReadLease? coherentRead = null)
         : this()
     {
+        if (direction != QueryDirection.Ascending && direction != QueryDirection.Descending)
+        {
+            throw new ArgumentOutOfRangeException(nameof(direction), direction, "Unknown query direction.");
+        }
+
         this.session = session;
         this.maxKeyLength = maxKeyLength;
         this.decodeLogicalKeys = decodeLogicalKeys;
         this.captureDiagnostics = captureDiagnostics;
+        this.coherentRead = coherentRead;
+        descendingTraversal = direction == QueryDirection.Descending;
         this.lowerKey = lowerKey.ToArray();
         this.upperKey = upperKey.ToArray();
         pendingOffsets = ArrayPool<long>.Shared.Rent(DefaultShelfCapacity);
@@ -90,13 +106,94 @@ internal sealed class VarKeyScalar8RangeReader : IDisposable
 
         byte lowerPrefix = LibraDexFileSession.GetVarKeyScalar8Prefix(lowerKey, 0);
         byte upperPrefix = LibraDexFileSession.GetVarKeyScalar8Prefix(upperKey, 0);
-        for (int prefix = upperPrefix; prefix >= lowerPrefix; prefix--)
+        if (descendingTraversal)
         {
-            long targetOffset = session.FindRouterTarget(rootRouterOffset, (byte)prefix);
-            if (targetOffset != 0)
+            for (int prefix = lowerPrefix; prefix <= upperPrefix; prefix++)
             {
-                PushTarget(targetOffset, maxRouterHops, prefix == lowerPrefix, prefix == upperPrefix);
+                long targetOffset = session.FindRouterTarget(rootRouterOffset, (byte)prefix);
+                if (targetOffset != 0)
+                {
+                    PushTarget(targetOffset, maxRouterHops, prefix == lowerPrefix, prefix == upperPrefix);
+                }
             }
+        }
+        else
+        {
+            for (int prefix = upperPrefix; prefix >= lowerPrefix; prefix--)
+            {
+                long targetOffset = session.FindRouterTarget(rootRouterOffset, (byte)prefix);
+                if (targetOffset != 0)
+                {
+                    PushTarget(targetOffset, maxRouterHops, prefix == lowerPrefix, prefix == upperPrefix);
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Opens a routed `VS8` range reader from an already-split set of disjoint continuation targets.<br/>
+    /// The targets are produced under a coherent planning read and copied into this worker-owned reader's pending stack before that transition read is released.<br/>
+    /// Global lower/upper bounds remain authoritative at every shelf, while each target's edge flags preserve the same boundary pruning context used by the ordinary root-starting cursor.<br/>
+    /// </summary>
+    /// <param name="session">The worker-visible LibraDex session.<br/></param>
+    /// <param name="maxKeyLength">The maximum encoded key length accepted by the index.<br/></param>
+    /// <param name="lowerKey">The inclusive global lower encoded key bound.<br/></param>
+    /// <param name="upperKey">The inclusive global upper encoded key bound.<br/></param>
+    /// <param name="targets">Disjoint continuation targets assigned to this worker.<br/></param>
+    /// <param name="decodeLogicalKeys">Whether current keys should expose decoded logical payload bytes.<br/></param>
+    /// <param name="captureDiagnostics">Whether physical traversal counters should be retained.<br/></param>
+    /// <param name="direction">The requested within-worker traversal direction.<br/></param>
+    /// <param name="usePooledStreamingShelfReads">Whether cold shelf images should use reader-owned pooled buffers that are released immediately after forward consumption.<br/></param>
+    /// <param name="coherentRead">The coherent read acquired on this worker thread.<br/></param>
+    internal VarKeyScalar8RangeReader(
+        LibraDexFileSession session,
+        int maxKeyLength,
+        ReadOnlySpan<byte> lowerKey,
+        ReadOnlySpan<byte> upperKey,
+        IReadOnlyList<VarKeyScalar8PhysicalTarget> targets,
+        bool decodeLogicalKeys,
+        bool captureDiagnostics,
+        QueryDirection direction,
+        bool usePooledStreamingShelfReads,
+        DataKernel.CoherentReadLease coherentRead)
+        : this()
+    {
+        ArgumentNullException.ThrowIfNull(targets);
+        ArgumentNullException.ThrowIfNull(coherentRead);
+        if (targets.Count == 0)
+            throw new ArgumentException("A physical VS8 worker reader requires at least one continuation target.", nameof(targets));
+        if (direction != QueryDirection.Ascending && direction != QueryDirection.Descending)
+            throw new ArgumentOutOfRangeException(nameof(direction), direction, "Unknown query direction.");
+        if (usePooledStreamingShelfReads && direction != QueryDirection.Ascending)
+            throw new ArgumentException("Pooled VS8 streaming shelf reads require ascending forward traversal.", nameof(direction));
+
+        this.session = session;
+        this.maxKeyLength = maxKeyLength;
+        this.decodeLogicalKeys = decodeLogicalKeys;
+        this.captureDiagnostics = captureDiagnostics;
+        this.usePooledStreamingShelfReads = usePooledStreamingShelfReads;
+        this.coherentRead = coherentRead;
+        descendingTraversal = direction == QueryDirection.Descending;
+        this.lowerKey = lowerKey.ToArray();
+        this.upperKey = upperKey.ToArray();
+        pendingOffsets = ArrayPool<long>.Shared.Rent(Math.Max(DefaultShelfCapacity, targets.Count));
+        pendingHops = ArrayPool<int>.Shared.Rent(Math.Max(DefaultShelfCapacity, targets.Count));
+        pendingFlags = ArrayPool<byte>.Shared.Rent(Math.Max(DefaultShelfCapacity, targets.Count));
+        visitedShelves = RouteVisitedOffsetSet.Rent();
+        visitedRouters = RouteVisitedContextSet.Rent();
+        if (usePooledStreamingShelfReads)
+            rentedShelfBuffers = ArrayPool<byte[]>.Shared.Rent(shelves.Length);
+        traversalComplete = false;
+
+        if (descendingTraversal)
+        {
+            for (int targetIndex = 0; targetIndex < targets.Count; targetIndex++)
+                PushPhysicalTarget(targets[targetIndex]);
+        }
+        else
+        {
+            for (int targetIndex = targets.Count - 1; targetIndex >= 0; targetIndex--)
+                PushPhysicalTarget(targets[targetIndex]);
         }
     }
 
@@ -109,6 +206,12 @@ internal sealed class VarKeyScalar8RangeReader : IDisposable
         get
         {
             ThrowIfDisposed();
+            if (usePooledStreamingShelfReads)
+            {
+                throw new InvalidOperationException(
+                    "A pooled streaming VS8 reader does not retain consumed shelves and therefore cannot calculate Count.");
+            }
+
             EnsureAllRangesLoaded();
             return rowCount;
         }
@@ -118,7 +221,9 @@ internal sealed class VarKeyScalar8RangeReader : IDisposable
     /// Gets the zero-based row ordinal after a successful <see cref="MoveNext"/> call.<br/>
     /// The value is `-1` before the first row and equals <see cref="Count"/> after the reader passes the final row.<br/>
     /// </summary>
-    public int Ordinal => ordinal;
+    public int Ordinal => usePooledStreamingShelfReads
+        ? checked(retiredStreamingRowCount + ordinal)
+        : ordinal;
 
     /// <summary>
     /// Gets the raw key bytes for the current row.<br/>
@@ -217,12 +322,14 @@ internal sealed class VarKeyScalar8RangeReader : IDisposable
     public bool MoveNext()
     {
         ThrowIfDisposed();
+        RetireConsumedStreamingWindow();
         while (ordinal + 1 >= rowCount && LoadNextShelfRange())
         {
         }
 
         if (ordinal + 1 >= rowCount)
         {
+            ReleaseConsumedStreamingShelf(currentShelfIndex);
             ordinal = rowCount;
             currentShelfIndex = shelfCount;
             currentSlotIndex = -1;
@@ -234,17 +341,122 @@ internal sealed class VarKeyScalar8RangeReader : IDisposable
             currentShelfIndex = 0;
             currentSlotIndex = startSlots[0];
         }
+        else if (resumeAtAppendedTarget)
+        {
+            if ((uint)currentShelfIndex >= (uint)shelfCount)
+                throw new InvalidDataException("The appended VS8 continuation target did not load a matching shelf range.");
+
+            currentSlotIndex = startSlots[currentShelfIndex];
+            resumeAtAppendedTarget = false;
+        }
         else
         {
             currentSlotIndex++;
             while (currentShelfIndex < shelfCount && currentSlotIndex >= endSlots[currentShelfIndex])
             {
+                ReleaseConsumedStreamingShelf(currentShelfIndex);
                 currentShelfIndex++;
                 if (currentShelfIndex < shelfCount)
                 {
                     currentSlotIndex = startSlots[currentShelfIndex];
                 }
             }
+        }
+
+        ordinal++;
+        return true;
+    }
+
+    /// <summary>
+    /// Advances a descending reader to the previous persisted tuple in key/identity order.<br/>
+    /// Router targets are discovered from high key to low key, while each retained shelf range is consumed from its final matching slot to its first matching slot.<br/>
+    /// Forward-only terminal and duplicate shelf chains are retained once and their shelf references are reversed without copying keys, identities, or shelf payloads.<br/>
+    /// </summary>
+    /// <returns><see langword="true"/> when the reader is positioned on a valid descending row; otherwise <see langword="false"/>.<br/></returns>
+    public bool MovePrevious()
+    {
+        ThrowIfDisposed();
+        if (usePooledStreamingShelfReads)
+        {
+            throw new InvalidOperationException(
+                "A pooled streaming VS8 reader is forward-only because consumed shelf buffers are returned immediately.");
+        }
+
+        if (!descendingTraversal)
+        {
+            EnsureAllRangesLoaded();
+        }
+        else
+        {
+            while (ordinal + 1 >= rowCount && LoadNextShelfRange())
+            {
+            }
+        }
+
+        if (rowCount == 0)
+        {
+            ordinal = rowCount;
+            currentShelfIndex = shelfCount;
+            currentSlotIndex = -1;
+            return false;
+        }
+
+        if (descendingTraversal)
+        {
+            if (ordinal < 0)
+            {
+                currentShelfIndex = 0;
+                currentSlotIndex = endSlots[0] - 1;
+            }
+            else
+            {
+                currentSlotIndex--;
+                while (currentShelfIndex < shelfCount && currentSlotIndex < startSlots[currentShelfIndex])
+                {
+                    currentShelfIndex++;
+                    if (currentShelfIndex < shelfCount)
+                    {
+                        currentSlotIndex = endSlots[currentShelfIndex] - 1;
+                    }
+                }
+            }
+
+            if (currentShelfIndex >= shelfCount)
+            {
+                ordinal = rowCount;
+                currentSlotIndex = -1;
+                return false;
+            }
+
+            ordinal++;
+            return true;
+        }
+
+        EnsureAllRangesLoaded();
+        if (ordinal < 0)
+        {
+            currentShelfIndex = shelfCount - 1;
+            currentSlotIndex = endSlots[currentShelfIndex] - 1;
+        }
+        else
+        {
+            currentSlotIndex--;
+            while (currentShelfIndex >= 0 && currentSlotIndex < startSlots[currentShelfIndex])
+            {
+                currentShelfIndex--;
+                if (currentShelfIndex >= 0)
+                {
+                    currentSlotIndex = endSlots[currentShelfIndex] - 1;
+                }
+            }
+        }
+
+        if (currentShelfIndex < 0)
+        {
+            ordinal = rowCount;
+            currentShelfIndex = shelfCount;
+            currentSlotIndex = -1;
+            return false;
         }
 
         ordinal++;
@@ -260,6 +472,12 @@ internal sealed class VarKeyScalar8RangeReader : IDisposable
     public int Skip(int count)
     {
         ThrowIfDisposed();
+        if (usePooledStreamingShelfReads)
+        {
+            throw new InvalidOperationException(
+                "A pooled streaming VS8 reader does not support retained-range Skip semantics.");
+        }
+
         while (!traversalComplete && rowCount - ordinal - 1 < count)
         {
             if (!LoadNextShelfRange())
@@ -323,6 +541,24 @@ internal sealed class VarKeyScalar8RangeReader : IDisposable
 
     internal void AddShelfRange(VarKeyScalar8ReadOnly shelf, ReadOnlySpan<byte> lowerKey, ReadOnlySpan<byte> upperKey)
     {
+        _ = AddShelfRange(shelf, lowerKey, upperKey, rentedShelfBuffer: null);
+    }
+
+    /// <summary>
+    /// Resolves and appends the matching slot interval from one shelf while transferring any pooled shelf-buffer ownership to the reader.<br/>
+    /// A shelf with no matching slots returns its pooled buffer immediately and is not retained in the reader arrays.<br/>
+    /// </summary>
+    /// <param name="shelf">The validated shelf view.<br/></param>
+    /// <param name="lowerKey">The inclusive lower encoded key.<br/></param>
+    /// <param name="upperKey">The inclusive upper encoded key.<br/></param>
+    /// <param name="rentedShelfBuffer">The optional ArrayPool-owned shelf image backing <paramref name="shelf"/>.<br/></param>
+    /// <returns><see langword="true"/> when at least one matching row was retained.<br/></returns>
+    private bool AddShelfRange(
+        VarKeyScalar8ReadOnly shelf,
+        ReadOnlySpan<byte> lowerKey,
+        ReadOnlySpan<byte> upperKey,
+        byte[]? rentedShelfBuffer)
+    {
         if (!shelf.IsValid)
         {
             throw new InvalidDataException("The routed VS8 range target shelf is invalid.");
@@ -335,7 +571,10 @@ internal sealed class VarKeyScalar8RangeReader : IDisposable
             endSlot++;
         }
 
-        AddShelfRange(shelf, startSlot, endSlot);
+        bool retained = AddShelfRange(shelf, startSlot, endSlot, rentedShelfBuffer);
+        if (!retained && rentedShelfBuffer is not null)
+            ArrayPool<byte>.Shared.Return(rentedShelfBuffer, clearArray: false);
+        return retained;
     }
 
     /// <summary>
@@ -353,6 +592,16 @@ internal sealed class VarKeyScalar8RangeReader : IDisposable
         ArrayPool<VarKeyScalar8ReadOnly>.Shared.Return(shelves, clearArray: true);
         ArrayPool<int>.Shared.Return(startSlots, clearArray: false);
         ArrayPool<int>.Shared.Return(endSlots, clearArray: false);
+        if (rentedShelfBuffers is not null)
+        {
+            for (int i = 0; i < shelfCount; i++)
+            {
+                if (rentedShelfBuffers[i] is byte[] rentedShelfBuffer)
+                    ArrayPool<byte>.Shared.Return(rentedShelfBuffer, clearArray: false);
+            }
+
+            ArrayPool<byte[]>.Shared.Return(rentedShelfBuffers, clearArray: true);
+        }
         if (terminalIdentityShelves is not null)
         {
             for (int i = 0; i < shelfCount; i++)
@@ -391,16 +640,26 @@ internal sealed class VarKeyScalar8RangeReader : IDisposable
             ArrayPool<byte>.Shared.Return(pendingFlags, clearArray: false);
         }
 
+        if (routerScratch is not null)
+        {
+            ArrayPool<byte>.Shared.Return(routerScratch, clearArray: false);
+        }
+
         visitedShelves?.Dispose();
         visitedRouters?.Dispose();
         pendingOffsets = null;
         pendingHops = null;
         pendingFlags = null;
+        routerScratch = null;
         terminalShelfFlags = null;
         terminalIdentityShelves = null;
         terminalKeys = null;
+        rentedShelfBuffers = null;
         visitedShelves = null;
         visitedRouters = null;
+        DataKernel.CoherentReadLease? completedCoherentRead = coherentRead;
+        coherentRead = null;
+        completedCoherentRead?.Dispose();
         session = null;
         lowerKey = null;
         upperKey = null;
@@ -408,6 +667,7 @@ internal sealed class VarKeyScalar8RangeReader : IDisposable
         rowCount = 0;
         pendingCount = 0;
         ordinal = -1;
+        retiredStreamingRowCount = 0;
         currentShelfIndex = 0;
         currentSlotIndex = -1;
     }
@@ -426,11 +686,15 @@ internal sealed class VarKeyScalar8RangeReader : IDisposable
         }
     }
 
-    private void AddShelfRange(VarKeyScalar8ReadOnly shelf, int startSlot, int endSlot)
+    private bool AddShelfRange(
+        VarKeyScalar8ReadOnly shelf,
+        int startSlot,
+        int endSlot,
+        byte[]? rentedShelfBuffer = null)
     {
         if (endSlot <= startSlot)
         {
-            return;
+            return false;
         }
 
         if (shelfCount == shelves.Length)
@@ -442,6 +706,8 @@ internal sealed class VarKeyScalar8RangeReader : IDisposable
         startSlots[shelfCount] = startSlot;
         endSlots[shelfCount] = endSlot;
         terminalShelfFlags![shelfCount] = 0;
+        if (rentedShelfBuffers is not null)
+            rentedShelfBuffers[shelfCount] = rentedShelfBuffer!;
         shelfCount++;
         int added = endSlot - startSlot;
         rowCount = checked(rowCount + added);
@@ -449,6 +715,7 @@ internal sealed class VarKeyScalar8RangeReader : IDisposable
         {
             matchingRows += added;
         }
+        return true;
     }
 
     private void AddTerminalIdentityShelfRange(byte[] shelfBytes, byte[] keyBytes)
@@ -492,7 +759,8 @@ internal sealed class VarKeyScalar8RangeReader : IDisposable
         ReadOnlySpan<byte> localLowerKey = lowerKey ?? throw new ObjectDisposedException(nameof(VarKeyScalar8RangeReader));
         ReadOnlySpan<byte> localUpperKey = upperKey ?? throw new ObjectDisposedException(nameof(VarKeyScalar8RangeReader));
         int previousRowCount = rowCount;
-        byte[] routerBytes = new byte[RouterLayout.Size];
+        byte[] routerBytes = routerScratch ??= ArrayPool<byte>.Shared.Rent(RouterLayout.Size);
+        Span<byte> routerPage = routerBytes.AsSpan(0, RouterLayout.Size);
         while (pendingCount > 0)
         {
             PopTarget(out long targetOffset, out int remainingHops, out bool lowerEdge, out bool upperEdge);
@@ -513,7 +781,10 @@ internal sealed class VarKeyScalar8RangeReader : IDisposable
                     continue;
                 }
 
-                VarKeyScalar8ReadOnly shelf = localSession.ReadVarKeyScalar8ReadOnlyShelf(targetOffset, maxKeyLength);
+                VarKeyScalar8ReadOnly shelf = ReadShelfForCurrentOwnership(
+                    localSession,
+                    targetOffset,
+                    out byte[]? rentedShelfBuffer);
                 if (captureDiagnostics)
                 {
                     shelvesVisited++;
@@ -524,10 +795,44 @@ internal sealed class VarKeyScalar8RangeReader : IDisposable
                         duplicateRunShelvesVisited++;
                     }
                 }
-                AddShelfRange(shelf, localLowerKey, localUpperKey);
-                if (shelf.IsValid && shelf.IsDuplicateRun && shelf.DuplicateRunNextOffset != 0)
+                if (descendingTraversal && shelf.IsDuplicateRun)
                 {
-                    PushTarget(shelf.DuplicateRunNextOffset, remainingHops, lowerEdge, upperEdge);
+                    int firstShelfIndex = shelfCount;
+                    while (true)
+                    {
+                        _ = AddShelfRange(shelf, localLowerKey, localUpperKey, rentedShelfBuffer);
+                        long nextOffset = shelf.DuplicateRunNextOffset;
+                        if (nextOffset == 0 || !localVisitedShelves.Add(nextOffset))
+                        {
+                            break;
+                        }
+
+                        shelf = ReadShelfForCurrentOwnership(localSession, nextOffset, out rentedShelfBuffer);
+                        if (!shelf.IsDuplicateRun)
+                        {
+                            throw new InvalidDataException("The routed VS8 duplicate-run continuation is not a duplicate-run shelf.");
+                        }
+                        if (captureDiagnostics)
+                        {
+                            shelvesVisited++;
+                            duplicateRunShelvesVisited++;
+                            shelfSlotsDecoded += shelf.ItemCount;
+                            shelfBytesTouched += shelf.ShelfExtentSize;
+                        }
+                    }
+
+                    ReverseShelfRanges(firstShelfIndex, shelfCount);
+                }
+                else
+                {
+                    long duplicateRunNextOffset = shelf.IsDuplicateRun
+                        ? shelf.DuplicateRunNextOffset
+                        : 0;
+                    _ = AddShelfRange(shelf, localLowerKey, localUpperKey, rentedShelfBuffer);
+                    if (duplicateRunNextOffset != 0)
+                    {
+                        PushTarget(duplicateRunNextOffset, remainingHops, lowerEdge, upperEdge);
+                    }
                 }
 
                 if (rowCount > previousRowCount)
@@ -566,6 +871,7 @@ internal sealed class VarKeyScalar8RangeReader : IDisposable
 
                 int shelfExtentSize = TerminalIdentityRootLayout.ReadShelfExtentSize(rootBytes);
                 long identityShelfOffset = TerminalIdentityRootLayout.ReadFirstShelfOffset(rootBytes);
+                int firstShelfIndex = shelfCount;
                 while (identityShelfOffset != 0)
                 {
                     if (!localVisitedShelves.Add(identityShelfOffset))
@@ -582,6 +888,10 @@ internal sealed class VarKeyScalar8RangeReader : IDisposable
                     long nextOffset = TerminalIdentity8ShelfLayout.ReadNextShelfOffset(identityShelfBytes);
                     AddTerminalIdentityShelfRange(identityShelfBytes, keyBytes);
                     identityShelfOffset = nextOffset;
+                }
+                if (descendingTraversal)
+                {
+                    ReverseShelfRanges(firstShelfIndex, shelfCount);
                 }
 
                 if (rowCount > previousRowCount)
@@ -602,8 +912,8 @@ internal sealed class VarKeyScalar8RangeReader : IDisposable
                 continue;
             }
 
-            localSession.ReadRouterPageUsingArenaCache(targetOffset, routerBytes);
-            RouterReader router = new(routerBytes);
+            localSession.ReadRouterPageUsingArenaCache(targetOffset, routerPage);
+            RouterReader router = new(routerPage);
             if (!router.IsValid)
             {
                 throw new InvalidDataException("The routed VS8 range router is invalid.");
@@ -646,7 +956,10 @@ internal sealed class VarKeyScalar8RangeReader : IDisposable
                     _ = router.FindTarget(localUpperKey, router.KeyDepth, out upperRouteIndex);
                 }
 
-                for (int routeIndex = router.RouteCount - 1; routeIndex >= 0; routeIndex--)
+                int routeIndex = descendingTraversal ? 0 : router.RouteCount - 1;
+                int routeLimit = descendingTraversal ? router.RouteCount : -1;
+                int routeStep = descendingTraversal ? 1 : -1;
+                for (; routeIndex != routeLimit; routeIndex += routeStep)
                 {
                     if (router.TrySelectMultiByteRangeRoute(
                         routeIndex,
@@ -675,13 +988,40 @@ internal sealed class VarKeyScalar8RangeReader : IDisposable
                 oneByteRoutersVisited++;
                 routerRoutesExamined += upperPrefix - lowerPrefix + 1;
             }
-            for (int prefix = upperPrefix; prefix >= lowerPrefix; prefix--)
+            int prefix = descendingTraversal ? lowerPrefix : upperPrefix;
+            while (descendingTraversal ? prefix <= upperPrefix : prefix >= lowerPrefix)
             {
                 long childTargetOffset = router.FindTarget((byte)prefix);
-                if (childTargetOffset != 0)
+                if (childTargetOffset == 0)
                 {
-                    PushTarget(childTargetOffset, remainingHops - 1, lowerEdge && prefix == lowerPrefix, upperEdge && prefix == upperPrefix);
+                    prefix += descendingTraversal ? 1 : -1;
+                    continue;
                 }
+
+                int runStart = prefix;
+                int runEnd = prefix;
+                if (descendingTraversal)
+                {
+                    while (runEnd < upperPrefix && router.FindTarget((byte)(runEnd + 1)) == childTargetOffset)
+                    {
+                        runEnd++;
+                    }
+                }
+                else
+                {
+                    while (runStart > lowerPrefix && router.FindTarget((byte)(runStart - 1)) == childTargetOffset)
+                    {
+                        runStart--;
+                    }
+                }
+
+                bool singlePrefixRun = runStart == runEnd;
+                PushTarget(
+                    childTargetOffset,
+                    remainingHops - 1,
+                    singlePrefixRun && lowerEdge && runStart == lowerPrefix,
+                    singlePrefixRun && upperEdge && runEnd == upperPrefix);
+                prefix = descendingTraversal ? runEnd + 1 : runStart - 1;
             }
         }
 
@@ -729,6 +1069,46 @@ internal sealed class VarKeyScalar8RangeReader : IDisposable
         {
             targetsQueued++;
         }
+    }
+
+    /// <summary>
+    /// Validates and appends one planner-produced continuation target to this reader's private pending stack.<br/>
+    /// Keeping validation at the ownership transfer boundary prevents a malformed partition plan from weakening the ordinary cursor's offset and hop protections.<br/>
+    /// </summary>
+    /// <param name="target">The disjoint physical continuation target to enqueue.<br/></param>
+    private void PushPhysicalTarget(VarKeyScalar8PhysicalTarget target)
+    {
+        if (target.TargetOffset <= 0)
+            throw new InvalidDataException("A physical VS8 partition contained a non-positive target offset.");
+        if (target.RemainingRouterHops <= 0)
+            throw new InvalidDataException("A physical VS8 partition exhausted its router hop budget before worker traversal began.");
+
+        PushTarget(target.TargetOffset, target.RemainingRouterHops, target.LowerEdge, target.UpperEdge);
+    }
+
+    /// <summary>
+    /// Appends one disjoint planner-produced continuation target after this reader has drained its current target set.<br/>
+    /// The reader retains its worker-owned coherent read and visited-route guards, allowing a FastFind worker to claim bounded topology work dynamically without reopening the index root or crossing a published generation.<br/>
+    /// Existing shelf views remain valid until disposal; the next <see cref="MoveNext"/> resumes at the first matching slot loaded for <paramref name="target"/>.<br/>
+    /// </summary>
+    /// <param name="target">The next disjoint physical continuation target owned by this worker.<br/></param>
+    internal void AppendPhysicalTarget(VarKeyScalar8PhysicalTarget target)
+    {
+        ThrowIfDisposed();
+        if (!traversalComplete || pendingCount != 0 || ordinal != rowCount || currentShelfIndex != shelfCount)
+        {
+            throw new InvalidOperationException(
+                "A VS8 continuation target can be appended only after the current target set has been drained completely.");
+        }
+
+        bool hadRows = rowCount != 0;
+        PushPhysicalTarget(target);
+        traversalComplete = false;
+        ordinal = rowCount - 1;
+        resumeAtAppendedTarget = hadRows;
+        if (!hadRows)
+            currentShelfIndex = 0;
+        currentSlotIndex = -1;
     }
 
     private void PopTarget(out long offset, out int remainingHops, out bool lowerEdge, out bool upperEdge)
@@ -780,9 +1160,125 @@ internal sealed class VarKeyScalar8RangeReader : IDisposable
             terminalKeys = newTerminalKeys;
         }
 
+        if (rentedShelfBuffers is not null)
+        {
+            byte[][] newRentedShelfBuffers = ArrayPool<byte[]>.Shared.Rent(newLength);
+            Array.Copy(rentedShelfBuffers, newRentedShelfBuffers, shelfCount);
+            ArrayPool<byte[]>.Shared.Return(rentedShelfBuffers, clearArray: true);
+            rentedShelfBuffers = newRentedShelfBuffers;
+        }
+
         shelves = newShelves;
         startSlots = newStartSlots;
         endSlots = newEndSlots;
+    }
+
+    /// <summary>
+    /// Reverses a contiguous set of already-retained shelf ranges in place without copying any persisted shelf payload.<br/>
+    /// Descending terminal and duplicate-key traversal uses this after following the format's forward-only continuation links once, making the last physical shelf the first range consumed by <see cref="MovePrevious"/>.<br/>
+    /// All parallel shelf metadata arrays are exchanged together so key, identity, and slot bounds retain one ownership position.<br/>
+    /// </summary>
+    /// <param name="startIndex">Inclusive first retained shelf index to reverse.<br/></param>
+    /// <param name="endIndexExclusive">Exclusive final retained shelf index to reverse.<br/></param>
+    private void ReverseShelfRanges(int startIndex, int endIndexExclusive)
+    {
+        int left = startIndex;
+        int right = endIndexExclusive - 1;
+        while (left < right)
+        {
+            (shelves[left], shelves[right]) = (shelves[right], shelves[left]);
+            (startSlots[left], startSlots[right]) = (startSlots[right], startSlots[left]);
+            (endSlots[left], endSlots[right]) = (endSlots[right], endSlots[left]);
+            (terminalShelfFlags![left], terminalShelfFlags[right]) = (terminalShelfFlags[right], terminalShelfFlags[left]);
+            (terminalIdentityShelves![left], terminalIdentityShelves[right]) = (terminalIdentityShelves[right], terminalIdentityShelves[left]);
+            (terminalKeys![left], terminalKeys[right]) = (terminalKeys[right], terminalKeys[left]);
+            if (rentedShelfBuffers is not null)
+                (rentedShelfBuffers[left], rentedShelfBuffers[right]) = (rentedShelfBuffers[right], rentedShelfBuffers[left]);
+            left++;
+            right--;
+        }
+    }
+
+    /// <summary>
+    /// Loads one ordinary shelf through either the existing session-owned cache contract or the FastFind-only pooled streaming contract.<br/>
+    /// </summary>
+    /// <param name="localSession">The owning LibraDex session.<br/></param>
+    /// <param name="shelfOffset">The physical shelf offset.<br/></param>
+    /// <param name="rentedShelfBuffer">The optional ArrayPool-owned backing buffer transferred to this reader.<br/></param>
+    /// <returns>The validated shelf view.<br/></returns>
+    private VarKeyScalar8ReadOnly ReadShelfForCurrentOwnership(
+        LibraDexFileSession localSession,
+        long shelfOffset,
+        out byte[]? rentedShelfBuffer)
+    {
+        if (usePooledStreamingShelfReads)
+        {
+            return localSession.ReadVarKeyScalar8ReadOnlyShelfForStreaming(
+                shelfOffset,
+                maxKeyLength,
+                out rentedShelfBuffer);
+        }
+
+        rentedShelfBuffer = null;
+        return localSession.ReadVarKeyScalar8ReadOnlyShelf(shelfOffset, maxKeyLength);
+    }
+
+    /// <summary>
+    /// Returns the pooled shelf image whose final row was consumed by a forward-only streaming cursor.<br/>
+    /// The shelf reference is cleared at the same ownership boundary so no later reader operation can observe bytes after ArrayPool reuse.<br/>
+    /// </summary>
+    /// <param name="completedShelfIndex">The zero-based consumed shelf index.<br/></param>
+    private void ReleaseConsumedStreamingShelf(int completedShelfIndex)
+    {
+        if (rentedShelfBuffers is null || (uint)completedShelfIndex >= (uint)shelfCount)
+            return;
+
+        byte[]? rentedShelfBuffer = rentedShelfBuffers[completedShelfIndex];
+        if (rentedShelfBuffer is null)
+            return;
+
+        rentedShelfBuffers[completedShelfIndex] = null!;
+        shelves[completedShelfIndex] = null!;
+        ArrayPool<byte>.Shared.Return(rentedShelfBuffer, clearArray: false);
+    }
+
+    /// <summary>
+    /// Retires a fully consumed forward-only streaming window before the next routed shelf is loaded.<br/>
+    /// The ordinary bidirectional cursor retains every shelf range for counting, skipping, and reverse movement; the FastFind streaming cursor supports none of those operations and therefore reuses its metadata slots instead of growing parallel arrays across the entire scan.<br/>
+    /// A cumulative row base preserves the externally observed ordinal while shelf views, slot bounds, terminal metadata, and pooled byte ownership become eligible for immediate reuse.<br/>
+    /// </summary>
+    private void RetireConsumedStreamingWindow()
+    {
+        if (!usePooledStreamingShelfReads ||
+            rowCount == 0 ||
+            ordinal + 1 < rowCount)
+        {
+            return;
+        }
+
+        for (int shelfIndex = 0; shelfIndex < shelfCount; shelfIndex++)
+        {
+            ReleaseConsumedStreamingShelf(shelfIndex);
+            if (terminalShelfFlags![shelfIndex] != 0 &&
+                terminalIdentityShelves![shelfIndex] is byte[] terminalShelfBytes)
+            {
+                ArrayPool<byte>.Shared.Return(terminalShelfBytes, clearArray: false);
+            }
+            shelves[shelfIndex] = null!;
+            if (rentedShelfBuffers is not null)
+                rentedShelfBuffers[shelfIndex] = null!;
+            terminalShelfFlags[shelfIndex] = 0;
+            terminalIdentityShelves![shelfIndex] = null!;
+            terminalKeys![shelfIndex] = null!;
+        }
+
+        retiredStreamingRowCount = checked(retiredStreamingRowCount + rowCount);
+        shelfCount = 0;
+        rowCount = 0;
+        currentShelfIndex = 0;
+        currentSlotIndex = -1;
+        ordinal = -1;
+        resumeAtAppendedTarget = false;
     }
 
     private void PositionAtOrdinal(int targetOrdinal)

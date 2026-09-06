@@ -420,4 +420,63 @@ internal static class VarKeyScalar8
         VarKeyScalar8Layout.WriteRecordArenaEnd(bytes, recordCursor);
         return true;
     }
+
+    /// <summary>
+    /// Builds one shelf directly from a stable ordinal tuple source without materializing per-key managed arrays.<br/>
+    /// The source range must already be sorted by encoded key then identity and remain stable for the duration of this call.<br/>
+    /// </summary>
+    /// <param name="source">Stable encoded tuple source.<br/></param>
+    /// <param name="start">Inclusive source ordinal.<br/></param>
+    /// <param name="end">Exclusive source ordinal.<br/></param>
+    /// <param name="profile">Target shelf profile.<br/></param>
+    /// <param name="bytes">Completed shelf bytes when the range fits.<br/></param>
+    /// <returns><see langword="true"/> when the complete range fits the supplied profile; otherwise <see langword="false"/>.<br/></returns>
+    internal static bool TryBuildFromSorted(
+        IVarKeyScalar8SortedTupleSource source,
+        int start,
+        int end,
+        VarKeyScalar8Profile profile,
+        out byte[] bytes)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        if (start < 0 || end < start || end > source.Count)
+            throw new ArgumentOutOfRangeException(nameof(start));
+
+        int count = end - start;
+        bytes = new byte[profile.ShelfExtentSize];
+        VarKeyScalar8Layout.Initialize(bytes, profile);
+        int slotLength = checked(count * VarKeyScalar8Layout.SlotSize);
+        int slotCapacityBytes = VarKeyScalar8Layout.ReadSlotCapacityBytes(bytes);
+        if (slotLength > slotCapacityBytes)
+            return false;
+
+        int recordCursor = VarKeyScalar8Layout.HeaderSize + slotCapacityBytes;
+        int[] recordOffsets = GC.AllocateUninitializedArray<int>(count);
+        for (int i = 0; i < count; i++)
+        {
+            ReadOnlySpan<byte> key = source.GetKey(start + i);
+            if (key.Length <= 0 || key.Length > profile.MaxKeyLength)
+                return false;
+            int recordLength = VarKeyScalar8Layout.GetNewRecordLength(key.Length);
+            if (recordCursor + recordLength > profile.ShelfExtentSize)
+                return false;
+            recordOffsets[i] = recordCursor;
+            VarKeyScalar8Layout.WriteRecord(bytes, recordCursor, key, source.GetIdentity(start + i));
+            recordCursor += recordLength;
+        }
+
+        int slotCursor = VarKeyScalar8Layout.HeaderSize;
+        for (int i = 0; i < count; i++)
+        {
+            ReadOnlySpan<byte> key = source.GetKey(start + i);
+            VarKeyScalar8Layout.WriteSlotRecordOffset(bytes, slotCursor, recordOffsets[i]);
+            VarKeyScalar8Layout.WriteSlotKeyPrefix(bytes, slotCursor, VarKeyScalar8Layout.CreateKeyPrefix(key));
+            slotCursor += VarKeyScalar8Layout.SlotSize;
+        }
+
+        VarKeyScalar8Layout.WriteItemCount(bytes, count);
+        VarKeyScalar8Layout.WriteSlotStreamLength(bytes, slotCursor - VarKeyScalar8Layout.HeaderSize);
+        VarKeyScalar8Layout.WriteRecordArenaEnd(bytes, recordCursor);
+        return true;
+    }
 }

@@ -89,30 +89,45 @@ public sealed class LibraDexBatch<TKey, TIdentity> : IDisposable, ISharedLibraDe
     {
         attemptedInsertCount++;
         LibraDexStagedIdentityKeyGuard<TKey, TIdentity>? stagedGuard = null;
+        bool newlyTracked = false;
         if (index.IdentityKeyMultiplicity == IdentityKeyMultiplicity.SingleKeyPerIdentity)
         {
             stagedGuard = stagedIdentityKeyGuard ??= new LibraDexStagedIdentityKeyGuard<TKey, TIdentity>(index);
-            if (!stagedGuard.CanInsert(identity, key))
+            if (!stagedGuard.CanInsert(identity, key, out newlyTracked))
             {
                 return new LibraDexGenericInsertResult(false, false, default, default);
             }
         }
 
         bool allowDuplicateKeys = index.KeyContract == IndexKeys.NonUnique;
-        LibraDexGenericInsertResult result = index.Shape switch
+        LibraDexGenericInsertResult result;
+        try
         {
-            LibraDexGenericScalarShape.SS88 => InsertScalar8Scalar8(key, identity, allowDuplicateKeys),
-            LibraDexGenericScalarShape.SS168 => InsertScalar16Scalar8(key, identity, allowDuplicateKeys),
-            LibraDexGenericScalarShape.SS816 => InsertScalar8Scalar16(key, identity, allowDuplicateKeys),
-            LibraDexGenericScalarShape.SS1616 => InsertScalar16Scalar16(key, identity, allowDuplicateKeys),
-            LibraDexGenericScalarShape.FS328 => InsertFixed32Scalar8(key, identity, allowDuplicateKeys),
-            LibraDexGenericScalarShape.FS3216 => InsertFixed32Scalar16(key, identity, allowDuplicateKeys),
-            _ => throw new InvalidDataException($"Unsupported generic LibraDex shape {index.Shape}.")
-        };
+            result = index.Shape switch
+            {
+                LibraDexGenericScalarShape.SS88 => InsertScalar8Scalar8(key, identity, allowDuplicateKeys),
+                LibraDexGenericScalarShape.SS168 => InsertScalar16Scalar8(key, identity, allowDuplicateKeys),
+                LibraDexGenericScalarShape.SS816 => InsertScalar8Scalar16(key, identity, allowDuplicateKeys),
+                LibraDexGenericScalarShape.SS1616 => InsertScalar16Scalar16(key, identity, allowDuplicateKeys),
+                LibraDexGenericScalarShape.FS328 => InsertFixed32Scalar8(key, identity, allowDuplicateKeys),
+                LibraDexGenericScalarShape.FS3216 => InsertFixed32Scalar16(key, identity, allowDuplicateKeys),
+                _ => throw new InvalidDataException($"Unsupported generic LibraDex shape {index.Shape}.")
+            };
+        }
+        catch
+        {
+            stagedGuard?.CancelUnusedReservation(identity, newlyTracked);
+            throw;
+        }
+
         if (result.Inserted)
         {
             stagedGuard?.RecordInserted(identity, key);
             index.InsertExactReversedProjection(key, identity, durabilityBatch);
+        }
+        else
+        {
+            stagedGuard?.CancelUnusedReservation(identity, newlyTracked);
         }
 
         return result;
@@ -143,7 +158,7 @@ public sealed class LibraDexBatch<TKey, TIdentity> : IDisposable, ISharedLibraDe
             LibraDexOperationDiagnostics.FromDataKernel(commit),
             storageDiagnostics);
         index.Stats.RecordCommit(result);
-        index.Catalog?.Stats.RecordCommit(result);
+        index.Catalog.Stats.RecordCommit(result);
         if (fixed32Attribution is not null)
         {
             fixed32Attribution.PublishTicks += Stopwatch.GetTimestamp() - publishStartTicks;
@@ -246,8 +261,11 @@ public sealed class LibraDexBatch<TKey, TIdentity> : IDisposable, ISharedLibraDe
         fixed32Scalar16RouteTargetCache?.Clear();
         fixed32Scalar16RouteCursor.Clear();
         fixedScalarMonotonicRouteCursor.Clear();
+        if (insertedCount != 0)
+            index.InvalidateSingleKeyIdentityMapAfterStagedPublication();
+        stagedIdentityKeyGuard?.ReleaseAllReservations();
         index.Stats.RecordBatchInserts(insertedCount, initialShelfRouteCreateCount, insertStatsBytesWritten);
-        index.Catalog?.Stats.RecordBatchInserts(insertedCount, initialShelfRouteCreateCount, insertStatsBytesWritten);
+        index.Catalog.Stats.RecordBatchInserts(insertedCount, initialShelfRouteCreateCount, insertStatsBytesWritten);
         completed = true;
     }
 
@@ -273,6 +291,7 @@ public sealed class LibraDexBatch<TKey, TIdentity> : IDisposable, ISharedLibraDe
         fixed32Scalar16RouteTargetCache?.Clear();
         fixed32Scalar16RouteCursor.Clear();
         fixedScalarMonotonicRouteCursor.Clear();
+        stagedIdentityKeyGuard?.ReleaseAllReservations();
         completed = true;
     }
 
@@ -2527,8 +2546,16 @@ public sealed class LibraDexBatch<TKey, TIdentity> : IDisposable, ISharedLibraDe
             {
                 long restartOffset = offsets[restartDepth];
                 offsets[(restartDepth + 1)..].Clear();
-                resolvedTarget = session.WalkFixed32Scalar8RoutePathTarget(restartOffset, key0, key1, key2, key3, maxRouterHops: 32, offsets);
-                return true;
+                resolvedTarget = session.WalkFixed32Scalar8RoutePathTarget(
+                    restartOffset,
+                    key0,
+                    key1,
+                    key2,
+                    key3,
+                    maxRouterHops: 32,
+                    offsets,
+                    returnDefaultWhenUnset: true);
+                return resolvedTarget.Target.Offset > 0;
             }
 
             resolvedTarget = default;
@@ -2677,8 +2704,16 @@ public sealed class LibraDexBatch<TKey, TIdentity> : IDisposable, ISharedLibraDe
             {
                 long restartOffset = offsets[restartDepth];
                 offsets[(restartDepth + 1)..].Clear();
-                resolvedTarget = session.WalkFixed32Scalar16RoutePathTarget(restartOffset, key0, key1, key2, key3, maxRouterHops: 32, offsets);
-                return true;
+                resolvedTarget = session.WalkFixed32Scalar16RoutePathTarget(
+                    restartOffset,
+                    key0,
+                    key1,
+                    key2,
+                    key3,
+                    maxRouterHops: 32,
+                    offsets,
+                    returnDefaultWhenUnset: true);
+                return resolvedTarget.Target.Offset > 0;
             }
 
             resolvedTarget = default;

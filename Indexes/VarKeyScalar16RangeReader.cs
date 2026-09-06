@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Buffers.Binary;
 using LibraDex.Layouts;
 using LibraDex.Views;
 
@@ -13,12 +14,15 @@ internal sealed class VarKeyScalar16RangeReader : IDisposable
 {
     private const int DefaultShelfCapacity = 8;
 
-    private VarKeyScalar16ReadOnly[] shelves;
+    private VarKeyScalar16ReadOnly?[] shelves;
+    private byte[]?[] terminalKeys;
+    private byte[]?[] terminalShelfBytes;
     private int[] startSlots;
     private int[] endSlots;
     private long[]? pendingOffsets;
     private int[]? pendingHops;
     private byte[]? pendingFlags;
+    private byte[]? routerScratch;
     private RouteVisitedOffsetSet? visitedShelves;
     private RouteVisitedOffsetSet? visitedRouters;
     private LibraDexFileSession? session;
@@ -37,7 +41,11 @@ internal sealed class VarKeyScalar16RangeReader : IDisposable
 
     internal VarKeyScalar16RangeReader()
     {
-        shelves = ArrayPool<VarKeyScalar16ReadOnly>.Shared.Rent(DefaultShelfCapacity);
+        shelves = ArrayPool<VarKeyScalar16ReadOnly?>.Shared.Rent(DefaultShelfCapacity);
+        terminalKeys = ArrayPool<byte[]?>.Shared.Rent(DefaultShelfCapacity);
+        terminalShelfBytes = ArrayPool<byte[]?>.Shared.Rent(DefaultShelfCapacity);
+        terminalKeys.AsSpan().Clear();
+        terminalShelfBytes.AsSpan().Clear();
         startSlots = ArrayPool<int>.Shared.Rent(DefaultShelfCapacity);
         endSlots = ArrayPool<int>.Shared.Rent(DefaultShelfCapacity);
     }
@@ -104,7 +112,7 @@ internal sealed class VarKeyScalar16RangeReader : IDisposable
     {
         get
         {
-            ReadOnlySpan<byte> encoded = CurrentShelf.ReadKeyAt(currentSlotIndex);
+            ReadOnlySpan<byte> encoded = ReadCurrentEncodedKey();
             return decodeLogicalKeys ? LibraDexVarLenKeyCodec.DecodePayloadSpan(encoded) : encoded;
         }
     }
@@ -113,7 +121,7 @@ internal sealed class VarKeyScalar16RangeReader : IDisposable
     /// Gets whether the current logical key is the null-key sentinel.<br/>
     /// This is false for raw encoded readers and for logical empty keys; callers can combine it with <see cref="CurrentKeyLength"/> to distinguish null from empty.<br/>
     /// </summary>
-    public bool CurrentKeyIsNull => decodeLogicalKeys && LibraDexVarLenKeyCodec.IsNull(CurrentShelf.ReadKeyAt(currentSlotIndex));
+    public bool CurrentKeyIsNull => decodeLogicalKeys && LibraDexVarLenKeyCodec.IsNull(ReadCurrentEncodedKey());
 
     /// <summary>
     /// Gets the high encoded 64 bits of the current 16-byte identity.<br/>
@@ -122,7 +130,7 @@ internal sealed class VarKeyScalar16RangeReader : IDisposable
     {
         get
         {
-            CurrentShelf.ReadIdentityAt(currentSlotIndex, out ulong high, out _);
+            ReadCurrentEncodedIdentity(out ulong high, out _);
             return high;
         }
     }
@@ -134,7 +142,7 @@ internal sealed class VarKeyScalar16RangeReader : IDisposable
     {
         get
         {
-            CurrentShelf.ReadIdentityAt(currentSlotIndex, out _, out ulong low);
+            ReadCurrentEncodedIdentity(out _, out ulong low);
             return low;
         }
     }
@@ -151,7 +159,7 @@ internal sealed class VarKeyScalar16RangeReader : IDisposable
     /// <param name="encodedIdentityLow">The low encoded identity half.</param>
     public void ReadCurrentIdentity(out ulong encodedIdentityHigh, out ulong encodedIdentityLow)
     {
-        CurrentShelf.ReadIdentityAt(currentSlotIndex, out encodedIdentityHigh, out encodedIdentityLow);
+        ReadCurrentEncodedIdentity(out encodedIdentityHigh, out encodedIdentityLow);
     }
 
     /// <summary>
@@ -294,7 +302,9 @@ internal sealed class VarKeyScalar16RangeReader : IDisposable
         }
 
         disposed = true;
-        ArrayPool<VarKeyScalar16ReadOnly>.Shared.Return(shelves, clearArray: true);
+        ArrayPool<VarKeyScalar16ReadOnly?>.Shared.Return(shelves, clearArray: true);
+        ArrayPool<byte[]?>.Shared.Return(terminalKeys, clearArray: true);
+        ArrayPool<byte[]?>.Shared.Return(terminalShelfBytes, clearArray: true);
         ArrayPool<int>.Shared.Return(startSlots, clearArray: false);
         ArrayPool<int>.Shared.Return(endSlots, clearArray: false);
         if (pendingOffsets is not null)
@@ -312,11 +322,17 @@ internal sealed class VarKeyScalar16RangeReader : IDisposable
             ArrayPool<byte>.Shared.Return(pendingFlags, clearArray: false);
         }
 
+        if (routerScratch is not null)
+        {
+            ArrayPool<byte>.Shared.Return(routerScratch, clearArray: false);
+        }
+
         visitedShelves?.Dispose();
         visitedRouters?.Dispose();
         pendingOffsets = null;
         pendingHops = null;
         pendingFlags = null;
+        routerScratch = null;
         visitedShelves = null;
         visitedRouters = null;
         session = null;
@@ -340,7 +356,8 @@ internal sealed class VarKeyScalar16RangeReader : IDisposable
                 throw new InvalidOperationException("The VS16 range reader is not positioned on a row.");
             }
 
-            return shelves[currentShelfIndex];
+            return shelves[currentShelfIndex] ??
+                throw new InvalidOperationException("The current VS16 cursor segment is a terminal identity shelf, not an ordinary shelf.");
         }
     }
 
@@ -357,10 +374,98 @@ internal sealed class VarKeyScalar16RangeReader : IDisposable
         }
 
         shelves[shelfCount] = shelf;
+        terminalKeys[shelfCount] = null;
+        terminalShelfBytes[shelfCount] = null;
         startSlots[shelfCount] = startSlot;
         endSlots[shelfCount] = endSlot;
         shelfCount++;
         rowCount = checked(rowCount + endSlot - startSlot);
+    }
+
+    /// <summary>
+    /// Adds one terminal scalar-16 identity shelf as a native cursor segment for its root-owned exact key.<br/>
+    /// The segment retains the terminal shelf bytes directly and therefore avoids rebuilding an ordinary `VS16` shelf with the same variable key repeated for every identity.<br/>
+    /// </summary>
+    /// <param name="key">The exact encoded key stored once by the terminal root.<br/></param>
+    /// <param name="shelfBytes">The validated terminal variable-identity shelf bytes.<br/></param>
+    private void AddTerminalShelfRange(byte[] key, byte[] shelfBytes)
+    {
+        int itemCount = TerminalVarIdentityShelfLayout.ReadItemCount(shelfBytes);
+        if (itemCount <= 0)
+        {
+            return;
+        }
+
+        for (int i = 0; i < itemCount; i++)
+        {
+            if (TerminalVarIdentityShelfLayout.ReadIdentityAt(shelfBytes, i).Length != 16)
+            {
+                throw new InvalidDataException("The VS16 terminal cursor encountered a non-16-byte identity.");
+            }
+        }
+
+        if (shelfCount == shelves.Length)
+        {
+            GrowShelves();
+        }
+
+        shelves[shelfCount] = default;
+        terminalKeys[shelfCount] = key;
+        terminalShelfBytes[shelfCount] = shelfBytes;
+        startSlots[shelfCount] = 0;
+        endSlots[shelfCount] = itemCount;
+        shelfCount++;
+        rowCount = checked(rowCount + itemCount);
+    }
+
+    /// <summary>
+    /// Reads the encoded key for the current ordinary or terminal cursor segment without allocating.<br/>
+    /// Ordinary segments read the shelf record key; terminal segments return the key stored once by the terminal root.<br/>
+    /// </summary>
+    /// <returns>The current encoded key span.<br/></returns>
+    private ReadOnlySpan<byte> ReadCurrentEncodedKey()
+    {
+        ThrowIfDisposed();
+        if ((uint)ordinal >= (uint)rowCount || (uint)currentShelfIndex >= (uint)shelfCount)
+        {
+            throw new InvalidOperationException("The VS16 range reader is not positioned on a row.");
+        }
+
+        byte[]? terminalKey = terminalKeys[currentShelfIndex];
+        return terminalKey is null
+            ? CurrentShelf.ReadKeyAt(currentSlotIndex)
+            : terminalKey;
+    }
+
+    /// <summary>
+    /// Reads the encoded scalar-16 identity for the current ordinary or terminal cursor segment.<br/>
+    /// Terminal segments decode the canonical big-endian high/low halves directly from the retained terminal shelf bytes.<br/>
+    /// </summary>
+    /// <param name="encodedIdentityHigh">Receives the high encoded identity half.<br/></param>
+    /// <param name="encodedIdentityLow">Receives the low encoded identity half.<br/></param>
+    private void ReadCurrentEncodedIdentity(out ulong encodedIdentityHigh, out ulong encodedIdentityLow)
+    {
+        ThrowIfDisposed();
+        if ((uint)ordinal >= (uint)rowCount || (uint)currentShelfIndex >= (uint)shelfCount)
+        {
+            throw new InvalidOperationException("The VS16 range reader is not positioned on a row.");
+        }
+
+        byte[]? terminalBytes = terminalShelfBytes[currentShelfIndex];
+        if (terminalBytes is null)
+        {
+            CurrentShelf.ReadIdentityAt(currentSlotIndex, out encodedIdentityHigh, out encodedIdentityLow);
+            return;
+        }
+
+        ReadOnlySpan<byte> identity = TerminalVarIdentityShelfLayout.ReadIdentityAt(terminalBytes, currentSlotIndex);
+        if (identity.Length != 16)
+        {
+            throw new InvalidDataException("The VS16 terminal cursor encountered a non-16-byte identity.");
+        }
+
+        encodedIdentityHigh = BinaryPrimitives.ReadUInt64BigEndian(identity[..sizeof(ulong)]);
+        encodedIdentityLow = BinaryPrimitives.ReadUInt64BigEndian(identity.Slice(sizeof(ulong), sizeof(ulong)));
     }
 
     private bool LoadNextShelfRange()
@@ -376,7 +481,8 @@ internal sealed class VarKeyScalar16RangeReader : IDisposable
         ReadOnlySpan<byte> localLowerKey = lowerKey ?? throw new ObjectDisposedException(nameof(VarKeyScalar16RangeReader));
         ReadOnlySpan<byte> localUpperKey = upperKey ?? throw new ObjectDisposedException(nameof(VarKeyScalar16RangeReader));
         int previousRowCount = rowCount;
-        byte[] routerBytes = new byte[RouterLayout.Size];
+        byte[] routerBytes = routerScratch ??= ArrayPool<byte>.Shared.Rent(RouterLayout.Size);
+        Span<byte> routerPage = routerBytes.AsSpan(0, RouterLayout.Size);
         while (pendingCount > 0)
         {
             PopTarget(out long targetOffset, out int remainingHops, out bool lowerEdge, out bool upperEdge);
@@ -403,6 +509,43 @@ internal sealed class VarKeyScalar16RangeReader : IDisposable
                 continue;
             }
 
+            if (kind == VarKeyScalar16RouteTargetKind.TerminalIdentityRoot)
+            {
+                if (!localVisitedShelves.Add(targetOffset))
+                {
+                    continue;
+                }
+
+                byte[] rootBytes = localSession.ReadTerminalIdentityRootBytes(targetOffset);
+                if (TerminalIdentityRootLayout.ReadShape(rootBytes) != TerminalIdentityRootLayout.ShapeVarKeyScalar16Identity)
+                {
+                    throw new InvalidDataException("The routed VS16 range terminal root has the wrong shape.");
+                }
+
+                int keyLength = TerminalIdentityRootLayout.ReadKeyLength(rootBytes);
+                byte[] terminalKey = rootBytes.AsSpan(TerminalIdentityRootLayout.KeyBytesOffset, keyLength).ToArray();
+                if (terminalKey.AsSpan().SequenceCompareTo(localLowerKey) >= 0 &&
+                    terminalKey.AsSpan().SequenceCompareTo(localUpperKey) <= 0)
+                {
+                    int shelfExtentSize = TerminalIdentityRootLayout.ReadShelfExtentSize(rootBytes);
+                    long terminalShelfOffset = TerminalIdentityRootLayout.ReadFirstShelfOffset(rootBytes);
+                    while (terminalShelfOffset != 0)
+                    {
+                        byte[] terminalBytes = localSession.ReadTerminalVarIdentityShelfBytes(terminalShelfOffset, shelfExtentSize);
+                        TerminalVarIdentityShelfLayout.Validate(terminalBytes, shelfExtentSize);
+                        AddTerminalShelfRange(terminalKey, terminalBytes);
+                        terminalShelfOffset = TerminalVarIdentityShelfLayout.ReadNextShelfOffset(terminalBytes);
+                    }
+                }
+
+                if (rowCount > previousRowCount)
+                {
+                    return true;
+                }
+
+                continue;
+            }
+
             if (kind != VarKeyScalar16RouteTargetKind.Router)
             {
                 throw new InvalidDataException("The routed VS16 range target is not a shelf or router.");
@@ -413,8 +556,8 @@ internal sealed class VarKeyScalar16RangeReader : IDisposable
                 continue;
             }
 
-            localSession.ReadRouterPageUsingArenaCache(targetOffset, routerBytes);
-            RouterReader router = new(routerBytes);
+            localSession.ReadRouterPageUsingArenaCache(targetOffset, routerPage);
+            RouterReader router = new(routerPage);
             if (!router.IsValid)
             {
                 throw new InvalidDataException("The routed VS16 range router is invalid.");
@@ -554,16 +697,26 @@ internal sealed class VarKeyScalar16RangeReader : IDisposable
     private void GrowShelves()
     {
         int newLength = checked(shelves.Length * 2);
-        VarKeyScalar16ReadOnly[] newShelves = ArrayPool<VarKeyScalar16ReadOnly>.Shared.Rent(newLength);
+        VarKeyScalar16ReadOnly?[] newShelves = ArrayPool<VarKeyScalar16ReadOnly?>.Shared.Rent(newLength);
+        byte[]?[] newTerminalKeys = ArrayPool<byte[]?>.Shared.Rent(newLength);
+        byte[]?[] newTerminalShelfBytes = ArrayPool<byte[]?>.Shared.Rent(newLength);
+        newTerminalKeys.AsSpan().Clear();
+        newTerminalShelfBytes.AsSpan().Clear();
         int[] newStartSlots = ArrayPool<int>.Shared.Rent(newLength);
         int[] newEndSlots = ArrayPool<int>.Shared.Rent(newLength);
         Array.Copy(shelves, newShelves, shelfCount);
+        Array.Copy(terminalKeys, newTerminalKeys, shelfCount);
+        Array.Copy(terminalShelfBytes, newTerminalShelfBytes, shelfCount);
         startSlots.AsSpan(0, shelfCount).CopyTo(newStartSlots);
         endSlots.AsSpan(0, shelfCount).CopyTo(newEndSlots);
-        ArrayPool<VarKeyScalar16ReadOnly>.Shared.Return(shelves, clearArray: true);
+        ArrayPool<VarKeyScalar16ReadOnly?>.Shared.Return(shelves, clearArray: true);
+        ArrayPool<byte[]?>.Shared.Return(terminalKeys, clearArray: true);
+        ArrayPool<byte[]?>.Shared.Return(terminalShelfBytes, clearArray: true);
         ArrayPool<int>.Shared.Return(startSlots, clearArray: false);
         ArrayPool<int>.Shared.Return(endSlots, clearArray: false);
         shelves = newShelves;
+        terminalKeys = newTerminalKeys;
+        terminalShelfBytes = newTerminalShelfBytes;
         startSlots = newStartSlots;
         endSlots = newEndSlots;
     }

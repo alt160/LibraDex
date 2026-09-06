@@ -29,6 +29,7 @@ internal sealed class LibraDexWriteContext
     private Dictionary<long, byte[]>? terminalIdentity8MutableShelfBytes;
     private Dictionary<long, VarKeyScalar8MutableShelf>? varKeyScalar8MutableBatchShelves;
     private Dictionary<long, VarKeyScalar8RouteClaim>? varKeyScalar8RouteClaims;
+    private Dictionary<long, ReaderWriterLockSlim>? varKeyScalar8TopologyReadSyncByRoot;
     private Dictionary<long, VarKeyScalar16MutableShelf>? varKeyScalar16MutableBatchShelves;
     private Dictionary<long, VarKeyScalar16RouteClaim>? varKeyScalar16RouteClaims;
     private Dictionary<long, VarKeyVarIdentityMutableShelf>? varKeyVarIdentityMutableBatchShelves;
@@ -189,6 +190,12 @@ internal sealed class LibraDexWriteContext
     /// Publication revalidates these claims so a shelf-local var-key writer cannot publish an old shelf image after another writer transformed, grew, or relinked the parent route.<br/>
     /// </summary>
     internal Dictionary<long, VarKeyScalar8RouteClaim> VarKeyScalar8RouteClaims => varKeyScalar8RouteClaims ??= [];
+
+    /// <summary>
+    /// Gets the per-root `VS8` topology read gates held by this writer context until publication or abort.<br/>
+    /// Holding the read side after shelf staging prevents an immediate topology fallback from changing either the selected shelf bytes or its parent route before this context publishes.<br/>
+    /// </summary>
+    internal Dictionary<long, ReaderWriterLockSlim> VarKeyScalar8TopologyReadSyncByRoot => varKeyScalar8TopologyReadSyncByRoot ??= [];
 
     /// <summary>
     /// Gets writer-local dirty `VS16` mutable shelves staged by the active writer.<br/>
@@ -683,4 +690,20 @@ internal sealed class LibraDexWriteContextVarKeyVarIdentityShelfOwnershipExcepti
     /// Gets the shelf offset that was already owned by another writer context.<br/>
     /// </summary>
     internal long ShelfOffset { get; }
+}
+
+/// <summary>
+/// Identifies a supported `VS8` writer-context operation that must leave shelf-local staging and use the serialized topology path.<br/>
+/// The exception is deliberately narrower than <see cref="InvalidOperationException"/> so concurrent facades do not hide unrelated infrastructure or validation failures as routine topology fallback.<br/>
+/// </summary>
+internal sealed class LibraDexWriteContextVarKeyScalar8TopologyFallbackException : InvalidOperationException
+{
+    /// <summary>
+    /// Creates one writer-context topology-fallback signal with a storage-facing reason suitable for diagnostics.<br/>
+    /// </summary>
+    /// <param name="message">The unsupported shelf-local shape that requires serialized topology work.<br/></param>
+    internal LibraDexWriteContextVarKeyScalar8TopologyFallbackException(string message)
+        : base(message)
+    {
+    }
 }

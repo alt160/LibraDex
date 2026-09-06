@@ -222,6 +222,41 @@ public sealed class CatalogIdentityGroupBatchManager
         return result;
     }
 
+    /// <summary>
+    /// Inserts one borrowed UTF-8 logical string through the active identity-group durability scope.<br/>
+    /// The group-owned string scratch adds LibraDex's exact marker without a managed allocation, while the logical string facade remains responsible for every maintained projection.<br/>
+    /// </summary>
+    /// <param name="index">The participating logical string/scalar8 facade.<br/></param>
+    /// <param name="utf8Key">A validated UTF-8 string payload without an Inheto length prefix or LibraDex marker.<br/></param>
+    /// <param name="identity">The scalar identity associated with the logical string.<br/></param>
+    /// <returns>The exact-index insert result with group-level attempt accounting.<br/></returns>
+    internal LibraDexGenericInsertResult InsertUtf8(
+        LibraDexStringScalar8Index index,
+        ReadOnlySpan<byte> utf8Key,
+        ulong identity)
+    {
+        if (!string.Equals(index.Group, Group, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("The index does not belong to this identity group batch manager.");
+        }
+
+        _ = RequireActiveBatch();
+        attemptedInsertCount++;
+        stringScalar8Scratch ??= new LibraDexStringScalar8Index.LibraDexStringScalar8InsertScratch();
+        LibraDexGenericInsertResult result = index.InsertUtf8InCurrentScope(utf8Key, identity, stringScalar8Scratch);
+        if (result.Inserted)
+        {
+            insertedCount++;
+        }
+
+        if (result.CreatedInitialShelfRoute)
+        {
+            initialShelfRouteCreateCount++;
+        }
+
+        return result;
+    }
+
     private LibraDexGenericBatchCommitResult CommitActiveBatch()
     {
         LibraDexFileSessionDurabilityBatch batch = RequireActiveBatch();

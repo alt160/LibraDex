@@ -6,13 +6,15 @@ namespace LibraDex;
 /// Provides a first-class BigInteger key facade over fixed-width keys with raw variable-length identity bytes.<br/>
 /// The explicit type avoids overloading `byte[]` scalar identity semantics, where fixed-width byte arrays already mean fixed blob lanes.<br/>
 /// </summary>
-public sealed class LibraDexBigIntVarIdentityIndex : IIndex, IIdentityPrimitiveExecutor, IDisposable
+public sealed class LibraDexBigIntVarIdentityIndex : IIndex, IIdentityPrimitiveExecutor, IIdentityPrimitiveTupleStreamer, IDisposable
 {
+    private readonly Catalog catalog;
     private readonly FixedNVarIdentityIndex inner;
     private readonly IndexKeys keyContract;
     private bool disposed;
 
     internal LibraDexBigIntVarIdentityIndex(
+        Catalog catalog,
         string group,
         string name,
         FixedNVarIdentityIndex inner,
@@ -20,6 +22,7 @@ public sealed class LibraDexBigIntVarIdentityIndex : IIndex, IIdentityPrimitiveE
         int maxIdentityBytes,
         IndexKeys keyContract)
     {
+        this.catalog = catalog ?? throw new ArgumentNullException(nameof(catalog));
         ArgumentNullException.ThrowIfNull(inner);
         LibraDexBigIntCodec.ValidateMaxBytes(maxBytes, nameof(maxBytes));
         FixedNVarIdentityProfile.Create(FixedNVarIdentityProfile.DefaultShelfExtentSize, LibraDexBigIntCodec.GetFixedEncodedLength(maxBytes), maxIdentityBytes);
@@ -35,6 +38,11 @@ public sealed class LibraDexBigIntVarIdentityIndex : IIndex, IIdentityPrimitiveE
     /// Gets the identity group name recorded for this BigInt index.<br/>
     /// </summary>
     public string Group { get; }
+
+    /// <summary>
+    /// Gets the open catalog that owns this index handle.<br/>
+    /// </summary>
+    public Catalog Catalog => catalog;
 
     /// <summary>
     /// Gets the logical index name recorded for this BigInt index.<br/>
@@ -216,6 +224,12 @@ public sealed class LibraDexBigIntVarIdentityIndex : IIndex, IIdentityPrimitiveE
         return IterateIdentityPrimitive(new LibraDexIdentityPrimitiveRequest(LibraDexCriteriaKind.All, Array.Empty<object?>()));
     }
 
+    IEnumerable<LibraDexObjectTuple> IIdentityPrimitiveTupleStreamer.IterateTuplePrimitive(
+        LibraDexIdentityPrimitiveRequest request)
+    {
+        return IterateTuplePrimitive(request);
+    }
+
     public void Dispose()
     {
         disposed = true;
@@ -225,6 +239,33 @@ public sealed class LibraDexBigIntVarIdentityIndex : IIndex, IIdentityPrimitiveE
     private IReadOnlyList<object> ExecuteIdentityPrimitive(LibraDexIdentityPrimitiveRequest request)
     {
         return IterateIdentityPrimitive(request).ToList();
+    }
+
+    /// <summary>
+    /// Streams authoritative BigInteger/raw-identity tuples for full-index maintenance work.<br/>
+    /// Fixed-N traversal owns each key and identity array, allowing the facade to decode BigInteger keys without retaining shelf-backed spans.<br/>
+    /// </summary>
+    /// <param name="request">The normalized primitive request; maintenance tuple streaming currently accepts only <see cref="LibraDexCriteriaKind.All"/>.<br/></param>
+    /// <returns>Live logical tuples in physical key/identity order.<br/></returns>
+    private IEnumerable<LibraDexObjectTuple> IterateTuplePrimitive(LibraDexIdentityPrimitiveRequest request)
+    {
+        ThrowIfDisposed();
+        if (request.CriteriaKind != LibraDexCriteriaKind.All)
+            throw new NotSupportedException($"{request.CriteriaKind} tuple streaming is not connected to the BigInteger variable-identity facade.");
+        if (request.TakeLimit is < 0)
+            throw new ArgumentOutOfRangeException(nameof(request.TakeLimit), request.TakeLimit, "Take cannot be negative.");
+        if (request.TakeLimit == 0)
+            yield break;
+
+        int yielded = 0;
+        foreach (FixedNVarIdentityTuple tuple in inner.IterateTuples())
+        {
+            BigInteger key = LibraDexBigIntCodec.Decode(tuple.Key, MaxBytes, LibraDexBigIntKeyStorage.FixedWidth);
+            yield return new LibraDexObjectTuple(key, tuple.Identity);
+            yielded++;
+            if (request.TakeLimit is int limit && yielded >= limit)
+                yield break;
+        }
     }
 
     private IEnumerable<object> IterateIdentityPrimitive(LibraDexIdentityPrimitiveRequest request)

@@ -1,5 +1,7 @@
 # Filter DX AI Remaining Work
 
+> This file tracks the older 671-row filter-DX syntax corpus. It is not the current 219-row intuitiveness worklist. For current continuation, accepted condition-builder semantics, validation evidence, and the new-conversation prompt, start with [`condition-builder-continuation-restart.md`](condition-builder-continuation-restart.md).
+
 Restart point for the AI-authored review of `filter-dx-natural-language-corpus.csv`.
 
 The active corpus was cleared of deterministic generator output and refilled from the natural-language rows by AI review. Rows scored `5` have proposed LibraDex and Abraxas syntax or an explicit corpus note explaining why the natural-language request is policy/presentation rather than condition syntax. There are currently no score-`0` rows.
@@ -68,10 +70,10 @@ Developers can express the same idea against ordinary indexes, but the composite
 
 Possible changes:
 
-- Done in current Group 1 slice: opened `.Where.KeyPart(...).AsString` and `.AsScalar<TValue>()` now expose part-scoped `NotEqualTo`, `NotBetween`, `InSet` / `In` / `IsIn`, and `NotInSet` / `NotIn` / `IsNotIn`, with routed composite executor support.
+- Done in current Group 1 slice: opened `.Where.KeyPart(...).AsString` and the named scalar projections (`.AsInt32`, `.AsGuid`, and peers) now expose part-scoped `NotEqualTo`, `NotBetween`, `InSet` / `In` / `IsIn`, and `NotInSet` / `NotIn` / `IsNotIn`, with routed composite executor support.
 - Done in current Group 1 slice: opened `.Where.KeyPart(...).AsGuid` now exposes part-scoped `InSet` / `In` / `IsIn` and `NotInSet` / `NotIn` / `IsNotIn`, with routed composite executor support.
 - Done in current Group 1 slice: composite `.KeyPart(...).AsBinary` and `C.Binary(...)` now support byte-domain `EqualTo`, `NotEqualTo`, `StartsWith`, `EndsWith`, and `Contains`, including durable composite snapshot/node encoding for byte-array part values.
-- Done in current Group 1 slice: composite `.KeyPart(...).AsDate` now supports DateTime full-value comparison operators `EqualTo`, `NotEqualTo`, `GreaterThan`, `GreaterOrEqual`, `LessThan`, `LessOrEqual`, `Between`, and `NotBetween`.
+- Done in current Group 1 slice: composite `.KeyPart(...).AsDateTime` now supports DateTime full-value comparison operators `EqualTo`, `NotEqualTo`, `GreaterThan`, `GreaterOrEqual`, `LessThan`, `LessOrEqual`, `Between`, and `NotBetween`.
 - Done in current Group 1 slice: descriptor-level predicate selection now owns the implementation through `.Where(...)`; legacy `.Index(...)` forwards into `.Where(...)` instead of being the behavior-owning path.
 - Done in current Group 1 slice: catalog group `Index(indexName)`, `Index<TKey, TIdentity>(indexName)`, and `Where<TKey, TIdentity>(indexName)` are available for grouped open/typed-open/typed-condition paths, with metadata validation on the typed forms.
 - Done in current Group 1 slice: catalog group `CompositeWhere(indexName)` now selects a composite index by name and returns composite-specific IntelliSense after validating that the named index is composite.
@@ -400,6 +402,8 @@ Done in current Group 8 slice:
 - `F570` closed through grouping/duplicate metadata over the tenant+username composite index.
 
 ## Next Restart Step
+
+This historical restart step is superseded by [`condition-builder-continuation-restart.md`](condition-builder-continuation-restart.md).
 
 No rows remain score `0` in `docs/condition-builder/filter-dx-natural-language-corpus.csv`.
 

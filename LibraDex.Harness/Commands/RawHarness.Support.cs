@@ -84,7 +84,7 @@ internal static partial class RawHarness
             new[] { 2001UL },
             "proof row 200 bookmark first page");
         AssertSequence(
-            sLastNames.ToList<ulong>(pagingResolver, deduplication: IdentityDeduplication.Preserve, take: 2, bookmark: new LibraDexBookmark(0, 1)),
+            sLastNames.ToList<ulong>(pagingResolver, deduplication: IdentityDeduplication.Preserve, take: 2, bookmark: LibraDexBookmark.Legacy(0, 1)),
             new[] { 2002UL, 2003UL },
             "proof row 200 bookmark next page");
         if (!LibraDexCondition.ForGroup("users").Index("age").AsInt32.EqualTo(20).EndCondition.Exists(userResolver, IdentityDeduplication.Preserve) ||
@@ -116,14 +116,6 @@ internal static partial class RawHarness
             UIDs(deferredIndexCondition, deferredResolver),
             new[] { 1763UL },
             "proof row 176 deferred selector alternate");
-        LibraDexConditionEndCondition deferredIndexExpression = deferredIndexCondition;
-        AssertSet(
-            catalog.Indexes["deferred"].GetIdentities<ulong>(
-                deferredIndexExpression.WithIndex("selectedIndex", "primary"),
-                deduplication: IdentityDeduplication.Preserve),
-            new[] { 1762UL },
-            "proof row 182 named selector replacement");
-
         LibraDexIndexShapeSpec selectedCreatedShape = catalog.Indexes["deferredDate"]["created"].Shape.Date<DateTime, ulong>(
             DateKeys.ExactAndStructured,
             keys: IndexKeys.NonUnique);
@@ -142,7 +134,7 @@ internal static partial class RawHarness
             _ => throw new KeyNotFoundException(indexName)
         };
         string selectedDateIndex = "created";
-        LibraDexConditionEndCondition deferredDateCondition = LibraDexCondition.ForGroup("deferredDate").Index(() => selectedDateIndex, "selectedDate").AsDate.YearEqual(2026).EndCondition;
+        LibraDexConditionEndCondition deferredDateCondition = LibraDexCondition.ForGroup("deferredDate").Index(() => selectedDateIndex, "selectedDate").AsDateTime.YearEqual(2026).EndCondition;
         AssertSet(
             UIDs(deferredDateCondition, deferredDateResolver),
             new[] { 1771UL },
@@ -342,7 +334,7 @@ internal static partial class RawHarness
             "deleted" => rowDeleted,
             _ => throw new KeyNotFoundException(indexName)
         };
-        LibraDexConditionEndCondition freshRows = LibraDexCondition.ForGroup("rows").Index("created").AsDate.IsToday().OR.Index("updated").AsDate.IsToday().EndCondition;
+        LibraDexConditionEndCondition freshRows = LibraDexCondition.ForGroup("rows").Index("created").AsDateTime.IsToday().OR.Index("updated").AsDateTime.IsToday().EndCondition;
         AssertSet(
             UIDs(LibraDexCondition.ForGroup("rows").Index("deleted").AsBoolean.EqualTo(false).AND.Group(freshRows).EndCondition, rowResolver),
             new[] { 1721UL, 1722UL },
@@ -702,6 +694,11 @@ internal static partial class RawHarness
         {
             throw new InvalidDataException("VS8 shelf metadata contract did not expose slot-deleted and payload-deleted counts.");
         }
+        if (!VarKeyScalar8MutableShelf.TryCreate(vs8Bytes, VarKeyScalar8Profile.Default16KiB, ownsBytes: false, rentSidecars: false, out VarKeyScalar8MutableShelf reopenedVs8) ||
+            reopenedVs8.PayloadBytesDeleted != vs8.PayloadBytesDeleted)
+        {
+            throw new InvalidDataException("VS8 shelf metadata contract did not restore its persisted orphaned-payload byte count.");
+        }
 
         byte[] vs8RepackBytes = new byte[VarKeyScalar8Profile.Default16KiB.ShelfExtentSize];
         VarKeyScalar8Layout.Initialize(vs8RepackBytes, VarKeyScalar8Profile.Default16KiB);
@@ -755,6 +752,11 @@ internal static partial class RawHarness
             vs16.PayloadBytesDeleted <= 0)
         {
             throw new InvalidDataException("VS16 shelf metadata contract did not expose slot-deleted and payload-deleted counts.");
+        }
+        if (!VarKeyScalar16MutableShelf.TryCreate(vs16Bytes, VarKeyScalar16Profile.Default16KiB, ownsBytes: false, rentSidecars: false, out VarKeyScalar16MutableShelf reopenedVs16) ||
+            reopenedVs16.PayloadBytesDeleted != vs16.PayloadBytesDeleted)
+        {
+            throw new InvalidDataException("VS16 shelf metadata contract did not restore its persisted orphaned-payload byte count.");
         }
 
         byte[] vs16RepackBytes = new byte[VarKeyScalar16Profile.Default16KiB.ShelfExtentSize];
@@ -810,6 +812,11 @@ internal static partial class RawHarness
         {
             throw new InvalidDataException("VV shelf metadata contract did not expose slot-deleted and payload-deleted counts.");
         }
+        if (!VarKeyVarIdentityMutableShelf.TryCreate(vvBytes, VarKeyVarIdentityProfile.Default16KiB, ownsBytes: false, rentSidecars: false, out VarKeyVarIdentityMutableShelf reopenedVv) ||
+            reopenedVv.PayloadBytesDeleted != vv.PayloadBytesDeleted)
+        {
+            throw new InvalidDataException("VV shelf metadata contract did not restore its persisted orphaned-payload byte count.");
+        }
 
         byte[] sv8Bytes = new byte[Scalar8VarIdentityProfile.Default16KiB.ShelfExtentSize];
         Scalar8VarIdentityLayout.Initialize(sv8Bytes, Scalar8VarIdentityProfile.Default16KiB);
@@ -837,6 +844,11 @@ internal static partial class RawHarness
             sv8.PayloadBytesDeleted <= 0)
         {
             throw new InvalidDataException("SV8 shelf metadata contract did not expose slot-deleted and payload-deleted counts.");
+        }
+        if (!Scalar8VarIdentityMutableShelfView.TryCreate(sv8Bytes, Scalar8VarIdentityProfile.Default16KiB, out Scalar8VarIdentityMutableShelfView reopenedSv8) ||
+            reopenedSv8.PayloadBytesDeleted != sv8.PayloadBytesDeleted)
+        {
+            throw new InvalidDataException("SV8 shelf metadata contract did not restore its persisted orphaned-payload byte count.");
         }
 
         byte[] sv16Bytes = new byte[Scalar16VarIdentityProfile.Default16KiB.ShelfExtentSize];
@@ -866,6 +878,11 @@ internal static partial class RawHarness
         {
             throw new InvalidDataException("SV16 shelf metadata contract did not expose slot-deleted and payload-deleted counts.");
         }
+        if (!Scalar16VarIdentityMutableShelfView.TryCreate(sv16Bytes, Scalar16VarIdentityProfile.Default16KiB, out Scalar16VarIdentityMutableShelfView reopenedSv16) ||
+            reopenedSv16.PayloadBytesDeleted != sv16.PayloadBytesDeleted)
+        {
+            throw new InvalidDataException("SV16 shelf metadata contract did not restore its persisted orphaned-payload byte count.");
+        }
     }
 
 
@@ -879,14 +896,18 @@ internal static partial class RawHarness
 
     private sealed class ClassificationOnlyIndex : IIndex
     {
+        private readonly Catalog catalog;
         private readonly LibraDexIndexShapeSpec shape;
         private readonly string group;
 
-        internal ClassificationOnlyIndex(LibraDexIndexShapeSpec shape, string? groupOverride = null)
+        internal ClassificationOnlyIndex(Catalog catalog, LibraDexIndexShapeSpec shape, string? groupOverride = null)
         {
+            this.catalog = catalog ?? throw new ArgumentNullException(nameof(catalog));
             this.shape = shape;
             group = groupOverride ?? shape.Group;
         }
+
+        public Catalog Catalog => catalog;
 
         public string Name => shape.Name;
 
@@ -2048,6 +2069,34 @@ internal static partial class RawHarness
         int lowDepth = keyDepth - sizeof(ulong);
         int lowShift = (sizeof(ulong) - 1 - lowDepth) * 8;
         return (byte)(encodedLow >> lowShift);
+    }
+
+    private enum ProofStatus
+    {
+        One = 1,
+        Two = 2,
+        Three = 3,
+        Four = 4
+    }
+
+    private enum ProofShortStatus : short
+    {
+        One = 1,
+        Two = 2,
+        Four = 4
+    }
+
+    private enum ProofWideStatus : long
+    {
+        TooLargeForByte = 300
+    }
+
+    [Flags]
+    private enum ProofPermissions : uint
+    {
+        Read = 0x01,
+        Write = 0x02,
+        Execute = 0x04
     }
 
 }

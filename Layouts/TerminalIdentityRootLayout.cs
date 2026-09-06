@@ -13,6 +13,10 @@ internal static class TerminalIdentityRootLayout
     public const byte ShapeVarKey = 2;
     public const byte ShapeScalar8VarIdentity = 3;
     public const byte ShapeScalar16VarIdentity = 4;
+    public const byte ShapeVarKeyScalar16Identity = 5;
+    public const byte ShapeFixedKeyScalar8Identity = 6;
+    public const byte ShapeFixedKeyScalar16Identity = 7;
+    public const byte ShapeFixedKeyVarIdentity = 8;
 
     public const int MagicOffset = 0;
     public const int FormatVersionOffset = 4;

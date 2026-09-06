@@ -6,10 +6,9 @@ internal sealed class VarKeyScalar8ReadOnly
 {
     private readonly ReadOnlyMemory<byte> bytes;
     private readonly VarKeyScalar8Profile profile;
-    private readonly uint[] recordOffsets;
-    private readonly uint[] keyPrefixes;
     private readonly bool isDuplicateRun;
     private readonly int duplicateRunKeyLength;
+    private readonly int itemCount;
 
     public VarKeyScalar8ReadOnly(ReadOnlyMemory<byte> bytes, VarKeyScalar8Profile profile)
     {
@@ -19,13 +18,12 @@ internal sealed class VarKeyScalar8ReadOnly
         if (isDuplicateRun)
         {
             IsValid = TryValidateDuplicateRun(bytes.Span, profile, out duplicateRunKeyLength);
-            recordOffsets = [];
-            keyPrefixes = [];
+            itemCount = IsValid ? VarKeyScalar8Layout.ReadItemCount(bytes.Span) : 0;
         }
         else
         {
             duplicateRunKeyLength = 0;
-            IsValid = TryDecodeSlots(bytes.Span, profile, out recordOffsets, out keyPrefixes);
+            IsValid = TryValidateSlots(bytes.Span, profile, out itemCount);
         }
     }
 
@@ -35,7 +33,7 @@ internal sealed class VarKeyScalar8ReadOnly
 
     public long DuplicateRunNextOffset => IsDuplicateRun ? VarKeyScalar8Layout.ReadDuplicateRunNextOffset(bytes.Span) : 0;
 
-    public int ItemCount => IsValid ? (IsDuplicateRun ? VarKeyScalar8Layout.ReadItemCount(bytes.Span) : recordOffsets.Length) : 0;
+    public int ItemCount => IsValid ? itemCount : 0;
 
     public int PhysicalItemCount => ItemCount;
 
@@ -134,7 +132,7 @@ internal sealed class VarKeyScalar8ReadOnly
             return VarKeyScalar8Layout.ReadDuplicateRunKey(bytes.Span);
         }
 
-        return VarKeyScalar8Layout.ReadKey(bytes.Span, checked((int)recordOffsets[slotIndex]));
+        return VarKeyScalar8Layout.ReadKey(bytes.Span, checked((int)ReadRecordOffsetAt(slotIndex)));
     }
 
     public ulong ReadIdentityAt(int slotIndex)
@@ -144,7 +142,7 @@ internal sealed class VarKeyScalar8ReadOnly
             return VarKeyScalar8Layout.ReadDuplicateRunIdentity(bytes.Span, duplicateRunKeyLength, slotIndex);
         }
 
-        return VarKeyScalar8Layout.ReadIdentity(bytes.Span, checked((int)recordOffsets[slotIndex]), out _);
+        return VarKeyScalar8Layout.ReadIdentity(bytes.Span, checked((int)ReadRecordOffsetAt(slotIndex)), out _);
     }
 
     public bool Contains(ReadOnlySpan<byte> key, ulong encodedIdentity)
@@ -165,7 +163,8 @@ internal sealed class VarKeyScalar8ReadOnly
         ReadOnlySpan<byte> localBytes = bytes.Span;
         for (int i = slotIndex; i < ItemCount; i++)
         {
-            ReadOnlySpan<byte> key = VarKeyScalar8Layout.ReadKey(localBytes, checked((int)recordOffsets[i]));
+            int recordOffset = checked((int)ReadRecordOffsetAt(i));
+            ReadOnlySpan<byte> key = VarKeyScalar8Layout.ReadKey(localBytes, recordOffset);
             if (key.SequenceCompareTo(upperKey) > 0)
             {
                 break;
@@ -176,7 +175,7 @@ internal sealed class VarKeyScalar8ReadOnly
                 throw new ArgumentException("The identity output span is too small for the requested VS8 range.", nameof(encodedIdentities));
             }
 
-            encodedIdentities[copied++] = VarKeyScalar8Layout.ReadIdentity(localBytes, checked((int)recordOffsets[i]), out _);
+            encodedIdentities[copied++] = VarKeyScalar8Layout.ReadIdentity(localBytes, recordOffset, out _);
         }
 
         return copied;
@@ -251,7 +250,11 @@ internal sealed class VarKeyScalar8ReadOnly
             return checked((uint)(VarKeyScalar8Layout.GetDuplicateRunIdentityOffset(duplicateRunKeyLength) + (slotIndex * VarKeyScalar8Layout.IdentitySize)));
         }
 
-        return recordOffsets[slotIndex];
+        if ((uint)slotIndex >= (uint)itemCount)
+            throw new ArgumentOutOfRangeException(nameof(slotIndex));
+
+        int slotOffset = checked(VarKeyScalar8Layout.HeaderSize + (slotIndex * VarKeyScalar8Layout.SlotSize));
+        return checked((uint)VarKeyScalar8Layout.ReadSlotRecordOffset(bytes.Span, slotOffset));
     }
 
     internal static bool TryValidateDuplicateRun(ReadOnlySpan<byte> bytes, VarKeyScalar8Profile profile, out int keyLength)
@@ -275,10 +278,17 @@ internal sealed class VarKeyScalar8ReadOnly
             count <= VarKeyScalar8Layout.GetDuplicateRunCapacity(profile, keyLength);
     }
 
-    internal static bool TryDecodeSlots(ReadOnlySpan<byte> bytes, VarKeyScalar8Profile profile, out uint[] recordOffsets, out uint[] keyPrefixes)
+    /// <summary>
+    /// Validates the persisted slot stream without materializing decoded offset or key-prefix sidecars.<br/>
+    /// `VS8` shelves already persist both values in fixed-width slots, so direct reads can address those bytes on demand and avoid two managed arrays for every shelf view.<br/>
+    /// </summary>
+    /// <param name="bytes">Complete persisted shelf bytes.<br/></param>
+    /// <param name="profile">Validated physical shelf profile.<br/></param>
+    /// <param name="itemCount">Receives the validated number of live slots.<br/></param>
+    /// <returns><see langword="true"/> when the header, slot stream, and every referenced record are structurally valid.<br/></returns>
+    private static bool TryValidateSlots(ReadOnlySpan<byte> bytes, VarKeyScalar8Profile profile, out int itemCount)
     {
-        recordOffsets = [];
-        keyPrefixes = [];
+        itemCount = 0;
         if (bytes.Length < profile.ShelfExtentSize ||
             VarKeyScalar8Layout.ReadMagic(bytes) != VarKeyScalar8Layout.Magic ||
             VarKeyScalar8Layout.ReadFormatVersion(bytes) != VarKeyScalar8Layout.FormatVersion ||
@@ -305,8 +315,6 @@ internal sealed class VarKeyScalar8ReadOnly
             return false;
         }
 
-        uint[] offsets = new uint[count];
-        uint[] prefixes = new uint[count];
         int cursor = VarKeyScalar8Layout.HeaderSize;
         for (int i = 0; i < count; i++)
         {
@@ -322,19 +330,18 @@ internal sealed class VarKeyScalar8ReadOnly
                 return false;
             }
 
-            offsets[i] = checked((uint)offset);
-            prefixes[i] = VarKeyScalar8Layout.ReadSlotKeyPrefix(bytes, cursor);
+            _ = VarKeyScalar8Layout.ReadSlotKeyPrefix(bytes, cursor);
             cursor += VarKeyScalar8Layout.SlotSize;
         }
 
-        recordOffsets = offsets;
-        keyPrefixes = prefixes;
+        itemCount = count;
         return true;
     }
 
     private int CompareSlotKey(ReadOnlySpan<byte> localBytes, int slotIndex, uint prefix, ReadOnlySpan<byte> key)
     {
-        uint slotPrefix = keyPrefixes[slotIndex];
+        int slotOffset = checked(VarKeyScalar8Layout.HeaderSize + (slotIndex * VarKeyScalar8Layout.SlotSize));
+        uint slotPrefix = VarKeyScalar8Layout.ReadSlotKeyPrefix(localBytes, slotOffset);
         if (slotPrefix < prefix)
         {
             return -1;
@@ -345,12 +352,14 @@ internal sealed class VarKeyScalar8ReadOnly
             return 1;
         }
 
-        return VarKeyScalar8Layout.CompareRecordKey(localBytes, checked((int)recordOffsets[slotIndex]), key);
+        int recordOffset = VarKeyScalar8Layout.ReadSlotRecordOffset(localBytes, slotOffset);
+        return VarKeyScalar8Layout.CompareRecordKey(localBytes, recordOffset, key);
     }
 
     private int CompareSlotTuple(ReadOnlySpan<byte> localBytes, int slotIndex, uint prefix, ReadOnlySpan<byte> key, ulong encodedIdentity)
     {
-        uint slotPrefix = keyPrefixes[slotIndex];
+        int slotOffset = checked(VarKeyScalar8Layout.HeaderSize + (slotIndex * VarKeyScalar8Layout.SlotSize));
+        uint slotPrefix = VarKeyScalar8Layout.ReadSlotKeyPrefix(localBytes, slotOffset);
         if (slotPrefix < prefix)
         {
             return -1;
@@ -361,7 +370,8 @@ internal sealed class VarKeyScalar8ReadOnly
             return 1;
         }
 
-        return VarKeyScalar8Layout.CompareRecordTuple(localBytes, checked((int)recordOffsets[slotIndex]), key, encodedIdentity);
+        int recordOffset = VarKeyScalar8Layout.ReadSlotRecordOffset(localBytes, slotOffset);
+        return VarKeyScalar8Layout.CompareRecordTuple(localBytes, recordOffset, key, encodedIdentity);
     }
 
     /// <summary>

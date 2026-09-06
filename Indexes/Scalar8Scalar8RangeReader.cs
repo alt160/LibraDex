@@ -22,6 +22,7 @@ internal sealed class Scalar8Scalar8RangeReader : IDisposable
     private long[]? pendingOffsets;
     private int[]? pendingHops;
     private byte[]? pendingFlags;
+    private byte[]? routerScratch;
     private RouteVisitedOffsetSet? visitedShelves;
     private RouteVisitedContextSet? visitedRouters;
     private Scalar8Scalar8RangePlan? plan;
@@ -39,6 +40,9 @@ internal sealed class Scalar8Scalar8RangeReader : IDisposable
     private bool currentRowInvalidated;
     private bool descendingTraversal;
     private bool disposed;
+    private long pendingTerminalShelfOffset;
+    private int pendingTerminalShelfExtent;
+    private ulong pendingTerminalKey;
 
     internal Scalar8Scalar8RangeReader()
     {
@@ -470,6 +474,11 @@ internal sealed class Scalar8Scalar8RangeReader : IDisposable
             currentShelfIndex = 0;
             currentSlotIndex = -1;
             currentRowInvalidated = false;
+            if (routerScratch is not null)
+            {
+                ArrayPool<byte>.Shared.Return(routerScratch, clearArray: false);
+                routerScratch = null;
+            }
             return;
         }
 
@@ -492,6 +501,11 @@ internal sealed class Scalar8Scalar8RangeReader : IDisposable
             ArrayPool<byte>.Shared.Return(pendingFlags, clearArray: false);
         }
 
+        if (routerScratch is not null)
+        {
+            ArrayPool<byte>.Shared.Return(routerScratch, clearArray: false);
+        }
+
         if (terminalShelfFlags is not null)
         {
             ArrayPool<byte>.Shared.Return(terminalShelfFlags, clearArray: false);
@@ -507,6 +521,7 @@ internal sealed class Scalar8Scalar8RangeReader : IDisposable
         pendingOffsets = null;
         pendingHops = null;
         pendingFlags = null;
+        routerScratch = null;
         terminalShelfFlags = null;
         terminalScalarKeys = null;
         visitedShelves = null;
@@ -674,7 +689,10 @@ internal sealed class Scalar8Scalar8RangeReader : IDisposable
         RouteVisitedOffsetSet localVisitedShelves = visitedShelves ?? throw new ObjectDisposedException(nameof(Scalar8Scalar8RangeReader));
         RouteVisitedContextSet localVisitedRouters = visitedRouters ?? throw new ObjectDisposedException(nameof(Scalar8Scalar8RangeReader));
         int previousRowCount = rowCount;
-        byte[] routerBytes = new byte[RouterLayout.Size];
+        if (LoadPendingTerminalShelf(localSession, localVisitedShelves))
+            return true;
+        byte[] routerBytes = routerScratch ??= ArrayPool<byte>.Shared.Rent(RouterLayout.Size);
+        Span<byte> routerPage = routerBytes.AsSpan(0, RouterLayout.Size);
         while (pendingCount > 0)
         {
             PopTarget(out long targetOffset, out int remainingHops, out bool lowerEdge, out bool upperEdge);
@@ -728,25 +746,11 @@ internal sealed class Scalar8Scalar8RangeReader : IDisposable
                     continue;
                 }
 
-                int shelfExtentSize = TerminalIdentityRootLayout.ReadShelfExtentSize(rootBytes);
-                long identityShelfOffset = TerminalIdentityRootLayout.ReadFirstShelfOffset(rootBytes);
-                while (identityShelfOffset != 0)
-                {
-                    if (!localVisitedShelves.Add(identityShelfOffset))
-                    {
-                        break;
-                    }
-
-                    byte[] identityShelfBytes = localSession.ReadTerminalIdentity8ShelfBytes(identityShelfOffset, shelfExtentSize);
-                    long nextOffset = TerminalIdentity8ShelfLayout.ReadNextShelfOffset(identityShelfBytes);
-                    AddTerminalIdentityShelfRange(identityShelfBytes, encodedKey);
-                    identityShelfOffset = nextOffset;
-                }
-
-                if (rowCount > previousRowCount)
-                {
+                pendingTerminalShelfExtent = TerminalIdentityRootLayout.ReadShelfExtentSize(rootBytes);
+                pendingTerminalShelfOffset = TerminalIdentityRootLayout.ReadFirstShelfOffset(rootBytes);
+                pendingTerminalKey = encodedKey;
+                if (LoadPendingTerminalShelf(localSession, localVisitedShelves))
                     return true;
-                }
 
                 continue;
             }
@@ -761,8 +765,8 @@ internal sealed class Scalar8Scalar8RangeReader : IDisposable
                 continue;
             }
 
-            localSession.ReadRouterPageUsingArenaCache(targetOffset, routerBytes);
-            RouterReader router = new(routerBytes);
+            localSession.ReadRouterPageUsingArenaCache(targetOffset, routerPage);
+            RouterReader router = new(routerPage);
             if (!router.IsValid)
             {
                 throw new InvalidDataException("The routed SS8-8 range router is invalid.");
@@ -815,6 +819,30 @@ internal sealed class Scalar8Scalar8RangeReader : IDisposable
         while (LoadNextShelfRange())
         {
         }
+    }
+
+    /// <summary>
+    /// Resumes an exhausted-key identity chain until one nonempty shelf becomes available.<br/>
+    /// The next link is retained instead of loading the entire duplicate-key run before its first identity.<br/>
+    /// Shelf-local ordering and the existing visited-offset protection are preserved in both directions.<br/>
+    /// </summary>
+    /// <param name="localSession">Owning live session.<br/></param>
+    /// <param name="visited">Reader-owned shelf visitation state.<br/></param>
+    /// <returns>Whether a new nonempty range was appended to the reader.<br/></returns>
+    private bool LoadPendingTerminalShelf(LibraDexFileSession localSession, RouteVisitedOffsetSet visited)
+    {
+        while (pendingTerminalShelfOffset != 0)
+        {
+            long offset = pendingTerminalShelfOffset;
+            pendingTerminalShelfOffset = 0;
+            if (!visited.Add(offset)) return false;
+            byte[] bytes = localSession.ReadTerminalIdentity8ShelfBytes(offset, pendingTerminalShelfExtent);
+            pendingTerminalShelfOffset = TerminalIdentity8ShelfLayout.ReadNextShelfOffset(bytes);
+            int previousCount = rowCount;
+            AddTerminalIdentityShelfRange(bytes, pendingTerminalKey);
+            if (rowCount > previousCount) return true;
+        }
+        return false;
     }
 
     private void PushTarget(long offset, int remainingHops, bool lowerEdge, bool upperEdge)

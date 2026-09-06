@@ -8,8 +8,9 @@ namespace LibraDex;
 /// Fixed-width storage supports scalar-8 and scalar-16 identities through programmable `FSN` shelves; variable-width storage currently supports scalar-8 identities.<br/>
 /// </summary>
 /// <typeparam name="TIdentity">The scalar identity type encoded into the underlying fixed identity lane.</typeparam>
-public sealed class LibraDexBigIntScalar8Index<TIdentity> : IIndex, IIdentityPrimitiveExecutor, IDisposable
+public sealed class LibraDexBigIntScalar8Index<TIdentity> : IIndex, IIdentityPrimitiveExecutor, IIdentityPrimitiveExecutor<TIdentity>, IIdentityPrimitiveTupleStreamer, IDisposable
 {
+    private readonly Catalog catalog;
     private readonly VarKeyScalar8Index? varInner;
     private readonly FixedNScalar8Index? fixedInner8;
     private readonly FixedNScalar16Index? fixedInner16;
@@ -18,6 +19,7 @@ public sealed class LibraDexBigIntScalar8Index<TIdentity> : IIndex, IIdentityPri
     private readonly LibraDexScalarWidth identityWidth;
 
     internal LibraDexBigIntScalar8Index(
+        Catalog catalog,
         string group,
         string name,
         VarKeyScalar8Index inner,
@@ -25,6 +27,7 @@ public sealed class LibraDexBigIntScalar8Index<TIdentity> : IIndex, IIdentityPri
         LibraDexBigIntKeyStorage storage,
         IndexKeys keyContract)
     {
+        this.catalog = catalog ?? throw new ArgumentNullException(nameof(catalog));
         ArgumentNullException.ThrowIfNull(inner);
         LibraDexBigIntCodec.ValidateMaxBytes(maxBytes, nameof(maxBytes));
         if (LibraDexGenericScalarCodec<TIdentity>.ResolveWidth(null) != LibraDexScalarWidth.Bytes8)
@@ -42,6 +45,7 @@ public sealed class LibraDexBigIntScalar8Index<TIdentity> : IIndex, IIdentityPri
     }
 
     internal LibraDexBigIntScalar8Index(
+        Catalog catalog,
         string group,
         string name,
         FixedNScalar8Index inner,
@@ -49,6 +53,7 @@ public sealed class LibraDexBigIntScalar8Index<TIdentity> : IIndex, IIdentityPri
         LibraDexBigIntKeyStorage storage,
         IndexKeys keyContract)
     {
+        this.catalog = catalog ?? throw new ArgumentNullException(nameof(catalog));
         ArgumentNullException.ThrowIfNull(inner);
         LibraDexBigIntCodec.ValidateMaxBytes(maxBytes, nameof(maxBytes));
         if (LibraDexGenericScalarCodec<TIdentity>.ResolveWidth(null) != LibraDexScalarWidth.Bytes8)
@@ -71,6 +76,7 @@ public sealed class LibraDexBigIntScalar8Index<TIdentity> : IIndex, IIdentityPri
     }
 
     internal LibraDexBigIntScalar8Index(
+        Catalog catalog,
         string group,
         string name,
         FixedNScalar16Index inner,
@@ -78,6 +84,7 @@ public sealed class LibraDexBigIntScalar8Index<TIdentity> : IIndex, IIdentityPri
         LibraDexBigIntKeyStorage storage,
         IndexKeys keyContract)
     {
+        this.catalog = catalog ?? throw new ArgumentNullException(nameof(catalog));
         ArgumentNullException.ThrowIfNull(inner);
         LibraDexBigIntCodec.ValidateMaxBytes(maxBytes, nameof(maxBytes));
         if (LibraDexGenericScalarCodec<TIdentity>.ResolveWidth(null) != LibraDexScalarWidth.Bytes16)
@@ -103,6 +110,11 @@ public sealed class LibraDexBigIntScalar8Index<TIdentity> : IIndex, IIdentityPri
     /// Gets the identity group name recorded for this BigInt index.<br/>
     /// </summary>
     public string Group { get; }
+
+    /// <summary>
+    /// Gets the open catalog that owns this index handle.<br/>
+    /// </summary>
+    public Catalog Catalog => catalog;
 
     /// <summary>
     /// Gets the logical index name recorded for this BigInt index.<br/>
@@ -724,7 +736,12 @@ public sealed class LibraDexBigIntScalar8Index<TIdentity> : IIndex, IIdentityPri
 
     IEnumerable<object> IIdentityPrimitiveExecutor.IterateIdentityPrimitive(LibraDexIdentityPrimitiveRequest request)
     {
-        return IterateIdentityPrimitive(request);
+        return BoxIdentityIterator(IterateIdentityPrimitiveTyped(request));
+    }
+
+    IEnumerable<TIdentity> IIdentityPrimitiveExecutor<TIdentity>.IterateIdentityPrimitiveTyped(LibraDexIdentityPrimitiveRequest request)
+    {
+        return IterateIdentityPrimitiveTyped(request);
     }
 
     long IIdentityPrimitiveExecutor.CountIdentityPrimitive(LibraDexIdentityPrimitiveRequest request)
@@ -762,7 +779,18 @@ public sealed class LibraDexBigIntScalar8Index<TIdentity> : IIndex, IIdentityPri
 
     IEnumerable<object> IIdentityPrimitiveExecutor.IterateIdentityUniverse()
     {
-        return IterateIdentityPrimitive(new LibraDexIdentityPrimitiveRequest(LibraDexCriteriaKind.All, Array.Empty<object?>()));
+        return BoxIdentityIterator(IterateIdentityPrimitiveTyped(new LibraDexIdentityPrimitiveRequest(LibraDexCriteriaKind.All, Array.Empty<object?>())));
+    }
+
+    IEnumerable<TIdentity> IIdentityPrimitiveExecutor<TIdentity>.IterateIdentityUniverseTyped()
+    {
+        return IterateIdentityPrimitiveTyped(new LibraDexIdentityPrimitiveRequest(LibraDexCriteriaKind.All, Array.Empty<object?>()));
+    }
+
+    IEnumerable<LibraDexObjectTuple> IIdentityPrimitiveTupleStreamer.IterateTuplePrimitive(
+        LibraDexIdentityPrimitiveRequest request)
+    {
+        return IterateTuplePrimitive(request);
     }
 
     /// <summary>
@@ -775,12 +803,100 @@ public sealed class LibraDexBigIntScalar8Index<TIdentity> : IIndex, IIdentityPri
         fixedInner16?.Dispose();
     }
 
-    private IReadOnlyList<object> ExecuteIdentityPrimitive(LibraDexIdentityPrimitiveRequest request)
+    /// <summary>
+    /// Adapts typed scalar identities to the legacy runtime-object executor contract.<br/>
+    /// Typed condition projections bypass this method and retain <typeparamref name="TIdentity"/> from physical scalar decoding through result composition.<br/>
+    /// </summary>
+    /// <param name="identities">The typed identities to expose to object-shaped callers.<br/></param>
+    /// <returns>A lazy boxed identity sequence preserving source order.<br/></returns>
+    private static IEnumerable<object> BoxIdentityIterator(IEnumerable<TIdentity> identities)
     {
-        return IterateIdentityPrimitive(request).ToList();
+        foreach (TIdentity identity in identities)
+        {
+            yield return identity!;
+        }
     }
 
-    private IEnumerable<object> IterateIdentityPrimitive(LibraDexIdentityPrimitiveRequest request)
+    private IReadOnlyList<object> ExecuteIdentityPrimitive(LibraDexIdentityPrimitiveRequest request)
+    {
+        return BoxIdentityIterator(IterateIdentityPrimitiveTyped(request)).ToList();
+    }
+
+    /// <summary>
+    /// Streams authoritative BigInteger key/identity tuples for full-index maintenance work.<br/>
+    /// Fixed-width storage emits its slot-owned scalar-null route explicitly before ordinary fixed-N tuples, while variable-width storage decodes keys directly from the routed `VS8` cursor.<br/>
+    /// </summary>
+    /// <param name="request">The normalized primitive request; maintenance tuple streaming currently accepts only <see cref="LibraDexCriteriaKind.All"/>.<br/></param>
+    /// <returns>Live logical tuples in stable physical order.<br/></returns>
+    private IEnumerable<LibraDexObjectTuple> IterateTuplePrimitive(LibraDexIdentityPrimitiveRequest request)
+    {
+        if (request.CriteriaKind != LibraDexCriteriaKind.All)
+            throw new NotSupportedException($"{request.CriteriaKind} tuple streaming is not connected to the BigInteger scalar facade.");
+        if (request.TakeLimit is < 0)
+            throw new ArgumentOutOfRangeException(nameof(request.TakeLimit), request.TakeLimit, "Take cannot be negative.");
+        if (request.TakeLimit == 0)
+            yield break;
+
+        int yielded = 0;
+        if (storage == LibraDexBigIntKeyStorage.FixedWidth)
+        {
+            foreach (TIdentity identity in IterateScalarNullRouteIdentityObjects())
+            {
+                yield return new LibraDexObjectTuple(null, identity!);
+                yielded++;
+                if (request.TakeLimit is int limit && yielded >= limit)
+                    yield break;
+            }
+
+            if (identityWidth == LibraDexScalarWidth.Bytes8)
+            {
+                FixedNScalar8Index inner = fixedInner8 ?? throw new ObjectDisposedException(nameof(LibraDexBigIntScalar8Index<TIdentity>));
+                foreach (FixedNScalar8Tuple tuple in inner.IterateTuples())
+                {
+                    BigInteger key = LibraDexBigIntCodec.Decode(tuple.Key, MaxBytes, LibraDexBigIntKeyStorage.FixedWidth);
+                    TIdentity identity = LibraDexGenericScalarCodec<TIdentity>.Decode8(tuple.EncodedIdentity);
+                    yield return new LibraDexObjectTuple(key, identity!);
+                    yielded++;
+                    if (request.TakeLimit is int limit && yielded >= limit)
+                        yield break;
+                }
+
+                yield break;
+            }
+
+            FixedNScalar16Index inner16 = fixedInner16 ?? throw new ObjectDisposedException(nameof(LibraDexBigIntScalar8Index<TIdentity>));
+            foreach (FixedNScalar16Tuple tuple in inner16.IterateTuples())
+            {
+                BigInteger key = LibraDexBigIntCodec.Decode(tuple.Key, MaxBytes, LibraDexBigIntKeyStorage.FixedWidth);
+                ulong high = BinaryPrimitives.ReadUInt64BigEndian(tuple.EncodedIdentity.AsSpan(0, 8));
+                ulong low = BinaryPrimitives.ReadUInt64BigEndian(tuple.EncodedIdentity.AsSpan(8, 8));
+                TIdentity identity = LibraDexGenericScalarCodec<TIdentity>.Decode16(high, low);
+                yield return new LibraDexObjectTuple(key, identity!);
+                yielded++;
+                if (request.TakeLimit is int limit && yielded >= limit)
+                    yield break;
+            }
+
+            yield break;
+        }
+
+        (BigInteger minimum, BigInteger maximum) = GetFullKeyBounds();
+        byte[] lower = EncodeKey(minimum);
+        byte[] upper = EncodeKey(maximum);
+        VarKeyScalar8Index varIndex = varInner ?? throw new ObjectDisposedException(nameof(LibraDexBigIntScalar8Index<TIdentity>));
+        using VarKeyScalar8RangeReader reader = varIndex.OpenRangeReader(lower, upper);
+        while (reader.MoveNext())
+        {
+            BigInteger key = LibraDexBigIntCodec.Decode(reader.CurrentKey, MaxBytes, LibraDexBigIntKeyStorage.VariableWidth);
+            TIdentity identity = LibraDexGenericScalarCodec<TIdentity>.Decode8(reader.CurrentEncodedIdentity);
+            yield return new LibraDexObjectTuple(key, identity!);
+            yielded++;
+            if (request.TakeLimit is int limit && yielded >= limit)
+                yield break;
+        }
+    }
+
+    private IEnumerable<TIdentity> IterateIdentityPrimitiveTyped(LibraDexIdentityPrimitiveRequest request)
     {
         if (request.TakeLimit is < 0)
         {
@@ -794,7 +910,7 @@ public sealed class LibraDexBigIntScalar8Index<TIdentity> : IIndex, IIdentityPri
 
         if (request.CriteriaKind == LibraDexCriteriaKind.ScalarNull)
         {
-            foreach (object identity in IterateScalarNullIdentityObjects(request.Values, request.TakeLimit))
+            foreach (TIdentity identity in IterateScalarNullIdentityObjects(request.Values, request.TakeLimit))
             {
                 yield return identity;
             }
@@ -804,7 +920,7 @@ public sealed class LibraDexBigIntScalar8Index<TIdentity> : IIndex, IIdentityPri
 
         if (request.CriteriaKind == LibraDexCriteriaKind.All)
         {
-            foreach (object identity in IterateAllIdentityObjects(request.TakeLimit))
+            foreach (TIdentity identity in IterateAllIdentityObjects(request.TakeLimit))
             {
                 yield return identity;
             }
@@ -1093,12 +1209,12 @@ public sealed class LibraDexBigIntScalar8Index<TIdentity> : IIndex, IIdentityPri
         return LibraDexBigIntCodec.Encode(key, MaxBytes, storage);
     }
 
-    private IEnumerable<object> IterateAllIdentityObjects(int? takeLimit = null)
+    private IEnumerable<TIdentity> IterateAllIdentityObjects(int? takeLimit = null)
     {
         int returned = 0;
         if (storage == LibraDexBigIntKeyStorage.FixedWidth)
         {
-            foreach (object identity in IterateScalarNullRouteIdentityObjects(takeLimit))
+            foreach (TIdentity identity in IterateScalarNullRouteIdentityObjects(takeLimit))
             {
                 yield return identity;
                 returned++;
@@ -1132,7 +1248,7 @@ public sealed class LibraDexBigIntScalar8Index<TIdentity> : IIndex, IIdentityPri
         return count;
     }
 
-    private IEnumerable<object> IterateScalarNullIdentityObjects(IReadOnlyList<object?> values, int? takeLimit = null)
+    private IEnumerable<TIdentity> IterateScalarNullIdentityObjects(IReadOnlyList<object?> values, int? takeLimit = null)
     {
         ScalarNull state = RequireScalarNullState(values);
         if (state == ScalarNull.NonNull)
@@ -1152,7 +1268,7 @@ public sealed class LibraDexBigIntScalar8Index<TIdentity> : IIndex, IIdentityPri
             yield break;
         }
 
-        foreach (object identity in IterateScalarNullRouteIdentityObjects(takeLimit))
+        foreach (TIdentity identity in IterateScalarNullRouteIdentityObjects(takeLimit))
         {
             yield return identity;
         }
@@ -1223,7 +1339,7 @@ public sealed class LibraDexBigIntScalar8Index<TIdentity> : IIndex, IIdentityPri
         byte[] lower = EncodeKey(lowerKey);
         byte[] upper = EncodeKey(upperKey);
         VarKeyScalar8Index inner = varInner ?? throw new ObjectDisposedException(nameof(LibraDexBigIntScalar8Index<TIdentity>));
-        return inner.CountEncodedIdentityRange(lower, upper);
+        return inner.CountIdentityRange(lower, upper);
     }
 
     private bool InsertScalarNullIdentity(TIdentity identity)
@@ -1300,7 +1416,7 @@ public sealed class LibraDexBigIntScalar8Index<TIdentity> : IIndex, IIdentityPri
         return false;
     }
 
-    private IEnumerable<object> IterateScalarNullRouteIdentityObjects(int? takeLimit = null)
+    private IEnumerable<TIdentity> IterateScalarNullRouteIdentityObjects(int? takeLimit = null)
     {
         EnsureFixedScalarNullRouteSupported();
         if (takeLimit == 0)

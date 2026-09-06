@@ -1,3 +1,5 @@
+using System.Text;
+
 namespace LibraDex;
 
 public sealed partial class CatalogIdentityGroupIndexes
@@ -95,11 +97,11 @@ public sealed partial class CatalogIdentityGroupIndexes
     }
 
     /// <summary>
-    /// Starts an unfiltered grouped aggregate condition over one named index in this identity group.<br/>
+    /// Starts an unfiltered grouped result condition over one named index in this identity group.<br/>
     /// Exact stored key bytes define groups by default; use <c>AsString(SubIndexType)</c> only when a maintained Folded or SortKey projection is intended.<br/>
     /// </summary>
     /// <param name="indexName">The index whose exact stored key bytes define groups.<br/></param>
-    /// <returns>A grouped continuation that requires an aggregate selection before termination.<br/></returns>
+    /// <returns>A grouped continuation that can select <c>First</c>, <c>Last</c>, or an aggregate before termination.<br/></returns>
     public LibraDexConditionGroupBy GroupBy(string indexName)
         => new(Name, filter: null, indexName);
 
@@ -111,32 +113,27 @@ public sealed partial class CatalogIdentityGroupIndexes
     /// <param name="condition">The completed typed condition to execute.<br/></param>
     /// <param name="skip">The number of logical results to skip before collection begins.<br/></param>
     /// <param name="take">The optional maximum number of logical results to return.<br/></param>
+    /// <param name="bookmark">The optional condition-result bookmark from which collection should continue.<br/></param>
+    /// <param name="consistency">The bookmark consistency policy; generation-bound continuation is the safe default.<br/></param>
     /// <returns>A caller-owned result array for the requested window.<br/></returns>
     public IReadOnlyList<TResult> Get<TResult>(
         LibraDexCondition<TResult> condition,
         int skip = 0,
-        int? take = null)
+        int? take = null,
+        LibraDexBookmark? bookmark = null,
+        LibraDexBookmarkConsistency consistency = LibraDexBookmarkConsistency.GenerationBound)
     {
         ValidateResultCondition(condition, skip, take);
-        if (take == 0)
-            return Array.Empty<TResult>();
-
-        List<TResult> results = take.HasValue ? new List<TResult>(take.Value) : new List<TResult>();
-        int skipped = 0;
-        foreach (TResult result in ExecuteResultCondition(condition))
-        {
-            if (skipped < skip)
-            {
-                skipped++;
-                continue;
-            }
-
-            results.Add(result);
-            if (take.HasValue && results.Count >= take.Value)
-                break;
-        }
-
-        return results.ToArray();
+        return catalog.Diagnostics.Queries.IsEnabled
+            ? MeasureCore(
+                condition,
+                skip,
+                take,
+                bookmark,
+                consistency,
+                publishTelemetry: true,
+                forceAllocationMeasurement: false).Results
+            : GetCore(condition, skip, take, bookmark, consistency);
     }
 
     /// <summary>
@@ -145,11 +142,50 @@ public sealed partial class CatalogIdentityGroupIndexes
     /// </summary>
     /// <typeparam name="TResult">The logical result type declared by the condition.<br/></typeparam>
     /// <param name="condition">The completed typed condition to execute.<br/></param>
+    /// <param name="bookmark">The optional condition-result bookmark whose next unread result should begin the sequence.<br/></param>
+    /// <param name="consistency">The bookmark consistency policy; generation-bound continuation is the safe default.<br/></param>
     /// <returns>The condition's logical result sequence.<br/></returns>
-    public IEnumerable<TResult> Iterate<TResult>(LibraDexCondition<TResult> condition)
+    public IEnumerable<TResult> Iterate<TResult>(
+        LibraDexCondition<TResult> condition,
+        LibraDexBookmark? bookmark = null,
+        LibraDexBookmarkConsistency consistency = LibraDexBookmarkConsistency.GenerationBound)
     {
         ValidateResultCondition(condition, skip: 0, take: null);
-        return ExecuteResultCondition(condition);
+        if (!catalog.Diagnostics.Queries.TryGetFields(out QueryDiagnosticFields fields))
+        {
+            LibraDexPreparedBookmarkResult<TResult> prepared = PrepareBookmarkResult(condition, bookmark, consistency);
+            return Values(prepared.Results);
+        }
+
+        LibraDexCondition<TResult> frozen = condition.FreezeForBookmark(
+            out bool hadDeferredSelectors,
+            out bool hadDeferredValues);
+        LibraDexQueryExplanation explanation = Explain(frozen);
+        bool measureAllocations = (fields & QueryDiagnosticFields.Allocations) != 0;
+        DateTimeOffset startedUtc = DateTimeOffset.UtcNow;
+        long startedTimestamp = System.Diagnostics.Stopwatch.GetTimestamp();
+        long startedAllocated = measureAllocations
+            ? GC.GetAllocatedBytesForCurrentThread()
+            : 0;
+        LibraDexPreparedBookmarkResult<TResult> tracked = PrepareBookmarkResult(
+            frozen,
+            bookmark,
+            consistency,
+            conditionIsFrozen: true,
+            hadDeferredSelectors,
+            hadDeferredValues);
+        var telemetry = new LibraDexQueryTelemetrySession(
+            catalog.Diagnostics.Queries,
+            startedUtc,
+            Name,
+            explanation.ConditionShape,
+            explanation.RequiresScan,
+            CatalogQueryTelemetry.GetElapsedTicks(startedTimestamp),
+            measureAllocations
+                ? GC.GetAllocatedBytesForCurrentThread() - startedAllocated
+                : 0,
+            measureAllocations);
+        return TrackedValues(tracked.Results, telemetry);
     }
 
     /// <summary>
@@ -158,15 +194,354 @@ public sealed partial class CatalogIdentityGroupIndexes
     /// </summary>
     /// <typeparam name="TResult">The logical result type declared by the condition.<br/></typeparam>
     /// <param name="condition">The completed typed condition to execute.<br/></param>
+    /// <param name="bookmark">The optional condition-result bookmark whose next unread result should become the reader's first result.<br/></param>
+    /// <param name="consistency">The bookmark consistency policy; generation-bound continuation is the safe default.<br/></param>
     /// <returns>A live reader over the condition's logical results.<br/></returns>
-    public LibraDexResultReader<TResult> OpenReader<TResult>(LibraDexCondition<TResult> condition)
+    public LibraDexResultReader<TResult> OpenReader<TResult>(
+        LibraDexCondition<TResult> condition,
+        LibraDexBookmark? bookmark = null,
+        LibraDexBookmarkConsistency consistency = LibraDexBookmarkConsistency.GenerationBound)
     {
         ValidateResultCondition(condition, skip: 0, take: null);
-        return new LibraDexResultReader<TResult>(ExecuteResultCondition(condition));
+        LibraDexQueryTelemetrySession? telemetry = null;
+        LibraDexPreparedBookmarkResult<TResult> prepared;
+        if (!catalog.Diagnostics.Queries.TryGetFields(out QueryDiagnosticFields fields))
+        {
+            prepared = PrepareBookmarkResult(condition, bookmark, consistency);
+        }
+        else
+        {
+            LibraDexCondition<TResult> frozen = condition.FreezeForBookmark(
+                out bool hadDeferredSelectors,
+                out bool hadDeferredValues);
+            LibraDexQueryExplanation explanation = Explain(frozen);
+            bool measureAllocations = (fields & QueryDiagnosticFields.Allocations) != 0;
+            DateTimeOffset startedUtc = DateTimeOffset.UtcNow;
+            long startedTimestamp = System.Diagnostics.Stopwatch.GetTimestamp();
+            long startedAllocated = measureAllocations
+                ? GC.GetAllocatedBytesForCurrentThread()
+                : 0;
+            prepared = PrepareBookmarkResult(
+                frozen,
+                bookmark,
+                consistency,
+                conditionIsFrozen: true,
+                hadDeferredSelectors,
+                hadDeferredValues);
+            telemetry = new LibraDexQueryTelemetrySession(
+                catalog.Diagnostics.Queries,
+                startedUtc,
+                Name,
+                explanation.ConditionShape,
+                explanation.RequiresScan,
+                CatalogQueryTelemetry.GetElapsedTicks(startedTimestamp),
+                measureAllocations
+                    ? GC.GetAllocatedBytesForCurrentThread() - startedAllocated
+                    : 0,
+                measureAllocations);
+        }
+        long resultsConsumed = bookmark?.ResultsConsumed ?? 0;
+        return new LibraDexResultReader<TResult>(
+            prepared.Results,
+            prepared.Template,
+            consistency,
+            resultsConsumed,
+            bookmark?.Anchor,
+            telemetry);
     }
 
-    private IEnumerable<TResult> ExecuteResultCondition<TResult>(LibraDexCondition<TResult> condition)
-        => condition.Result.Iterate(this);
+    private LibraDexPreparedBookmarkResult<TResult> PrepareBookmarkResult<TResult>(
+        LibraDexCondition<TResult> condition,
+        LibraDexBookmark? bookmark,
+        LibraDexBookmarkConsistency consistency)
+    {
+        if (consistency is not (LibraDexBookmarkConsistency.GenerationBound or LibraDexBookmarkConsistency.LiveContinuation))
+            throw new ArgumentOutOfRangeException(nameof(consistency), consistency, "Unknown bookmark consistency policy.");
+
+        LibraDexCondition<TResult> frozen = condition.FreezeForBookmark(
+            out bool hadDeferredSelectors,
+            out bool hadDeferredValues);
+        return PrepareBookmarkResult(
+            frozen,
+            bookmark,
+            consistency,
+            conditionIsFrozen: true,
+            hadDeferredSelectors,
+            hadDeferredValues);
+    }
+
+    private LibraDexPreparedBookmarkResult<TResult> PrepareBookmarkResult<TResult>(
+        LibraDexCondition<TResult> frozen,
+        LibraDexBookmark? bookmark,
+        LibraDexBookmarkConsistency consistency,
+        bool conditionIsFrozen,
+        bool hadDeferredSelectors,
+        bool hadDeferredValues)
+    {
+        if (!conditionIsFrozen)
+            throw new InvalidOperationException("Prepared bookmark execution requires a frozen condition.");
+
+        LibraDexBookmarkTemplate template = CreateBookmarkTemplate(
+            frozen,
+            hadDeferredSelectors,
+            hadDeferredValues);
+
+        if (bookmark is not null)
+        {
+            if (bookmark.FormatVersion != LibraDexBookmark.CurrentFormatVersion)
+                throw new InvalidOperationException("The bookmark format version is not supported by this LibraDex build.");
+            if (!string.Equals(bookmark.Group, Name, StringComparison.Ordinal))
+                throw new InvalidOperationException($"The bookmark belongs to identity group '{bookmark.Group}', not '{Name}'.");
+            if (!bookmark.ConditionKey.Matches(template.ConditionKey))
+                throw new InvalidOperationException("The bookmark does not apply to the materialized condition, return shape, or ordering.");
+            if (consistency == LibraDexBookmarkConsistency.GenerationBound &&
+                bookmark.CatalogMutationVersion != template.CatalogMutationVersion)
+            {
+                throw new InvalidOperationException("The catalog changed after this generation-bound bookmark was captured.");
+            }
+        }
+
+        LibraDexBookmarkAnchor? seekAnchor = bookmark?.Anchor;
+        IEnumerable<LibraDexBookmarkResult<TResult>> results = frozen.Result.IterateBookmark(this, seekAnchor);
+        if (bookmark is not null && bookmark.ResultsConsumed != 0)
+        {
+            results = bookmark.Anchor.HasValue
+                ? ContinueAfterAnchor(results, bookmark.Anchor)
+                : SkipBookmarkResults(results, bookmark.ResultsConsumed);
+        }
+
+        return new LibraDexPreparedBookmarkResult<TResult>(results, template);
+    }
+
+    private LibraDexBookmarkTemplate CreateBookmarkTemplate<TResult>(
+        LibraDexCondition<TResult> condition,
+        bool hadDeferredSelectors,
+        bool hadDeferredValues)
+    {
+        List<LibraDexBookmarkIndexReference> references = new();
+        LibraDexConditionEndCondition? filter = condition.Filter;
+        if (filter is not null)
+        {
+            IReadOnlyList<LibraDexConditionLeafDescriptor> leaves = filter.Leaves;
+            for (int i = 0; i < leaves.Count; i++)
+            {
+                LibraDexConditionLeafDescriptor leaf = leaves[i];
+                references.Add(new LibraDexBookmarkIndexReference(
+                    leaf.IndexName,
+                    leaf.IndexSelector.Name,
+                    LibraDexBookmarkIndexRole.Filter));
+            }
+        }
+
+        IReadOnlyList<LibraDexBookmarkIndexReference> resultIndexes = condition.Result.BookmarkIndexes;
+        for (int i = 0; i < resultIndexes.Count; i++)
+            references.Add(resultIndexes[i]);
+
+        bool hasResultOrder = false;
+        for (int i = 0; i < references.Count; i++)
+        {
+            if ((references[i].Roles & (LibraDexBookmarkIndexRole.Order | LibraDexBookmarkIndexRole.NaturalOrder)) != 0)
+            {
+                hasResultOrder = true;
+                break;
+            }
+        }
+
+        if (!hasResultOrder && filter is not null && filter.Leaves.Count != 0)
+        {
+            LibraDexConditionLeafDescriptor first = filter.Leaves[0];
+            references.Add(new LibraDexBookmarkIndexReference(
+                first.IndexName,
+                first.IndexSelector.Name,
+                LibraDexBookmarkIndexRole.NaturalOrder));
+        }
+
+        List<LibraDexBookmarkIndexInfo> indexInfos = new(references.Count);
+        for (int i = 0; i < references.Count; i++)
+        {
+            LibraDexBookmarkIndexReference reference = references[i];
+            int existingIndex = -1;
+            for (int j = 0; j < indexInfos.Count; j++)
+            {
+                if (string.Equals(indexInfos[j].Name, reference.Name, StringComparison.Ordinal))
+                {
+                    existingIndex = j;
+                    break;
+                }
+            }
+
+            if (existingIndex >= 0)
+            {
+                LibraDexBookmarkIndexInfo existing = indexInfos[existingIndex];
+                indexInfos[existingIndex] = existing with
+                {
+                    SelectorName = existing.SelectorName ?? reference.SelectorName,
+                    Roles = existing.Roles | reference.Roles
+                };
+                continue;
+            }
+
+            if (!TryGetInfo(reference.Name, out CatalogIndexInfo info))
+                throw new KeyNotFoundException($"Index '{reference.Name}' was not found in identity group '{Name}' while preparing bookmark provenance.");
+
+            indexInfos.Add(new LibraDexBookmarkIndexInfo(
+                reference.Name,
+                reference.SelectorName,
+                reference.Roles,
+                info.Generation));
+        }
+
+        LibraDexConditionResultPlan plan = condition.Plan();
+        string conditionShape = CreateConditionShape(condition, plan.Shape);
+        LibraDexBookmarkConditionInfo conditionInfo = new(
+            Name,
+            conditionShape,
+            hadDeferredSelectors,
+            hadDeferredValues);
+        LibraDexBookmarkConditionKey conditionKey = CreateConditionKey(condition, plan.Shape);
+        return new LibraDexBookmarkTemplate(
+            conditionInfo,
+            indexInfos.ToArray(),
+            catalog.Session.MutationVersion,
+            conditionKey);
+    }
+
+    private static string CreateConditionShape<TResult>(LibraDexCondition<TResult> condition, string resultShape)
+    {
+        StringBuilder shape = new(resultShape);
+        if (condition.Filter is null)
+            return shape.ToString();
+
+        return shape.Append(".Filter[")
+            .Append(condition.Filter.GetStructureShape())
+            .Append(']')
+            .ToString();
+    }
+
+    private static LibraDexBookmarkConditionKey CreateConditionKey<TResult>(
+        LibraDexCondition<TResult> condition,
+        string resultShape)
+    {
+        if (condition.Filter is null)
+            return new LibraDexBookmarkConditionKey(condition.Group, resultShape, Array.Empty<LibraDexBookmarkLeafKey>());
+
+        IReadOnlyList<LibraDexConditionLeafDescriptor> leaves = condition.Filter.Leaves;
+        LibraDexBookmarkLeafKey[] keys = new LibraDexBookmarkLeafKey[leaves.Count];
+        for (int i = 0; i < keys.Length; i++)
+        {
+            LibraDexConditionLeafDescriptor leaf = leaves[i];
+            object?[] values = new object?[leaf.Operands.Count];
+            for (int j = 0; j < values.Length; j++)
+                values[j] = leaf.Operands[j].GetValue();
+
+            keys[i] = new LibraDexBookmarkLeafKey(
+                leaf.IndexName,
+                leaf.ValueKind,
+                leaf.Operator,
+                leaf.IgnoreCase,
+                leaf.Culture,
+                values);
+        }
+
+        string structuralResultShape = $"{resultShape}.Filter[{condition.Filter.GetStructureShape()}]";
+        return new LibraDexBookmarkConditionKey(condition.Group, structuralResultShape, keys);
+    }
+
+    private static IEnumerable<LibraDexBookmarkResult<TResult>> SkipBookmarkResults<TResult>(
+        IEnumerable<LibraDexBookmarkResult<TResult>> results,
+        long count)
+    {
+        long skipped = 0;
+        foreach (LibraDexBookmarkResult<TResult> result in results)
+        {
+            if (skipped < count)
+            {
+                skipped++;
+                continue;
+            }
+
+            yield return result;
+        }
+    }
+
+    private static IEnumerable<LibraDexBookmarkResult<TResult>> ContinueAfterAnchor<TResult>(
+        IEnumerable<LibraDexBookmarkResult<TResult>> results,
+        LibraDexBookmarkAnchor? anchor)
+    {
+        if (anchor is null)
+            throw new InvalidOperationException("A live-continuation bookmark has no logical result anchor.");
+
+        bool found = false;
+        foreach (LibraDexBookmarkResult<TResult> result in results)
+        {
+            if (!found)
+            {
+                if (BookmarkAnchorEquals(result.Anchor, anchor.Value))
+                    found = true;
+                continue;
+            }
+
+            yield return result;
+        }
+
+        if (!found)
+            throw new InvalidOperationException("The live-continuation bookmark anchor is no longer present in the current result stream.");
+    }
+
+    private static bool BookmarkAnchorEquals(LibraDexBookmarkAnchor left, LibraDexBookmarkAnchor right)
+        => LibraDexObjectTuple.ValueEquals(left.OrderValue, right.OrderValue) &&
+           LibraDexObjectTuple.ValueEquals(left.IdentityValue, right.IdentityValue);
+
+    private static IEnumerable<TResult> Values<TResult>(IEnumerable<LibraDexBookmarkResult<TResult>> results)
+    {
+        foreach (LibraDexBookmarkResult<TResult> result in results)
+            yield return result.Value;
+    }
+
+    private static IEnumerable<TResult> TrackedValues<TResult>(
+        IEnumerable<LibraDexBookmarkResult<TResult>> results,
+        LibraDexQueryTelemetrySession telemetry)
+    {
+        using IEnumerator<LibraDexBookmarkResult<TResult>> enumerator = results.GetEnumerator();
+        bool completed = false;
+        try
+        {
+            while (true)
+            {
+                telemetry.StartStep(out long startedTimestamp, out long startedAllocated);
+                bool moved;
+                LibraDexBookmarkResult<TResult> result = default;
+                try
+                {
+                    moved = enumerator.MoveNext();
+                    if (moved)
+                        result = enumerator.Current;
+                }
+                catch
+                {
+                    telemetry.EndStep(startedTimestamp, startedAllocated);
+                    telemetry.Complete(LibraDexQueryCompletion.Failed);
+                    throw;
+                }
+                telemetry.EndStep(startedTimestamp, startedAllocated);
+
+                if (!moved)
+                {
+                    completed = true;
+                    telemetry.Complete(LibraDexQueryCompletion.Completed);
+                    yield break;
+                }
+
+                telemetry.Returned();
+                yield return result.Value;
+            }
+        }
+        finally
+        {
+            if (!completed)
+                telemetry.Complete(LibraDexQueryCompletion.StoppedEarly);
+        }
+    }
 
     private void ValidateResultCondition<TResult>(LibraDexCondition<TResult> condition, int skip, int? take)
     {
@@ -188,4 +563,8 @@ public sealed partial class CatalogIdentityGroupIndexes
 
         return names;
     }
+
+    private readonly record struct LibraDexPreparedBookmarkResult<TResult>(
+        IEnumerable<LibraDexBookmarkResult<TResult>> Results,
+        LibraDexBookmarkTemplate Template);
 }

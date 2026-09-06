@@ -505,7 +505,12 @@ internal enum Scalar8Scalar16RouteTargetKind
     /// <summary>
     /// The target bytes begin with the `Scalar8Scalar16` shelf magic.<br/>
     /// </summary>
-    Shelf = 2
+    Shelf = 2,
+
+    /// <summary>
+    /// The target bytes begin with a fixed-key scalar-sixteen terminal identity root.<br/>
+    /// </summary>
+    TerminalIdentityRoot = 3
 }
 
 /// <summary>
@@ -737,7 +742,12 @@ internal enum Scalar16Scalar8RouteTargetKind
     /// <summary>
     /// The target bytes begin with the `Scalar16Scalar8` shelf magic.<br/>
     /// </summary>
-    Shelf = 2
+    Shelf = 2,
+
+    /// <summary>
+    /// The target bytes begin with a fixed-key scalar-eight terminal identity root.<br/>
+    /// </summary>
+    TerminalIdentityRoot = 3
 }
 
 /// <summary>
@@ -975,7 +985,12 @@ internal enum Scalar16Scalar16RouteTargetKind
     /// <summary>
     /// The target bytes begin with the `Scalar16Scalar16` shelf magic.<br/>
     /// </summary>
-    Shelf = 2
+    Shelf = 2,
+
+    /// <summary>
+    /// The target bytes begin with a fixed-key scalar-sixteen terminal identity root.<br/>
+    /// </summary>
+    TerminalIdentityRoot = 3
 }
 
 /// <summary>
@@ -1219,7 +1234,12 @@ internal enum Fixed32Scalar8RouteTargetKind
     /// <summary>
     /// The target bytes begin with the `Fixed32Scalar8` shelf magic.<br/>
     /// </summary>
-    Shelf = 2
+    Shelf = 2,
+
+    /// <summary>
+    /// The target bytes begin with a fixed-key scalar-eight terminal identity root.<br/>
+    /// </summary>
+    TerminalIdentityRoot = 3
 }
 
 /// <summary>
@@ -1469,7 +1489,12 @@ internal enum Fixed32Scalar16RouteTargetKind
     /// <summary>
     /// The target bytes begin with the `Fixed32Scalar16` shelf magic.<br/>
     /// </summary>
-    Shelf = 2
+    Shelf = 2,
+
+    /// <summary>
+    /// The target bytes begin with a fixed-key scalar-sixteen terminal identity root.<br/>
+    /// </summary>
+    TerminalIdentityRoot = 3
 }
 
 /// <summary>

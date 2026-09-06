@@ -1979,6 +1979,8 @@ internal sealed partial class LibraDexFileSession
                     .Append("; rows=").Append(terminalRows)
                     .Append("; path=").Append(path)
                     .Append("; terminalRoot=").Append(targetOffset)
+                    .Append("; firstShelf=").Append(TerminalIdentityRootLayout.ReadFirstShelfOffset(rootBytes))
+                    .Append("; tailShelf=").Append(TerminalIdentityRootLayout.ReadTailShelfOffset(rootBytes))
                     .AppendLine();
             }
 
@@ -2385,7 +2387,15 @@ internal sealed partial class LibraDexFileSession
         }
 
         Scalar8VarIdentitySplitIdentitySource identitySource = new(mutableShelf, sourceSlots, incomingIndex, incomingIdentity);
-        int firstSplitDepth = FindFirstDifferingScalar8VarIdentityDepth(keys, currentRouterDepth + 1);
+        int firstSplitDepth = FindFirstDifferingScalar8VarIdentityDepth(keys, 0);
+        if (firstSplitDepth >= 0 && firstSplitDepth < currentRouterDepth)
+        {
+            throw new InvalidDataException($"The SV8 transform source violates its routed prefix stem. FirstDifferentDepth={firstSplitDepth}; FirstOwnedDepth={currentRouterDepth + 1}; Count={keys.Length}.");
+        }
+        if (firstSplitDepth == currentRouterDepth)
+        {
+            return false;
+        }
         for (int depth = firstSplitDepth; depth >= 0 && depth < sizeof(ulong); depth++)
         {
             if (TryBuildScalar8VarIdentitySplitAtDepth(keys, identitySource, profile, checked((ushort)depth), out selectedRightPrefix, out leftShelf, out rightShelf, out leftCount, out rightCount))
@@ -3610,7 +3620,11 @@ internal sealed partial class LibraDexFileSession
             AddScalar8VarIdentityTuple(ref keys, ref identities, ref tupleCount, encodedKey, incomingIdentityRef);
         }
 
-        int splitDepth = FindFirstDifferingScalar8VarIdentityDepth(keys.AsSpan(0, tupleCount), currentRouterDepth + 1);
+        int splitDepth = FindFirstDifferingScalar8VarIdentityDepth(keys.AsSpan(0, tupleCount), 0);
+        if (splitDepth >= 0 && splitDepth < currentRouterDepth)
+        {
+            throw new InvalidDataException($"The SV8 overflow source violates its routed prefix stem. FirstDifferentDepth={splitDepth}; FirstOwnedDepth={currentRouterDepth + 1}; Count={tupleCount}.");
+        }
         if (splitDepth < 0)
         {
             return false;
@@ -3629,22 +3643,37 @@ internal sealed partial class LibraDexFileSession
         }
 
         byte selectedRightPrefix = GetScalar8VarIdentityPrefix(keys[boundary], splitDepth);
-        long childRouterOffset = CreateScalar8VarIdentitySplitRouterChain(
-            checked((ushort)(currentRouterDepth + 1)),
-            checked((ushort)splitDepth),
-            allocationClassId,
-            keys[0],
-            leftHeadOffset,
-            rightHeadOffset,
-            selectedRightPrefix);
         FlushScalar8VarIdentityMutableBatchShelvesBeforeStructuralMutation();
         scalar8VarIdentityMutableBatchShelves.Remove(headShelfOffset);
-        RepointMatchingScalar8VarIdentityRoutes(rootRouterOffset, headShelfOffset, childRouterOffset, checked((ushort)currentRouterDepth));
+        long replacementOffset;
+        if (splitDepth == currentRouterDepth)
+        {
+            RepointSameDepthScalar8VarIdentityRoutes(
+                rootRouterOffset,
+                headShelfOffset,
+                selectedRightPrefix,
+                leftHeadOffset,
+                rightHeadOffset,
+                checked((ushort)currentRouterDepth));
+            replacementOffset = leftHeadOffset;
+        }
+        else
+        {
+            replacementOffset = CreateScalar8VarIdentitySplitRouterChain(
+                checked((ushort)(currentRouterDepth + 1)),
+                checked((ushort)splitDepth),
+                allocationClassId,
+                keys[0],
+                leftHeadOffset,
+                rightHeadOffset,
+                selectedRightPrefix);
+            RepointMatchingScalar8VarIdentityRoutes(rootRouterOffset, headShelfOffset, replacementOffset, checked((ushort)currentRouterDepth));
+        }
         DataKernelCommitTelemetry telemetry = CommitAndInvalidateRouterReadCache();
         result = new Scalar8VarIdentityRoutedInsertResult(
             Scalar8VarIdentityRoutedInsertKind.WalkedShelfSplit,
             Scalar8VarIdentityInsertResult.Inserted,
-            childRouterOffset,
+            replacementOffset,
             rightHeadOffset,
             telemetry,
             Math.Max(leftLargestCount, rightLargestCount),
@@ -5939,14 +5968,14 @@ internal sealed partial class LibraDexFileSession
         TerminalIdentityRootLayout.Initialize(rootRewrite.Span, shape, keyBytes, shelfExtentSize, firstShelfOffset);
         TerminalIdentityRootLayout.WriteTailShelfOffset(rootRewrite.Span, tailShelfOffset);
         ClearTerminalIdentityReadCaches();
-        DataKernelCommitTelemetry telemetry = CommitAndInvalidateRouterReadCache();
         ReleaseTerminalVarIdentityShelfChain(oldFirstShelfOffset, shelfExtentSize);
+        DataKernelCommitTelemetry telemetry = CommitAndInvalidateRouterReadCache();
         return telemetry;
     }
 
     /// <summary>
     /// Rewrites a terminal `SV8` var-identity route from a pooled flat identity workspace.<br/>
-    /// The method keeps identity data as byte slices until each terminal shelf is written into its final reservation, then releases the superseded memory-backed shelf chain after publication.<br/>
+    /// The method keeps identity data as byte slices until each terminal shelf is written into its final reservation, then stages the superseded shelf chain for retirement after root publication in the same commit.<br/>
     /// </summary>
     /// <param name="rootOffset">The terminal identity root offset to rewrite.<br/></param>
     /// <param name="shape">The terminal root shape value to persist.<br/></param>
@@ -5994,14 +6023,14 @@ internal sealed partial class LibraDexFileSession
         TerminalIdentityRootLayout.Initialize(rootRewrite.Span, shape, keyBytes, shelfExtentSize, firstShelfOffset);
         TerminalIdentityRootLayout.WriteTailShelfOffset(rootRewrite.Span, tailShelfOffset);
         ClearTerminalIdentityReadCaches();
-        DataKernelCommitTelemetry telemetry = CommitAndInvalidateRouterReadCache();
         ReleaseTerminalVarIdentityShelfChain(oldFirstShelfOffset, shelfExtentSize);
+        DataKernelCommitTelemetry telemetry = CommitAndInvalidateRouterReadCache();
         return telemetry;
     }
 
     /// <summary>
-    /// Releases a superseded terminal variable-identity shelf chain from a memory-backed DataKernel arena.<br/>
-    /// File-backed kernels ignore each release call, preserving append-only durable-file behavior until compaction is explicit.<br/>
+    /// Stages release of a superseded terminal variable-identity shelf chain through the backing-specific allocator.<br/>
+    /// Callers stage the root rewrite first and invoke this helper before the enclosing commit so file retirement is ordered after topology publication while memory arenas recover equivalent capacity safely.<br/>
     /// </summary>
     /// <param name="firstShelfOffset">The first terminal variable-identity shelf in the old chain, or zero when the old root had no shelves.<br/></param>
     /// <param name="shelfExtentSize">The fixed extent size of each terminal variable-identity shelf.<br/></param>
@@ -6013,7 +6042,7 @@ internal sealed partial class LibraDexFileSession
             byte[] shelfBytes = ReadTerminalVarIdentityShelfBytesCached(currentOffset, shelfExtentSize);
             long nextOffset = TerminalVarIdentityShelfLayout.ReadNextShelfOffset(shelfBytes);
             terminalVarIdentityShelfReadCache.TryRemove(currentOffset, out _);
-            kernel.ReleaseMemoryExtent(currentOffset, shelfExtentSize);
+            kernel.StageExtentRetirement(currentOffset, shelfExtentSize);
             currentOffset = nextOffset;
         }
     }
@@ -6387,7 +6416,7 @@ internal sealed partial class LibraDexFileSession
     }
 
     /// <summary>
-    /// Deletes one raw identity from an `SV8` terminal var-identity route and rewrites the terminal root to the remaining identity sequence.<br/>
+    /// Deletes one raw identity from an `SV8` terminal var-identity route through the shared shelf-local terminal mutation path.<br/>
     /// Terminal routes store the scalar key once in the root, so exact tuple deletion only compares the raw identity payload after validating the root key.<br/>
     /// </summary>
     /// <param name="rootOffset">The terminal identity root offset reached by the routed exact-key walk.</param>
@@ -6404,33 +6433,11 @@ internal sealed partial class LibraDexFileSession
             throw new InvalidDataException("The routed SV8 terminal var identity root does not match the delete key.");
         }
 
-        int shelfExtentSize = TerminalIdentityRootLayout.ReadShelfExtentSize(rootBytes);
-        byte[][] identities = ReadScalar8VarIdentityTerminalIdentities(rootOffset, keyBytes, shelfExtentSize);
-        int deleteIndex = LowerBoundTerminalVarIdentity(identities, identity);
-        if ((uint)deleteIndex >= (uint)identities.Length ||
-            !identities[deleteIndex].AsSpan().SequenceEqual(identity))
-        {
-            return false;
-        }
-
-        byte[][] remaining = new byte[identities.Length - 1][];
-        if (deleteIndex != 0)
-        {
-            Array.Copy(identities, 0, remaining, 0, deleteIndex);
-        }
-
-        if (deleteIndex + 1 < identities.Length)
-        {
-            Array.Copy(identities, deleteIndex + 1, remaining, deleteIndex, identities.Length - deleteIndex - 1);
-        }
-
-        _ = RewriteScalar8VarIdentityTerminalRoute(
+        return DeleteTerminalVarIdentityExactTupleLocally(
             rootOffset,
             TerminalIdentityRootLayout.ShapeScalar8VarIdentity,
             keyBytes,
-            shelfExtentSize,
-            remaining);
-        return true;
+            identity);
     }
 
     private byte[][] ReadScalar8VarIdentityTerminalIdentities(long rootOffset, ReadOnlySpan<byte> expectedKey, int shelfExtentSize)
@@ -7207,6 +7214,286 @@ internal sealed partial class LibraDexFileSession
             Scalar8VarIdentityRouteTargetKind.TerminalVarIdentityRoot => Scalar8Scalar8RouteTargetKind.TerminalIdentityRoot,
             _ => Scalar8Scalar8RouteTargetKind.None
         };
+    }
+
+    /// <summary>
+    /// Deletes one identity from a terminal variable-identity chain while touching only the containing shelf and the minimum link metadata.<br/>
+    /// A nonempty survivor shelf is repacked at its existing offset so deleted payload bytes cannot accumulate as fragmentation; an empty shelf is unlinked by rewriting only its predecessor and, when necessary, the terminal root first/tail pointers.<br/>
+    /// The method validates strict cross-shelf identity ordering before mutation and serializes structural publication through the session storage-publication gate.<br/>
+    /// </summary>
+    /// <param name="rootOffset">The terminal identity root offset selected by the routed exact-key walk.<br/></param>
+    /// <param name="expectedShape">The terminal root shape expected by the calling physical family.<br/></param>
+    /// <param name="expectedKey">The exact encoded key expected in the terminal root.<br/></param>
+    /// <param name="identity">The raw identity bytes to remove.<br/></param>
+    /// <returns><see langword="true"/> when the identity existed and was removed; otherwise <see langword="false"/>.<br/></returns>
+    private bool DeleteTerminalVarIdentityExactTupleLocally(
+        long rootOffset,
+        byte expectedShape,
+        ReadOnlySpan<byte> expectedKey,
+        ReadOnlySpan<byte> identity)
+    {
+        lock (writePublicationSync)
+        {
+            kernel.EnterExclusiveStoragePublication();
+            try
+            {
+                byte[] rootBytes = ReadTerminalIdentityRootBytes(rootOffset);
+                if (TerminalIdentityRootLayout.ReadShape(rootBytes) != expectedShape ||
+                    !IsTerminalIdentityRootForKey(rootBytes, expectedKey, out long firstShelfOffset))
+                {
+                    throw new InvalidDataException("The terminal variable-identity delete root does not match the routed key and shape.");
+                }
+
+                if (firstShelfOffset == 0)
+                {
+                    return false;
+                }
+
+                int shelfExtentSize = TerminalIdentityRootLayout.ReadShelfExtentSize(rootBytes);
+                long rootTailOffset = TerminalIdentityRootLayout.ReadTailShelfOffset(rootBytes);
+                long previousOffset = 0;
+                byte[]? previousBytes = null;
+                long currentOffset = firstShelfOffset;
+                while (currentOffset != 0)
+                {
+                    byte[] currentBytes = ReadTerminalVarIdentityShelfBytesCached(currentOffset, shelfExtentSize);
+                    TerminalVarIdentityShelfLayout.Validate(currentBytes, shelfExtentSize);
+                    int count = TerminalVarIdentityShelfLayout.ReadItemCount(currentBytes);
+                    long nextOffset = TerminalVarIdentityShelfLayout.ReadNextShelfOffset(currentBytes);
+                    if (count == 0)
+                    {
+                        previousOffset = currentOffset;
+                        previousBytes = currentBytes;
+                        currentOffset = nextOffset;
+                        continue;
+                    }
+
+                    ReadOnlySpan<byte> firstIdentity = TerminalVarIdentityShelfLayout.ReadIdentityAt(currentBytes, 0);
+                    ReadOnlySpan<byte> lastIdentity = TerminalVarIdentityShelfLayout.ReadIdentityAt(currentBytes, count - 1);
+                    if (previousBytes is not null)
+                    {
+                        int previousCount = TerminalVarIdentityShelfLayout.ReadItemCount(previousBytes);
+                        if (previousCount != 0 &&
+                            Scalar8VarIdentityLayout.CompareIdentityBytes(
+                                TerminalVarIdentityShelfLayout.ReadIdentityAt(previousBytes, previousCount - 1),
+                                firstIdentity) >= 0)
+                        {
+                            throw new InvalidDataException("The terminal variable-identity delete chain is not strictly ordered across its shelf boundary.");
+                        }
+                    }
+
+                    if (Scalar8VarIdentityLayout.CompareIdentityBytes(identity, firstIdentity) < 0)
+                    {
+                        return false;
+                    }
+
+                    if (Scalar8VarIdentityLayout.CompareIdentityBytes(identity, lastIdentity) > 0)
+                    {
+                        previousOffset = currentOffset;
+                        previousBytes = currentBytes;
+                        currentOffset = nextOffset;
+                        continue;
+                    }
+
+                    int deleteIndex = LowerBoundTerminalVarIdentityShelf(currentBytes, count, identity);
+                    if (deleteIndex >= count ||
+                        Scalar8VarIdentityLayout.CompareIdentityBytes(TerminalVarIdentityShelfLayout.ReadIdentityAt(currentBytes, deleteIndex), identity) != 0)
+                    {
+                        return false;
+                    }
+
+                    if (count > 1)
+                    {
+                        byte[] rewrittenBytes = new byte[shelfExtentSize];
+                        BuildTerminalVarIdentityShelfWithoutIndex(rewrittenBytes, currentBytes, count, deleteIndex, shelfExtentSize);
+                        TerminalVarIdentityShelfLayout.WriteNextShelfOffset(rewrittenBytes, nextOffset);
+                        PublishTerminalVarIdentityShelfRewrite(currentOffset, rewrittenBytes, shelfExtentSize);
+                        _ = CommitTerminalVarIdentityMutationIfNeeded(directMemory: false);
+                        return true;
+                    }
+
+                    byte[]? updatedPreviousBytes = null;
+                    byte[]? updatedRootBytes = null;
+                    if (previousOffset == 0)
+                    {
+                        updatedRootBytes = rootBytes.AsSpan(0, TerminalIdentityRootLayout.Size).ToArray();
+                        TerminalIdentityRootLayout.WriteFirstShelfOffset(updatedRootBytes, nextOffset);
+                        if (nextOffset == 0)
+                        {
+                            TerminalIdentityRootLayout.WriteTailShelfOffset(updatedRootBytes, 0);
+                        }
+                    }
+                    else
+                    {
+                        updatedPreviousBytes = previousBytes!.AsSpan(0, shelfExtentSize).ToArray();
+                        if (TerminalVarIdentityShelfLayout.ReadNextShelfOffset(updatedPreviousBytes) != currentOffset)
+                        {
+                            throw new InvalidDataException("The terminal variable-identity predecessor changed before exact-delete unlink publication.");
+                        }
+
+                        TerminalVarIdentityShelfLayout.WriteNextShelfOffset(updatedPreviousBytes, nextOffset);
+                    }
+
+                    if (nextOffset == 0 && previousOffset != 0)
+                    {
+                        if (rootTailOffset != 0 && rootTailOffset != currentOffset)
+                        {
+                            throw new InvalidDataException("The terminal variable-identity root tail does not match the shelf being unlinked.");
+                        }
+
+                        updatedRootBytes ??= rootBytes.AsSpan(0, TerminalIdentityRootLayout.Size).ToArray();
+                        TerminalIdentityRootLayout.WriteTailShelfOffset(updatedRootBytes, previousOffset);
+                    }
+
+                    if (updatedPreviousBytes is not null)
+                    {
+                        PublishTerminalVarIdentityShelfRewrite(previousOffset, updatedPreviousBytes, shelfExtentSize);
+                    }
+
+                    if (updatedRootBytes is not null)
+                    {
+                        PublishTerminalVarIdentityRootRewrite(rootOffset, updatedRootBytes);
+                    }
+
+                    terminalVarIdentityMutableBatchShelfBytes.Remove(currentOffset);
+                    terminalVarIdentityShelfReadCache.TryRemove(currentOffset, out _);
+                    kernel.StageExtentRetirement(currentOffset, shelfExtentSize);
+                    _ = CommitTerminalVarIdentityMutationIfNeeded(directMemory: false);
+
+                    return true;
+                }
+
+                return false;
+            }
+            finally
+            {
+                kernel.ExitExclusiveStoragePublication();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Finds the first terminal shelf identity greater than or equal to a target identity.<br/>
+    /// The search compares raw persisted identity bytes directly and allocates no per-identity objects.<br/>
+    /// </summary>
+    /// <param name="shelfBytes">The validated terminal shelf byte image.<br/></param>
+    /// <param name="count">The live identity count in the shelf.<br/></param>
+    /// <param name="identity">The target raw identity bytes.<br/></param>
+    /// <returns>The lower-bound slot index in the range zero through <paramref name="count"/>.<br/></returns>
+    private static int LowerBoundTerminalVarIdentityShelf(ReadOnlySpan<byte> shelfBytes, int count, ReadOnlySpan<byte> identity)
+    {
+        int low = 0;
+        int high = count;
+        while (low < high)
+        {
+            int middle = low + ((high - low) >> 1);
+            if (Scalar8VarIdentityLayout.CompareIdentityBytes(TerminalVarIdentityShelfLayout.ReadIdentityAt(shelfBytes, middle), identity) < 0)
+            {
+                low = middle + 1;
+            }
+            else
+            {
+                high = middle;
+            }
+        }
+
+        return low;
+    }
+
+    /// <summary>
+    /// Rebuilds one terminal variable-identity shelf from its own live slots while omitting exactly one slot.<br/>
+    /// Repacking removes the deleted payload bytes and preserves bounded future insert capacity without reading or rewriting any other identity shelf.<br/>
+    /// The caller restores the linked-list next pointer after this method initializes the compact shelf image.<br/>
+    /// </summary>
+    /// <param name="target">The complete destination shelf span.<br/></param>
+    /// <param name="source">The validated source shelf bytes.<br/></param>
+    /// <param name="sourceCount">The live source identity count.<br/></param>
+    /// <param name="deleteIndex">The one source slot to omit.<br/></param>
+    /// <param name="shelfExtentSize">The fixed terminal shelf extent size.<br/></param>
+    private static void BuildTerminalVarIdentityShelfWithoutIndex(
+        Span<byte> target,
+        ReadOnlySpan<byte> source,
+        int sourceCount,
+        int deleteIndex,
+        int shelfExtentSize)
+    {
+        TerminalVarIdentityShelfLayout.Initialize(target.Slice(0, shelfExtentSize), shelfExtentSize);
+        int slotCapacityBytes = TerminalVarIdentityShelfLayout.ReadSlotCapacityBytes(target);
+        int slotCursor = TerminalVarIdentityShelfLayout.HeaderSize;
+        int recordCursor = TerminalVarIdentityShelfLayout.HeaderSize + slotCapacityBytes;
+        int written = 0;
+        for (int i = 0; i < sourceCount; i++)
+        {
+            if (i == deleteIndex)
+            {
+                continue;
+            }
+
+            ReadOnlySpan<byte> currentIdentity = TerminalVarIdentityShelfLayout.ReadIdentityAt(source, i);
+            int recordLength = TerminalVarIdentityShelfLayout.GetNewRecordLength(currentIdentity.Length);
+            if (slotCursor + TerminalVarIdentityShelfLayout.SlotSize > TerminalVarIdentityShelfLayout.HeaderSize + slotCapacityBytes ||
+                recordCursor + recordLength > shelfExtentSize)
+            {
+                throw new InvalidDataException("The terminal variable-identity local delete repack exceeded the source shelf extent.");
+            }
+
+            TerminalVarIdentityShelfLayout.WriteRecord(target, recordCursor, currentIdentity);
+            TerminalVarIdentityShelfLayout.WriteSlotRecordOffset(target, slotCursor, recordCursor);
+            slotCursor += TerminalVarIdentityShelfLayout.SlotSize;
+            recordCursor += recordLength;
+            written++;
+        }
+
+        TerminalVarIdentityShelfLayout.WriteItemCount(target, written);
+        TerminalVarIdentityShelfLayout.WriteSlotStreamLength(target, checked(written * TerminalVarIdentityShelfLayout.SlotSize));
+        TerminalVarIdentityShelfLayout.WriteRecordArenaEnd(target, recordCursor);
+    }
+
+    /// <summary>
+    /// Publishes one complete terminal variable-identity shelf rewrite while keeping batch, file, and memory backing semantics aligned.<br/>
+    /// Durability batches retain the compact image in the existing dirty-shelf map, standalone files stage one fixed-offset rewrite, and memory catalogs update their writable extent directly.<br/>
+    /// </summary>
+    /// <param name="shelfOffset">The existing shelf offset to rewrite.<br/></param>
+    /// <param name="shelfBytes">The complete validated replacement shelf image.<br/></param>
+    /// <param name="shelfExtentSize">The fixed persisted shelf extent size.<br/></param>
+    private void PublishTerminalVarIdentityShelfRewrite(long shelfOffset, byte[] shelfBytes, int shelfExtentSize)
+    {
+        if (kernel.TryGetMemoryWritableSpanDirect(shelfOffset, shelfExtentSize, out Span<byte> directSpan))
+        {
+            shelfBytes.AsSpan(0, shelfExtentSize).CopyTo(directSpan);
+        }
+        else if (durabilityBatchActive)
+        {
+            MarkDirtyTerminalVarIdentityShelf(shelfOffset, shelfBytes);
+        }
+        else
+        {
+            RawDataReservation rewrite = kernel.ReserveAt(shelfOffset, shelfExtentSize);
+            shelfBytes.AsSpan(0, shelfExtentSize).CopyTo(rewrite.Span);
+        }
+
+        terminalVarIdentityShelfReadCache[shelfOffset] = shelfBytes;
+    }
+
+    /// <summary>
+    /// Publishes terminal root first/tail pointer changes at the existing root offset.<br/>
+    /// The root cache is updated with the exact replacement image so subsequent mutations in the same session observe the new chain endpoints.<br/>
+    /// </summary>
+    /// <param name="rootOffset">The existing terminal identity root offset.<br/></param>
+    /// <param name="rootBytes">The complete replacement root image.<br/></param>
+    private void PublishTerminalVarIdentityRootRewrite(long rootOffset, byte[] rootBytes)
+    {
+        if (kernel.TryGetMemoryWritableSpanDirect(rootOffset, TerminalIdentityRootLayout.Size, out Span<byte> directSpan))
+        {
+            rootBytes.AsSpan(0, TerminalIdentityRootLayout.Size).CopyTo(directSpan);
+        }
+        else
+        {
+            RawDataReservation rewrite = kernel.ReserveAt(rootOffset, TerminalIdentityRootLayout.Size);
+            rootBytes.AsSpan(0, TerminalIdentityRootLayout.Size).CopyTo(rewrite.Span);
+        }
+
+        terminalIdentityRootReadCache[rootOffset] = rootBytes;
     }
 }
 

@@ -13277,4 +13277,866 @@ internal static partial class RawHarness
 
         active.Abort();
     }
+
+    /// <summary>
+    /// Proves that multiple independently owned logical string batches can force `VS8` shelf growth and fallback publication without losing an accepted exact tuple.<br/>
+    /// The workload deliberately shares a long key prefix so concurrent contexts repeatedly meet on the same routed shelf while still submitting unique logical keys and identities.<br/>
+    /// Live and reopened validation both inspect every expected tuple, making an old private shelf image overwriting an immediate fallback mutation directly observable.<br/>
+    /// </summary>
+    /// <param name="args">Optional <c>--threads</c>, <c>--items-per-thread</c>, <c>--max-action-items</c>, and <c>--wherzit-distribution</c> controls for the focused stress shape.<br/></param>
+    /// <returns>Zero when all accepted tuples remain visible live and after reopen.<br/></returns>
+    private static int RunStringConcurrentBatchPublicationSanity(string[] args)
+    {
+        int threadCount = Math.Max(2, GetIntOption(args, "--threads", 4));
+        int itemsPerThread = Math.Max(256, GetIntOption(args, "--items-per-thread", 2048));
+        int maximumActionItems = Math.Max(1, GetIntOption(args, "--max-action-items", LibraDexConcurrencyOptions.QueuedWriter.MaxActionItems));
+        bool useWherzitDistribution = args.Any(static argument => string.Equals(argument, "--wherzit-distribution", StringComparison.OrdinalIgnoreCase));
+        string root = Path.Combine(
+            Path.GetTempPath(),
+            "LibraDex",
+            $"string-concurrent-publication-{Guid.NewGuid():N}");
+        string path = Path.Combine(root, "proof.lbdx");
+        Directory.CreateDirectory(root);
+
+        try
+        {
+            using (Catalog catalog = Catalog.Create(path, CatalogOptions.UInt64Identities))
+            using (LibraDexStringScalar8Index index = catalog.Indexes["proof"]["path"].String.Create(StringKeys.Exact))
+            {
+                using ManualResetEventSlim startGate = new(false);
+                using CountdownEvent readyGate = new(threadCount);
+                Task[] tasks = new Task[threadCount];
+                var publications = new LibraDexConcurrentBatchPublishResult[threadCount];
+                for (int worker = 0; worker < threadCount; worker++)
+                {
+                    int workerOrdinal = worker;
+                    tasks[worker] = Task.Run(() =>
+                    {
+                        using LibraDexStringScalar8ConcurrentBatch batch = index.BeginConcurrentBatch(
+                            new LibraDexConcurrencyOptions
+                            {
+                                Mode = LibraDexConcurrencyMode.QueuedWriter,
+                                MaxActionItems = maximumActionItems
+                            });
+                        readyGate.Signal();
+                        startGate.Wait();
+                        for (int item = 0; item < itemsPerThread; item++)
+                        {
+                            string key = CreateStringConcurrentBatchPublicationKey(
+                                workerOrdinal,
+                                item,
+                                threadCount,
+                                useWherzitDistribution);
+                            ulong identity = CreateStringConcurrentBatchPublicationIdentity(workerOrdinal, item, itemsPerThread);
+                            LibraDexGenericInsertResult insert = batch.Insert(key, identity);
+                            if (!insert.Inserted)
+                            {
+                                throw new InvalidDataException($"VS8 concurrent publication proof rejected worker={workerOrdinal} item={item} identity={identity}.");
+                            }
+                        }
+
+                        LibraDexConcurrentBatchPublishResult publish = batch.Publish();
+                        publications[workerOrdinal] = publish;
+                        if (publish.InsertedCount != itemsPerThread)
+                        {
+                            throw new InvalidDataException($"VS8 concurrent publication proof expected {itemsPerThread:n0} accepted inserts for worker {workerOrdinal}, got {publish.InsertedCount:n0}.");
+                        }
+                    });
+                }
+
+                if (!readyGate.Wait(TimeSpan.FromSeconds(30)))
+                {
+                    throw new InvalidDataException("VS8 concurrent publication proof could not ready every independent batch.");
+                }
+
+                startGate.Set();
+                Task.WaitAll(tasks);
+                ValidateStringConcurrentBatchPublicationParity(index, threadCount, itemsPerThread, useWherzitDistribution, "live");
+                Console.WriteLine(
+                    $"string concurrent publication contexts={publications.Sum(static result => result.PublishedContextCount):n0} " +
+                    $"peakStaged={publications.Max(static result => result.MaximumStagedMutationCount):n0} " +
+                    $"maxActionItems={maximumActionItems:n0}");
+            }
+
+            using (Catalog reopened = Catalog.Open(path, CatalogOptions.UInt64Identities))
+            using (LibraDexStringScalar8Index index = reopened.Indexes["proof"]["path"].String.Open())
+            {
+                ValidateStringConcurrentBatchPublicationParity(index, threadCount, itemsPerThread, useWherzitDistribution, "reopened");
+            }
+
+            Console.WriteLine($"string-concurrent-batch-publication-sanity ok threads={threadCount} itemsPerThread={itemsPerThread:n0} total={checked((long)threadCount * itemsPerThread):n0} maxActionItems={maximumActionItems:n0} distribution={(useWherzitDistribution ? "wherzit" : "worker-prefix")}");
+            return 0;
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(root, recursive: true);
+            }
+            catch
+            {
+            }
+        }
+    }
+
+    /// <summary>
+    /// Validates every unique string/identity tuple expected from the focused independent-batch publication proof.<br/>
+    /// The first missing tuples are retained in the exception so nondeterministic publication loss can still be correlated to worker and source position.<br/>
+    /// </summary>
+    /// <param name="index">Live or reopened exact string index to inspect.<br/></param>
+    /// <param name="threadCount">Number of independent batch owners used by the proof.<br/></param>
+    /// <param name="itemsPerThread">Number of accepted inserts submitted by each owner.<br/></param>
+    /// <param name="phase">Short validation phase label included in failures.<br/></param>
+    private static void ValidateStringConcurrentBatchPublicationParity(
+        LibraDexStringScalar8Index index,
+        int threadCount,
+        int itemsPerThread,
+        bool useWherzitDistribution,
+        string phase)
+    {
+        List<string> missing = new(capacity: 8);
+        long found = 0;
+        for (int worker = 0; worker < threadCount; worker++)
+        {
+            for (int item = 0; item < itemsPerThread; item++)
+            {
+                string key = CreateStringConcurrentBatchPublicationKey(
+                    worker,
+                    item,
+                    threadCount,
+                    useWherzitDistribution);
+                ulong identity = CreateStringConcurrentBatchPublicationIdentity(worker, item, itemsPerThread);
+                if (index.ContainsTupleUtf8(Encoding.UTF8.GetBytes(key), identity))
+                {
+                    found++;
+                }
+                else if (missing.Count < 8)
+                {
+                    missing.Add($"w{worker}/i{item}/id{identity}/{key}");
+                }
+            }
+        }
+
+        long expected = checked((long)threadCount * itemsPerThread);
+        if (found != expected)
+        {
+            throw new InvalidDataException($"VS8 concurrent publication {phase} parity expected {expected:n0} tuples, found {found:n0}; missing sample: {string.Join("; ", missing)}.");
+        }
+
+        long emitted = 0;
+        var uniqueIdentities = new HashSet<ulong>();
+        foreach (ulong identity in index.IterateExactIdentities(QueryDirection.Ascending))
+        {
+            emitted++;
+            uniqueIdentities.Add(identity);
+        }
+        if (emitted != expected || uniqueIdentities.Count != expected)
+        {
+            throw new InvalidDataException(
+                $"VS8 concurrent publication {phase} ordered traversal emitted {emitted:n0} rows and {uniqueIdentities.Count:n0} unique identities; expected exactly {expected:n0} of each.");
+        }
+    }
+
+    /// <summary>
+    /// Creates one common-prefix exact string key for the independent-batch publication proof.<br/>
+    /// The default shape places worker position after the shared path prefix; the Wherzit shape reproduces Abraxas's strided worker assignment over interleaved project, folder, and path-segment components.<br/>
+    /// </summary>
+    /// <param name="worker">Independent batch owner ordinal.<br/></param>
+    /// <param name="item">Owner-local item ordinal.<br/></param>
+    /// <param name="threadCount">Worker stride used to recover the source-order ordinal for Wherzit distribution.<br/></param>
+    /// <param name="useWherzitDistribution">Whether to reproduce the Abraxas Wherzit fixture's interleaved path components.<br/></param>
+    /// <returns>The deterministic unique logical string key.<br/></returns>
+    private static string CreateStringConcurrentBatchPublicationKey(
+        int worker,
+        int item,
+        int threadCount,
+        bool useWherzitDistribution)
+    {
+        if (!useWherzitDistribution)
+        {
+            return FormattableString.Invariant($"E:\\VSProjects\\AbraxasDB\\shared-prefix\\worker-{worker:D2}\\file-{item:D7}.payload.txt");
+        }
+
+        int ordinal = checked(800_000 + worker + (item * threadCount));
+        return FormattableString.Invariant(
+            $"C:\\representative-long-root\\project-{ordinal % 97:D2}\\nested-folder-{ordinal % 251:D3}\\additional-path-segment-{ordinal % 31:D2}\\file-{ordinal:D8}.dat");
+    }
+
+    /// <summary>
+    /// Creates the unique scalar identity paired with one proof key.<br/>
+    /// The one-based result keeps zero outside the generated identity domain while preserving a reversible worker/item mapping.<br/>
+    /// </summary>
+    /// <param name="worker">Independent batch owner ordinal.<br/></param>
+    /// <param name="item">Owner-local item ordinal.<br/></param>
+    /// <param name="itemsPerThread">Stride separating worker identity ranges.<br/></param>
+    /// <returns>The deterministic one-based scalar identity.<br/></returns>
+    private static ulong CreateStringConcurrentBatchPublicationIdentity(int worker, int item, int itemsPerThread)
+        => checked((ulong)(((long)worker * itemsPerThread) + item + 1L));
+
+    /// <summary>
+    /// Measures and validates generic `SS8-8` concurrent batches over the same strided, monotonically increasing scalar distribution produced by Abraxas's current index-worker loop.<br/>
+    /// Per-worker publication diagnostics expose whether same-shelf ownership transfer, topology fallback, or retained context size dominates before any Abraxas or Fractal work is involved.<br/>
+    /// Live and reopened validation checks every deterministic key/identity tuple so a faster contention policy cannot hide publication loss.<br/>
+    /// </summary>
+    /// <param name="args">Optional <c>--threads</c> and <c>--items-per-thread</c> controls for the focused scalar stress shape.<br/></param>
+    /// <returns>Zero when every expected tuple is visible live and after reopen.<br/></returns>
+    private static int RunScalar8ConcurrentBatchPublicationSanity(string[] args)
+    {
+        if (args.Any(static argument => string.Equals(argument, "--abx-date", StringComparison.OrdinalIgnoreCase)))
+            return RunDateTimeScalar8ConcurrentBatchPublicationSanity(args);
+
+        int threadCount = Math.Max(2, GetIntOption(args, "--threads", 4));
+        int itemsPerThread = Math.Max(256, GetIntOption(args, "--items-per-thread", 2048));
+        string root = Path.Combine(
+            Path.GetTempPath(),
+            "LibraDex",
+            $"scalar8-concurrent-publication-{Guid.NewGuid():N}");
+        string path = Path.Combine(root, "proof.lbdx");
+        Directory.CreateDirectory(root);
+
+        try
+        {
+            using (Catalog catalog = Catalog.Create(path))
+            using (LibraDexIndex<long, long> index = catalog.Indexes["proof"]["value"].Int64Keys<long>().Create(
+                options: new IndexOptions
+                {
+                    IdentityKeyMultiplicity = IdentityKeyMultiplicity.SingleKeyPerIdentity
+                }))
+            {
+                using ManualResetEventSlim startGate = new(false);
+                using CountdownEvent readyGate = new(threadCount);
+                Task[] tasks = new Task[threadCount];
+                var publications = new LibraDexConcurrentBatchPublishResult[threadCount];
+                for (int worker = 0; worker < threadCount; worker++)
+                {
+                    int workerOrdinal = worker;
+                    tasks[worker] = Task.Run(() =>
+                    {
+                        using LibraDexConcurrentBatch<long, long> batch = index.BeginConcurrentBatch();
+                        readyGate.Signal();
+                        startGate.Wait();
+                        for (int item = 0; item < itemsPerThread; item++)
+                        {
+                            long value = CreateScalar8ConcurrentBatchPublicationValue(workerOrdinal, item, threadCount);
+                            LibraDexGenericInsertResult insert = batch.Insert(value, value);
+                            if (!insert.Inserted)
+                            {
+                                throw new InvalidDataException(
+                                    $"SS8-8 concurrent publication proof rejected worker={workerOrdinal} item={item} value={value}.");
+                            }
+                        }
+
+                        publications[workerOrdinal] = batch.Publish();
+                    });
+                }
+
+                if (!readyGate.Wait(TimeSpan.FromSeconds(30)))
+                {
+                    throw new InvalidDataException("SS8-8 concurrent publication proof could not ready every independent batch.");
+                }
+
+                startGate.Set();
+                Task.WaitAll(tasks);
+                ValidateScalar8ConcurrentBatchPublicationParity(index, threadCount, itemsPerThread, "live");
+                Console.WriteLine(
+                    $"scalar8 concurrent publication contexts={publications.Sum(static result => result.PublishedContextCount):n0} " +
+                    $"ownershipConflicts={publications.Sum(static result => result.OwnershipConflictCount):n0} " +
+                    $"conflictPublications={publications.Sum(static result => result.ConflictPublicationCount):n0} " +
+                    $"topologyFallbacks={publications.Sum(static result => result.TopologyFallbackCount):n0} " +
+                    $"peakStaged={publications.Max(static result => result.MaximumStagedMutationCount):n0} " +
+                    $"stagedBeforeConflict={publications.Sum(static result => result.StagedMutationCountBeforeConflictPublication):n0}");
+            }
+
+            using (Catalog reopened = Catalog.Open(path))
+            using (LibraDexIndex<long, long> index = reopened.Indexes["proof"]["value"].Int64Keys<long>().Open())
+            {
+                ValidateScalar8ConcurrentBatchPublicationParity(index, threadCount, itemsPerThread, "reopened");
+            }
+
+            Console.WriteLine(
+                $"scalar8-concurrent-batch-publication-sanity ok threads={threadCount} " +
+                $"itemsPerThread={itemsPerThread:n0} total={checked((long)threadCount * itemsPerThread):n0}");
+            return 0;
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(root, recursive: true);
+            }
+            catch
+            {
+            }
+        }
+    }
+
+    /// <summary>
+    /// Measures and validates the exact Abraxas ordinary-date index contract through direct LibraDex concurrent batches.<br/>
+    /// Keys use the `DateTime` precision-SDT encoding selected by Abraxas, identities use the scalar `ulong` family, and every index retains `SingleKeyPerIdentity` so physical routing and multiplicity checks match Wherzit rather than a simplified scalar surrogate.<br/>
+    /// Live and reopened range probes verify every strided worker tuple and retain the first missing entries in any failure.<br/>
+    /// </summary>
+    /// <param name="args">Optional <c>--threads</c>, <c>--items-per-thread</c>, <c>--duplicate-key</c>, and <c>--mixed-duplicate-key</c> controls for the focused date stress shape.<br/></param>
+    /// <returns>Zero when every expected date/identity tuple remains visible live and after reopen.<br/></returns>
+    private static int RunDateTimeScalar8ConcurrentBatchPublicationSanity(string[] args)
+    {
+        int threadCount = Math.Max(2, GetIntOption(args, "--threads", 4));
+        int itemsPerThread = Math.Max(256, GetIntOption(args, "--items-per-thread", 2048));
+        bool useDuplicateKey = args.Any(static argument => string.Equals(argument, "--duplicate-key", StringComparison.OrdinalIgnoreCase));
+        bool useMixedDuplicateKey = args.Any(static argument => string.Equals(argument, "--mixed-duplicate-key", StringComparison.OrdinalIgnoreCase));
+        string root = Path.Combine(
+            Path.GetTempPath(),
+            "LibraDex",
+            $"datetime-scalar8-concurrent-publication-{Guid.NewGuid():N}");
+        string path = Path.Combine(root, "proof.lbdx");
+        Directory.CreateDirectory(root);
+
+        try
+        {
+            LibraDexIndexShapeSpec shape;
+            using (Catalog catalog = Catalog.Create(path, CatalogOptions.UInt64Identities))
+            {
+                shape = catalog.Indexes["proof"]["value"].Shape.Date<DateTime, ulong>(
+                    DateKeys.ExactAndStructured,
+                    DateTimeKeyEncoding.PrecisionSdt,
+                    IndexKeys.NonUnique);
+                using LibraDexIndex<DateTime, ulong> index = (LibraDexIndex<DateTime, ulong>)catalog.Indexes.Create(
+                    shape,
+                    new IndexOptions
+                    {
+                        Keys = IndexKeys.NonUnique,
+                        IdentityKeyMultiplicity = IdentityKeyMultiplicity.SingleKeyPerIdentity,
+                        DateKeys = DateKeys.ExactAndStructured,
+                        DateTimeKeyEncoding = DateTimeKeyEncoding.PrecisionSdt
+                    });
+                using ManualResetEventSlim startGate = new(false);
+                using CountdownEvent readyGate = new(threadCount);
+                Task[] tasks = new Task[threadCount];
+                var publications = new LibraDexConcurrentBatchPublishResult[threadCount];
+                for (int worker = 0; worker < threadCount; worker++)
+                {
+                    int workerOrdinal = worker;
+                    tasks[worker] = Task.Run(() =>
+                    {
+                        using LibraDexConcurrentBatch<DateTime, ulong> batch = index.BeginConcurrentBatch();
+                        readyGate.Signal();
+                        startGate.Wait();
+                        for (int item = 0; item < itemsPerThread; item++)
+                        {
+                            DateTime key = CreateDateTimeScalar8ConcurrentBatchPublicationKey(
+                                workerOrdinal,
+                                item,
+                                threadCount,
+                                useDuplicateKey,
+                                useMixedDuplicateKey);
+                            ulong identity = CreateDateTimeScalar8ConcurrentBatchPublicationIdentity(workerOrdinal, item, threadCount);
+                            LibraDexGenericInsertResult insert = batch.Insert(key, identity);
+                            if (!insert.Inserted)
+                            {
+                                throw new InvalidDataException(
+                                    $"DateTime SS8-8 concurrent publication proof rejected worker={workerOrdinal} item={item} key={key:O} identity={identity}.");
+                            }
+                        }
+
+                        publications[workerOrdinal] = batch.Publish();
+                    });
+                }
+
+                if (!readyGate.Wait(TimeSpan.FromSeconds(30)))
+                    throw new InvalidDataException("DateTime SS8-8 concurrent publication proof could not ready every independent batch.");
+
+                startGate.Set();
+                Task.WaitAll(tasks);
+                ValidateDateTimeScalar8ConcurrentBatchPublicationParity(
+                    index,
+                    threadCount,
+                    itemsPerThread,
+                    useDuplicateKey,
+                    useMixedDuplicateKey,
+                    "live");
+                Console.WriteLine(
+                    $"datetime scalar8 concurrent publication contexts={publications.Sum(static result => result.PublishedContextCount):n0} " +
+                    $"ownershipConflicts={publications.Sum(static result => result.OwnershipConflictCount):n0} " +
+                    $"conflictPublications={publications.Sum(static result => result.ConflictPublicationCount):n0} " +
+                    $"topologyFallbacks={publications.Sum(static result => result.TopologyFallbackCount):n0} " +
+                    $"peakStaged={publications.Max(static result => result.MaximumStagedMutationCount):n0} " +
+                    $"stagedBeforeConflict={publications.Sum(static result => result.StagedMutationCountBeforeConflictPublication):n0}");
+            }
+
+            using (Catalog reopened = Catalog.Open(path, CatalogOptions.UInt64Identities))
+            using (LibraDexIndex<DateTime, ulong> index = (LibraDexIndex<DateTime, ulong>)reopened.Indexes.Open(shape))
+            {
+                ValidateDateTimeScalar8ConcurrentBatchPublicationParity(
+                    index,
+                    threadCount,
+                    itemsPerThread,
+                    useDuplicateKey,
+                    useMixedDuplicateKey,
+                    "reopened");
+            }
+
+            Console.WriteLine(
+                $"scalar8-concurrent-batch-publication-sanity ok shape=DateTime/UInt64 threads={threadCount} " +
+                $"itemsPerThread={itemsPerThread:n0} total={checked((long)threadCount * itemsPerThread):n0} " +
+                $"keys={(useDuplicateKey ? "duplicate" : useMixedDuplicateKey ? "mixed-duplicate" : "strided")}");
+            return 0;
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(root, recursive: true);
+            }
+            catch
+            {
+            }
+        }
+    }
+
+    /// <summary>
+    /// Verifies every deterministic `DateTime`/`ulong` tuple emitted by the exact Abraxas-style concurrent date proof.<br/>
+    /// Exact range readers keep validation on the public ordered index path and avoid trusting aggregate tuple counts alone.<br/>
+    /// </summary>
+    /// <param name="index">Live or reopened precision-SDT date index to inspect.<br/></param>
+    /// <param name="threadCount">Number of independent batch owners used by the proof.<br/></param>
+    /// <param name="itemsPerThread">Number of accepted inserts submitted by each owner.<br/></param>
+    /// <param name="useDuplicateKey">Whether every tuple uses one identical date key to force concurrent exhausted-key growth.<br/></param>
+    /// <param name="useMixedDuplicateKey">Whether alternating tuples share one date key while the remaining tuples retain a diverse routed distribution.<br/></param>
+    /// <param name="phase">Short validation phase label included in failures.<br/></param>
+    private static void ValidateDateTimeScalar8ConcurrentBatchPublicationParity(
+        LibraDexIndex<DateTime, ulong> index,
+        int threadCount,
+        int itemsPerThread,
+        bool useDuplicateKey,
+        bool useMixedDuplicateKey,
+        string phase)
+    {
+        List<string> missing = new(capacity: 8);
+        long found = 0;
+        for (int worker = 0; worker < threadCount; worker++)
+        {
+            for (int item = 0; item < itemsPerThread; item++)
+            {
+                DateTime expectedKey = CreateDateTimeScalar8ConcurrentBatchPublicationKey(
+                    worker,
+                    item,
+                    threadCount,
+                    useDuplicateKey,
+                    useMixedDuplicateKey);
+                ulong expectedIdentity = CreateDateTimeScalar8ConcurrentBatchPublicationIdentity(worker, item, threadCount);
+                bool present = false;
+                using (LibraDexRangeReader<DateTime, ulong> reader = index.OpenRangeReader(expectedKey, expectedKey))
+                {
+                    while (reader.TryReadNext(out DateTime key, out ulong identity))
+                    {
+                        if (key == expectedKey && identity == expectedIdentity)
+                        {
+                            present = true;
+                            break;
+                        }
+                    }
+                }
+
+                if (present)
+                    found++;
+                else if (missing.Count < 8)
+                    missing.Add($"w{worker}/i{item}/id{expectedIdentity}/key{expectedKey:O}");
+            }
+        }
+
+        long expected = checked((long)threadCount * itemsPerThread);
+        if (found != expected)
+        {
+            throw new InvalidDataException(
+                $"DateTime SS8-8 concurrent publication {phase} parity expected {expected:n0} tuples, found {found:n0}; missing sample: {string.Join("; ", missing)}.");
+        }
+    }
+
+    /// <summary>
+    /// Reconstructs the `LastWriteTime` value at one Abraxas strided source position.<br/>
+    /// The base and minute cadence exactly match the deterministic Wherzit lifecycle records used by the one-index profile.<br/>
+    /// </summary>
+    /// <param name="worker">Independent batch owner ordinal.<br/></param>
+    /// <param name="item">Owner-local item ordinal.<br/></param>
+    /// <param name="threadCount">Worker stride used by the Abraxas source loop.<br/></param>
+    /// <param name="useDuplicateKey">Whether to collapse every source position onto one repeated date key.<br/></param>
+    /// <param name="useMixedDuplicateKey">Whether alternating source positions collapse onto one repeated key while other positions remain distinct.<br/></param>
+    /// <returns>The precision-preserving local `DateTime` key for that source position.<br/></returns>
+    private static DateTime CreateDateTimeScalar8ConcurrentBatchPublicationKey(
+        int worker,
+        int item,
+        int threadCount,
+        bool useDuplicateKey,
+        bool useMixedDuplicateKey)
+        => useDuplicateKey || (useMixedDuplicateKey && (item & 1) == 0)
+            ? new DateTime(2025, 2, 18, 15, 37, 59, DateTimeKind.Local)
+            : new DateTime(2026, 2, 1).AddMinutes(checked(800_000 + worker + (item * threadCount)));
+
+    /// <summary>
+    /// Creates one monotonic scalar identity in source order for the exact Abraxas-style date proof.<br/>
+    /// A nonzero high prefix exercises ordinary scalar identity comparisons while the low bits preserve the source-position mapping used in failures.<br/>
+    /// </summary>
+    /// <param name="worker">Independent batch owner ordinal.<br/></param>
+    /// <param name="item">Owner-local item ordinal.<br/></param>
+    /// <param name="threadCount">Worker stride used by the Abraxas source loop.<br/></param>
+    /// <returns>The unique scalar identity for that source position.<br/></returns>
+    private static ulong CreateDateTimeScalar8ConcurrentBatchPublicationIdentity(int worker, int item, int threadCount)
+        => 0x0100_0000_0000_0000UL + checked((ulong)(worker + (item * threadCount) + 1));
+
+    /// <summary>
+    /// Verifies every deterministic scalar key/identity tuple emitted by the Abraxas-style strided concurrent batch proof.<br/>
+    /// A bounded missing sample is retained in the failure so nondeterministic publication loss remains attributable to its worker and item.<br/>
+    /// </summary>
+    /// <param name="index">Live or reopened generic scalar index to inspect.<br/></param>
+    /// <param name="threadCount">Number of independent batch owners used by the proof.<br/></param>
+    /// <param name="itemsPerThread">Number of accepted inserts submitted by each owner.<br/></param>
+    /// <param name="phase">Short validation phase label included in failures.<br/></param>
+    private static void ValidateScalar8ConcurrentBatchPublicationParity(
+        LibraDexIndex<long, long> index,
+        int threadCount,
+        int itemsPerThread,
+        string phase)
+    {
+        List<string> missing = new(capacity: 8);
+        long found = 0;
+        for (int worker = 0; worker < threadCount; worker++)
+        {
+            for (int item = 0; item < itemsPerThread; item++)
+            {
+                long value = CreateScalar8ConcurrentBatchPublicationValue(worker, item, threadCount);
+                bool present = false;
+                using (LibraDexRangeReader<long, long> reader = index.OpenRangeReader(value, value))
+                {
+                    while (reader.TryReadNext(out long key, out long identity))
+                    {
+                        if (key == value && identity == value)
+                        {
+                            present = true;
+                            break;
+                        }
+                    }
+                }
+
+                if (present)
+                {
+                    found++;
+                }
+                else if (missing.Count < 8)
+                {
+                    missing.Add($"w{worker}/i{item}/v{value}");
+                }
+            }
+        }
+
+        long expected = checked((long)threadCount * itemsPerThread);
+        if (found != expected)
+        {
+            throw new InvalidDataException(
+                $"SS8-8 concurrent publication {phase} parity expected {expected:n0} tuples, found {found:n0}; missing sample: {string.Join("; ", missing)}.");
+        }
+    }
+
+    /// <summary>
+    /// Recovers one source-order scalar value from a strided worker assignment matching Abraxas concurrent simple-index ingestion.<br/>
+    /// The fixed positive base keeps generated keys away from sentinel/default values while preserving exact monotonic source order.<br/>
+    /// </summary>
+    /// <param name="worker">Independent batch owner ordinal.<br/></param>
+    /// <param name="item">Owner-local item ordinal.<br/></param>
+    /// <param name="threadCount">Worker stride used by the source loop.<br/></param>
+    /// <returns>The deterministic key and identity value.<br/></returns>
+    private static long CreateScalar8ConcurrentBatchPublicationValue(int worker, int item, int threadCount)
+        => checked(800_000L + worker + ((long)item * threadCount));
+
+    /// <summary>
+    /// Proves that independent unpublished concurrent batches cannot reserve two different keys for one identity when the index declares <see cref="IdentityKeyMultiplicity.SingleKeyPerIdentity"/>.<br/>
+    /// The fixture first creates a routed scalar index, then chooses two absent keys from distant routed regions so both inserts can remain shelf-local instead of being serialized by initial-route or split publication.<br/>
+    /// Both batch owners are held at a barrier after their insert calls and before publication; therefore a passing result demonstrates cross-batch reservation rather than a later committed-index check.<br/>
+    /// Live and reopened enumeration finally require exactly one tuple for the contested identity and require that tuple's key to match the sole accepted insert.<br/>
+    /// </summary>
+    /// <param name="args">Command arguments; this focused proof currently has no optional controls.<br/></param>
+    /// <returns>Zero when exactly one independent batch accepts and publishes the contested identity.<br/></returns>
+    private static int RunSingleKeyCrossBatchReservationSanity(string[] args)
+    {
+        const long contestedIdentity = 9_000_000_001L;
+        const long firstCandidateKey = 2_001L;
+        const long secondCandidateKey = 14_001L;
+        string root = Path.Combine(
+            Path.GetTempPath(),
+            "LibraDex",
+            $"single-key-cross-batch-{Guid.NewGuid():N}");
+        string path = Path.Combine(root, "proof.lbdx");
+        Directory.CreateDirectory(root);
+
+        try
+        {
+            long acceptedKey;
+            using (Catalog catalog = Catalog.Create(path))
+            using (LibraDexIndex<long, long> index = catalog.Indexes["proof"]["value"].Int64Keys<long>().Create(
+                options: new IndexOptions
+                {
+                    Keys = IndexKeys.NonUnique,
+                    IdentityKeyMultiplicity = IdentityKeyMultiplicity.SingleKeyPerIdentity
+                }))
+            {
+                using (LibraDexConcurrentBatch<long, long> seed = index.BeginConcurrentBatch())
+                {
+                    for (long key = 0; key < 16_000; key += 2)
+                    {
+                        LibraDexGenericInsertResult inserted = seed.Insert(key, key + 1);
+                        if (!inserted.Inserted)
+                            throw new InvalidDataException($"Cross-batch reservation fixture could not seed key {key:n0}.");
+                    }
+
+                    _ = seed.Publish();
+                }
+
+                using LibraDexConcurrentBatch<long, long> first = index.BeginConcurrentBatch();
+                using LibraDexConcurrentBatch<long, long> second = index.BeginConcurrentBatch();
+                using ManualResetEventSlim startGate = new(false);
+                using ManualResetEventSlim publishGate = new(false);
+                using CountdownEvent stagedGate = new(2);
+                LibraDexGenericInsertResult firstInsert = default;
+                LibraDexGenericInsertResult secondInsert = default;
+
+                Task firstTask = Task.Run(() =>
+                {
+                    startGate.Wait();
+                    firstInsert = first.Insert(firstCandidateKey, contestedIdentity);
+                    stagedGate.Signal();
+                    publishGate.Wait();
+                    _ = first.Publish();
+                });
+                Task secondTask = Task.Run(() =>
+                {
+                    startGate.Wait();
+                    secondInsert = second.Insert(secondCandidateKey, contestedIdentity);
+                    stagedGate.Signal();
+                    publishGate.Wait();
+                    _ = second.Publish();
+                });
+
+                startGate.Set();
+                if (!stagedGate.Wait(TimeSpan.FromSeconds(30)))
+                    throw new InvalidDataException("Cross-batch reservation proof could not stage both independent insert attempts.");
+
+                publishGate.Set();
+                Task.WaitAll(firstTask, secondTask);
+                int accepted = (firstInsert.Inserted ? 1 : 0) + (secondInsert.Inserted ? 1 : 0);
+                if (accepted != 1)
+                {
+                    throw new InvalidDataException(
+                        $"SingleKeyPerIdentity cross-batch reservation accepted {accepted} conflicting inserts; expected exactly one.");
+                }
+
+                acceptedKey = firstInsert.Inserted ? firstCandidateKey : secondCandidateKey;
+                ValidateSingleKeyCrossBatchReservationResult(index, contestedIdentity, acceptedKey, "live");
+            }
+
+            using (Catalog reopened = Catalog.Open(path))
+            using (LibraDexIndex<long, long> index = reopened.Indexes["proof"]["value"].Int64Keys<long>().Open())
+            {
+                ValidateSingleKeyCrossBatchReservationResult(index, contestedIdentity, acceptedKey, "reopened");
+            }
+
+            Console.WriteLine(
+                $"single-key-cross-batch-reservation-sanity ok identity={contestedIdentity} acceptedKey={acceptedKey}");
+            return 0;
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(root, recursive: true);
+            }
+            catch
+            {
+            }
+        }
+    }
+
+    /// <summary>
+    /// Validates the final single-key association for the contested cross-batch identity.<br/>
+    /// Enumeration is intentional because the proof must detect both an unexpected second key and a missing accepted key rather than trusting only identity-to-key acceleration state.<br/>
+    /// </summary>
+    /// <param name="index">The live or reopened index to inspect.<br/></param>
+    /// <param name="identity">The identity concurrently offered under two keys.<br/></param>
+    /// <param name="expectedKey">The key belonging to the sole accepted insert.<br/></param>
+    /// <param name="phase">The validation phase included in failures.<br/></param>
+    private static void ValidateSingleKeyCrossBatchReservationResult(
+        LibraDexIndex<long, long> index,
+        long identity,
+        long expectedKey,
+        string phase)
+    {
+        List<long> keys = [];
+        using LibraDexRangeReader<long, long> reader = index.OpenReader();
+        while (reader.TryReadNext(out long key, out long currentIdentity))
+        {
+            if (currentIdentity == identity)
+                keys.Add(key);
+        }
+
+        if (keys.Count != 1 || keys[0] != expectedKey)
+        {
+            throw new InvalidDataException(
+                $"SingleKeyPerIdentity cross-batch {phase} result expected only key {expectedKey}, found [{string.Join(", ", keys)}].");
+        }
+    }
+
+    /// <summary>
+    /// Stresses the session-local large mutable-shelf pool with independent `VS8` writer contexts that publish and abort concurrently.<br/>
+    /// Each worker owns a separate 128-KiB root-prefix shelf, so the test isolates byte-pool rent/return synchronization from same-shelf admission contention while still sharing one session pool.<br/>
+    /// Live and reopened range validation requires every published identity and rejects every aborted identity, proving buffer reuse does not leak stale shelf bytes or mutate authoritative topology.<br/>
+    /// </summary>
+    /// <param name="args">Optional <c>--threads</c>, <c>--cycles</c>, and <c>--path</c> controls for the focused pool lifecycle stress.<br/></param>
+    /// <returns>Zero when all worker contexts complete without pool corruption and live/reopened visibility matches publish versus abort decisions.<br/></returns>
+    private static int RunVarKeyScalar8ConcurrentPoolAbortSanity(string[] args)
+    {
+        int threadCount = Math.Clamp(GetIntOption(args, "--threads", 16), 2, 32);
+        int cycles = Math.Max(32, GetIntOption(args, "--cycles", 256));
+        string path = GetOption(
+            args,
+            "--path",
+            Path.Combine(Path.GetTempPath(), "LibraDex", $"vs8-concurrent-pool-abort-{Guid.NewGuid():N}.lbdx"));
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.Delete(path);
+
+        DataKernelOptions options = CreateDesignPerfOptions();
+        long rootOffset;
+        try
+        {
+            using (LibraDexFileSession session = LibraDexFileSession.Initialize(path, options, CreateDesignPerfMetadata(823), DataKernelTelemetryOptions.EnabledOptions))
+            {
+                (RouterSnapshot root, _) = session.CreateRootRouterIndex(CreateHarnessSlot(0, "vs8pool", 0));
+                rootOffset = root.Offset;
+                VarKeyScalar8Profile profile = VarKeyScalar8Profile.Default128KiB;
+                for (int worker = 0; worker < threadCount; worker++)
+                {
+                    byte prefix = checked((byte)(0x20 + worker));
+                    _ = session.CreateVarKeyScalar8ShelfAndLinkRootRoute(rootOffset, prefix, profile);
+                }
+
+                using ManualResetEventSlim startGate = new(false);
+                Task[] tasks = new Task[threadCount];
+                for (int worker = 0; worker < threadCount; worker++)
+                {
+                    int workerOrdinal = worker;
+                    tasks[worker] = Task.Run(() =>
+                    {
+                        startGate.Wait();
+                        for (int cycle = 0; cycle < cycles; cycle++)
+                        {
+                            byte prefix = checked((byte)(0x20 + workerOrdinal));
+                            byte[] key = new byte[6];
+                            key[0] = prefix;
+                            BinaryPrimitives.WriteInt32BigEndian(key.AsSpan(1, sizeof(int)), cycle);
+                            key[^1] = 0xA5;
+                            ulong identity = checked((ulong)(workerOrdinal + 1) * 1_000_000UL + (uint)cycle + 1UL);
+                            LibraDexWriteContext context = session.BeginVarKeyScalar8WriteContext();
+                            try
+                            {
+                                session.EnterVarKeyScalar8TopologyReadForWriteContext(context, rootOffset);
+                                VarKeyScalar8RoutedInsertResult insert = session.InsertWalkedRoutedVarKeyScalar8NoSplitForWriteContext(
+                                    context,
+                                    rootOffset,
+                                    profile.MaxKeyLength,
+                                    key,
+                                    identity,
+                                    allowDuplicateKeys: true,
+                                    maxRouterHops: LibraDexFileSession.DefaultVarKeyScalar8MaxRouterHops);
+                                if (insert.InsertResult != VarKeyScalar8InsertResult.Inserted)
+                                {
+                                    throw new InvalidDataException($"VS8 pool lifecycle worker={workerOrdinal} cycle={cycle} returned {insert.Kind}/{insert.InsertResult}.");
+                                }
+
+                                if ((cycle & 1) == 0)
+                                {
+                                    _ = session.PublishVarKeyScalar8WriteContext(context);
+                                }
+                                else
+                                {
+                                    session.AbortVarKeyScalar8WriteContext(context);
+                                }
+                            }
+                            catch
+                            {
+                                session.AbortVarKeyScalar8WriteContext(context);
+                                throw;
+                            }
+                        }
+                    });
+                }
+
+                startGate.Set();
+                Task.WaitAll(tasks);
+                ValidateVarKeyScalar8ConcurrentPoolAbortParity(session, rootOffset, threadCount, cycles, "live");
+            }
+
+            using (LibraDexFileSession reopened = LibraDexFileSession.Open(path, options, DataKernelTelemetryOptions.EnabledOptions))
+            {
+                ValidateVarKeyScalar8ConcurrentPoolAbortParity(reopened, rootOffset, threadCount, cycles, "reopened");
+            }
+
+            Console.WriteLine(
+                $"vs8-concurrent-pool-abort-sanity ok path={path} threads={threadCount} cycles={cycles:n0} " +
+                $"published={checked((long)threadCount * ((cycles + 1) / 2)):n0} aborted={checked((long)threadCount * (cycles / 2)):n0}");
+            return 0;
+        }
+        finally
+        {
+            try
+            {
+                File.Delete(path);
+            }
+            catch
+            {
+            }
+        }
+    }
+
+    /// <summary>
+    /// Validates published-versus-aborted identity visibility for every independent root-prefix shelf in the concurrent large-pool stress.<br/>
+    /// Canonical key order matches cycle order, allowing one allocation-bounded range read per worker and exact ordinal comparison without a hash set.<br/>
+    /// </summary>
+    /// <param name="session">The live or reopened session to validate.<br/></param>
+    /// <param name="rootOffset">The stable `VS8` root router offset.<br/></param>
+    /// <param name="threadCount">The number of independent prefix owners.<br/></param>
+    /// <param name="cycles">The number of alternating publish/abort contexts submitted by each worker.<br/></param>
+    /// <param name="phase">The validation phase included in failure diagnostics.<br/></param>
+    private static void ValidateVarKeyScalar8ConcurrentPoolAbortParity(
+        LibraDexFileSession session,
+        long rootOffset,
+        int threadCount,
+        int cycles,
+        string phase)
+    {
+        int expectedCount = (cycles + 1) / 2;
+        ulong[] identities = new ulong[expectedCount + 1];
+        for (int worker = 0; worker < threadCount; worker++)
+        {
+            byte prefix = checked((byte)(0x20 + worker));
+            byte[] lower = [prefix, 0, 0, 0, 0, 0];
+            byte[] upper = [prefix, byte.MaxValue, byte.MaxValue, byte.MaxValue, byte.MaxValue, byte.MaxValue];
+            int copied = session.ReadVarKeyScalar8IdentityRange(
+                rootOffset,
+                VarKeyScalar8Profile.Default128KiB.MaxKeyLength,
+                lower,
+                upper,
+                identities);
+            if (copied != expectedCount)
+            {
+                throw new InvalidDataException($"VS8 pool lifecycle {phase} worker={worker} returned {copied:N0} identities; expected {expectedCount:N0}.");
+            }
+
+            int ordinal = 0;
+            for (int cycle = 0; cycle < cycles; cycle += 2)
+            {
+                ulong expectedIdentity = checked((ulong)(worker + 1) * 1_000_000UL + (uint)cycle + 1UL);
+                if (identities[ordinal] != expectedIdentity)
+                {
+                    throw new InvalidDataException($"VS8 pool lifecycle {phase} worker={worker} ordinal={ordinal} returned identity={identities[ordinal]}; expected={expectedIdentity}.");
+                }
+                ordinal++;
+            }
+        }
+    }
 }

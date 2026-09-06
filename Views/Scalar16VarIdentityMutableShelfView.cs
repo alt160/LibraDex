@@ -1,3 +1,4 @@
+using System.Buffers;
 using LibraDex.Layouts;
 
 namespace LibraDex.Views;
@@ -118,12 +119,14 @@ internal sealed class Scalar16VarIdentityMutableShelfView
         int expectedSlotStreamLength = checked(count * Scalar16VarIdentityLayout.SlotSize);
         int expectedSlotCapacityBytes = Scalar16VarIdentityLayout.CalculateSlotCapacityBytes(profile.ShelfExtentSize);
         int recordArenaStart = Scalar16VarIdentityLayout.HeaderSize + slotCapacityBytes;
+        int reclaimablePayloadBytes = Scalar16VarIdentityLayout.ReadReclaimablePayloadBytes(bytes);
         if (count < 0 ||
             slotStreamLength != expectedSlotStreamLength ||
             slotStreamLength > slotCapacityBytes ||
             slotCapacityBytes != expectedSlotCapacityBytes ||
             recordArenaEnd < recordArenaStart ||
-            recordArenaEnd > profile.ShelfExtentSize)
+            recordArenaEnd > profile.ShelfExtentSize ||
+            reclaimablePayloadBytes > recordArenaEnd - recordArenaStart)
         {
             return false;
         }
@@ -159,6 +162,7 @@ internal sealed class Scalar16VarIdentityMutableShelfView
         }
 
         shelf = new Scalar16VarIdentityMutableShelfView(bytes, profile, offsets, prefixes, keyHighs, keyLows, indexes, deleted, count, slotStreamLength, slotCapacityBytes, recordArenaEnd);
+        shelf.deletedPayloadBytes = reclaimablePayloadBytes;
         return true;
     }
 
@@ -217,6 +221,18 @@ internal sealed class Scalar16VarIdentityMutableShelfView
         int recordLength = Scalar16VarIdentityLayout.GetNewRecordLength(identity.Length);
         int recordOffset = recordArenaEnd;
         int newRecordArenaEnd = recordOffset + recordLength;
+        if (newRecordArenaEnd > Profile.ShelfExtentSize && deletedPayloadBytes >= recordLength)
+        {
+            byte[]? compacted = BuildCompactedPayloadIfWorthwhile(recordLength, 0);
+            if (compacted is not null)
+            {
+                compacted.AsSpan(0, Profile.ShelfExtentSize).CopyTo(Bytes.AsSpan(0, Profile.ShelfExtentSize));
+                RebuildSidecarsAfterPayloadCompaction();
+                recordOffset = recordArenaEnd;
+                newRecordArenaEnd = recordOffset + recordLength;
+            }
+        }
+
         if (newRecordArenaEnd > Profile.ShelfExtentSize)
         {
             return Scalar16VarIdentityInsertResult.Full;
@@ -324,6 +340,7 @@ internal sealed class Scalar16VarIdentityMutableShelfView
 
         if (marked != 0)
         {
+            Scalar16VarIdentityLayout.WriteReclaimablePayloadBytes(Bytes, deletedPayloadBytes);
             IsDirty = true;
             SlotBytesDirty = true;
         }
@@ -385,6 +402,7 @@ internal sealed class Scalar16VarIdentityMutableShelfView
 
     /// <summary>
     /// Removes deleted entries from the sorted sidecars while retaining record-arena bytes for a later full payload repack decision.<br/>
+    /// Survivor metadata is first copied into pooled scratch arrays because sorted slot order is a permutation of physical sidecar indexes; compacting directly into the source arrays can overwrite metadata that a later survivor still references.<br/>
     /// This keeps ordinary search and insertion algorithms over live entries only while `PayloadBytesDeleted` continues to report orphaned record bytes.<br/>
     /// </summary>
     /// <returns>The number of deleted entries removed from the active slot stream.</returns>
@@ -396,29 +414,47 @@ internal sealed class Scalar16VarIdentityMutableShelfView
         }
 
         int removed = deletedItemCount;
+        int originalItemCount = itemCount;
+        int[] compactedRecordOffsets = ArrayPool<int>.Shared.Rent(originalItemCount);
+        uint[] compactedKeyPrefixes = ArrayPool<uint>.Shared.Rent(originalItemCount);
+        ulong[] compactedKeyHighs = ArrayPool<ulong>.Shared.Rent(originalItemCount);
+        ulong[] compactedKeyLows = ArrayPool<ulong>.Shared.Rent(originalItemCount);
         int writeIndex = 0;
-        for (int slotIndex = 0; slotIndex < itemCount; slotIndex++)
+        try
         {
-            int physicalIndex = sortedIndexes[slotIndex];
-            if (deletedSlots[physicalIndex])
+            for (int slotIndex = 0; slotIndex < originalItemCount; slotIndex++)
             {
-                deletedSlots[physicalIndex] = false;
-                continue;
+                int physicalIndex = sortedIndexes[slotIndex];
+                if (deletedSlots[physicalIndex])
+                {
+                    continue;
+                }
+
+                compactedRecordOffsets[writeIndex] = recordOffsets[physicalIndex];
+                compactedKeyPrefixes[writeIndex] = keyPrefixes[physicalIndex];
+                compactedKeyHighs[writeIndex] = keyHighs[physicalIndex];
+                compactedKeyLows[writeIndex] = keyLows[physicalIndex];
+                writeIndex++;
             }
 
-            if (writeIndex != physicalIndex)
+            Array.Copy(compactedRecordOffsets, recordOffsets, writeIndex);
+            Array.Copy(compactedKeyPrefixes, keyPrefixes, writeIndex);
+            Array.Copy(compactedKeyHighs, keyHighs, writeIndex);
+            Array.Copy(compactedKeyLows, keyLows, writeIndex);
+            for (int slotIndex = 0; slotIndex < writeIndex; slotIndex++)
             {
-                recordOffsets[writeIndex] = recordOffsets[physicalIndex];
-                keyPrefixes[writeIndex] = keyPrefixes[physicalIndex];
-                keyHighs[writeIndex] = keyHighs[physicalIndex];
-                keyLows[writeIndex] = keyLows[physicalIndex];
+                sortedIndexes[slotIndex] = slotIndex;
             }
-
-            sortedIndexes[writeIndex] = writeIndex;
-            writeIndex++;
+        }
+        finally
+        {
+            ArrayPool<int>.Shared.Return(compactedRecordOffsets, clearArray: false);
+            ArrayPool<uint>.Shared.Return(compactedKeyPrefixes, clearArray: false);
+            ArrayPool<ulong>.Shared.Return(compactedKeyHighs, clearArray: false);
+            ArrayPool<ulong>.Shared.Return(compactedKeyLows, clearArray: false);
         }
 
-        Array.Clear(deletedSlots, writeIndex, itemCount - writeIndex);
+        Array.Clear(deletedSlots, 0, originalItemCount);
         itemCount = writeIndex;
         slotStreamLength = checked(itemCount * Scalar16VarIdentityLayout.SlotSize);
         deletedItemCount = 0;
@@ -428,6 +464,85 @@ internal sealed class Scalar16VarIdentityMutableShelfView
         EnsureSlotBytesCurrent();
         IsDirty = true;
         return removed;
+    }
+
+    /// <summary>
+    /// Builds a compact replacement `SV16` shelf image when persisted orphaned identity bytes cross both supplied thresholds.<br/>
+    /// The replacement preserves sorted 16-byte scalar keys, raw identities, and the duplicate-run next-shelf link while resetting reclaimable-payload metadata.<br/>
+    /// </summary>
+    /// <param name="minimumDeletedPayloadBytes">The minimum orphaned payload bytes required before repack is considered.<br/></param>
+    /// <param name="minimumDeletedPayloadPercent">The minimum orphaned percentage of used payload bytes required before repack is considered.<br/></param>
+    /// <returns>A compact full shelf image, or null when no repack is warranted.<br/></returns>
+    internal byte[]? BuildCompactedPayloadIfWorthwhile(int minimumDeletedPayloadBytes, int minimumDeletedPayloadPercent)
+    {
+        if (minimumDeletedPayloadBytes < 0)
+            throw new ArgumentOutOfRangeException(nameof(minimumDeletedPayloadBytes));
+        if (minimumDeletedPayloadPercent < 0 || minimumDeletedPayloadPercent > 100)
+            throw new ArgumentOutOfRangeException(nameof(minimumDeletedPayloadPercent));
+        if (deletedItemCount != 0)
+            _ = NormalizeDeletedSlotsForPublication();
+
+        int deletedBytes = deletedPayloadBytes;
+        int usedBytes = PayloadBytesUsed;
+        if (deletedBytes <= 0 ||
+            deletedBytes < minimumDeletedPayloadBytes ||
+            usedBytes <= 0 ||
+            checked((long)deletedBytes * 100L) < checked((long)usedBytes * minimumDeletedPayloadPercent))
+        {
+            return null;
+        }
+
+        byte[] compacted = new byte[Profile.ShelfExtentSize];
+        Scalar16VarIdentityLayout.Initialize(compacted, Profile);
+        Scalar16VarIdentityLayout.WriteNextShelfOffset(compacted, Scalar16VarIdentityLayout.ReadNextShelfOffset(Bytes));
+        int slotCursor = Scalar16VarIdentityLayout.HeaderSize;
+        int recordCursor = Scalar16VarIdentityLayout.HeaderSize + Scalar16VarIdentityLayout.ReadSlotCapacityBytes(compacted);
+        for (int i = 0; i < itemCount; i++)
+        {
+            ulong keyHigh = ReadKeyHighAt(i);
+            ulong keyLow = ReadKeyLowAt(i);
+            ReadOnlySpan<byte> identity = ReadIdentityAt(i);
+            Scalar16VarIdentityLayout.WriteRecord(compacted, recordCursor, keyHigh, keyLow, identity);
+            Scalar16VarIdentityLayout.WriteSlotRecordOffset(compacted, slotCursor, recordCursor);
+            Scalar16VarIdentityLayout.WriteSlotKeyPrefix(compacted, slotCursor, Scalar16VarIdentityLayout.CreateKeyPrefix(keyHigh, keyLow));
+            recordCursor += Scalar16VarIdentityLayout.GetNewRecordLength(identity.Length);
+            slotCursor += Scalar16VarIdentityLayout.SlotSize;
+        }
+
+        Scalar16VarIdentityLayout.WriteItemCount(compacted, itemCount);
+        Scalar16VarIdentityLayout.WriteSlotStreamLength(compacted, checked(itemCount * Scalar16VarIdentityLayout.SlotSize));
+        Scalar16VarIdentityLayout.WriteRecordArenaEnd(compacted, recordCursor);
+        Scalar16VarIdentityLayout.WriteReclaimablePayloadBytes(compacted, 0);
+        return compacted;
+    }
+
+    /// <summary>
+    /// Rebinds decoded `SV16` sidecars after a compact replacement image has been copied over the authoritative shelf bytes.<br/>
+    /// The compact image is already in sorted tuple order, so physical and sorted indexes become identical while reclaimable payload accounting resets to zero.<br/>
+    /// </summary>
+    private void RebuildSidecarsAfterPayloadCompaction()
+    {
+        itemCount = Scalar16VarIdentityLayout.ReadItemCount(Bytes);
+        slotStreamLength = Scalar16VarIdentityLayout.ReadSlotStreamLength(Bytes);
+        recordArenaEnd = Scalar16VarIdentityLayout.ReadRecordArenaEnd(Bytes);
+        deletedItemCount = 0;
+        deletedPayloadBytes = 0;
+        int slotOffset = Scalar16VarIdentityLayout.HeaderSize;
+        for (int i = 0; i < itemCount; i++)
+        {
+            int recordOffset = Scalar16VarIdentityLayout.ReadSlotRecordOffset(Bytes, slotOffset);
+            recordOffsets[i] = recordOffset;
+            keyPrefixes[i] = Scalar16VarIdentityLayout.ReadSlotKeyPrefix(Bytes, slotOffset);
+            keyHighs[i] = Scalar16VarIdentityLayout.ReadKeyHigh(Bytes, recordOffset);
+            keyLows[i] = Scalar16VarIdentityLayout.ReadKeyLow(Bytes, recordOffset);
+            sortedIndexes[i] = i;
+            deletedSlots[i] = false;
+            slotOffset += Scalar16VarIdentityLayout.SlotSize;
+        }
+
+        Scalar16VarIdentityLayout.WriteReclaimablePayloadBytes(Bytes, 0);
+        SlotBytesDirty = false;
+        IsDirty = true;
     }
 
     /// <summary>

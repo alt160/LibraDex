@@ -302,7 +302,8 @@ internal enum VarKeyScalar16RouteTargetKind
 {
     None = 0,
     Router = 1,
-    Shelf = 2
+    Shelf = 2,
+    TerminalIdentityRoot = 3
 }
 
 internal readonly record struct VarKeyScalar16RouteTarget(
@@ -325,7 +326,8 @@ internal enum VarKeyScalar16RoutedInsertKind
     WalkedShelfTransformSplit = 3,
     Full = 4,
     KeyConflict = 5,
-    Invalid = 6
+    Invalid = 6,
+    WalkedTerminalDuplicate = 7
 }
 
 internal readonly record struct VarKeyScalar16RoutedInsertResult(

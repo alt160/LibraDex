@@ -6,6 +6,14 @@ using System.Text;
 namespace LibraDex;
 
 /// <summary>
+/// Visits one identity and its complete logical composite-key parts during an ordered routed-index traversal.<br/>
+/// The key-part span is borrowed from the traversal and is valid only for the duration of the callback.<br/>
+/// </summary>
+/// <param name="keyParts">The complete logical key parts in declared composite order.</param>
+/// <param name="identity">The identity stored at the current complete key.</param>
+public delegate void LibraDexCompositeEntryVisitor(ReadOnlySpan<object?> keyParts, object identity);
+
+/// <summary>
 /// Provides the first routed-component composite-key proof over in-process mini-router tiers.<br/>
 /// Each composite part is stored as its own tier value, so repeated leading values are represented once as a route node rather than duplicated into every terminal key.<br/>
 /// This slice intentionally proves condition semantics before the mini-router node format is persisted into DataKernel pages.<br/>
@@ -13,16 +21,12 @@ namespace LibraDex;
 public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExecutor, IIdentityPrimitiveMutator, IIdentityPrimitiveTupleExecutor, IIdentityPrimitiveTupleStreamer, IIdentityExactTupleMutator
 {
     private const int MaxCompositeDepth = 16;
+    private readonly Catalog catalog;
     private readonly LibraDexIndexShapeSpec shape;
     private readonly LibraDexFileSession? session;
     private readonly int? slotIndex;
     private readonly CompositeNode root = new();
     private long itemCount;
-
-    internal LibraDexRoutedCompositeIndex(LibraDexIndexShapeSpec shape)
-        : this(shape, session: null, slotIndex: null, entries: null)
-    {
-    }
 
     /// <summary>
     /// Creates a routed composite index over an optional durable composite snapshot anchor.<br/>
@@ -33,11 +37,12 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
     /// <param name="slotIndex">The optional fixed catalog slot that anchors the durable snapshot.</param>
     /// <param name="entries">Optional reopened entries to load into the routed tier tree.</param>
     internal LibraDexRoutedCompositeIndex(
+        Catalog catalog,
         LibraDexIndexShapeSpec shape,
         LibraDexFileSession? session,
         int? slotIndex,
         IReadOnlyList<LibraDexCompositeEntry>? entries = null)
-        : this(shape, session, slotIndex, rootOffset: 0, itemCount: 0, entries)
+        : this(catalog, shape, session, slotIndex, rootOffset: 0, itemCount: 0, entries)
     {
     }
 
@@ -50,15 +55,17 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
     /// <param name="slotIndex">The optional fixed catalog slot that anchors the durable root.</param>
     /// <param name="rootOffset">The durable root node page offset, or zero for memory-only indexes.</param>
     internal LibraDexRoutedCompositeIndex(
+        Catalog catalog,
         LibraDexIndexShapeSpec shape,
         LibraDexFileSession? session,
         int? slotIndex,
         long rootOffset)
-        : this(shape, session, slotIndex, rootOffset, itemCount: 0, entries: null)
+        : this(catalog, shape, session, slotIndex, rootOffset, itemCount: 0, entries: null)
     {
     }
 
     private LibraDexRoutedCompositeIndex(
+        Catalog catalog,
         LibraDexIndexShapeSpec shape,
         LibraDexFileSession? session,
         int? slotIndex,
@@ -66,6 +73,7 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
         long itemCount,
         IReadOnlyList<LibraDexCompositeEntry>? entries = null)
     {
+        this.catalog = catalog ?? throw new ArgumentNullException(nameof(catalog));
         ArgumentNullException.ThrowIfNull(shape);
         if (shape.KeyFamily != CatalogIndexKeyFamily.Composite)
         {
@@ -102,13 +110,14 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
     /// <param name="itemCount">The logical tuple count stored in the catalog slot.</param>
     /// <returns>A routed composite index loaded from node pages.</returns>
     internal static LibraDexRoutedCompositeIndex OpenFromNodePages(
+        Catalog catalog,
         LibraDexIndexShapeSpec shape,
         LibraDexFileSession session,
         int slotIndex,
         long rootOffset,
         long itemCount)
     {
-        LibraDexRoutedCompositeIndex index = new(shape, session, slotIndex, rootOffset, itemCount);
+        LibraDexRoutedCompositeIndex index = new(catalog, shape, session, slotIndex, rootOffset, itemCount);
         index.root.MarkUnloaded(rootOffset);
         return index;
     }
@@ -122,6 +131,11 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
     /// Gets the identity group that owns this routed composite index.<br/>
     /// </summary>
     public string Group => shape.Group;
+
+    /// <summary>
+    /// Gets the open catalog that owns this routed composite index.<br/>
+    /// </summary>
+    public Catalog Catalog => catalog;
 
     /// <summary>
     /// Gets the runtime key type accepted by this composite facade.<br/>
@@ -160,6 +174,31 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
     /// The index supplies its identity group and index name, so callers can describe declared key-part criteria without repeating `ForGroup(...).Index(...)` ceremony.<br/>
     /// </summary>
     public LibraDexCompositeConditionWhere Where => LibraDexCondition.ForGroup(Group).Index(Name).CompositeWhereRoot;
+
+    /// <summary>
+    /// Visits every identity and its complete logical key in composite-index natural order.<br/>
+    /// One key-part buffer is reused for the traversal, avoiding a composite-key container and copied array for every distinct terminal key.<br/>
+    /// Null-route sentinels are translated to logical <see langword="null"/> values before the visitor is invoked.<br/>
+    /// The supplied key-part span is borrowed and must not be retained after the callback returns.<br/>
+    /// </summary>
+    /// <param name="visitor">The synchronous visitor invoked once per indexed identity.</param>
+    /// <returns>The number of visited key/identity tuples.</returns>
+    public long VisitEntries(LibraDexCompositeEntryVisitor visitor)
+    {
+        ArgumentNullException.ThrowIfNull(visitor);
+        object?[] values = new object?[shape.CompositeParts.Count];
+        long visited = 0;
+        VisitEntries(root, tier: 0, values, visitor, ref visited);
+        return visited;
+    }
+
+    /// <summary>
+    /// Opens a forward-only cursor over every identity and its complete logical key in composite-index natural order.<br/>
+    /// The cursor reuses one key-part buffer for its lifetime; <see cref="EntryCursor.KeyParts"/> is borrowed and remains valid only until the next <see cref="EntryCursor.Read"/> call or disposal.<br/>
+    /// Opening performs no traversal. Each read advances the routed tree directly without creating a composite-key container or copied key array.<br/>
+    /// </summary>
+    /// <returns>An unpositioned cursor owned by the caller.<br/></returns>
+    internal EntryCursor OpenEntryCursor() => new(this);
 
     /// <summary>
     /// Validates that a typed composite wrapper matches this index's persisted identity and key-part type contract.<br/>
@@ -215,6 +254,49 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
     }
 
     /// <summary>
+    /// Replaces this index from an unordered entry stream by constructing one detached routed tree and publishing one complete snapshot.<br/>
+    /// Candidate construction performs no per-entry durable path copy, so a wide one-part composite root retains linear live storage instead of appending the cumulative root after every insertion.<br/>
+    /// The current runtime tree and durable directory anchor remain unchanged if validation, cancellation, candidate construction, encoding, or publication fails.<br/>
+    /// Duplicate exact tuples retain ordinary <see cref="IndexKeys"/> behavior and are counted once in the returned logical population.<br/>
+    /// </summary>
+    /// <param name="entries">Unordered composite key and identity pairs used to construct the replacement population.<br/></param>
+    /// <param name="cancellationToken">Cancellation observed between candidate entries and immediately before publication.<br/></param>
+    /// <returns>The number of distinct logical tuples published in the replacement index.<br/></returns>
+    public long ReplaceFromUnordered(
+        IEnumerable<(LibraDexCompositeKey Key, object Identity)> entries,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(entries);
+        ThrowIfSessionDurabilityBatchActiveForMutation();
+
+        var candidate = new LibraDexRoutedCompositeIndex(
+            catalog,
+            shape,
+            session: null,
+            slotIndex: null);
+        foreach ((LibraDexCompositeKey key, object identity) in entries)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            ArgumentNullException.ThrowIfNull(key);
+            ArgumentNullException.ThrowIfNull(identity);
+            _ = candidate.AddEntry(key, identity, persist: false);
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        if (session is not null && slotIndex is int durableSlotIndex)
+        {
+            LibraDexCompositeEntry[] replacementEntries = candidate.EnumerateEntries().ToArray();
+            byte[] snapshot = LibraDexCompositeSnapshotCodec.Encode(shape, replacementEntries);
+            session.UpdateCompositeSnapshotIndex(durableSlotIndex, snapshot, candidate.itemCount);
+            candidate.root.DurableOffset = 0;
+        }
+
+        root.ReplaceWith(candidate.root);
+        itemCount = candidate.itemCount;
+        return itemCount;
+    }
+
+    /// <summary>
     /// Adds one composite key and identity to the routed tier tree.<br/>
     /// The helper is shared by normal inserts and snapshot hydration so reopened entries can rebuild memory state without recursively rewriting the durable snapshot.<br/>
     /// </summary>
@@ -262,7 +344,6 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
         if (inserted &&
             persist &&
             session is not null &&
-            session.BackingKind == DataKernelBackingKind.File &&
             slotIndex is int durableSlotIndex)
         {
             if (path.Length != 0 && root.DurableOffset > 0)
@@ -694,9 +775,10 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
     /// <summary>
     /// Deletes every tuple from this composite index.<br/>
     /// This is the mutation counterpart to the `All` primitive and clears the routed component tree while preserving the configured shape and durable catalog slot.<br/>
+    /// Higher-level adapters that already own this opened handle should use this direct method so clear-and-repopulate work cannot split across two independently opened routed trees.<br/>
     /// </summary>
-    /// <returns>The number of terminal key/identity tuples removed.</returns>
-    private long DeleteAll()
+    /// <returns>The number of terminal key/identity tuples removed.<br/></returns>
+    public long DeleteAll()
     {
         ThrowIfSessionDurabilityBatchActiveForMutation();
 
@@ -1542,6 +1624,18 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
     /// <returns><see langword="true"/> when the GUID satisfies the criterion.</returns>
     private static bool MatchesGuidCriterion(Guid value, LibraDexCompositePartCriterion criterion)
     {
+        if (criterion.Values.Count == 1 && criterion.Values[0] is LibraDexGuidPatternPredicate predicate)
+        {
+            return criterion.Operator switch
+            {
+                LibraDexConditionOperatorKind.StartsWith or
+                LibraDexConditionOperatorKind.EndsWith or
+                LibraDexConditionOperatorKind.Contains or
+                LibraDexConditionOperatorKind.MatchesPattern => predicate.Matches(value),
+                _ => throw new NotSupportedException($"Composite GUID predicate payload cannot be used with operator {criterion.Operator}.")
+            };
+        }
+
         return criterion.Operator switch
         {
             LibraDexConditionOperatorKind.EqualTo => value == RequireGuid(criterion.Values, 0),
@@ -1689,7 +1783,11 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
             LibraDexConditionOperatorKind.StartsWith => LibraDexStringPatternPredicate.Create(LibraDexStringPatternMode.StartsWith, RequireString(criterion.Values, 0), policy).Matches(text),
             LibraDexConditionOperatorKind.EndsWith => LibraDexStringPatternPredicate.Create(LibraDexStringPatternMode.EndsWith, RequireString(criterion.Values, 0), policy).Matches(text),
             LibraDexConditionOperatorKind.Contains => LibraDexStringPatternPredicate.Create(LibraDexStringPatternMode.Contains, RequireString(criterion.Values, 0), policy).Matches(text),
+            LibraDexConditionOperatorKind.NotStartsWith => LibraDexStringPatternPredicate.Create(LibraDexStringPatternMode.NotStartsWith, RequireString(criterion.Values, 0), policy).Matches(text),
+            LibraDexConditionOperatorKind.NotEndsWith => LibraDexStringPatternPredicate.Create(LibraDexStringPatternMode.NotEndsWith, RequireString(criterion.Values, 0), policy).Matches(text),
+            LibraDexConditionOperatorKind.NotContains => LibraDexStringPatternPredicate.Create(LibraDexStringPatternMode.NotContains, RequireString(criterion.Values, 0), policy).Matches(text),
             LibraDexConditionOperatorKind.MatchesPattern => LibraDexStringPatternPredicate.Create(LibraDexStringPatternMode.MatchesPattern, RequireString(criterion.Values, 0), policy).Matches(text),
+            LibraDexConditionOperatorKind.NotMatchesPattern => LibraDexStringPatternPredicate.Create(LibraDexStringPatternMode.NotMatchesPattern, RequireString(criterion.Values, 0), policy).Matches(text),
             LibraDexConditionOperatorKind.Between => LibraDexStringPatternPredicate.Create(LibraDexStringPatternMode.Between, RequireString(criterion.Values, 0), RequireString(criterion.Values, 1), policy).Matches(text),
             LibraDexConditionOperatorKind.NotBetween => LibraDexStringPatternPredicate.Create(LibraDexStringPatternMode.NotBetween, RequireString(criterion.Values, 0), RequireString(criterion.Values, 1), policy).Matches(text),
             LibraDexConditionOperatorKind.InSet => LibraDexStringPatternPredicate.CreateSet(LibraDexStringPatternMode.InSet, RequireStringSet(criterion.Values, 0), policy).Matches(text),
@@ -2027,7 +2125,11 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
             LibraDexConditionOperatorKind.StartsWith => candidate.StartsWith(operand),
             LibraDexConditionOperatorKind.EndsWith => candidate.EndsWith(operand),
             LibraDexConditionOperatorKind.Contains => candidate.IndexOf(operand) >= 0,
+            LibraDexConditionOperatorKind.NotStartsWith => !candidate.StartsWith(operand),
+            LibraDexConditionOperatorKind.NotEndsWith => !candidate.EndsWith(operand),
+            LibraDexConditionOperatorKind.NotContains => candidate.IndexOf(operand) < 0,
             LibraDexConditionOperatorKind.MatchesPattern => MatchesFullKeyByteWildcard(candidate, operand),
+            LibraDexConditionOperatorKind.NotMatchesPattern => !MatchesFullKeyByteWildcard(candidate, operand),
             _ => throw new NotSupportedException($"Composite full-key operator {criterion.Operator} is not supported for byte-domain matching.")
         };
     }
@@ -2159,28 +2261,30 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
     {
         int candidateIndex = 0;
         int patternIndex = 0;
-        int starIndex = -1;
+        int starResumePatternIndex = -1;
         int matchIndex = 0;
         while (candidateIndex < candidate.Length)
         {
-            if (patternIndex < pattern.Length &&
-                (pattern[patternIndex] == (byte)'?' || pattern[patternIndex] == candidate[candidateIndex]))
+            if (TryReadFullKeyWildcardToken(pattern, patternIndex, out byte token, out bool wildcard, out int consumed) &&
+                ((wildcard && token == (byte)'?') || (!wildcard && token == candidate[candidateIndex])))
             {
                 candidateIndex++;
-                patternIndex++;
+                patternIndex += consumed;
                 continue;
             }
 
-            if (patternIndex < pattern.Length && pattern[patternIndex] == (byte)'*')
+            if (TryReadFullKeyWildcardToken(pattern, patternIndex, out token, out wildcard, out consumed) &&
+                wildcard && token == (byte)'*')
             {
-                starIndex = patternIndex++;
+                patternIndex += consumed;
+                starResumePatternIndex = patternIndex;
                 matchIndex = candidateIndex;
                 continue;
             }
 
-            if (starIndex >= 0)
+            if (starResumePatternIndex >= 0)
             {
-                patternIndex = starIndex + 1;
+                patternIndex = starResumePatternIndex;
                 candidateIndex = ++matchIndex;
                 continue;
             }
@@ -2188,12 +2292,57 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
             return false;
         }
 
-        while (patternIndex < pattern.Length && pattern[patternIndex] == (byte)'*')
+        while (TryReadFullKeyWildcardToken(pattern, patternIndex, out byte token, out bool wildcard, out int consumed) &&
+            wildcard && token == (byte)'*')
         {
-            patternIndex++;
+            patternIndex += consumed;
         }
 
         return patternIndex == pattern.Length;
+    }
+
+    /// <summary>
+    /// Reads one byte-domain wildcard token while preserving ordinary backslashes as literal data.<br/>
+    /// A backslash escapes `*` or `?`; a doubled backslash is collapsed only when needed to keep one literal backslash immediately before an active wildcard.<br/>
+    /// </summary>
+    private static bool TryReadFullKeyWildcardToken(
+        ReadOnlySpan<byte> pattern,
+        int patternIndex,
+        out byte token,
+        out bool wildcard,
+        out int consumed)
+    {
+        if ((uint)patternIndex >= (uint)pattern.Length)
+        {
+            token = default;
+            wildcard = false;
+            consumed = 0;
+            return false;
+        }
+
+        token = pattern[patternIndex];
+        consumed = 1;
+        if (token == (byte)'\\' && patternIndex + 1 < pattern.Length &&
+            (pattern[patternIndex + 1] == (byte)'*' || pattern[patternIndex + 1] == (byte)'?'))
+        {
+            token = pattern[patternIndex + 1];
+            consumed = 2;
+            wildcard = false;
+            return true;
+        }
+
+
+        if (token == (byte)'\\' && patternIndex + 2 < pattern.Length &&
+            pattern[patternIndex + 1] == (byte)'\\' &&
+            (pattern[patternIndex + 2] == (byte)'*' || pattern[patternIndex + 2] == (byte)'?'))
+        {
+            consumed = 2;
+            wildcard = false;
+            return true;
+        }
+
+        wildcard = token == (byte)'*' || token == (byte)'?';
+        return true;
     }
 
     private void ValidateIdentity(object identity)
@@ -2311,9 +2460,7 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
     /// </summary>
     private void PersistAfterWholeTreeMutation()
     {
-        if (session is null ||
-            session.BackingKind != DataKernelBackingKind.File ||
-            slotIndex is not int durableSlotIndex)
+        if (session is null || slotIndex is not int durableSlotIndex)
         {
             return;
         }
@@ -2474,6 +2621,46 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
                 yield return entry;
             }
 
+            values[tier] = null;
+        }
+    }
+
+    /// <summary>
+    /// Recursively visits terminal identities while borrowing one reusable logical key-part buffer.<br/>
+    /// </summary>
+    /// <param name="node">The node to visit.</param>
+    /// <param name="tier">The current composite part ordinal.</param>
+    /// <param name="values">The reusable logical traversal-path buffer.</param>
+    /// <param name="visitor">The synchronous terminal visitor.</param>
+    /// <param name="visited">The checked running tuple count.</param>
+    private void VisitEntries(
+        CompositeNode node,
+        int tier,
+        object?[] values,
+        LibraDexCompositeEntryVisitor visitor,
+        ref long visited)
+    {
+        EnsureNodeLoaded(node, tier);
+        if (tier >= shape.CompositeParts.Count)
+        {
+            IReadOnlyList<object> identities = node.Identities;
+            for (int i = 0; i < identities.Count; i++)
+            {
+                visitor(values, identities[i]);
+                visited = checked(visited + 1);
+            }
+
+            return;
+        }
+
+        LibraDexCompositeKeyPartSpec part = shape.CompositeParts[tier];
+        IReadOnlyList<CompositeChild> children = node.Children;
+        for (int i = 0; i < children.Count; i++)
+        {
+            CompositeChild child = children[i];
+            object value = child.Key.Value;
+            values[tier] = LibraDexCompositeKeyValueSemantics.IsPartNull(part, value) ? null : value;
+            VisitEntries(child.Node, tier + 1, values, visitor, ref visited);
             values[tier] = null;
         }
     }
@@ -2663,6 +2850,22 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
         }
 
         /// <summary>
+        /// Replaces this stable node object's complete loaded contents with one already-validated detached candidate node.<br/>
+        /// Child nodes are transferred by reference only after durable replacement publication succeeds, keeping existing index handles stable without copying the routed tree a second time.<br/>
+        /// </summary>
+        /// <param name="source">Detached candidate node whose identities, children, durable marker, and load state become current.<br/></param>
+        internal void ReplaceWith(CompositeNode source)
+        {
+            ArgumentNullException.ThrowIfNull(source);
+            identities.Clear();
+            identities.AddRange(source.identities);
+            children.Clear();
+            children.AddRange(source.children);
+            DurableOffset = source.DurableOffset;
+            IsLoaded = source.IsLoaded;
+        }
+
+        /// <summary>
         /// Marks this node as a lazy durable placeholder whose page body should be loaded before child or identity access.<br/>
         /// </summary>
         /// <param name="offset">The durable node-page offset represented by this placeholder.</param>
@@ -2688,6 +2891,113 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
         public int CompareTo(CompositePartKey other)
         {
             return LibraDexCompositeKeyValueSemantics.ComparePartValues(Part, Value, other.Value);
+        }
+    }
+
+    /// <summary>
+    /// Traverses one routed composite index without allocating a stable composite-key object for each terminal path.<br/>
+    /// The current logical key is exposed as borrowed storage so aggregate and analysis readers can retain constant traversal memory.<br/>
+    /// </summary>
+    internal sealed class EntryCursor : IDisposable
+    {
+        private readonly LibraDexRoutedCompositeIndex owner;
+        private readonly CompositeNode[] nodes;
+        private readonly int[] nextChildren;
+        private readonly object?[] values;
+        private int tier;
+        private int nextIdentity;
+        private object? identity;
+        private bool positioned;
+        private bool disposed;
+
+        /// <summary>Creates one unpositioned depth-first cursor over the owning index.<br/></summary>
+        internal EntryCursor(LibraDexRoutedCompositeIndex owner)
+        {
+            this.owner = owner;
+            int parts = owner.shape.CompositeParts.Count;
+            nodes = new CompositeNode[parts + 1];
+            nextChildren = new int[parts];
+            values = new object?[parts];
+            nodes[0] = owner.root;
+        }
+
+        /// <summary>
+        /// Gets the current borrowed logical key parts.<br/>
+        /// The span must not be retained after the next <see cref="Read"/> call or cursor disposal.<br/>
+        /// </summary>
+        public ReadOnlySpan<object?> KeyParts
+            => positioned ? values : throw new InvalidOperationException("The composite entry cursor is not positioned on an entry.");
+
+        /// <summary>Gets the current identity after a successful <see cref="Read"/>.<br/></summary>
+        public object Identity
+            => positioned ? identity! : throw new InvalidOperationException("The composite entry cursor is not positioned on an entry.");
+
+        /// <summary>
+        /// Advances to the next complete logical key and identity in natural composite order.<br/>
+        /// The traversal retains one node stack and one reusable key-part buffer regardless of the number of entries.<br/>
+        /// </summary>
+        /// <returns><see langword="true"/> when <see cref="KeyParts"/> and <see cref="Identity"/> are available.<br/></returns>
+        public bool Read()
+        {
+            ObjectDisposedException.ThrowIf(disposed, this);
+            positioned = false;
+            int partCount = values.Length;
+            while (true)
+            {
+                CompositeNode node = nodes[tier];
+                owner.EnsureNodeLoaded(node, tier);
+                if (tier == partCount)
+                {
+                    IReadOnlyList<object> identities = node.Identities;
+                    if (nextIdentity < identities.Count)
+                    {
+                        identity = identities[nextIdentity++];
+                        positioned = true;
+                        return true;
+                    }
+
+                    if (tier == 0)
+                        return false;
+                    tier--;
+                    values[tier] = null;
+                    continue;
+                }
+
+                IReadOnlyList<CompositeChild> children = node.Children;
+                int childIndex = nextChildren[tier];
+                if (childIndex < children.Count)
+                {
+                    CompositeChild child = children[childIndex];
+                    nextChildren[tier] = childIndex + 1;
+                    LibraDexCompositeKeyPartSpec part = owner.shape.CompositeParts[tier];
+                    object value = child.Key.Value;
+                    values[tier] = LibraDexCompositeKeyValueSemantics.IsPartNull(part, value) ? null : value;
+                    tier++;
+                    nodes[tier] = child.Node;
+                    if (tier < partCount)
+                        nextChildren[tier] = 0;
+                    else
+                        nextIdentity = 0;
+                    continue;
+                }
+
+                if (tier == 0)
+                    return false;
+                nextChildren[tier] = 0;
+                tier--;
+                values[tier] = null;
+            }
+        }
+
+        /// <summary>Invalidates the borrowed key and prevents further traversal.<br/></summary>
+        public void Dispose()
+        {
+            if (disposed)
+                return;
+            disposed = true;
+            positioned = false;
+            identity = null;
+            Array.Clear(values);
         }
     }
 }

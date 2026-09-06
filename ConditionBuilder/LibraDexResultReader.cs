@@ -7,17 +7,31 @@ namespace LibraDex;
 /// <typeparam name="TResult">The logical result type produced by the condition.<br/></typeparam>
 public sealed class LibraDexResultReader<TResult> : IDisposable
 {
-    private readonly IEnumerator<TResult> enumerator;
+    private readonly IEnumerator<LibraDexBookmarkResult<TResult>> enumerator;
+    private readonly LibraDexBookmarkTemplate bookmarkTemplate;
+    private readonly LibraDexBookmarkConsistency consistency;
+    private readonly LibraDexQueryTelemetrySession? telemetry;
     private TResult? current;
+    private LibraDexBookmarkAnchor? anchor;
     private bool hasCurrent;
     private bool disposed;
     private bool exhausted;
 
-    internal LibraDexResultReader(IEnumerable<TResult> results)
+    internal LibraDexResultReader(
+        IEnumerable<LibraDexBookmarkResult<TResult>> results,
+        LibraDexBookmarkTemplate bookmarkTemplate,
+        LibraDexBookmarkConsistency consistency,
+        long resultsConsumed = 0,
+        LibraDexBookmarkAnchor? anchor = null,
+        LibraDexQueryTelemetrySession? telemetry = null)
     {
         ArgumentNullException.ThrowIfNull(results);
+        this.bookmarkTemplate = bookmarkTemplate ?? throw new ArgumentNullException(nameof(bookmarkTemplate));
+        this.consistency = consistency;
+        this.telemetry = telemetry;
         enumerator = results.GetEnumerator();
-        Ordinal = -1;
+        Ordinal = resultsConsumed - 1;
+        this.anchor = anchor;
     }
 
     /// <summary>
@@ -25,6 +39,19 @@ public sealed class LibraDexResultReader<TResult> : IDisposable
     /// Skipped and pulled results advance this position even though they are not exposed through <see cref="Current"/>.<br/>
     /// </summary>
     public long Ordinal { get; private set; }
+
+    /// <summary>
+    /// Gets an opaque continuation bookmark positioned at the next unread logical result.<br/>
+    /// The returned snapshot contains passive condition and resolved-index provenance; reading it never invokes deferred selectors or values.<br/>
+    /// </summary>
+    public LibraDexBookmark Bookmark
+    {
+        get
+        {
+            ThrowIfDisposed();
+            return bookmarkTemplate.Create(Ordinal + 1, anchor, consistency);
+        }
+    }
 
     /// <summary>
     /// Gets the result exposed by the most recent successful <see cref="Next"/> call.<br/>
@@ -146,22 +173,45 @@ public sealed class LibraDexResultReader<TResult> : IDisposable
             return;
 
         enumerator.Dispose();
+        telemetry?.Complete(
+            exhausted
+                ? LibraDexQueryCompletion.Completed
+                : LibraDexQueryCompletion.StoppedEarly);
         disposed = true;
         InvalidateCurrent();
     }
 
     private bool MoveNext(out TResult value)
     {
-        if (!exhausted && enumerator.MoveNext())
+        long startedTimestamp = 0;
+        long startedAllocated = 0;
+        if (telemetry is not null)
+            telemetry.StartStep(out startedTimestamp, out startedAllocated);
+        try
         {
-            Ordinal++;
-            value = enumerator.Current;
-            return true;
-        }
+            if (!exhausted && enumerator.MoveNext())
+            {
+                Ordinal++;
+                LibraDexBookmarkResult<TResult> result = enumerator.Current;
+                value = result.Value;
+                anchor = result.Anchor;
+                telemetry?.EndStep(startedTimestamp, startedAllocated);
+                telemetry?.Returned();
+                return true;
+            }
 
-        exhausted = true;
-        value = default!;
-        return false;
+            exhausted = true;
+            telemetry?.EndStep(startedTimestamp, startedAllocated);
+            telemetry?.Complete(LibraDexQueryCompletion.Completed);
+            value = default!;
+            return false;
+        }
+        catch
+        {
+            telemetry?.EndStep(startedTimestamp, startedAllocated);
+            telemetry?.Complete(LibraDexQueryCompletion.Failed);
+            throw;
+        }
     }
 
     private void InvalidateCurrent()

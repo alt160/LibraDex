@@ -274,3 +274,123 @@ internal static class LibraDexStructuredDateCodec
         };
     }
 }
+
+/// <summary>
+/// Encodes and decodes the public LibraDex temporal scalar representations used by typed indexes and explicitly coerced binary slices.<br/>
+/// Date-like scalars use the selected <see cref="DateTimeKeyEncoding"/> and are stored as unsigned 64-bit values; callers placing them inside binary payloads write those scalars in big-endian byte order as required by the binary-slice coercion contract.<br/>
+/// Ordered <see cref="TimeSpan"/> scalars flip the signed tick sign bit so unsigned big-endian comparison preserves the complete signed duration order.<br/>
+/// </summary>
+public static class LibraDexTemporalScalarCodec
+{
+    /// <summary>
+    /// Encodes one <see cref="DateTime"/> into the selected LibraDex SDT scalar without changing its <see cref="DateTime.Kind"/> or clock fields.<br/>
+    /// </summary>
+    /// <param name="value">The date/time value whose calendar and clock fields are encoded.<br/></param>
+    /// <param name="encoding">The Calendar SDT or Precision SDT representation to produce.<br/></param>
+    /// <returns>The unsigned structured scalar; write it in big-endian order when embedding it in binary data.<br/></returns>
+    public static ulong Encode(DateTime value, DateTimeKeyEncoding encoding)
+        => LibraDexStructuredDateCodec.Encode(value, encoding);
+
+    /// <summary>
+    /// Decodes one LibraDex SDT scalar into a UTC <see cref="DateTime"/> while validating all reconstructed CLR calendar and clock fields.<br/>
+    /// </summary>
+    /// <param name="value">The unsigned structured scalar previously read from big-endian binary data or an index key.<br/></param>
+    /// <param name="encoding">The Calendar SDT or Precision SDT representation carried by <paramref name="value"/>.<br/></param>
+    /// <returns>The reconstructed UTC date/time value.<br/></returns>
+    public static DateTime DecodeDateTime(ulong value, DateTimeKeyEncoding encoding)
+    {
+        DateTime decoded = LibraDexStructuredDateCodec.DecodeDateTime(value, encoding);
+        return LibraDexStructuredDateCodec.Encode(decoded, encoding) == value
+            ? decoded
+            : throw new ArgumentException("The scalar is not a canonical LibraDex DateTime SDT value.", nameof(value));
+    }
+
+    /// <summary>
+    /// Encodes one <see cref="DateOnly"/> into the selected LibraDex SDT scalar with all time fields left empty.<br/>
+    /// </summary>
+    /// <param name="value">The date value whose calendar fields are encoded.<br/></param>
+    /// <param name="encoding">The Calendar SDT or Precision SDT representation to produce.<br/></param>
+    /// <returns>The unsigned structured scalar; write it in big-endian order when embedding it in binary data.<br/></returns>
+    public static ulong Encode(DateOnly value, DateTimeKeyEncoding encoding)
+        => LibraDexStructuredDateCodec.Encode(value, encoding);
+
+    /// <summary>
+    /// Decodes one date-bearing LibraDex SDT scalar into a <see cref="DateOnly"/> and validates the selected representation and reconstructed calendar fields.<br/>
+    /// Clock fields, when present in the supplied scalar, do not affect the returned date.<br/>
+    /// </summary>
+    /// <param name="value">The unsigned structured scalar previously read from big-endian binary data or an index key.<br/></param>
+    /// <param name="encoding">The Calendar SDT or Precision SDT representation carried by <paramref name="value"/>.<br/></param>
+    /// <returns>The reconstructed date value.<br/></returns>
+    public static DateOnly DecodeDateOnly(ulong value, DateTimeKeyEncoding encoding)
+    {
+        DateOnly decoded = DateOnly.FromDateTime(LibraDexStructuredDateCodec.DecodeDateTime(value, encoding));
+        return LibraDexStructuredDateCodec.Encode(decoded, encoding) == value
+            ? decoded
+            : throw new ArgumentException("The scalar is not a canonical LibraDex DateOnly SDT value.", nameof(value));
+    }
+
+    /// <summary>
+    /// Encodes one <see cref="TimeOnly"/> into the selected LibraDex SDT scalar with all date fields left empty.<br/>
+    /// </summary>
+    /// <param name="value">The time value whose clock fields are encoded.<br/></param>
+    /// <param name="encoding">The Calendar SDT or Precision SDT representation to produce.<br/></param>
+    /// <returns>The unsigned structured scalar; write it in big-endian order when embedding it in binary data.<br/></returns>
+    public static ulong Encode(TimeOnly value, DateTimeKeyEncoding encoding)
+        => LibraDexStructuredDateCodec.Encode(value, encoding);
+
+    /// <summary>
+    /// Decodes one time-bearing LibraDex SDT scalar into a <see cref="TimeOnly"/> and validates the selected representation and reconstructed clock fields.<br/>
+    /// Date fields, when present in the supplied scalar, do not affect the returned time.<br/>
+    /// </summary>
+    /// <param name="value">The unsigned structured scalar previously read from big-endian binary data or an index key.<br/></param>
+    /// <param name="encoding">The Calendar SDT or Precision SDT representation carried by <paramref name="value"/>.<br/></param>
+    /// <returns>The reconstructed time value.<br/></returns>
+    public static TimeOnly DecodeTimeOnly(ulong value, DateTimeKeyEncoding encoding)
+    {
+        TimeOnly decoded = LibraDexStructuredDateCodec.DecodeTimeOnly(value, encoding);
+        return LibraDexStructuredDateCodec.Encode(decoded, encoding) == value
+            ? decoded
+            : throw new ArgumentException("The scalar is not a canonical LibraDex TimeOnly SDT value.", nameof(value));
+    }
+
+    /// <summary>
+    /// Encodes one <see cref="DateTimeOffset"/> as its UTC instant in the selected LibraDex SDT representation.<br/>
+    /// The original offset is intentionally not retained because the SDT binary coercion represents an instant rather than a local-time-plus-offset pair.<br/>
+    /// </summary>
+    /// <param name="value">The offset-aware value normalized to UTC before encoding.<br/></param>
+    /// <param name="encoding">The Calendar SDT or Precision SDT representation to produce.<br/></param>
+    /// <returns>The unsigned UTC structured scalar; write it in big-endian order when embedding it in binary data.<br/></returns>
+    public static ulong Encode(DateTimeOffset value, DateTimeKeyEncoding encoding)
+        => LibraDexStructuredDateCodec.Encode(value, encoding);
+
+    /// <summary>
+    /// Decodes one UTC LibraDex SDT scalar into a zero-offset <see cref="DateTimeOffset"/> while validating all reconstructed fields.<br/>
+    /// </summary>
+    /// <param name="value">The unsigned UTC structured scalar previously read from big-endian binary data or an index key.<br/></param>
+    /// <param name="encoding">The Calendar SDT or Precision SDT representation carried by <paramref name="value"/>.<br/></param>
+    /// <returns>The reconstructed instant with <see cref="TimeSpan.Zero"/> as its offset.<br/></returns>
+    public static DateTimeOffset DecodeDateTimeOffset(ulong value, DateTimeKeyEncoding encoding)
+    {
+        DateTimeOffset decoded = new(LibraDexStructuredDateCodec.DecodeDateTime(value, encoding));
+        return LibraDexStructuredDateCodec.Encode(decoded, encoding) == value
+            ? decoded
+            : throw new ArgumentException("The scalar is not a canonical LibraDex DateTimeOffset SDT value.", nameof(value));
+    }
+
+    /// <summary>
+    /// Encodes one <see cref="TimeSpan"/> as LibraDex's unsigned ordered tick scalar by flipping the signed tick sign bit.<br/>
+    /// </summary>
+    /// <param name="value">The complete signed duration to encode.<br/></param>
+    /// <returns>The unsigned ordered scalar; write it in big-endian order when embedding it in binary data.<br/></returns>
+    public static ulong Encode(TimeSpan value)
+        => unchecked((ulong)(value.Ticks ^ long.MinValue));
+
+    /// <summary>
+    /// Decodes one LibraDex ordered duration scalar by restoring the signed tick sign bit.<br/>
+    /// Every unsigned input maps to exactly one valid <see cref="TimeSpan"/> value.<br/>
+    /// </summary>
+    /// <param name="value">The unsigned ordered scalar previously read from big-endian binary data or an index key.<br/></param>
+    /// <returns>The reconstructed signed duration.<br/></returns>
+    public static TimeSpan DecodeTimeSpan(ulong value)
+        => TimeSpan.FromTicks(unchecked((long)value) ^ long.MinValue);
+}

@@ -96,57 +96,6 @@ public sealed class LibraDexConditionEndCondition
     }
 
     /// <summary>
-    /// Replaces every named operand in this completed condition with a static value.<br/>
-    /// The original condition is not modified, so reusable condition descriptors can be assigned once and rebound for later operations.<br/>
-    /// </summary>
-    /// <param name="name">The operand name to replace.</param>
-    /// <param name="value">The static replacement value.</param>
-    /// <returns>A new completed condition with matching operands replaced.</returns>
-    public LibraDexConditionEndCondition WithValue(string name, object? value) => RewriteOperands(name, LibraDexConditionOperand.Value(value, name));
-
-    /// <summary>
-    /// Replaces every named operand in this completed condition with a deferred value factory.<br/>
-    /// The factory is evaluated during materialization so a reusable condition can bind to current request state without rebuilding the chain.<br/>
-    /// </summary>
-    /// <param name="name">The operand name to replace.</param>
-    /// <param name="valueFactory">Factory that returns the current operand value.</param>
-    /// <returns>A new completed condition with matching operands replaced.</returns>
-    public LibraDexConditionEndCondition WithDeferredValue(string name, Func<object?> valueFactory)
-        => RewriteOperands(name, LibraDexConditionOperand.Deferred(valueFactory, name));
-
-    /// <summary>
-    /// Replaces every named index selector in this completed condition with a static index name.<br/>
-    /// This supports Abraxas-style proppath aliasing in a LibraDex-shaped form where aliases bind to index names inside the condition's identity group.<br/>
-    /// </summary>
-    /// <param name="name">The selector name to replace.</param>
-    /// <param name="indexName">The replacement index name inside this condition's identity group.</param>
-    /// <returns>A new completed condition with matching selectors replaced.</returns>
-    public LibraDexConditionEndCondition WithIndex(string name, string indexName)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(name);
-        return Rewrite(leaf =>
-            string.Equals(leaf.IndexSelector.Name, name, StringComparison.Ordinal)
-                ? leaf.WithIndexSelector(LibraDexConditionIndexSelector.Static(indexName, name))
-                : leaf);
-    }
-
-    /// <summary>
-    /// Replaces every named index selector in this completed condition with a deferred index-name factory.<br/>
-    /// The factory is evaluated only when the condition is inspected or materialized, allowing one reusable condition to target different aligned indexes over time.<br/>
-    /// </summary>
-    /// <param name="name">The selector name to replace.</param>
-    /// <param name="indexNameFactory">Factory that returns the replacement index name inside this condition's identity group.</param>
-    /// <returns>A new completed condition with matching selectors replaced.</returns>
-    public LibraDexConditionEndCondition WithDeferredIndex(string name, Func<string> indexNameFactory)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(name);
-        return Rewrite(leaf =>
-            string.Equals(leaf.IndexSelector.Name, name, StringComparison.Ordinal)
-                ? leaf.WithIndexSelector(LibraDexConditionIndexSelector.Deferred(indexNameFactory, name))
-                : leaf);
-    }
-
-    /// <summary>
     /// Materializes this adopted condition with an explicit maintained-projection resolver.<br/>
     /// The normal index resolver supplies the logical indexes referenced by the condition, while the projection resolver may supply a physical projection index for leaves classified as projection-backed.<br/>
     /// This keeps projection execution explicit: LibraDex can use a maintained projection when the caller provides one, but it does not silently scan or invent projection storage.<br/>
@@ -164,12 +113,39 @@ public sealed class LibraDexConditionEndCondition
     }
 
     /// <summary>
+    /// Materializes this condition with both projection routing and a non-throwing execution-time index resolver for structural availability guards.<br/>
+    /// Unguarded leaves continue through <paramref name="resolveIndex"/> and therefore retain strict missing-index failures; only a guarded branch may use a null result to become empty.<br/>
+    /// </summary>
+    /// <param name="resolveIndex">Required resolver for ordinary condition leaves.</param>
+    /// <param name="resolveProjectionIndex">Resolver for maintained projection indexes.</param>
+    /// <param name="tryResolveIndex">Non-throwing resolver used only by `.Where(index).Exists.And...` guards.</param>
+    /// <returns>An executable identity criterion tree.</returns>
+    internal IIdentityCriterion MaterializeWithProjectionBridge(
+        Func<string, IIndex> resolveIndex,
+        Func<LibraDexConditionLeafDescriptor, LibraDexConditionLeafClassification, IIndex?> resolveProjectionIndex,
+        Func<string, IIndex?> tryResolveIndex)
+    {
+        ArgumentNullException.ThrowIfNull(resolveIndex);
+        ArgumentNullException.ThrowIfNull(resolveProjectionIndex);
+        ArgumentNullException.ThrowIfNull(tryResolveIndex);
+        return root.Materialize(Group, resolveIndex, resolveProjectionIndex, tryResolveIndex);
+    }
+
+    /// <summary>
     /// Materializes this adopted condition using a dictionary of opened indexes keyed by index name.<br/>
     /// This overload is useful for generated callers and tests that already have the identity-group index handles in a simple lookup table.<br/>
     /// </summary>
     /// <param name="indexes">The opened indexes keyed by LibraDex index name.</param>
     /// <returns>An identity criterion tree executable by the existing LibraDex criteria projection layer.</returns>
-    public IIdentityCriterion Materialize(IReadOnlyDictionary<string, IIndex> indexes) => Materialize(CreateRequiredIndexResolver(indexes));
+    public IIdentityCriterion Materialize(IReadOnlyDictionary<string, IIndex> indexes)
+    {
+        ArgumentNullException.ThrowIfNull(indexes);
+        return root.Materialize(
+            Group,
+            CreateRequiredIndexResolver(indexes),
+            resolveProjectionIndex: null,
+            CreateOptionalIndexResolver(indexes));
+    }
 
     /// <summary>
     /// Builds an identity projection for this condition after resolving its index names.<br/>
@@ -369,6 +345,9 @@ public sealed class LibraDexConditionEndCondition
     internal LibraDexConditionNode GetRoot()
         => root;
 
+    internal string GetStructureShape()
+        => root.GetStructureShape();
+
     /// <summary>
     /// Creates a resolver that requires every referenced condition index to exist in the supplied dictionary.<br/>
     /// This keeps dictionary-bound materialization overloads on the same error wording as target mutation helpers while avoiding repeated lookup lambdas.<br/>
@@ -402,15 +381,67 @@ public sealed class LibraDexConditionEndCondition
     }
 
     /// <summary>
-    /// Creates a new completed condition by rewriting every leaf descriptor in the tree.<br/>
-    /// This keeps reusable partial conditions immutable while supporting Abraxas-style late replacement of named values and deferred index selectors.<br/>
+    /// Creates a new completed condition by freezing every leaf descriptor in the tree.<br/>
+    /// Bookmark capture uses this internal path to snapshot deferred operand values without reopening the terminal fluent surface.<br/>
     /// </summary>
-    /// <param name="rewriteLeaf">Function that returns the replacement descriptor for each leaf.</param>
-    /// <returns>A completed condition with the rewritten descriptor tree.</returns>
-    internal LibraDexConditionEndCondition Rewrite(Func<LibraDexConditionLeafDescriptor, LibraDexConditionLeafDescriptor> rewriteLeaf)
+    /// <param name="freezeLeaf">Function that returns the frozen descriptor for each leaf.</param>
+    /// <returns>A completed condition with the frozen descriptor tree.</returns>
+    internal LibraDexConditionEndCondition FreezeLeaves(Func<LibraDexConditionLeafDescriptor, LibraDexConditionLeafDescriptor> freezeLeaf)
     {
-        ArgumentNullException.ThrowIfNull(rewriteLeaf);
-        return new LibraDexConditionEndCondition(Group, root.Rewrite(rewriteLeaf));
+        ArgumentNullException.ThrowIfNull(freezeLeaf);
+        return new LibraDexConditionEndCondition(Group, root.FreezeLeaves(freezeLeaf));
+    }
+
+    /// <summary>
+    /// Freezes every ordinary and guarded index selector in this completed immutable condition.<br/>
+    /// Bookmark capture uses this internal path so structural guards do not retain deferred selectors.<br/>
+    /// </summary>
+    /// <param name="freezeSelector">Function that returns each frozen selector.</param>
+    /// <returns>A completed condition with the same logical tree and frozen selectors.</returns>
+    internal LibraDexConditionEndCondition FreezeIndexSelectors(Func<LibraDexConditionIndexSelector, LibraDexConditionIndexSelector> freezeSelector)
+    {
+        ArgumentNullException.ThrowIfNull(freezeSelector);
+        return new LibraDexConditionEndCondition(Group, root.FreezeIndexSelectors(freezeSelector));
+    }
+
+    internal LibraDexConditionEndCondition FreezeForBookmark(
+        out bool hadDeferredSelectors,
+        out bool hadDeferredValues)
+    {
+        if (root.HasExternalNode())
+            throw new NotSupportedException("Detached bookmarks do not support caller-owned external condition delegates or external identity sources.");
+
+        bool deferredSelectors = false;
+        bool deferredValues = false;
+        LibraDexConditionEndCondition selectorFrozen = FreezeIndexSelectors(selector =>
+        {
+            deferredSelectors |= selector.IsDeferred;
+            return LibraDexConditionIndexSelector.Static(selector.GetIndexName(), selector.Name);
+        });
+        LibraDexConditionEndCondition frozen = selectorFrozen.FreezeLeaves(leaf =>
+        {
+            LibraDexConditionOperand[] operands = new LibraDexConditionOperand[leaf.Operands.Count];
+            for (int i = 0; i < operands.Length; i++)
+            {
+                LibraDexConditionOperand operand = leaf.Operands[i];
+                deferredValues |= operand.IsDeferred;
+                operands[i] = LibraDexConditionOperand.Value(operand.GetValue());
+            }
+
+            return new LibraDexConditionLeafDescriptor(
+                leaf.IndexSelector,
+                leaf.ValueKind,
+                leaf.Operator,
+                operands,
+                leaf.IgnoreCase,
+                leaf.Culture,
+                leaf.StringComparisonPolicy,
+                leaf.TextNormalization);
+        });
+
+        hadDeferredSelectors = deferredSelectors;
+        hadDeferredValues = deferredValues;
+        return frozen;
     }
 
     private LibraDexConditionEndCondition Compose(LibraDexConditionEndCondition other, bool useOr)
@@ -425,31 +456,6 @@ public sealed class LibraDexConditionEndCondition
         return useOr
             ? left.OR.Group(other).EndCondition
             : left.AND.Group(other).EndCondition;
-    }
-
-    private LibraDexConditionEndCondition RewriteOperands(string name, LibraDexConditionOperand replacement)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(name);
-        return Rewrite(leaf =>
-        {
-            LibraDexConditionOperand[] operands = new LibraDexConditionOperand[leaf.Operands.Count];
-            bool changed = false;
-            for (int i = 0; i < operands.Length; i++)
-            {
-                LibraDexConditionOperand operand = leaf.Operands[i];
-                if (string.Equals(operand.Name, name, StringComparison.Ordinal))
-                {
-                    operands[i] = replacement;
-                    changed = true;
-                }
-                else
-                {
-                    operands[i] = operand;
-                }
-            }
-
-            return changed ? leaf.WithOperands(operands) : leaf;
-        });
     }
 
     private static LibraDexConditionBridgePlanRow CreateBridgePlanRow(LibraDexConditionLeafClassification classification)
@@ -558,6 +564,17 @@ public sealed class LibraDexConditionEndCondition
 
     private static LibraDexConditionLeafClassification ClassifyPrimitiveLeaf(LibraDexConditionLeafDescriptor leaf)
     {
+        if (leaf.NumericTransform is LibraDexNumericTransformDescriptor transform)
+        {
+            return new LibraDexConditionLeafClassification(
+                leaf.IndexName,
+                leaf.ValueKind,
+                leaf.Operator,
+                LibraDexConditionExecutionClass.VisibleScanLike,
+                $"The {transform.Kind} transform is planner-visible but is currently executed as a compact numeric-key scan followed by a transformed comparison.",
+                LibraDexIndexProjectionKind.Exact);
+        }
+
         return leaf.Operator switch
         {
             LibraDexConditionOperatorKind.EqualTo or
@@ -570,7 +587,9 @@ public sealed class LibraDexConditionEndCondition
             LibraDexConditionOperatorKind.NotBetween or
             LibraDexConditionOperatorKind.InSet or
             LibraDexConditionOperatorKind.NotInSet or
-            LibraDexConditionOperatorKind.ScalarNullState => new LibraDexConditionLeafClassification(
+            LibraDexConditionOperatorKind.KeysExistAll or
+            LibraDexConditionOperatorKind.ScalarNullState or
+            LibraDexConditionOperatorKind.NullState => new LibraDexConditionLeafClassification(
                 leaf.IndexName,
                 leaf.ValueKind,
                 leaf.Operator,
@@ -931,6 +950,54 @@ public sealed class LibraDexConditionEndCondition
 
     private static LibraDexConditionLeafClassification ClassifyStringLeaf(LibraDexConditionLeafDescriptor leaf, IIndex index)
     {
+        if (leaf.TextNormalization == LibraDexTextNormalization.FormC)
+        {
+            if (leaf.IgnoreCase ||
+                !string.IsNullOrEmpty(leaf.Culture) ||
+                leaf.StringComparisonPolicy is not null)
+            {
+                return new LibraDexConditionLeafClassification(
+                    leaf.IndexName,
+                    leaf.ValueKind,
+                    leaf.Operator,
+                    LibraDexConditionExecutionClass.VisibleScanLike,
+                    "Canonical normalization combined with a managed case or culture policy is evaluated visibly over exact-index keys.",
+                    ProjectionKind: null);
+            }
+
+            return leaf.Operator switch
+            {
+                LibraDexConditionOperatorKind.EqualTo or
+                LibraDexConditionOperatorKind.NotEqualTo or
+                LibraDexConditionOperatorKind.GreaterThan or
+                LibraDexConditionOperatorKind.GreaterOrEqual or
+                LibraDexConditionOperatorKind.LessThan or
+                LibraDexConditionOperatorKind.LessOrEqual or
+                LibraDexConditionOperatorKind.Between or
+                LibraDexConditionOperatorKind.NotBetween or
+                LibraDexConditionOperatorKind.StartsWith or
+                LibraDexConditionOperatorKind.InSet or
+                LibraDexConditionOperatorKind.NotInSet => ClassifyTextProjection(
+                    leaf,
+                    index,
+                    LibraDexIndexProjectionKind.NormalizedText,
+                    "Canonical Form-C string comparison prefers the maintained normalized-text projection."),
+                LibraDexConditionOperatorKind.EndsWith => ClassifyTextProjection(
+                    leaf,
+                    index,
+                    LibraDexIndexProjectionKind.NormalizedText,
+                    LibraDexIndexByteDirection.Reversed,
+                    "Canonical Form-C suffix comparison prefers the maintained reversed normalized-text projection."),
+                _ => new LibraDexConditionLeafClassification(
+                    leaf.IndexName,
+                    leaf.ValueKind,
+                    leaf.Operator,
+                    LibraDexConditionExecutionClass.VisibleScanLike,
+                    "The selector applies canonical Form-C normalization before a string operation without a maintained ordered projection primitive.",
+                    ProjectionKind: null)
+            };
+        }
+
         return leaf.Operator switch
         {
             LibraDexConditionOperatorKind.EqualTo or
@@ -948,7 +1015,7 @@ public sealed class LibraDexConditionEndCondition
                 "Exact string comparison can use the selected index's ordinary ordered-key primitive.",
                 LibraDexIndexProjectionKind.Exact),
             LibraDexConditionOperatorKind.EqualTo or
-            LibraDexConditionOperatorKind.NotEqualTo or
+            LibraDexConditionOperatorKind.NotEqualTo => ClassifyNoCasePointTextProjection(leaf, index),
             LibraDexConditionOperatorKind.GreaterThan or
             LibraDexConditionOperatorKind.GreaterOrEqual or
             LibraDexConditionOperatorKind.LessThan or
@@ -966,6 +1033,9 @@ public sealed class LibraDexConditionEndCondition
             LibraDexConditionOperatorKind.EndsWith when leaf.IgnoreCase => ClassifyTextProjection(leaf, index, LibraDexIndexProjectionKind.FoldedText, LibraDexIndexByteDirection.Reversed, "Case-insensitive ends-with requires a maintained reversed folded-text projection."),
             LibraDexConditionOperatorKind.EndsWith => ClassifyTextProjection(leaf, index, LibraDexIndexProjectionKind.Exact, LibraDexIndexByteDirection.Reversed, "Case-sensitive ends-with prefers a maintained reversed exact-text projection."),
             LibraDexConditionOperatorKind.Contains or
+            LibraDexConditionOperatorKind.NotStartsWith or
+            LibraDexConditionOperatorKind.NotEndsWith or
+            LibraDexConditionOperatorKind.NotContains or
             LibraDexConditionOperatorKind.MatchesPattern or
             LibraDexConditionOperatorKind.NotMatchesPattern or
             LibraDexConditionOperatorKind.RegexMatches or
@@ -989,7 +1059,7 @@ public sealed class LibraDexConditionEndCondition
                 "String membership can use repeated exact-key lookups or a prepared exact-key set.",
                 LibraDexIndexProjectionKind.Exact),
             LibraDexConditionOperatorKind.InSet or
-            LibraDexConditionOperatorKind.NotInSet => ClassifyTextProjection(leaf, index, LibraDexIndexProjectionKind.SortKey, "Case-insensitive string membership prefers a maintained sort-key projection."),
+            LibraDexConditionOperatorKind.NotInSet => ClassifyNoCasePointTextProjection(leaf, index),
             _ => new LibraDexConditionLeafClassification(
                 leaf.IndexName,
                 leaf.ValueKind,
@@ -1007,6 +1077,35 @@ public sealed class LibraDexConditionEndCondition
         string reason)
     {
         return ClassifyTextProjection(leaf, index, projectionKind, LibraDexIndexByteDirection.Forward, reason);
+    }
+
+    /// <summary>
+    /// Classifies case-insensitive point equality or membership against the narrowest maintained text projection.<br/>
+    /// Folded text is preferred because it stores the point-lookup representation directly; a sort-key projection remains a valid compatibility fallback when folded text was not selected for the index.<br/>
+    /// </summary>
+    /// <param name="leaf">The string condition leaf being classified.<br/></param>
+    /// <param name="index">The selected logical index and its persisted projection shape.<br/></param>
+    /// <returns>A projection-backed classification when folded or sort-key storage exists; otherwise a visible scan-like classification.<br/></returns>
+    private static LibraDexConditionLeafClassification ClassifyNoCasePointTextProjection(
+        LibraDexConditionLeafDescriptor leaf,
+        IIndex index)
+    {
+        bool foldedCompatible = index.LogicalShape?.HasProjection(LibraDexIndexProjectionKind.FoldedText, LibraDexIndexByteDirection.Forward) == true &&
+            (index is not LibraDexStringScalar8Index stringIndex || stringIndex.HasCompatibleFoldedProjection(leaf.Culture));
+        if (foldedCompatible)
+        {
+            return ClassifyTextProjection(
+                leaf,
+                index,
+                LibraDexIndexProjectionKind.FoldedText,
+                "Case-insensitive point comparison uses the maintained folded-text projection.");
+        }
+
+        return ClassifyTextProjection(
+            leaf,
+            index,
+            LibraDexIndexProjectionKind.SortKey,
+            "Case-insensitive point comparison uses the maintained sort-key projection because folded text is not present.");
     }
 
     private static LibraDexConditionLeafClassification ClassifyTextProjection(

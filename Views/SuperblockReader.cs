@@ -35,6 +35,8 @@ internal readonly ref struct SuperblockReader
 
     public long CreatedUtcTicks => SuperblockLayout.ReadCreatedUtcTicks(bytes);
 
+    public long AllocationDirectoryOffset => SuperblockLayout.ReadAllocationDirectoryOffset(bytes);
+
     public string DevIdentity => SuperblockLayout.ReadDevIdentity(bytes);
 
     public string DevCustomText => SuperblockLayout.ReadDevCustomText(bytes);

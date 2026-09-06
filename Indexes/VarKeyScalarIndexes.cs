@@ -47,7 +47,7 @@ internal sealed partial class VarKeyScalar8Index : IDisposable
     private readonly VarKeyScalar8IndexHandle handle;
     private readonly bool ownsSession;
     private readonly object singleOperationFallbackSync = new();
-    private readonly ReaderWriterLockSlim singleOperationTopologySync = new(LockRecursionPolicy.SupportsRecursion);
+    private readonly ReaderWriterLockSlim singleOperationTopologySync;
     private bool disposed;
 
     internal VarKeyScalar8Index(
@@ -60,6 +60,7 @@ internal sealed partial class VarKeyScalar8Index : IDisposable
         this.session = session;
         this.handle = handle;
         this.ownsSession = ownsSession;
+        singleOperationTopologySync = session.GetVarKeyScalar8TopologyMutationSync(handle.RootRouterOffset);
         SlotIndex = slotIndex;
         Name = name;
     }
@@ -235,7 +236,7 @@ internal sealed partial class VarKeyScalar8Index : IDisposable
                         session.AbortVarKeyScalar8WriteContext(writeContext);
                         session.WaitForWriteContextShelfRelease(ex.ShelfOffset, CancellationToken.None);
                     }
-                    catch (Exception ex) when (ex is InvalidOperationException or InvalidDataException)
+                    catch (LibraDexWriteContextVarKeyScalar8TopologyFallbackException)
                     {
                         session.AbortVarKeyScalar8WriteContext(writeContext);
                         break;
@@ -250,15 +251,18 @@ internal sealed partial class VarKeyScalar8Index : IDisposable
 
         if (!session.IsDurabilityBatchActive)
         {
+            VarKeyScalar8InsertOutcome fallbackOutcome;
             singleOperationTopologySync.EnterWriteLock();
             try
             {
-                return InsertEncodedInCurrentScope(encodedKey, encodedIdentity, allowDuplicateKeys);
+                fallbackOutcome = InsertEncodedInCurrentScope(encodedKey, encodedIdentity, allowDuplicateKeys);
             }
             finally
             {
                 singleOperationTopologySync.ExitWriteLock();
             }
+
+            return fallbackOutcome;
         }
 
         lock (singleOperationFallbackSync)
@@ -298,7 +302,8 @@ internal sealed partial class VarKeyScalar8Index : IDisposable
             encodedKey,
             encodedIdentity,
             allowDuplicateKeys,
-            maxRouterHops: LibraDexFileSession.DefaultVarKeyScalar8MaxRouterHops);
+            maxRouterHops: LibraDexFileSession.DefaultVarKeyScalar8MaxRouterHops,
+            requestedRouteCount: handle.OptimizerRouteFanout);
         return VarKeyScalar8InsertOutcome.FromStorage(result, createdInitialShelfRoute);
     }
 
@@ -319,6 +324,7 @@ internal sealed partial class VarKeyScalar8Index : IDisposable
     {
         ThrowIfDisposed();
         ValidateKeyLength(encodedKey, handle.MaxKeyLength);
+        session.EnterVarKeyScalar8TopologyReadForWriteContext(writeContext, handle.RootRouterOffset);
         VarKeyScalar8RoutedInsertResult result = session.InsertWalkedRoutedVarKeyScalar8NoSplitForWriteContext(
             writeContext,
             handle.RootRouterOffset,
@@ -531,6 +537,7 @@ internal sealed partial class VarKeyScalar8Index : IDisposable
     {
         ThrowIfDisposed();
         ValidateKeyLength(encodedKey, handle.MaxKeyLength);
+        session.EnterVarKeyScalar8TopologyReadForWriteContext(writeContext, handle.RootRouterOffset);
         return session.DeleteVarKeyScalar8ExactTupleForWriteContext(
             writeContext,
             handle.RootRouterOffset,
@@ -662,7 +669,10 @@ internal sealed partial class VarKeyScalar8Index : IDisposable
             decodeLogicalKeys: true);
     }
 
-    internal VarKeyScalar8RangeReader OpenEncodedRangeReader(ReadOnlySpan<byte> lowerKey, ReadOnlySpan<byte> upperKey)
+    internal VarKeyScalar8RangeReader OpenEncodedRangeReader(
+        ReadOnlySpan<byte> lowerKey,
+        ReadOnlySpan<byte> upperKey,
+        QueryDirection direction = QueryDirection.Ascending)
     {
         ThrowIfDisposed();
         return session.OpenVarKeyScalar8RangeReader(
@@ -670,7 +680,8 @@ internal sealed partial class VarKeyScalar8Index : IDisposable
             handle.MaxKeyLength,
             lowerKey,
             upperKey,
-            decodeLogicalKeys: false);
+            decodeLogicalKeys: false,
+            direction: direction);
     }
 
     /// <summary>
@@ -1489,7 +1500,8 @@ internal sealed class VarKeyScalar8Batch : IDisposable
             encodedKey,
             encodedIdentity,
             allowDuplicateKeys,
-            maxRouterHops: LibraDexFileSession.DefaultVarKeyScalar8MaxRouterHops);
+            maxRouterHops: LibraDexFileSession.DefaultVarKeyScalar8MaxRouterHops,
+            requestedRouteCount: index.Handle.OptimizerRouteFanout);
 
         VarKeyScalar8InsertOutcome publicResult = VarKeyScalar8InsertOutcome.FromStorage(result, createdInitialShelfRoute);
         Count(publicResult);

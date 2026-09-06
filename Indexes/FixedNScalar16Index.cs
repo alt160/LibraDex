@@ -153,7 +153,14 @@ internal sealed class FixedNScalar16Index : IDisposable
         bool deleted;
         if (handle.IsRouted)
         {
-            deleted = session.DeleteRoutedFixedNScalar16ExactForWriteContext(writeContext, handle, key, encodedIdentity);
+            try
+            {
+                deleted = session.DeleteRoutedFixedNScalar16ExactForWriteContext(writeContext, handle, key, encodedIdentity);
+            }
+            catch (InvalidOperationException)
+            {
+                return (false, false);
+            }
         }
         else
         {
@@ -496,6 +503,17 @@ internal sealed class FixedNScalar16Index : IDisposable
     {
         ThrowIfDisposed();
         return session.CountScalar16KeyStateIdentities(slotIndex, KeyStateRoute.Null);
+    }
+
+    /// <summary>
+    /// Streams every live ordinary tuple through the shape-native fixed-N reader.<br/>
+    /// Keys and scalar-16 identities are returned as owned sortable bytes for facade-level decoding.<br/>
+    /// </summary>
+    /// <returns>Authoritative ordinary tuples in physical key/identity order.<br/></returns>
+    internal IEnumerable<FixedNScalar16Tuple> IterateTuples()
+    {
+        ThrowIfDisposed();
+        return session.IterateFixedNScalar16Tuples(handle);
     }
 
     /// <summary>

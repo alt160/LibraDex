@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -6,53 +7,80 @@ using System.Threading;
 
 namespace LibraDex;
 
+internal interface ILibraDexTextProjectionNormalizationProvider
+{
+    LibraDexTextNormalization TextNormalization { get; }
+}
+
 /// <summary>
 /// Provides the first physical string-key facade over routed varlen-key/scalar-identity indexes.<br/>
 /// The exact index stores UTF-8 encoded strings, while optional folded and sort-key projections store maintained alternate keys for case-insensitive condition branches.<br/>
 /// This type is intentionally narrow: it proves maintained projection storage and condition projection resolution before widening string profiles to reversed projections, persisted projection metadata, or variable-width identity families.<br/>
 /// </summary>
-public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecutor, IIdentityPrimitiveMutator, IIdentityPrimitiveTupleExecutor, IIdentityPrimitiveTupleStreamer, IIdentityExactTupleMutator, ILibraDexStringComparisonPolicyProvider, IDisposable
+public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecutor, IIdentityPrimitiveExecutor<ulong>, IIdentityPrimitivePartitioner<ulong>, IIdentityPrimitiveMutator, IIdentityPrimitiveTupleExecutor, IIdentityPrimitiveTupleStreamer, IIdentityExactTupleMutator, ILibraDexIdentityInverseLookup, ILibraDexStringComparisonPolicyProvider, IDisposable
 {
-    private readonly Catalog? catalog;
+    private readonly Catalog catalog;
     private readonly VarKeyScalar8Index exact;
     private readonly LibraDexStringScalar8ProjectionIndex? exactReversed;
     private readonly LibraDexStringScalar8ProjectionIndex? folded;
-    private readonly LibraDexStringScalar8SortKeyProjectionIndex? sortKey;
+    private readonly LibraDexStringSortKeyProjection[] sortKeyProfiles;
     private readonly LibraDexStringScalar8ProjectionIndex? foldedReversed;
+    private readonly LibraDexStringScalar8ProjectionIndex? normalized;
+    private readonly LibraDexStringScalar8ProjectionIndex? normalizedReversed;
     private readonly CultureInfo foldedCulture;
-    private readonly CultureInfo sortKeyCulture;
+    private readonly LibraDexTextNormalization foldedNormalization;
     private readonly LibraDexStringComparisonPolicy? stringComparisonPolicy;
     [ThreadStatic]
     private static LibraDexStringScalar8ThreadInsertDiagnostics? threadInsertDiagnostics;
     private bool disposed;
 
     internal LibraDexStringScalar8Index(
-        Catalog? catalog,
+        Catalog catalog,
         string group,
         string name,
         VarKeyScalar8Index exact,
         VarKeyScalar8Index? exactReversed,
         VarKeyScalar8Index? folded,
-        VarKeyScalar8Index? sortKey,
+        IReadOnlyList<LibraDexStringSortKeyProjectionBinding> sortKeys,
         VarKeyScalar8Index? foldedReversed,
+        VarKeyScalar8Index? normalized,
+        VarKeyScalar8Index? normalizedReversed,
         string? foldedCulture,
-        string? sortKeyCulture,
-        LibraDexStringComparisonPolicy? stringComparisonPolicy = null)
+        LibraDexTextNormalization foldedNormalization,
+        LibraDexStringComparisonPolicy? stringComparisonPolicy = null,
+        IdentityLookupMode identityLookupMode = IdentityLookupMode.Explicit)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(group);
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
-        this.catalog = catalog;
+        this.catalog = catalog ?? throw new ArgumentNullException(nameof(catalog), "A public string index must belong to an opened catalog.");
+        LibraDexIdentityLookup.ValidateMode(identityLookupMode);
         Group = group;
         Name = name;
         this.exact = exact ?? throw new ArgumentNullException(nameof(exact));
         this.foldedCulture = ResolveCulture(foldedCulture);
-        this.sortKeyCulture = ResolveCulture(sortKeyCulture);
+        this.foldedNormalization = foldedNormalization;
         this.stringComparisonPolicy = stringComparisonPolicy;
-        this.exactReversed = exactReversed is null ? null : new LibraDexStringScalar8ProjectionIndex(group, $"{name}#exact-rev", exactReversed, static value => value);
-        this.folded = folded is null ? null : new LibraDexStringScalar8ProjectionIndex(group, $"{name}#folded", folded, value => Fold(value, this.foldedCulture));
-        this.sortKey = sortKey is null ? null : new LibraDexStringScalar8SortKeyProjectionIndex(group, $"{name}#sortkey", sortKey);
-        this.foldedReversed = foldedReversed is null ? null : new LibraDexStringScalar8ProjectionIndex(group, $"{name}#folded-rev", foldedReversed, static value => value);
+        this.exactReversed = exactReversed is null ? null : new LibraDexStringScalar8ProjectionIndex(catalog, group, $"{name}#exact-rev", exactReversed, static value => value, LibraDexTextNormalization.None);
+        this.folded = folded is null ? null : new LibraDexStringScalar8ProjectionIndex(catalog, group, $"{name}#folded", folded, value => Fold(value, this.foldedCulture, this.foldedNormalization), foldedNormalization);
+        this.sortKeyProfiles = CreateSortKeyProjections(catalog, group, sortKeys);
+        this.foldedReversed = foldedReversed is null ? null : new LibraDexStringScalar8ProjectionIndex(catalog, group, $"{name}#folded-rev", foldedReversed, static value => value, foldedNormalization);
+        this.normalized = normalized is null ? null : new LibraDexStringScalar8ProjectionIndex(catalog, group, $"{name}#normalized", normalized, static value => NormalizeCanonical(value), LibraDexTextNormalization.FormC);
+        this.normalizedReversed = normalizedReversed is null ? null : new LibraDexStringScalar8ProjectionIndex(catalog, group, $"{name}#normalized-rev", normalizedReversed, static value => value, LibraDexTextNormalization.FormC);
+        catalog.ConfigureIdentityLookup(this, identityLookupMode);
     }
+
+    private LibraDexStringScalar8SortKeyProjectionIndex? PrimarySortKey =>
+        sortKeyProfiles.Length == 0 ? null : sortKeyProfiles[0].Index;
+
+    private CultureInfo PrimarySortKeyCulture =>
+        sortKeyProfiles.Length == 0 ? CultureInfo.InvariantCulture : sortKeyProfiles[0].Culture;
+
+    private CompareOptions PrimarySortKeyCompareOptions =>
+        sortKeyProfiles.Length == 0 ? CompareOptions.IgnoreCase : sortKeyProfiles[0].CompareOptions;
+
+    private LibraDexStringScalar8SortKeyProjectionIndex? sortKey => PrimarySortKey;
+
+    private CultureInfo sortKeyCulture => PrimarySortKeyCulture;
 
     /// <summary>
     /// Gets the logical string index name inside the identity group.<br/>
@@ -63,6 +91,11 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
     /// Gets the identity group shared by the exact and projection indexes.<br/>
     /// </summary>
     public string Group { get; }
+
+    /// <summary>
+    /// Gets the open catalog that owns this logical string index and its maintained projections.<br/>
+    /// </summary>
+    public Catalog Catalog => catalog;
 
     /// <summary>
     /// Gets the developer-facing key type accepted by this facade.<br/>
@@ -108,6 +141,69 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
     public LibraDexStringComparisonPolicy? StringComparisonPolicy => stringComparisonPolicy;
 
     /// <summary>
+    /// Gets whether this opened facade can satisfy one folded-text operand culture with its maintained forward projection.<br/>
+    /// The planner uses this before preferring folded point lookup over a compatible sort-key fallback.<br/>
+    /// </summary>
+    /// <param name="cultureName">The condition culture name, or null/empty for invariant culture.<br/></param>
+    /// <returns><see langword="true"/> when folded text is maintained with the same culture.<br/></returns>
+    internal bool HasCompatibleFoldedProjection(string? cultureName)
+        => folded is not null && CulturesMatch(ResolveCulture(cultureName), foldedCulture);
+
+    /// <summary>
+    /// Attempts to expose a lazy identity sequence in one exact maintained culture-aware sort-key order.<br/>
+    /// Null and empty key-state identities are merged with ordinary projected rows so the sequence covers the logical string index's complete population without decoding source strings or rebuilding a temporary order.<br/>
+    /// Culture and comparison options must match a configured profile exactly; LibraDex never substitutes a nearby collation.<br/>
+    /// </summary>
+    /// <param name="cultureName">The requested culture name, or null/empty for invariant culture.<br/></param>
+    /// <param name="compareOptions">The exact comparison options belonging to the requested profile.<br/></param>
+    /// <param name="direction">The requested traversal direction over sort-key bytes.<br/></param>
+    /// <param name="identities">Receives a lazy, independently enumerable identity sequence when the profile exists.<br/></param>
+    /// <returns><see langword="true"/> when this logical index owns the exact requested profile; otherwise <see langword="false"/>.<br/></returns>
+    public bool TryIterateSortKeyIdentities(
+        string? cultureName,
+        CompareOptions compareOptions,
+        QueryDirection direction,
+        [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out IEnumerable<ulong>? identities)
+    {
+        ThrowIfDisposed();
+        CultureInfo culture = ResolveCulture(cultureName);
+        for (int i = 0; i < sortKeyProfiles.Length; i++)
+        {
+            LibraDexStringSortKeyProjection profile = sortKeyProfiles[i];
+            if (profile.CompareOptions == compareOptions && CulturesMatch(profile.Culture, culture))
+            {
+                identities = IterateSortKeyIdentities(profile, direction);
+                return true;
+            }
+        }
+
+        identities = null;
+        return false;
+    }
+
+    /// <summary>
+    /// Gets allocation-free exact-string key-membership operations for this opened index.<br/>
+    /// Null and empty strings use their dedicated identity routes; ordinary strings use exact UTF-8 point lookup.<br/>
+    /// </summary>
+    public LibraDexIndexKeys<string, ulong> Keys => new(this);
+
+    /// <summary>
+    /// Gets allocation-conscious UInt64 identity-membership operations for this opened string index.<br/>
+    /// A configured inverse is preferred; otherwise batch checks walk the exact identity stream once with bounded scratch.<br/>
+    /// </summary>
+    public LibraDexIndexIdentities<string, ulong> Identities => new(this);
+
+    /// <summary>
+    /// Gets exact string-key/UInt64-identity association checks for this opened index.<br/>
+    /// </summary>
+    public LibraDexIndexEntries<string, ulong> Entries => new(this);
+
+    /// <summary>
+    /// Gets runtime identity-to-key lookup controls for this opened catalog index.<br/>
+    /// </summary>
+    public LibraDexIdentityLookup IdentityLookup => new(this);
+
+    /// <summary>
     /// Inserts one exact string key and scalar identity, also maintaining the folded-text and sort-key projections when present for non-empty text.<br/>
     /// Null and empty string keys are written to metadata-backed identity routes so they remain compact and fast to enumerate before ordinary non-empty string values.<br/>
     /// Non-empty exact and projection keys are written in the same call so condition projection retrieval does not require callers to manually populate companion indexes.<br/>
@@ -127,7 +223,7 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
 
         if (TryClassifyStringKeyState(key, out NullKey keyState))
         {
-            return InsertStringKeyStateIdentity(keyState, identity);
+            return RecordInsert(InsertStringKeyStateIdentity(keyState, identity));
         }
 
         byte[] exactKey = Encode(key);
@@ -142,21 +238,34 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
             _ = exactReversed.InsertProjected(Reverse(key), identity);
         }
 
-        if (sortKey is not null)
-        {
-            _ = sortKey.InsertProjected(CreateSortKey(key, sortKeyCulture), identity);
-        }
+        InsertSortKeyProjections(key, identity);
 
         if (foldedReversed is not null)
         {
-            _ = foldedReversed.InsertProjected(Reverse(Fold(key, foldedCulture)), identity);
+            _ = foldedReversed.InsertProjected(Reverse(Fold(key, foldedCulture, foldedNormalization)), identity);
         }
 
-        return new LibraDexGenericInsertResult(
+        if (normalized is not null)
+        {
+            _ = normalized.InsertProjected(key, identity);
+        }
+
+        if (normalizedReversed is not null)
+        {
+            _ = normalizedReversed.InsertProjected(Reverse(NormalizeCanonical(key)), identity);
+        }
+
+        return RecordInsert(new LibraDexGenericInsertResult(
             exactResult.Inserted,
             exactResult.CreatedInitialShelfRoute,
             default,
-            LibraDexOperationDiagnostics.FromDataKernel(exactResult.Commit));
+            LibraDexOperationDiagnostics.FromDataKernel(exactResult.Commit)));
+    }
+
+    private LibraDexGenericInsertResult RecordInsert(LibraDexGenericInsertResult result)
+    {
+        catalog.Stats.RecordInsert(result);
+        return result;
     }
 
     /// <summary>
@@ -168,15 +277,114 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
     /// <exception cref="ObjectDisposedException">Thrown when this index has been disposed.<br/></exception>
     /// <exception cref="InvalidOperationException">Thrown when a session durability batch or identity-group batch is active.<br/></exception>
     public LibraDexStringScalar8ConcurrentBatch BeginConcurrentBatch()
+        => BeginConcurrentBatch(options: null);
+
+    /// <summary>
+    /// Starts a concurrent batch for this string/scalar8 index and bounds how long one private `VS8` writer context may retain topology-read ownership.<br/>
+    /// <see cref="LibraDexConcurrencyOptions.MaxActionItems"/> controls the maximum number of successful logical writer-context mutations staged before the batch cooperatively publishes and opens a fresh context.<br/>
+    /// Bounded publication keeps rare topology-changing fallbacks from waiting behind an arbitrarily long producer while retaining shelf-local batching for ordinary inserts, deletes, and rekeys.<br/>
+    /// This is not a transaction; cooperative publications and topology fallbacks may make earlier mutations visible before the final <see cref="LibraDexStringScalar8ConcurrentBatch.Publish"/> call.<br/>
+    /// </summary>
+    /// <param name="options">Optional concurrency options; null uses queued-writer defaults, including a 1,000-mutation context bound.<br/></param>
+    /// <returns>A string concurrent batch facade for this index.<br/></returns>
+    /// <exception cref="ObjectDisposedException">Thrown when this index has been disposed.<br/></exception>
+    /// <exception cref="NotSupportedException">Thrown when a concurrency mode other than <see cref="LibraDexConcurrencyMode.QueuedWriter"/> is requested.<br/></exception>
+    /// <exception cref="ArgumentOutOfRangeException">Thrown when <see cref="LibraDexConcurrencyOptions.MaxActionItems"/> is not positive.<br/></exception>
+    /// <exception cref="InvalidOperationException">Thrown when a session durability batch or identity-group batch is active.<br/></exception>
+    public LibraDexStringScalar8ConcurrentBatch BeginConcurrentBatch(LibraDexConcurrencyOptions? options)
     {
         ThrowIfDisposed();
+        LibraDexConcurrencyMode mode = options?.Mode ?? LibraDexConcurrencyMode.QueuedWriter;
+        if (mode != LibraDexConcurrencyMode.QueuedWriter)
+        {
+            throw new NotSupportedException($"The string concurrent batch requires {nameof(LibraDexConcurrencyMode.QueuedWriter)} mode, not {mode}.");
+        }
+
+        int maximumActionItems = options?.MaxActionItems ?? LibraDexConcurrencyOptions.QueuedWriter.MaxActionItems;
+        if (maximumActionItems <= 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(options),
+                maximumActionItems,
+                $"{nameof(LibraDexConcurrencyOptions.MaxActionItems)} must be greater than zero.");
+        }
+
         if (catalog?.TryGetActiveIdentityGroupBatch(Group, out _) == true)
         {
             throw new InvalidOperationException("The string concurrent batch cannot start while an identity-group batch is active.");
         }
 
         ThrowIfSessionDurabilityBatchActiveForImmediateMutation();
-        return new LibraDexStringScalar8ConcurrentBatch(this);
+        return new LibraDexStringScalar8ConcurrentBatch(this, maximumActionItems);
+    }
+
+    /// <summary>
+    /// Opens this logical string index's exact/projection-aware concurrent batch through LibraDex's non-generic runtime bridge.<br/>
+    /// String null and empty routes remain supported because the typed string batch already owns those logical key states.<br/>
+    /// </summary>
+    /// <param name="batch">Receives the opened runtime concurrent insert batch.<br/></param>
+    /// <returns><see langword="true"/> for this supported VS8/scalar8 logical string shape.<br/></returns>
+    public bool TryBeginConcurrentInsertBatch(out ILibraDexConcurrentInsertBatch? batch)
+    {
+        batch = new RuntimeConcurrentInsertBatch(BeginConcurrentBatch());
+        return true;
+    }
+
+    /// <summary>
+    /// Adapts one logical string concurrent batch to metadata-driven runtime values without reflection.<br/>
+    /// </summary>
+    private sealed class RuntimeConcurrentInsertBatch : ILibraDexConcurrentInsertBatch
+    {
+        private LibraDexStringScalar8ConcurrentBatch? batch;
+
+        /// <summary>
+        /// Captures the already opened typed string batch.<br/>
+        /// </summary>
+        /// <param name="batch">Typed string batch receiving validated values.<br/></param>
+        internal RuntimeConcurrentInsertBatch(LibraDexStringScalar8ConcurrentBatch batch)
+        {
+            this.batch = batch;
+        }
+
+        /// <inheritdoc/>
+        public LibraDexGenericInsertResult Insert(object? key, object identity)
+            => RequireActive().Insert(
+                RequireStringKey(key, nameof(key)),
+                RequireScalar8Identity(identity, nameof(identity)));
+
+        /// <inheritdoc/>
+        public LibraDexConcurrentBatchPublishResult Publish()
+        {
+            LibraDexStringScalar8ConcurrentBatch current = RequireActive();
+            LibraDexConcurrentBatchPublishResult result = current.Publish();
+            batch = null;
+            current.Dispose();
+            return result;
+        }
+
+        /// <inheritdoc/>
+        public void Abort()
+        {
+            LibraDexStringScalar8ConcurrentBatch current = RequireActive();
+            current.Abort();
+            batch = null;
+            current.Dispose();
+        }
+
+        /// <inheritdoc/>
+        public void Dispose()
+        {
+            LibraDexStringScalar8ConcurrentBatch? current = batch;
+            batch = null;
+            current?.Dispose();
+        }
+
+        /// <summary>
+        /// Requires the one live typed string batch before forwarding an operation.<br/>
+        /// </summary>
+        /// <returns>The active typed string batch.<br/></returns>
+        private LibraDexStringScalar8ConcurrentBatch RequireActive()
+            => batch ?? throw new InvalidOperationException("The runtime string concurrent insert batch has already completed.");
     }
 
     /// <summary>
@@ -202,18 +410,23 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         }
 
         byte[] exactKey = Encode(key);
-        byte[]? foldedKey = folded is null ? null : Encode(Fold(key, foldedCulture));
+        byte[]? foldedKey = folded is null ? null : Encode(Fold(key, foldedCulture, foldedNormalization));
         byte[]? exactReversedKey = exactReversed is null ? null : Encode(Reverse(key));
-        byte[]? sortKeyBytes = sortKey is null ? null : CreateSortKey(key, sortKeyCulture);
-        byte[]? foldedReversedKey = foldedReversed is null ? null : Encode(Reverse(Fold(key, foldedCulture)));
+        byte[][] sortKeyBytes = CreatePreparedSortKeyBytes(key!);
+        byte[]? foldedReversedKey = foldedReversed is null ? null : Encode(Reverse(Fold(key, foldedCulture, foldedNormalization)));
+        byte[]? normalizedKey = normalized is null ? null : Encode(NormalizeCanonical(key));
+        byte[]? normalizedReversedKey = normalizedReversed is null ? null : Encode(Reverse(NormalizeCanonical(key)));
         return new LibraDexStringScalar8PreparedKey(
             key,
             null,
             exactKey,
             foldedKey,
             exactReversedKey,
-            sortKeyBytes,
-            foldedReversedKey);
+            sortKeyBytes.Length == 0 ? null : sortKeyBytes[0],
+            foldedReversedKey,
+            normalizedKey,
+            normalizedReversedKey,
+            sortKeyBytes.Length <= 1 ? null : sortKeyBytes[1..]);
     }
 
     /// <summary>
@@ -235,7 +448,7 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
 
         if (prepared.KeyState is NullKey keyState)
         {
-            return InsertStringKeyStateIdentity(keyState, identity);
+            return RecordInsert(InsertStringKeyStateIdentity(keyState, identity));
         }
 
         VarKeyScalar8InsertOutcome exactResult = exact.InsertEncoded(prepared.ExactEncodedKey, identity);
@@ -249,21 +462,28 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
             _ = exactReversed.InsertEncoded(RequirePreparedProjection(prepared.ExactReversedEncodedKey, "exact-reversed"), identity);
         }
 
-        if (sortKey is not null)
-        {
-            _ = sortKey.InsertProjected(RequirePreparedProjection(prepared.SortKeyBytes, "sort-key"), identity);
-        }
+        InsertPreparedSortKeyProjections(prepared, identity, inCurrentScope: false, scratch: null);
 
         if (foldedReversed is not null)
         {
             _ = foldedReversed.InsertEncoded(RequirePreparedProjection(prepared.FoldedReversedEncodedKey, "folded-reversed"), identity);
         }
 
-        return new LibraDexGenericInsertResult(
+        if (normalized is not null)
+        {
+            _ = normalized.InsertEncoded(RequirePreparedProjection(prepared.NormalizedEncodedKey, "normalized"), identity);
+        }
+
+        if (normalizedReversed is not null)
+        {
+            _ = normalizedReversed.InsertEncoded(RequirePreparedProjection(prepared.NormalizedReversedEncodedKey, "normalized-reversed"), identity);
+        }
+
+        return RecordInsert(new LibraDexGenericInsertResult(
             exactResult.Inserted,
             exactResult.CreatedInitialShelfRoute,
             default,
-            LibraDexOperationDiagnostics.FromDataKernel(exactResult.Commit));
+            LibraDexOperationDiagnostics.FromDataKernel(exactResult.Commit)));
     }
 
     internal LibraDexGenericInsertResult InsertInCurrentScope(string? key, ulong identity)
@@ -286,7 +506,7 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         RecordThreadInsertOutcome(Name, "exact", exactResult);
         if (folded is not null)
         {
-            if (scratch is not null && IsInvariantCulture(foldedCulture))
+            if (scratch is not null && IsInvariantCulture(foldedCulture) && foldedNormalization == LibraDexTextNormalization.None)
             {
                 _ = folded.InsertEncodedInCurrentScope(scratch.EncodeInvariantFoldedString(key), identity);
             }
@@ -301,14 +521,21 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
             _ = exactReversed.InsertProjectedInCurrentScope(Reverse(key), identity, scratch);
         }
 
-        if (sortKey is not null)
-        {
-            _ = sortKey.InsertProjectedInCurrentScope(CreateSortKey(key, sortKeyCulture), identity, scratch);
-        }
+        InsertSortKeyProjectionsInCurrentScope(key, identity, scratch);
 
         if (foldedReversed is not null)
         {
-            _ = foldedReversed.InsertProjectedInCurrentScope(Reverse(Fold(key, foldedCulture)), identity, scratch);
+            _ = foldedReversed.InsertProjectedInCurrentScope(Reverse(Fold(key, foldedCulture, foldedNormalization)), identity, scratch);
+        }
+
+        if (normalized is not null)
+        {
+            _ = normalized.InsertProjectedInCurrentScope(key, identity, scratch);
+        }
+
+        if (normalizedReversed is not null)
+        {
+            _ = normalizedReversed.InsertProjectedInCurrentScope(Reverse(NormalizeCanonical(key)), identity, scratch);
         }
 
         return new LibraDexGenericInsertResult(
@@ -338,14 +565,21 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
             _ = exactReversed.InsertEncodedInCurrentScope(RequirePreparedProjection(prepared.ExactReversedEncodedKey, "exact-reversed"), identity);
         }
 
-        if (sortKey is not null)
-        {
-            _ = sortKey.InsertProjectedInCurrentScope(RequirePreparedProjection(prepared.SortKeyBytes, "sort-key"), identity, scratch);
-        }
+        InsertPreparedSortKeyProjections(prepared, identity, inCurrentScope: true, scratch: scratch);
 
         if (foldedReversed is not null)
         {
             _ = foldedReversed.InsertEncodedInCurrentScope(RequirePreparedProjection(prepared.FoldedReversedEncodedKey, "folded-reversed"), identity);
+        }
+
+        if (normalized is not null)
+        {
+            _ = normalized.InsertEncodedInCurrentScope(RequirePreparedProjection(prepared.NormalizedEncodedKey, "normalized"), identity);
+        }
+
+        if (normalizedReversed is not null)
+        {
+            _ = normalizedReversed.InsertEncodedInCurrentScope(RequirePreparedProjection(prepared.NormalizedReversedEncodedKey, "normalized-reversed"), identity);
         }
 
         return new LibraDexGenericInsertResult(
@@ -412,7 +646,10 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
     /// <returns><see langword="true"/> when the exact tuple was removed.</returns>
     public bool Delete(object? key, object identity)
     {
-        return DeleteExactTuple(RequireStringKey(key, nameof(key)), RequireScalar8Identity(identity, nameof(identity)));
+        bool deleted = DeleteExactTuple(RequireStringKey(key, nameof(key)), RequireScalar8Identity(identity, nameof(identity)));
+        if (deleted)
+            catalog.Stats.RecordDelete();
+        return deleted;
     }
 
     /// <summary>
@@ -449,7 +686,10 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
             }
         }
 
-        return DeleteExactTuple(typedOldKey, typedIdentity);
+        bool changed = DeleteExactTuple(typedOldKey, typedIdentity);
+        if (changed)
+            catalog.Stats.RecordRekey();
+        return changed;
     }
 
     /// <summary>
@@ -550,7 +790,9 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
             LibraDexIndexProjectionKind.Exact when descriptor.Operator == LibraDexConditionOperatorKind.EndsWith => exactReversed,
             LibraDexIndexProjectionKind.FoldedText when descriptor.Operator == LibraDexConditionOperatorKind.EndsWith && CulturesMatch(requestedCulture, foldedCulture) => foldedReversed,
             LibraDexIndexProjectionKind.FoldedText when CulturesMatch(requestedCulture, foldedCulture) => folded,
-            LibraDexIndexProjectionKind.SortKey when CulturesMatch(requestedCulture, sortKeyCulture) => sortKey,
+            LibraDexIndexProjectionKind.SortKey => FindSortKeyProjection(requestedCulture, ResolveRequestedSortKeyCompareOptions(descriptor)),
+            LibraDexIndexProjectionKind.NormalizedText when descriptor.Operator == LibraDexConditionOperatorKind.EndsWith => normalizedReversed,
+            LibraDexIndexProjectionKind.NormalizedText => normalized,
             _ => null
         };
     }
@@ -614,15 +856,258 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
     }
 
     /// <summary>
-    /// Streams folded string grouping tuples in their maintained binary key form.<br/>
-    /// Null and empty exact routes retain their own sentinels; ordinary values come directly from the Folded subindex without managed string conversion.<br/>
+    /// Materializes exact encoded string keys once per distinct or duplicate-key result without allocating a key or string for every scanned tuple.<br/>
+    /// One pooled comparison buffer follows the current sorted key run; result arrays are allocated only when a key is emitted.<br/>
+    /// </summary>
+    /// <param name="duplicatesOnly"><see langword="true"/> to emit only keys associated with multiple distinct identities; otherwise emit every distinct key.<br/></param>
+    /// <returns>Caller-owned encoded string-key buffers in exact index traversal order.<br/></returns>
+    internal IReadOnlyList<byte[]?> GetRawKeys(bool duplicatesOnly)
+    {
+        ThrowIfDisposed();
+        List<byte[]?> results = new();
+        AddKeyState(NullKey.Null, EncodedNullKey);
+        AddKeyState(NullKey.Empty, EncodedEmptyKey);
+
+        byte[] previous = ArrayPool<byte>.Shared.Rent(exact.Handle.MaxKeyLength);
+        try
+        {
+            int previousLength = 0;
+            ulong previousIdentity = 0;
+            bool hasPrevious = false;
+            bool duplicateEmitted = false;
+            using VarKeyScalar8RangeReader reader = exact.OpenEncodedRangeReader(
+                FullLowerBound(),
+                FullUpperBound(exact.Handle.MaxKeyLength));
+            while (reader.MoveNext())
+            {
+                ReadOnlySpan<byte> key = reader.CurrentKey;
+                if (!hasPrevious || !key.SequenceEqual(previous.AsSpan(0, previousLength)))
+                {
+                    key.CopyTo(previous);
+                    previousLength = key.Length;
+                    previousIdentity = reader.CurrentEncodedIdentity;
+                    hasPrevious = true;
+                    duplicateEmitted = false;
+                    if (!duplicatesOnly)
+                        results.Add(key.ToArray());
+                    continue;
+                }
+
+                if (duplicatesOnly &&
+                    !duplicateEmitted &&
+                    reader.CurrentEncodedIdentity != previousIdentity)
+                {
+                    results.Add(previous.AsSpan(0, previousLength).ToArray());
+                    duplicateEmitted = true;
+                }
+            }
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(previous);
+        }
+
+        return results;
+
+        void AddKeyState(NullKey keyState, byte[] encoded)
+        {
+            bool found = false;
+            object? firstIdentity = null;
+            foreach (LibraDexObjectTuple tuple in IterateExactTuplePrimitive(
+                new LibraDexIdentityPrimitiveRequest(LibraDexCriteriaKind.KeyState, new object?[] { keyState })))
+            {
+                if (!found)
+                {
+                    firstIdentity = tuple.Identity;
+                    found = true;
+                    if (!duplicatesOnly)
+                        results.Add(encoded.ToArray());
+                    continue;
+                }
+
+                if (duplicatesOnly && !LibraDexObjectTuple.ValueEquals(firstIdentity, tuple.Identity))
+                {
+                    results.Add(encoded.ToArray());
+                    return;
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Streams exact duplicate encoded string keys without materializing the returned duplicate-key collection.<br/>
+    /// Discovery follows sorted key runs with one pooled comparison buffer and allocates only each emitted duplicate key.<br/>
+    /// </summary>
+    /// <returns>A forward-only duplicate-key sequence in exact index traversal order.<br/></returns>
+    internal IEnumerable<byte[]?> IterateRawDuplicateKeys()
+    {
+        ThrowIfDisposed();
+        List<byte[]> keyStates = new(2);
+        AddKeyState(NullKey.Null, EncodedNullKey);
+        AddKeyState(NullKey.Empty, EncodedEmptyKey);
+        for (int i = 0; i < keyStates.Count; i++)
+            yield return keyStates[i];
+
+        byte[] previous = ArrayPool<byte>.Shared.Rent(exact.Handle.MaxKeyLength);
+        try
+        {
+            int previousLength = 0;
+            ulong previousIdentity = 0;
+            bool hasPrevious = false;
+            bool duplicateEmitted = false;
+            using VarKeyScalar8RangeReader reader = exact.OpenEncodedRangeReader(
+                FullLowerBound(),
+                FullUpperBound(exact.Handle.MaxKeyLength));
+            while (reader.MoveNext())
+            {
+                int keyLength = reader.CurrentKey.Length;
+                if (!hasPrevious || !reader.CurrentKey.SequenceEqual(previous.AsSpan(0, previousLength)))
+                {
+                    reader.CurrentKey.CopyTo(previous);
+                    previousLength = keyLength;
+                    previousIdentity = reader.CurrentEncodedIdentity;
+                    hasPrevious = true;
+                    duplicateEmitted = false;
+                    continue;
+                }
+
+                if (!duplicateEmitted && reader.CurrentEncodedIdentity != previousIdentity)
+                {
+                    byte[] result = previous.AsSpan(0, previousLength).ToArray();
+                    duplicateEmitted = true;
+                    yield return result;
+                }
+            }
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(previous);
+        }
+
+        void AddKeyState(NullKey keyState, byte[] encoded)
+        {
+            bool found = false;
+            object? firstIdentity = null;
+            foreach (LibraDexObjectTuple tuple in IterateExactTuplePrimitive(
+                new LibraDexIdentityPrimitiveRequest(LibraDexCriteriaKind.KeyState, new object?[] { keyState })))
+            {
+                if (!found)
+                {
+                    firstIdentity = tuple.Identity;
+                    found = true;
+                    continue;
+                }
+
+                if (!LibraDexObjectTuple.ValueEquals(firstIdentity, tuple.Identity))
+                {
+                    keyStates.Add(encoded.ToArray());
+                    return;
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Streams exact encoded string keys associated with exactly one distinct scalar identity.<br/>
+    /// Discovery follows sorted key runs with one pooled comparison buffer; repeated identical tuples preserve singleton cardinality.<br/>
+    /// Null and empty key states use their dedicated routers and are emitted when their distinct-identity cardinality is exactly one.<br/>
+    /// </summary>
+    /// <returns>A forward-only singleton-key sequence in exact index traversal order.<br/></returns>
+    internal IEnumerable<byte[]?> IterateRawSingletonKeys()
+    {
+        ThrowIfDisposed();
+        List<byte[]> keyStates = new(2);
+        AddKeyState(NullKey.Null, EncodedNullKey);
+        AddKeyState(NullKey.Empty, EncodedEmptyKey);
+        for (int i = 0; i < keyStates.Count; i++)
+            yield return keyStates[i];
+
+        byte[] previous = ArrayPool<byte>.Shared.Rent(exact.Handle.MaxKeyLength);
+        try
+        {
+            int previousLength = 0;
+            ulong previousIdentity = 0;
+            bool hasPrevious = false;
+            bool hasMultipleIdentities = false;
+            using VarKeyScalar8RangeReader reader = exact.OpenEncodedRangeReader(
+                FullLowerBound(),
+                FullUpperBound(exact.Handle.MaxKeyLength));
+            while (reader.MoveNext())
+            {
+                int keyLength = reader.CurrentKey.Length;
+                if (!hasPrevious || !reader.CurrentKey.SequenceEqual(previous.AsSpan(0, previousLength)))
+                {
+                    if (hasPrevious && !hasMultipleIdentities)
+                        yield return previous.AsSpan(0, previousLength).ToArray();
+
+                    reader.CurrentKey.CopyTo(previous);
+                    previousLength = keyLength;
+                    previousIdentity = reader.CurrentEncodedIdentity;
+                    hasPrevious = true;
+                    hasMultipleIdentities = false;
+                    continue;
+                }
+
+                if (reader.CurrentEncodedIdentity != previousIdentity)
+                    hasMultipleIdentities = true;
+            }
+
+            if (hasPrevious && !hasMultipleIdentities)
+                yield return previous.AsSpan(0, previousLength).ToArray();
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(previous);
+        }
+
+        void AddKeyState(NullKey keyState, byte[] encoded)
+        {
+            bool found = false;
+            object? firstIdentity = null;
+            foreach (LibraDexObjectTuple tuple in IterateExactTuplePrimitive(
+                new LibraDexIdentityPrimitiveRequest(LibraDexCriteriaKind.KeyState, new object?[] { keyState })))
+            {
+                if (!found)
+                {
+                    firstIdentity = tuple.Identity;
+                    found = true;
+                    continue;
+                }
+
+                if (!LibraDexObjectTuple.ValueEquals(firstIdentity, tuple.Identity))
+                    return;
+            }
+
+            if (found)
+                keyStates.Add(encoded.ToArray());
+        }
+    }
+
+    /// <summary>
+    /// Streams folded string grouping tuples in their binary key form.<br/>
+    /// A maintained Folded subindex is used directly when available; otherwise explicit folded grouping performs the accepted scan-time conversion over exact values.<br/>
+    /// Null and empty values retain their distinct encoded sentinels in either path.<br/>
     /// </summary>
     /// <returns>A forward-only stream of encoded folded string keys and scalar identities.<br/></returns>
     internal IEnumerable<LibraDexObjectTuple> IterateFoldedEncodedGroupingTuplePrimitive()
     {
         ThrowIfDisposed();
         if (folded is null)
-            throw new InvalidOperationException($"String index '{Name}' does not maintain a folded-text projection.");
+        {
+            foreach (LibraDexObjectTuple tuple in IterateExactTuplePrimitive(
+                new LibraDexIdentityPrimitiveRequest(LibraDexCriteriaKind.All, Array.Empty<object?>())))
+            {
+                string? value = tuple.Key switch
+                {
+                    null => null,
+                    string text => text,
+                    _ => throw new InvalidDataException($"String index '{Name}' returned a non-string exact key during folded scan projection.")
+                };
+                yield return new LibraDexObjectTuple(Encode(Fold(value, foldedCulture, foldedNormalization)), tuple.Identity);
+            }
+
+            yield break;
+        }
 
         foreach (LibraDexObjectTuple tuple in IterateExactTuplePrimitive(
             new LibraDexIdentityPrimitiveRequest(LibraDexCriteriaKind.KeyState, new object?[] { NullKey.Null })))
@@ -644,27 +1129,84 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
     }
 
     /// <summary>
-    /// Streams maintained sort-key projection tuples for grouping and proof paths that explicitly request binary sort-key buckets.<br/>
+    /// Streams case-preserving Form-C string grouping tuples in their binary key form.<br/>
+    /// A maintained Normalized subindex is used directly when available; otherwise explicit normalized grouping performs scan-time conversion over exact values.<br/>
+    /// Null and empty values retain their distinct encoded sentinels in either path.<br/>
+    /// </summary>
+    /// <returns>A forward-only stream of encoded normalized string keys and scalar identities.<br/></returns>
+    internal IEnumerable<LibraDexObjectTuple> IterateNormalizedEncodedGroupingTuplePrimitive()
+    {
+        ThrowIfDisposed();
+        if (normalized is null)
+        {
+            foreach (LibraDexObjectTuple tuple in IterateExactTuplePrimitive(
+                new LibraDexIdentityPrimitiveRequest(LibraDexCriteriaKind.All, Array.Empty<object?>())))
+            {
+                string? value = tuple.Key switch
+                {
+                    null => null,
+                    string text => text,
+                    _ => throw new InvalidDataException($"String index '{Name}' returned a non-string exact key during normalized scan projection.")
+                };
+                yield return new LibraDexObjectTuple(Encode(NormalizeCanonical(value)), tuple.Identity);
+            }
+
+            yield break;
+        }
+
+        foreach (LibraDexObjectTuple tuple in IterateExactTuplePrimitive(
+            new LibraDexIdentityPrimitiveRequest(LibraDexCriteriaKind.KeyState, new object?[] { NullKey.Null })))
+        {
+            yield return new LibraDexObjectTuple(EncodedNullKey, tuple.Identity);
+        }
+
+        foreach (LibraDexObjectTuple tuple in IterateExactTuplePrimitive(
+            new LibraDexIdentityPrimitiveRequest(LibraDexCriteriaKind.KeyState, new object?[] { NullKey.Empty })))
+        {
+            yield return new LibraDexObjectTuple(EncodedEmptyKey, tuple.Identity);
+        }
+
+        foreach (LibraDexObjectTuple tuple in normalized.IterateEncodedTuplePrimitive(
+            new LibraDexIdentityPrimitiveRequest(LibraDexCriteriaKind.All, Array.Empty<object?>())))
+        {
+            yield return tuple;
+        }
+    }
+
+    /// <summary>
+    /// Streams sort-key projection tuples for grouping and proof paths that explicitly request binary sort-key buckets.<br/>
+    /// A maintained SortKey subindex is used directly when available; otherwise explicit sort-key grouping performs the accepted scan-time conversion over exact values.<br/>
     /// The returned keys are byte-array sort keys, not exact developer-facing strings, because sort-key bytes are the projection's natural grouping domain.<br/>
     /// </summary>
     /// <returns>A forward-only stream of binary sort-key and scalar identity tuples.<br/></returns>
-    /// <exception cref="InvalidOperationException">Thrown when this string index was not created with a sort-key projection.<br/></exception>
     internal IEnumerable<LibraDexObjectTuple> IterateSortKeyTuplePrimitive()
     {
         ThrowIfDisposed();
         if (sortKey is null)
         {
-            throw new InvalidOperationException($"String index '{Name}' does not maintain a sort-key projection.");
+            foreach (LibraDexObjectTuple tuple in IterateExactTuplePrimitive(
+                new LibraDexIdentityPrimitiveRequest(LibraDexCriteriaKind.All, Array.Empty<object?>())))
+            {
+                string? value = tuple.Key switch
+                {
+                    null => null,
+                    string text => text,
+                    _ => throw new InvalidDataException($"String index '{Name}' returned a non-string exact key during sort-key scan projection.")
+                };
+                yield return new LibraDexObjectTuple(CreateSortKey(value, sortKeyCulture, PrimarySortKeyCompareOptions), tuple.Identity);
+            }
+
+            yield break;
         }
 
         foreach (LibraDexObjectTuple tuple in IterateExactTuplePrimitive(new LibraDexIdentityPrimitiveRequest(LibraDexCriteriaKind.KeyState, new object?[] { NullKey.Null })))
         {
-            yield return new LibraDexObjectTuple(CreateSortKey(null, sortKeyCulture), tuple.Identity);
+            yield return new LibraDexObjectTuple(CreateSortKey(null, sortKeyCulture, PrimarySortKeyCompareOptions), tuple.Identity);
         }
 
         foreach (LibraDexObjectTuple tuple in IterateExactTuplePrimitive(new LibraDexIdentityPrimitiveRequest(LibraDexCriteriaKind.KeyState, new object?[] { NullKey.Empty })))
         {
-            yield return new LibraDexObjectTuple(CreateSortKey(string.Empty, sortKeyCulture), tuple.Identity);
+            yield return new LibraDexObjectTuple(CreateSortKey(string.Empty, sortKeyCulture, PrimarySortKeyCompareOptions), tuple.Identity);
         }
 
         foreach (LibraDexObjectTuple tuple in sortKey.IterateTuplePrimitive(new LibraDexIdentityPrimitiveRequest(LibraDexCriteriaKind.All, Array.Empty<object?>())))
@@ -710,12 +1252,33 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
 
     IReadOnlyList<object> IIdentityPrimitiveExecutor.ExecuteIdentityPrimitive(LibraDexIdentityPrimitiveRequest request)
     {
-        return IterateIdentityPrimitiveCore(request, exact, static value => value).ToArray();
+        return BoxIdentityIterator(IterateIdentityPrimitiveCore(request, exact, static value => value)).ToArray();
     }
 
     IEnumerable<object> IIdentityPrimitiveExecutor.IterateIdentityPrimitive(LibraDexIdentityPrimitiveRequest request)
     {
+        return BoxIdentityIterator(IterateIdentityPrimitiveCore(request, exact, static value => value));
+    }
+
+    IEnumerable<ulong> IIdentityPrimitiveExecutor<ulong>.IterateIdentityPrimitiveTyped(LibraDexIdentityPrimitiveRequest request)
+    {
         return IterateIdentityPrimitiveCore(request, exact, static value => value);
+    }
+
+    bool IIdentityPrimitivePartitioner<ulong>.TryCreateIdentityPrimitivePartitions(
+        LibraDexIdentityPrimitiveRequest request,
+        int workerCount,
+        out LibraDexIdentityPrimitivePartitionSet<ulong>? partitions,
+        out string? unsupportedReason)
+    {
+        return TryCreateStringIdentityPartitions(
+            request,
+            exact,
+            IdentityTransform,
+            allowCaseNormalizedBytes: false,
+            workerCount,
+            out partitions,
+            out unsupportedReason);
     }
 
     long IIdentityPrimitiveExecutor.CountIdentityPrimitive(LibraDexIdentityPrimitiveRequest request)
@@ -773,10 +1336,15 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
 
     IReadOnlyList<object> IIdentityPrimitiveExecutor.ExecuteAllIdentities()
     {
-        return IterateAll(exact).ToArray();
+        return BoxIdentityIterator(IterateAll(exact)).ToArray();
     }
 
     IEnumerable<object> IIdentityPrimitiveExecutor.IterateIdentityUniverse()
+    {
+        return BoxIdentityIterator(IterateAll(exact));
+    }
+
+    IEnumerable<ulong> IIdentityPrimitiveExecutor<ulong>.IterateIdentityUniverseTyped()
     {
         return IterateAll(exact);
     }
@@ -794,8 +1362,13 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         exact.Dispose();
         exactReversed?.Dispose();
         folded?.Dispose();
-        sortKey?.Dispose();
+        for (int i = 0; i < sortKeyProfiles.Length; i++)
+        {
+            sortKeyProfiles[i].Index.Dispose();
+        }
         foldedReversed?.Dispose();
+        normalized?.Dispose();
+        normalizedReversed?.Dispose();
         disposed = true;
     }
 
@@ -1308,7 +1881,7 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
                 exact.Session.AbortVarKeyScalar8WriteContext(writeContext);
                 exact.Session.WaitForWriteContextShelfRelease(ex.ShelfOffset, CancellationToken.None);
             }
-            catch (InvalidOperationException)
+            catch (LibraDexWriteContextVarKeyScalar8TopologyFallbackException)
             {
                 exact.Session.AbortVarKeyScalar8WriteContext(writeContext);
                 return DeleteIdentityPrimitiveWithBatch(tuples);
@@ -1405,8 +1978,10 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
     {
         return exactReversed is not null ||
             folded is not null ||
-            sortKey is not null ||
-            foldedReversed is not null;
+            sortKeyProfiles.Length != 0 ||
+            foldedReversed is not null ||
+            normalized is not null ||
+            normalizedReversed is not null;
     }
 
     /// <summary>
@@ -1471,9 +2046,9 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         {
             tuples = folded.IterateTuplePrimitive(new LibraDexIdentityPrimitiveRequest(criterion.CriteriaKind.Value, criterion.Values, AddForTakeLimit(skip, take), direction));
         }
-        else if (sortKey is not null && string.Equals(criterionIndex.Name, sortKey.Name, StringComparison.Ordinal))
+        else if (FindSortKeyProjection(criterionIndex.Name) is LibraDexStringScalar8SortKeyProjectionIndex selectedSortKey)
         {
-            tuples = sortKey.IterateTuplePrimitive(new LibraDexIdentityPrimitiveRequest(criterion.CriteriaKind.Value, criterion.Values, AddForTakeLimit(skip, take), direction));
+            tuples = selectedSortKey.IterateTuplePrimitive(new LibraDexIdentityPrimitiveRequest(criterion.CriteriaKind.Value, criterion.Values, AddForTakeLimit(skip, take), direction));
         }
         else if (foldedReversed is not null && string.Equals(criterionIndex.Name, foldedReversed.Name, StringComparison.Ordinal))
         {
@@ -1482,6 +2057,14 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         else if (exactReversed is not null && string.Equals(criterionIndex.Name, exactReversed.Name, StringComparison.Ordinal))
         {
             tuples = exactReversed.IterateTuplePrimitive(new LibraDexIdentityPrimitiveRequest(criterion.CriteriaKind.Value, criterion.Values, AddForTakeLimit(skip, take), direction));
+        }
+        else if (normalized is not null && string.Equals(criterionIndex.Name, normalized.Name, StringComparison.Ordinal))
+        {
+            tuples = normalized.IterateTuplePrimitive(new LibraDexIdentityPrimitiveRequest(criterion.CriteriaKind.Value, criterion.Values, AddForTakeLimit(skip, take), direction));
+        }
+        else if (normalizedReversed is not null && string.Equals(criterionIndex.Name, normalizedReversed.Name, StringComparison.Ordinal))
+        {
+            tuples = normalizedReversed.IterateTuplePrimitive(new LibraDexIdentityPrimitiveRequest(criterion.CriteriaKind.Value, criterion.Values, AddForTakeLimit(skip, take), direction));
         }
 
         if (tuples is null)
@@ -1608,8 +2191,10 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         byte[] exactKey = Encode(key);
         if (exactReversed is null &&
             folded is null &&
-            sortKey is null &&
-            foldedReversed is null)
+            sortKeyProfiles.Length == 0 &&
+            foldedReversed is null &&
+            normalized is null &&
+            normalizedReversed is null)
         {
             return exact.DeleteEncodedExactTuple(exactKey, identity);
         }
@@ -1633,8 +2218,10 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
     {
         exactReversed?.DeleteProjectedExactTuple(Reverse(key), identity);
         folded?.DeleteProjectedExactTuple(key, identity);
-        sortKey?.DeleteProjectedExactTuple(CreateSortKey(key, sortKeyCulture), identity);
-        foldedReversed?.DeleteProjectedExactTuple(Reverse(Fold(key, foldedCulture)), identity);
+        DeleteSortKeyProjections(key, identity, immediate: false);
+        foldedReversed?.DeleteProjectedExactTuple(Reverse(Fold(key, foldedCulture, foldedNormalization)), identity);
+        normalized?.DeleteProjectedExactTuple(key, identity);
+        normalizedReversed?.DeleteProjectedExactTuple(Reverse(NormalizeCanonical(key)), identity);
     }
 
     /// <summary>
@@ -1647,8 +2234,10 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
     {
         exactReversed?.DeleteProjectedExactTupleImmediate(Reverse(key), identity);
         folded?.DeleteProjectedExactTupleImmediate(key, identity);
-        sortKey?.DeleteProjectedExactTupleImmediate(CreateSortKey(key, sortKeyCulture), identity);
-        foldedReversed?.DeleteProjectedExactTupleImmediate(Reverse(Fold(key, foldedCulture)), identity);
+        DeleteSortKeyProjections(key, identity, immediate: true);
+        foldedReversed?.DeleteProjectedExactTupleImmediate(Reverse(Fold(key, foldedCulture, foldedNormalization)), identity);
+        normalized?.DeleteProjectedExactTupleImmediate(key, identity);
+        normalizedReversed?.DeleteProjectedExactTupleImmediate(Reverse(NormalizeCanonical(key)), identity);
     }
 
     /// <summary>
@@ -1827,8 +2416,10 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
     {
         exactReversed?.InsertProjected(Reverse(key), identity);
         folded?.InsertProjected(key, identity);
-        sortKey?.InsertProjected(CreateSortKey(key, sortKeyCulture), identity);
-        foldedReversed?.InsertProjected(Reverse(Fold(key, foldedCulture)), identity);
+        InsertSortKeyProjections(key, identity);
+        foldedReversed?.InsertProjected(Reverse(Fold(key, foldedCulture, foldedNormalization)), identity);
+        normalized?.InsertProjected(key, identity);
+        normalizedReversed?.InsertProjected(Reverse(NormalizeCanonical(key)), identity);
     }
 
     private void InsertProjectionTuplesForConcurrentBatch(
@@ -1838,8 +2429,10 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
     {
         exactReversed?.InsertProjectedForConcurrentBatch(writeContext, Reverse(key), identity);
         folded?.InsertProjectedForConcurrentBatch(writeContext, key, identity);
-        sortKey?.InsertProjectedForConcurrentBatch(writeContext, CreateSortKey(key, sortKeyCulture), identity);
-        foldedReversed?.InsertProjectedForConcurrentBatch(writeContext, Reverse(Fold(key, foldedCulture)), identity);
+        InsertSortKeyProjectionsForConcurrentBatch(writeContext, key, identity);
+        foldedReversed?.InsertProjectedForConcurrentBatch(writeContext, Reverse(Fold(key, foldedCulture, foldedNormalization)), identity);
+        normalized?.InsertProjectedForConcurrentBatch(writeContext, key, identity);
+        normalizedReversed?.InsertProjectedForConcurrentBatch(writeContext, Reverse(NormalizeCanonical(key)), identity);
     }
 
     private void DeleteProjectionTuplesForConcurrentBatch(
@@ -1849,8 +2442,10 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
     {
         exactReversed?.DeleteProjectedExactTupleForConcurrentBatch(writeContext, Reverse(key), identity);
         folded?.DeleteProjectedExactTupleForConcurrentBatch(writeContext, key, identity);
-        sortKey?.DeleteProjectedExactTupleForConcurrentBatch(writeContext, CreateSortKey(key, sortKeyCulture), identity);
-        foldedReversed?.DeleteProjectedExactTupleForConcurrentBatch(writeContext, Reverse(Fold(key, foldedCulture)), identity);
+        DeleteSortKeyProjectionsForConcurrentBatch(writeContext, key, identity);
+        foldedReversed?.DeleteProjectedExactTupleForConcurrentBatch(writeContext, Reverse(Fold(key, foldedCulture, foldedNormalization)), identity);
+        normalized?.DeleteProjectedExactTupleForConcurrentBatch(writeContext, key, identity);
+        normalizedReversed?.DeleteProjectedExactTupleForConcurrentBatch(writeContext, Reverse(NormalizeCanonical(key)), identity);
     }
 
     /// <summary>
@@ -2062,13 +2657,18 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
                 }
             }
 
-            if (byteMatcher is not null && !TryMatchEncodedStringPayload(currentKey, byteMatcher))
+            LibraDexUtf8MatchResult byteMatch = byteMatcher is null
+                ? LibraDexUtf8MatchResult.RequiresManaged
+                : EvaluateEncodedStringPayload(currentKey, byteMatcher);
+            if (byteMatch == LibraDexUtf8MatchResult.NoMatch)
             {
                 continue;
             }
 
             string? key = Decode(currentKey);
-            if (byteMatcher is null && textFilter is not null && (key is null || !textFilter(key)))
+            if (byteMatch == LibraDexUtf8MatchResult.RequiresManaged &&
+                textFilter is not null &&
+                (key is null || !textFilter(key)))
             {
                 continue;
             }
@@ -2239,7 +2839,7 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
             projections.Add(new LibraDexIndexProjectionSpec(LibraDexIndexProjectionKind.FoldedText, LibraDexIndexByteDirection.Forward, LibraDexIndexSortOrder.Ascending));
         }
 
-        if (sortKey is not null)
+        if (sortKeyProfiles.Length != 0)
         {
             projections.Add(new LibraDexIndexProjectionSpec(LibraDexIndexProjectionKind.SortKey, LibraDexIndexByteDirection.Forward, LibraDexIndexSortOrder.Ascending));
         }
@@ -2255,6 +2855,17 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         {
             directions |= LibraDexProjectionDirectionSet.Reversed;
             projections.Add(new LibraDexIndexProjectionSpec(LibraDexIndexProjectionKind.FoldedText, LibraDexIndexByteDirection.Reversed, LibraDexIndexSortOrder.Ascending));
+        }
+
+        if (normalized is not null)
+        {
+            projections.Add(new LibraDexIndexProjectionSpec(LibraDexIndexProjectionKind.NormalizedText, LibraDexIndexByteDirection.Forward, LibraDexIndexSortOrder.Ascending));
+        }
+
+        if (normalizedReversed is not null)
+        {
+            directions |= LibraDexProjectionDirectionSet.Reversed;
+            projections.Add(new LibraDexIndexProjectionSpec(LibraDexIndexProjectionKind.NormalizedText, LibraDexIndexByteDirection.Reversed, LibraDexIndexSortOrder.Ascending));
         }
 
         return new LibraDexIndexShapeSpec(
@@ -2277,19 +2888,40 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
 
     private StringKeys ResolveStringKeys()
     {
+        StringKeys keys = StringKeys.Exact;
         if (folded is not null)
         {
-            return sortKey is not null
-                ? StringKeys.ExactFoldedAndSortKey
-                : StringKeys.ExactAndFolded;
+            keys |= StringKeys.Folded;
         }
 
-        return sortKey is not null
-            ? StringKeys.ExactAndSortKey
-            : StringKeys.Exact;
+        if (sortKeyProfiles.Length != 0)
+        {
+            keys |= StringKeys.SortKey;
+        }
+
+        if (normalized is not null)
+        {
+            keys |= StringKeys.Normalized;
+        }
+
+        return keys;
     }
 
-    private static IEnumerable<object> IterateIdentityPrimitiveCore(
+    /// <summary>
+    /// Adapts scalar-8 identities to the legacy runtime-object executor contract.<br/>
+    /// Typed condition projections bypass this adapter and consume the same physical readers as <see cref="ulong"/> values, so boxing occurs only for callers that explicitly request object-shaped results.<br/>
+    /// </summary>
+    /// <param name="identities">The typed scalar identities to expose through the compatibility API.<br/></param>
+    /// <returns>A lazy object sequence preserving source order and cardinality.<br/></returns>
+    private static IEnumerable<object> BoxIdentityIterator(IEnumerable<ulong> identities)
+    {
+        foreach (ulong identity in identities)
+        {
+            yield return identity;
+        }
+    }
+
+    private static IEnumerable<ulong> IterateIdentityPrimitiveCore(
         LibraDexIdentityPrimitiveRequest request,
         VarKeyScalar8Index index,
         Func<string?, string?> transform)
@@ -2318,19 +2950,19 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
                     : IterateRange(index, prefix, prefix + '\uffff', request.TakeLimit);
             }
             case LibraDexCriteriaKind.Before:
-                return TryCreateOrderedKeyStateIterator(index, transform(RequireString(request.Values, 0)), before: true, inclusive: false, request.TakeLimit, out IEnumerable<object>? beforeKeyState)
+                return TryCreateOrderedKeyStateIterator(index, transform(RequireString(request.Values, 0)), before: true, inclusive: false, request.TakeLimit, out IEnumerable<ulong>? beforeKeyState)
                     ? beforeKeyState!
                     : IterateBefore(index, Encode(transform(RequireString(request.Values, 0))), inclusive: false, request.TakeLimit);
             case LibraDexCriteriaKind.AtOrBefore:
-                return TryCreateOrderedKeyStateIterator(index, transform(RequireString(request.Values, 0)), before: true, inclusive: true, request.TakeLimit, out IEnumerable<object>? atOrBeforeKeyState)
+                return TryCreateOrderedKeyStateIterator(index, transform(RequireString(request.Values, 0)), before: true, inclusive: true, request.TakeLimit, out IEnumerable<ulong>? atOrBeforeKeyState)
                     ? atOrBeforeKeyState!
                     : IterateBefore(index, Encode(transform(RequireString(request.Values, 0))), inclusive: true, request.TakeLimit);
             case LibraDexCriteriaKind.After:
-                return TryCreateOrderedKeyStateIterator(index, transform(RequireString(request.Values, 0)), before: false, inclusive: false, request.TakeLimit, out IEnumerable<object>? afterKeyState)
+                return TryCreateOrderedKeyStateIterator(index, transform(RequireString(request.Values, 0)), before: false, inclusive: false, request.TakeLimit, out IEnumerable<ulong>? afterKeyState)
                     ? afterKeyState!
                     : IterateAfter(index, Encode(transform(RequireString(request.Values, 0))), inclusive: false, request.TakeLimit);
             case LibraDexCriteriaKind.AtOrAfter:
-                return TryCreateOrderedKeyStateIterator(index, transform(RequireString(request.Values, 0)), before: false, inclusive: true, request.TakeLimit, out IEnumerable<object>? atOrAfterKeyState)
+                return TryCreateOrderedKeyStateIterator(index, transform(RequireString(request.Values, 0)), before: false, inclusive: true, request.TakeLimit, out IEnumerable<ulong>? atOrAfterKeyState)
                     ? atOrAfterKeyState!
                     : IterateAfter(index, Encode(transform(RequireString(request.Values, 0))), inclusive: true, request.TakeLimit);
             case LibraDexCriteriaKind.InSet:
@@ -2648,7 +3280,11 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
             {
                 if (byteMatcher is not null)
                 {
-                    return TryMatchEncodedStringPayload(key, byteMatcher);
+                    LibraDexUtf8MatchResult byteMatch = EvaluateEncodedStringPayload(key, byteMatcher);
+                    if (byteMatch != LibraDexUtf8MatchResult.RequiresManaged)
+                    {
+                        return byteMatch == LibraDexUtf8MatchResult.Match;
+                    }
                 }
 
                 string? candidate = Decode(key);
@@ -2690,7 +3326,7 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         return count;
     }
 
-    private static IEnumerable<object> IterateAll(VarKeyScalar8Index index)
+    private static IEnumerable<ulong> IterateAll(VarKeyScalar8Index index)
     {
         return IterateAll(index, null);
     }
@@ -2701,7 +3337,7 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         bool before,
         bool inclusive,
         int? takeLimit,
-        out IEnumerable<object>? identities)
+        out IEnumerable<ulong>? identities)
     {
         if (!TryClassifyStringKeyState(boundary, out NullKey keyState))
         {
@@ -2713,7 +3349,7 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         return true;
     }
 
-    private static IEnumerable<object> IterateOrderedKeyState(
+    private static IEnumerable<ulong> IterateOrderedKeyState(
         VarKeyScalar8Index index,
         NullKey boundary,
         bool before,
@@ -2724,14 +3360,14 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         {
             if (before && inclusive)
             {
-                foreach (object identity in IterateKeyState(index, NullKey.Null, takeLimit))
+                foreach (ulong identity in IterateKeyState(index, NullKey.Null, takeLimit))
                 {
                     yield return identity;
                 }
             }
             else if (!before)
             {
-                foreach (object identity in inclusive ? IterateAll(index, takeLimit) : IterateOrderedKeyState(index, NullKey.Empty, before: false, inclusive: true, takeLimit))
+                foreach (ulong identity in inclusive ? IterateAll(index, takeLimit) : IterateOrderedKeyState(index, NullKey.Empty, before: false, inclusive: true, takeLimit))
                 {
                     yield return identity;
                 }
@@ -2743,7 +3379,7 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         if (before)
         {
             int returned = 0;
-            foreach (object identity in IterateKeyState(index, NullKey.Null, takeLimit))
+            foreach (ulong identity in IterateKeyState(index, NullKey.Null, takeLimit))
             {
                 yield return identity;
                 returned++;
@@ -2756,7 +3392,7 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
             if (inclusive)
             {
                 int? remaining = takeLimit is null ? null : takeLimit.Value - returned;
-                foreach (object identity in IterateKeyState(index, NullKey.Empty, remaining))
+                foreach (ulong identity in IterateKeyState(index, NullKey.Empty, remaining))
                 {
                     yield return identity;
                 }
@@ -2768,7 +3404,7 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         if (inclusive)
         {
             int returned = 0;
-            foreach (object identity in IterateKeyState(index, NullKey.Empty, takeLimit))
+            foreach (ulong identity in IterateKeyState(index, NullKey.Empty, takeLimit))
             {
                 yield return identity;
                 returned++;
@@ -2779,7 +3415,7 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
             }
 
             int? remaining = takeLimit is null ? null : takeLimit.Value - returned;
-            foreach (object identity in IterateRange(index, FullLowerBound(), FullUpperBound(index.Handle.MaxKeyLength), remaining))
+            foreach (ulong identity in IterateRange(index, FullLowerBound(), FullUpperBound(index.Handle.MaxKeyLength), remaining))
             {
                 yield return identity;
             }
@@ -2787,16 +3423,16 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
             yield break;
         }
 
-        foreach (object identity in IterateRange(index, FullLowerBound(), FullUpperBound(index.Handle.MaxKeyLength), takeLimit))
+        foreach (ulong identity in IterateRange(index, FullLowerBound(), FullUpperBound(index.Handle.MaxKeyLength), takeLimit))
         {
             yield return identity;
         }
     }
 
-    private static IEnumerable<object> IterateAll(VarKeyScalar8Index index, int? takeLimit)
+    private static IEnumerable<ulong> IterateAll(VarKeyScalar8Index index, int? takeLimit)
     {
         int returned = 0;
-        foreach (object identity in IterateKeyState(index, NullKey.Null, takeLimit))
+        foreach (ulong identity in IterateKeyState(index, NullKey.Null, takeLimit))
         {
             yield return identity;
             returned++;
@@ -2807,7 +3443,7 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         }
 
         int? remainingForEmpty = takeLimit is null ? null : takeLimit.Value - returned;
-        foreach (object identity in IterateKeyState(index, NullKey.Empty, remainingForEmpty))
+        foreach (ulong identity in IterateKeyState(index, NullKey.Empty, remainingForEmpty))
         {
             yield return identity;
             returned++;
@@ -2818,18 +3454,18 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         }
 
         int? remainingForNormal = takeLimit is null ? null : takeLimit.Value - returned;
-        foreach (object identity in IterateRange(index, FullLowerBound(), FullUpperBound(index.Handle.MaxKeyLength), remainingForNormal))
+        foreach (ulong identity in IterateRange(index, FullLowerBound(), FullUpperBound(index.Handle.MaxKeyLength), remainingForNormal))
         {
             yield return identity;
         }
     }
 
-    private static IEnumerable<object> IterateRange(VarKeyScalar8Index index, string? lower, string? upper, int? takeLimit)
+    private static IEnumerable<ulong> IterateRange(VarKeyScalar8Index index, string? lower, string? upper, int? takeLimit)
     {
         return IterateRange(index, Encode(lower), Encode(upper), takeLimit);
     }
 
-    private static IEnumerable<object> IterateRange(VarKeyScalar8Index index, byte[] lower, byte[] upper, int? takeLimit)
+    private static IEnumerable<ulong> IterateRange(VarKeyScalar8Index index, byte[] lower, byte[] upper, int? takeLimit)
     {
         return IterateRange(index, lower, upper, takeLimit, keyFilter: null);
     }
@@ -2844,7 +3480,7 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
     /// <param name="takeLimit">Optional identity limit.</param>
     /// <param name="keyFilter">Optional encoded-key filter applied after range navigation.</param>
     /// <returns>The matching scalar identities as runtime objects.</returns>
-    private static IEnumerable<object> IterateRange(VarKeyScalar8Index index, byte[] lower, byte[] upper, int? takeLimit, Func<byte[], bool>? keyFilter)
+    private static IEnumerable<ulong> IterateRange(VarKeyScalar8Index index, byte[] lower, byte[] upper, int? takeLimit, Func<byte[], bool>? keyFilter)
     {
         using VarKeyScalar8RangeReader reader = index.OpenEncodedRangeReader(lower, upper);
         int yielded = 0;
@@ -2873,7 +3509,7 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
     /// <param name="inclusive">True to include keys equal to the boundary.</param>
     /// <param name="takeLimit">Optional identity limit.</param>
     /// <returns>The matching scalar identities as runtime objects.</returns>
-    private static IEnumerable<object> IterateBefore(VarKeyScalar8Index index, byte[] boundary, bool inclusive, int? takeLimit)
+    private static IEnumerable<ulong> IterateBefore(VarKeyScalar8Index index, byte[] boundary, bool inclusive, int? takeLimit)
     {
         return IterateRange(
             index,
@@ -2892,7 +3528,7 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
     /// <param name="inclusive">True to include keys equal to the boundary.</param>
     /// <param name="takeLimit">Optional identity limit.</param>
     /// <returns>The matching scalar identities as runtime objects.</returns>
-    private static IEnumerable<object> IterateAfter(VarKeyScalar8Index index, byte[] boundary, bool inclusive, int? takeLimit)
+    private static IEnumerable<ulong> IterateAfter(VarKeyScalar8Index index, byte[] boundary, bool inclusive, int? takeLimit)
     {
         return IterateRange(
             index,
@@ -2902,7 +3538,7 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
             inclusive ? null : key => key.AsSpan().SequenceCompareTo(boundary) > 0);
     }
 
-    private static IEnumerable<object> IterateMembership(
+    private static IEnumerable<ulong> IterateMembership(
         VarKeyScalar8Index index,
         IReadOnlyList<object?> values,
         Func<string?, string?> transform,
@@ -2925,10 +3561,10 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
                 }
 
                 key = transform(key);
-                IEnumerable<object> identities = TryClassifyStringKeyState(key, out NullKey keyState)
+                IEnumerable<ulong> identities = TryClassifyStringKeyState(key, out NullKey keyState)
                     ? IterateKeyState(index, keyState, takeLimit.HasValue ? takeLimit.Value - yielded : null)
                     : IterateRange(index, key, key, null);
-                foreach (object identity in identities)
+                foreach (ulong identity in identities)
                 {
                     yield return identity;
                     yielded++;
@@ -2949,7 +3585,7 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
     /// <param name="predicate">The compiled string predicate.</param>
     /// <param name="takeLimit">Optional identity limit.</param>
     /// <returns>The matching scalar identities as runtime objects.</returns>
-    private static IEnumerable<object> IterateStringPattern(VarKeyScalar8Index index, LibraDexStringPatternPredicate predicate, int? takeLimit)
+    private static IEnumerable<ulong> IterateStringPattern(VarKeyScalar8Index index, LibraDexStringPatternPredicate predicate, int? takeLimit)
     {
         IReadOnlyList<(string Lower, string Upper)> candidateRanges = predicate.CreateCandidateRanges();
         LibraDexUtf8StringPatternPredicate? byteMatcher = predicate.TryCreateUtf8ByteMatcher(IdentityTransform, allowCaseNormalizedBytes: false, out LibraDexUtf8StringPatternPredicate? matcher)
@@ -2958,7 +3594,7 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         int yielded = 0;
         if (predicate.Matches(string.Empty))
         {
-            foreach (object identity in IterateKeyState(index, NullKey.Empty, takeLimit))
+            foreach (ulong identity in IterateKeyState(index, NullKey.Empty, takeLimit))
             {
                 yield return identity;
                 yielded++;
@@ -2971,7 +3607,7 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
 
         if (candidateRanges.Count == 0)
         {
-            foreach (object identity in IterateStringPatternRange(index, FullLowerBound(), FullUpperBound(index.Handle.MaxKeyLength), predicate, byteMatcher, takeLimit.HasValue ? takeLimit.Value - yielded : null))
+            foreach (ulong identity in IterateStringPatternRange(index, FullLowerBound(), FullUpperBound(index.Handle.MaxKeyLength), predicate, byteMatcher, takeLimit.HasValue ? takeLimit.Value - yielded : null))
             {
                 yield return identity;
                 yielded++;
@@ -2986,7 +3622,7 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
 
         foreach ((string lower, string upper) in candidateRanges)
         {
-            foreach (object identity in IterateStringPatternRange(index, Encode(lower), Encode(upper), predicate, byteMatcher, takeLimit.HasValue ? takeLimit.Value - yielded : null))
+            foreach (ulong identity in IterateStringPatternRange(index, Encode(lower), Encode(upper), predicate, byteMatcher, takeLimit.HasValue ? takeLimit.Value - yielded : null))
             {
                 yield return identity;
                 yielded++;
@@ -3008,7 +3644,7 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
     /// <param name="predicate">The residual string predicate.</param>
     /// <param name="takeLimit">Optional identity limit for this range.</param>
     /// <returns>The matching scalar identities as runtime objects.</returns>
-    private static IEnumerable<object> IterateStringPatternRange(
+    private static IEnumerable<ulong> IterateStringPatternRange(
         VarKeyScalar8Index index,
         byte[] lower,
         byte[] upper,
@@ -3023,18 +3659,34 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
             ReadOnlySpan<byte> currentKey = reader.CurrentKey;
             if (byteMatcher is not null)
             {
-                if (!TryMatchEncodedStringPayload(currentKey, byteMatcher))
+                LibraDexUtf8MatchResult byteMatch = EvaluateEncodedStringPayload(currentKey, byteMatcher);
+                if (byteMatch == LibraDexUtf8MatchResult.NoMatch)
                 {
                     continue;
+                }
+
+                if (byteMatch == LibraDexUtf8MatchResult.RequiresManaged)
+                {
+                    if (!TryMatchEncodedUtf8Regex(currentKey, predicate, out bool regexMatch))
+                    {
+                        string? candidate = Decode(currentKey);
+                        if (candidate is null || !predicate.Matches(candidate))
+                            continue;
+                    }
+                    else if (!regexMatch)
+                        continue;
                 }
             }
             else
             {
-                string? candidate = Decode(currentKey);
-                if (candidate is null || !predicate.Matches(candidate))
+                if (!TryMatchEncodedUtf8Regex(currentKey, predicate, out bool regexMatch))
                 {
-                    continue;
+                    string? candidate = Decode(currentKey);
+                    if (candidate is null || !predicate.Matches(candidate))
+                        continue;
                 }
+                else if (!regexMatch)
+                    continue;
             }
 
             yield return reader.CurrentEncodedIdentity;
@@ -3046,6 +3698,406 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         }
     }
 
+    /// <summary>
+    /// Attempts to convert one scan-backed string-pattern primitive into exactly the requested number of independent topology-aligned `VS8` ranges.<br/>
+    /// The first slice supports one complete or bounded candidate range that does not include the dedicated empty-string route; multiple candidate ranges and global take limits fail closed until their cross-range quota semantics have an equally direct partition contract.<br/>
+    /// </summary>
+    /// <param name="request">The normalized string primitive request.<br/></param>
+    /// <param name="index">The exact or maintained string-projection `VS8` index selected by condition materialization.<br/></param>
+    /// <param name="transform">The maintained projection transform applied to candidate range bounds.<br/></param>
+    /// <param name="allowCaseNormalizedBytes">Whether the selected projection permits byte-native matching over already normalized key bytes.<br/></param>
+    /// <param name="workerCount">The exact number of independent physical range readers required.<br/></param>
+    /// <param name="partitions">The exact partition set when supported; otherwise <see langword="null"/>.<br/></param>
+    /// <returns><see langword="true"/> only when the primitive and current topology can supply exactly <paramref name="workerCount"/> workers.<br/></returns>
+    private static bool TryCreateStringIdentityPartitions(
+        LibraDexIdentityPrimitiveRequest request,
+        VarKeyScalar8Index index,
+        Func<string?, string?> transform,
+        bool allowCaseNormalizedBytes,
+        int workerCount,
+        out LibraDexIdentityPrimitivePartitionSet<ulong>? partitions,
+        out string? unsupportedReason)
+    {
+        partitions = null;
+        unsupportedReason = null;
+        if (workerCount < 2)
+            throw new ArgumentOutOfRangeException(nameof(workerCount));
+        if (request.TakeLimit is not null)
+        {
+            unsupportedReason = "Global take-limit semantics are not yet partitionable without a shared quota.";
+            return false;
+        }
+
+        if (request.CriteriaKind == LibraDexCriteriaKind.Find)
+        {
+            string? exactText = transform(RequireString(request.Values, 0));
+            if (TryClassifyStringKeyState(exactText, out _))
+            {
+                unsupportedReason = "Null and empty string key-state routes are not yet part of the exact-worker partition contract.";
+                return false;
+            }
+
+            byte[] encodedKey = Encode(exactText);
+            if (!index.Session.TryCreateVarKeyScalar8TerminalIdentityPartitions(
+                    index.Handle.RootRouterOffset,
+                    index.Handle.MaxKeyLength,
+                    encodedKey,
+                    workerCount,
+                    out VarKeyScalar8TerminalIdentityPartitionPlan? terminalPlan))
+            {
+                unsupportedReason = $"The exact string key does not resolve to an exhausted-key VS8 identity chain with at least {workerCount} identity slots.";
+                return false;
+            }
+
+            VarKeyScalar8TerminalIdentityPartitionPlan completedTerminalPlan = terminalPlan!;
+            using (completedTerminalPlan)
+            {
+                IIdentityPrimitivePartition<ulong>[] terminalWorkers = new IIdentityPrimitivePartition<ulong>[workerCount];
+                for (int workerIndex = 0; workerIndex < workerCount; workerIndex++)
+                {
+                    terminalWorkers[workerIndex] = new TerminalIdentityPartition(
+                        index.Session,
+                        completedTerminalPlan.Partitions[workerIndex]);
+                }
+
+                partitions = new LibraDexIdentityPrimitivePartitionSet<ulong>(
+                    terminalWorkers,
+                    completedTerminalPlan.TakeTransitionRead());
+                return true;
+            }
+        }
+
+        if (request.CriteriaKind == LibraDexCriteriaKind.Prefix)
+        {
+            string? prefixText = transform(RequireString(request.Values, 0));
+            if (string.IsNullOrEmpty(prefixText))
+            {
+                unsupportedReason = "An empty string prefix includes dedicated key-state routes that are not yet part of the exact-worker partition contract.";
+                return false;
+            }
+
+            byte[] prefixLower = Encode(prefixText);
+            byte[] prefixUpper = Encode(prefixText + '\uffff');
+            return TryCreateStringRangeIdentityPartitions(
+                index,
+                prefixLower,
+                prefixUpper,
+                predicate: null,
+                byteMatcher: null,
+                workerCount,
+                out partitions,
+                out unsupportedReason);
+        }
+
+        if (request.CriteriaKind != LibraDexCriteriaKind.StringPattern)
+        {
+            unsupportedReason = $"String exact-worker partitioning currently supports Find over exhausted-key identity chains, nonempty Prefix ranges, and StringPattern ranges, not '{request.CriteriaKind}'.";
+            return false;
+        }
+
+        LibraDexStringPatternPredicate predicate = RequireStringPatternPredicate(request.Values);
+        if (predicate.Matches(string.Empty))
+        {
+            unsupportedReason = "The string predicate includes the dedicated empty-string route, which is not yet part of the VS8 range partition contract.";
+            return false;
+        }
+
+        IReadOnlyList<(string Lower, string Upper)> candidateRanges = predicate.CreateCandidateRanges();
+        if (candidateRanges.Count > 1)
+        {
+            unsupportedReason = $"The string predicate produced {candidateRanges.Count} candidate ranges; exact partitioning currently supports zero or one contiguous range.";
+            return false;
+        }
+
+        byte[] lower;
+        byte[] upper;
+        if (candidateRanges.Count == 0)
+        {
+            lower = FullLowerBound();
+            upper = FullUpperBound(index.Handle.MaxKeyLength);
+        }
+        else
+        {
+            (string rangeLower, string rangeUpper) = candidateRanges[0];
+            lower = Encode(transform(rangeLower));
+            upper = Encode(transform(rangeUpper));
+        }
+
+        LibraDexUtf8StringPatternPredicate? byteMatcher = predicate.TryCreateUtf8ByteMatcher(
+            transform,
+            allowCaseNormalizedBytes,
+            out LibraDexUtf8StringPatternPredicate? matcher)
+            ? matcher
+            : null;
+        return TryCreateStringRangeIdentityPartitions(
+            index,
+            lower,
+            upper,
+            predicate,
+            byteMatcher,
+            workerCount,
+            out partitions,
+            out unsupportedReason);
+    }
+
+    /// <summary>
+    /// Builds exact worker-owned `VS8` range partitions for a contiguous encoded string-key interval.<br/>
+    /// A null predicate represents a byte-complete range such as nonempty prefix matching; otherwise each worker applies the supplied string-pattern residual inside its own disjoint range.<br/>
+    /// </summary>
+    private static bool TryCreateStringRangeIdentityPartitions(
+        VarKeyScalar8Index index,
+        byte[] lower,
+        byte[] upper,
+        LibraDexStringPatternPredicate? predicate,
+        LibraDexUtf8StringPatternPredicate? byteMatcher,
+        int workerCount,
+        out LibraDexIdentityPrimitivePartitionSet<ulong>? partitions,
+        out string? unsupportedReason)
+    {
+        partitions = null;
+        unsupportedReason = null;
+        if (!index.Session.TryCreateVarKeyScalar8PhysicalPartitions(
+                index.Handle.RootRouterOffset,
+                index.Handle.MaxKeyLength,
+                lower,
+                upper,
+                workerCount,
+                out VarKeyScalar8PhysicalPartitionPlan? physicalPlan))
+        {
+            unsupportedReason = $"The current VS8 topology could not divide the selected encoded key range into exactly {workerCount} non-overlapping extents.";
+            return false;
+        }
+
+        VarKeyScalar8PhysicalPartitionPlan completedPlan = physicalPlan!;
+        using (completedPlan)
+        {
+            var remainingTargets = new List<VarKeyScalar8PhysicalTarget>();
+            VarKeyScalar8PhysicalPartition[] workerPhysical = new VarKeyScalar8PhysicalPartition[workerCount];
+            for (int workerIndex = 0; workerIndex < workerCount; workerIndex++)
+            {
+                VarKeyScalar8PhysicalPartition planned = completedPlan.Partitions[workerIndex];
+                VarKeyScalar8PhysicalTarget[] targets = planned.SeedTargets
+                    ?? throw new InvalidOperationException("A router-native VS8 FastFind partition did not retain continuation targets.");
+                if (targets.Length == 0)
+                    throw new InvalidOperationException("A router-native VS8 FastFind worker did not receive an initial continuation target.");
+
+                workerPhysical[workerIndex] = new VarKeyScalar8PhysicalPartition(
+                    planned.LowerKey,
+                    planned.UpperKey,
+                    planned.EstimatedTupleCount,
+                    [targets[0]]);
+                for (int targetIndex = 1; targetIndex < targets.Length; targetIndex++)
+                    remainingTargets.Add(targets[targetIndex]);
+            }
+
+            var sharedWork = new StringRangeIdentityWorkQueue(remainingTargets);
+            IIdentityPrimitivePartition<ulong>[] workers = new IIdentityPrimitivePartition<ulong>[workerCount];
+            for (int workerIndex = 0; workerIndex < workerCount; workerIndex++)
+            {
+                workers[workerIndex] = new StringRangeIdentityPartition(
+                    index,
+                    workerPhysical[workerIndex],
+                    sharedWork,
+                    predicate,
+                    byteMatcher);
+            }
+
+            partitions = new LibraDexIdentityPrimitivePartitionSet<ulong>(
+                workers,
+                completedPlan.TakeTransitionRead(),
+                completedPlan.RouterPagesRead,
+                completedPlan.FrontierTargetCount);
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Owns one disjoint string key range whose reader is opened directly by its assigned worker.<br/>
+    /// A null predicate denotes a byte-complete range; otherwise the predicate and optional UTF-8 matcher are immutable query objects shared across workers while all cursor state remains worker-local.<br/>
+    /// </summary>
+    private sealed class StringRangeIdentityPartition : IIdentityPrimitivePartition<ulong>
+    {
+        private readonly VarKeyScalar8Index index;
+        private readonly VarKeyScalar8PhysicalPartition physical;
+        private readonly StringRangeIdentityWorkQueue sharedWork;
+        private readonly LibraDexStringPatternPredicate? predicate;
+        private readonly LibraDexUtf8StringPatternPredicate? byteMatcher;
+        private int workItemsClaimed = 1;
+        private long sourceItemsExamined;
+        private long matchesEmitted;
+
+        internal StringRangeIdentityPartition(
+            VarKeyScalar8Index index,
+            VarKeyScalar8PhysicalPartition physical,
+            StringRangeIdentityWorkQueue sharedWork,
+            LibraDexStringPatternPredicate? predicate,
+            LibraDexUtf8StringPatternPredicate? byteMatcher)
+        {
+            this.index = index;
+            this.physical = physical;
+            this.sharedWork = sharedWork;
+            this.predicate = predicate;
+            this.byteMatcher = byteMatcher;
+        }
+
+        /// <summary>
+        /// Opens this partition's `VS8` reader on the calling worker thread.<br/>
+        /// The first <see cref="IEnumerator{T}.MoveNext"/> call acquires the worker-local coherent read before the coordinator releases its transition read.<br/>
+        /// </summary>
+        /// <returns>The worker-owned identity enumerator for this disjoint range.<br/></returns>
+        public IEnumerator<ulong> OpenEnumerator()
+        {
+            return Iterate().GetEnumerator();
+        }
+
+        /// <inheritdoc/>
+        public IdentityPrimitivePartitionWork CaptureWork()
+            => new(workItemsClaimed, sourceItemsExamined, matchesEmitted);
+
+        private void RecordSourceItem() => sourceItemsExamined++;
+
+        private void RecordMatch() => matchesEmitted++;
+
+        private void RecordClaimedTarget() => workItemsClaimed++;
+
+        private IEnumerable<ulong> Iterate()
+        {
+            LibraDexStringPatternPredicate? workerPredicate = predicate?.CreateParallelWorkerCopy();
+            VarKeyScalar8PhysicalTarget[] targets = physical.SeedTargets
+                ?? throw new InvalidOperationException("A router-native VS8 FastFind partition did not retain continuation targets.");
+            using VarKeyScalar8RangeReader reader = index.Session.OpenVarKeyScalar8RangeReaderFromTargets(
+                index.Handle.MaxKeyLength,
+                physical.LowerKey,
+                physical.UpperKey,
+                targets,
+                usePooledStreamingShelfReads: true);
+            while (true)
+            {
+                while (reader.MoveNext())
+                {
+                    RecordSourceItem();
+                    if (workerPredicate is not null)
+                    {
+                        ReadOnlySpan<byte> currentKey = reader.CurrentKey;
+                        if (byteMatcher is not null)
+                        {
+                            LibraDexUtf8MatchResult byteMatch = EvaluateEncodedStringPayload(currentKey, byteMatcher);
+                            if (byteMatch == LibraDexUtf8MatchResult.NoMatch)
+                                continue;
+                            if (byteMatch == LibraDexUtf8MatchResult.RequiresManaged)
+                            {
+                                if (!TryMatchEncodedUtf8Regex(currentKey, workerPredicate, out bool regexMatch))
+                                {
+                                    string? candidate = Decode(currentKey);
+                                    if (candidate is null || !workerPredicate.Matches(candidate))
+                                        continue;
+                                }
+                                else if (!regexMatch)
+                                    continue;
+                            }
+                        }
+                        else
+                        {
+                            if (!TryMatchEncodedUtf8Regex(currentKey, workerPredicate, out bool regexMatch))
+                            {
+                                string? candidate = Decode(currentKey);
+                                if (candidate is null || !workerPredicate.Matches(candidate))
+                                    continue;
+                            }
+                            else if (!regexMatch)
+                                continue;
+                        }
+                    }
+
+                    RecordMatch();
+                    yield return reader.CurrentEncodedIdentity;
+                }
+
+                if (!sharedWork.TryTake(out VarKeyScalar8PhysicalTarget target))
+                    yield break;
+
+                RecordClaimedTarget();
+                reader.AppendPhysicalTarget(target);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Owns surplus disjoint `VS8` continuation targets shared by one exact FastFind worker set.<br/>
+    /// Every worker begins with a private target under its own coherent read, then claims one queued descriptor only after draining its prior descriptor; no key or identity results are materialized by this queue.<br/>
+    /// </summary>
+    private sealed class StringRangeIdentityWorkQueue
+    {
+        private readonly ConcurrentQueue<VarKeyScalar8PhysicalTarget> targets;
+
+        /// <summary>
+        /// Initializes the bounded topology-work queue from planner-owned continuation descriptors.<br/>
+        /// </summary>
+        /// <param name="targets">Surplus disjoint targets not used to bootstrap exact workers.<br/></param>
+        internal StringRangeIdentityWorkQueue(IEnumerable<VarKeyScalar8PhysicalTarget> targets)
+        {
+            ArgumentNullException.ThrowIfNull(targets);
+            this.targets = new ConcurrentQueue<VarKeyScalar8PhysicalTarget>(targets);
+        }
+
+        /// <summary>
+        /// Claims one remaining topology descriptor for the calling worker.<br/>
+        /// </summary>
+        /// <param name="target">The uniquely claimed target when work remains.<br/></param>
+        /// <returns><see langword="true"/> when one target was transferred to the caller.<br/></returns>
+        internal bool TryTake(out VarKeyScalar8PhysicalTarget target) => targets.TryDequeue(out target);
+    }
+
+    /// <summary>
+    /// Owns one disjoint exhausted-key terminal identity slice whose coherent reader is acquired on the assigned worker thread.<br/>
+    /// </summary>
+    private sealed class TerminalIdentityPartition : IIdentityPrimitivePartition<ulong>
+    {
+        private readonly LibraDexFileSession session;
+        private readonly VarKeyScalar8TerminalIdentityPartition partition;
+
+        internal TerminalIdentityPartition(
+            LibraDexFileSession session,
+            VarKeyScalar8TerminalIdentityPartition partition)
+        {
+            this.session = session;
+            this.partition = partition;
+        }
+
+        /// <summary>
+        /// Opens the assigned terminal shelf/slot slice on the calling worker thread.<br/>
+        /// </summary>
+        /// <returns>The worker-owned enumerator for this exact-key identity partition.<br/></returns>
+        public IEnumerator<ulong> OpenEnumerator()
+        {
+            return Iterate().GetEnumerator();
+        }
+
+        /// <inheritdoc/>
+        public IdentityPrimitivePartitionWork CaptureWork() => new(1, emitted, emitted);
+
+        private long emitted;
+
+        private IEnumerable<ulong> Iterate()
+        {
+            foreach (ulong identity in session.IterateVarKeyScalar8TerminalIdentityPartition(partition))
+            {
+                emitted++;
+                yield return identity;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Streams one planner-owned `VS8` continuation-target group through a worker-local coherent reader.<br/>
+    /// Physical targets are entered directly instead of reopening the root cursor, while the original global bounds remain authoritative for every shelf slot.<br/>
+    /// A null predicate denotes a byte-complete range; otherwise the same UTF-8 fast matcher and managed fallback used by the ordinary string-pattern cursor preserve exact semantics.<br/>
+    /// </summary>
+    /// <param name="index">The exact or maintained string-projection index.<br/></param>
+    /// <param name="physical">The disjoint continuation targets and global encoded bounds owned by this worker.<br/></param>
+    /// <param name="predicate">The optional residual string-pattern predicate.<br/></param>
+    /// <param name="byteMatcher">The optional allocation-free UTF-8 matcher.<br/></param>
+    /// <returns>Matching encoded identities from only this physical partition.<br/></returns>
     private static string? RequireString(IReadOnlyList<object?> values, int ordinal)
     {
         if (values.Count <= ordinal)
@@ -3106,7 +4158,7 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         return new LibraDexGenericInsertResult(inserted, false, default, default);
     }
 
-    private static IEnumerable<object> IterateKeyState(VarKeyScalar8Index index, NullKey keyState, int? takeLimit)
+    private static IEnumerable<ulong> IterateKeyState(VarKeyScalar8Index index, NullKey keyState, int? takeLimit)
     {
         if (keyState != NullKey.NullOrEmpty)
         {
@@ -3268,17 +4320,38 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
     }
 
     /// <summary>
-    /// Tests one encoded LibraDex string key against a byte-native UTF-8 payload matcher.<br/>
+    /// Attempts span-native regex evaluation over one encoded LibraDex string key while preserving null, empty, and value-marker semantics.<br/>
+    /// The predicate decides whether its exact regex contract is eligible; unsupported shapes return <see langword="false"/> without decoding so the caller can execute its established managed fallback.<br/>
+    /// </summary>
+    /// <param name="encoded">One complete encoded string key including its LibraDex key-state marker.<br/></param>
+    /// <param name="predicate">Compiled logical string predicate shared by the active scan.<br/></param>
+    /// <param name="matches">Receives the complete predicate result when this method returns <see langword="true"/>.<br/></param>
+    /// <returns><see langword="true"/> when the encoded key was a valid empty/value state and the predicate completed through UTF-8 span evaluation; otherwise <see langword="false"/>.<br/></returns>
+    private static bool TryMatchEncodedUtf8Regex(
+        ReadOnlySpan<byte> encoded,
+        LibraDexStringPatternPredicate predicate,
+        out bool matches)
+    {
+        matches = false;
+        if (encoded.Length == 1 && encoded[0] == StringEmptyMarker)
+            return predicate.TryMatchUtf8Regex(ReadOnlySpan<byte>.Empty, out matches);
+        if (encoded.Length > 1 && encoded[0] == StringValueMarker)
+            return predicate.TryMatchUtf8Regex(encoded[1..], out matches);
+        return false;
+    }
+
+    /// <summary>
+    /// Evaluates one encoded LibraDex string key through a byte-native UTF-8 payload matcher.<br/>
     /// Null and empty sentinel keys are not routed through ordinary var-key string scans, but the guard keeps the helper defensive for future callers.<br/>
     /// </summary>
-    /// <param name="encoded">The encoded string key bytes, including the leading LibraDex string marker.</param>
-    /// <param name="matcher">The byte-native predicate compiled for this query.</param>
-    /// <returns><see langword="true"/> when the encoded key has a string payload and the payload matches.</returns>
-    private static bool TryMatchEncodedStringPayload(ReadOnlySpan<byte> encoded, LibraDexUtf8StringPatternPredicate matcher)
+    /// <param name="encoded">The encoded string key bytes, including the leading LibraDex string marker.<br/></param>
+    /// <param name="matcher">The byte-native predicate compiled for this query.<br/></param>
+    /// <returns>The final byte match state, or a managed-fallback request for a non-ASCII or culture-sensitive candidate.<br/></returns>
+    private static LibraDexUtf8MatchResult EvaluateEncodedStringPayload(ReadOnlySpan<byte> encoded, LibraDexUtf8StringPatternPredicate matcher)
     {
-        return encoded.Length > 1 &&
-            encoded[0] == StringValueMarker &&
-            matcher.Matches(encoded[1..]);
+        return encoded.Length > 1 && encoded[0] == StringValueMarker
+            ? matcher.Evaluate(encoded[1..])
+            : LibraDexUtf8MatchResult.NoMatch;
     }
 
     /// <summary>
@@ -3323,14 +4396,52 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
     /// <param name="value">The original developer-facing string value, or null for the null-key sentinel.</param>
     /// <param name="culture">The projection culture.</param>
     /// <returns>The culture-folded string value, or null for the null-key sentinel.</returns>
-    private static string? Fold(string? value, CultureInfo culture)
+    private static string? Fold(string? value, CultureInfo culture, LibraDexTextNormalization normalization)
     {
         if (value is null)
         {
             return null;
         }
 
-        return value.ToLower(culture);
+        if (normalization == LibraDexTextNormalization.None)
+        {
+            return value.ToLower(culture);
+        }
+
+        string normalizedValue = NormalizeCanonical(value)!;
+        string foldedValue = normalizedValue.ToLower(culture);
+        return NormalizeCanonical(foldedValue);
+    }
+
+    /// <summary>
+    /// Returns one string in Unicode canonical composition Form C while preserving case.<br/>
+    /// ASCII and already-normalized strings return the original instance, avoiding an allocation on the overwhelmingly common fast path.<br/>
+    /// </summary>
+    /// <param name="value">The developer-facing string value, or null for the null-key sentinel.<br/></param>
+    /// <returns>The Form-C value, the original instance when conversion is unnecessary, or null for the null-key sentinel.<br/></returns>
+    private static string? NormalizeCanonical(string? value)
+    {
+        if (value is null || value.Length == 0)
+        {
+            return value;
+        }
+
+        bool ascii = true;
+        for (int i = 0; i < value.Length; i++)
+        {
+            if (value[i] > 0x7F)
+            {
+                ascii = false;
+                break;
+            }
+        }
+
+        if (ascii || value.IsNormalized(NormalizationForm.FormC))
+        {
+            return value;
+        }
+
+        return value.Normalize(NormalizationForm.FormC);
     }
 
     /// <summary>
@@ -3361,15 +4472,16 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
     /// </summary>
     /// <param name="value">The original developer-facing string value, or null for the null-key sentinel.</param>
     /// <param name="culture">The projection culture.</param>
-    /// <returns>The sort-key bytes for ignore-case comparison in the supplied culture.</returns>
-    private static byte[] CreateSortKey(string? value, CultureInfo culture)
+    /// <param name="compareOptions">The exact comparison options belonging to the maintained profile.</param>
+    /// <returns>The sort-key bytes for the supplied culture and comparison options.</returns>
+    private static byte[] CreateSortKey(string? value, CultureInfo culture, CompareOptions compareOptions)
     {
         if (value is null)
         {
             return new[] { StringNullMarker };
         }
 
-        return culture.CompareInfo.GetSortKey(value, CompareOptions.IgnoreCase).KeyData;
+        return culture.CompareInfo.GetSortKey(value, compareOptions).KeyData;
     }
 
     /// <summary>
@@ -3418,22 +4530,33 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
 
     private readonly record struct StringScalar8Tuple(string? Key, ulong Identity);
 
-    private sealed class LibraDexStringScalar8ProjectionIndex : IIndex, IIdentityPrimitiveExecutor, IDisposable
+    private sealed class LibraDexStringScalar8ProjectionIndex : IIndex, IIdentityPrimitiveExecutor, IIdentityPrimitiveExecutor<ulong>, IIdentityPrimitivePartitioner<ulong>, ILibraDexTextProjectionNormalizationProvider, IDisposable
     {
+        private readonly Catalog catalog;
         private readonly VarKeyScalar8Index index;
         private readonly Func<string?, string?> transform;
 
-        internal LibraDexStringScalar8ProjectionIndex(string group, string name, VarKeyScalar8Index index, Func<string?, string?> transform)
+        internal LibraDexStringScalar8ProjectionIndex(
+            Catalog catalog,
+            string group,
+            string name,
+            VarKeyScalar8Index index,
+            Func<string?, string?> transform,
+            LibraDexTextNormalization textNormalization)
         {
+            this.catalog = catalog;
             Group = group;
             Name = name;
             this.index = index;
             this.transform = transform;
+            TextNormalization = textNormalization;
         }
 
         public string Name { get; }
 
         public string Group { get; }
+
+        public Catalog Catalog => catalog;
 
         public Type KeyType => typeof(string);
 
@@ -3446,6 +4569,14 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         public CatalogIndexKeyFamily KeyFamily => CatalogIndexKeyFamily.String;
 
         public CatalogIndexIdentityFamily IdentityFamily => CatalogIndexIdentityFamily.Scalar;
+
+        public LibraDexTextNormalization TextNormalization { get; }
+
+        /// <summary>
+        /// Gets the physical variable-key/scalar-8 projection owned by this private logical projection wrapper.<br/>
+        /// The containing string facade uses this only for coordinated native population across all maintained projection roots.<br/>
+        /// </summary>
+        internal VarKeyScalar8Index PhysicalIndex => index;
 
         public LibraDexIndexShapeSpec? LogicalShape => null;
 
@@ -3613,12 +4744,33 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
 
         IReadOnlyList<object> IIdentityPrimitiveExecutor.ExecuteIdentityPrimitive(LibraDexIdentityPrimitiveRequest request)
         {
-            return IterateIdentityPrimitiveCore(request, index, transform).ToArray();
+            return BoxIdentityIterator(IterateIdentityPrimitiveCore(request, index, transform)).ToArray();
         }
 
         IEnumerable<object> IIdentityPrimitiveExecutor.IterateIdentityPrimitive(LibraDexIdentityPrimitiveRequest request)
         {
+            return BoxIdentityIterator(IterateIdentityPrimitiveCore(request, index, transform));
+        }
+
+        IEnumerable<ulong> IIdentityPrimitiveExecutor<ulong>.IterateIdentityPrimitiveTyped(LibraDexIdentityPrimitiveRequest request)
+        {
             return IterateIdentityPrimitiveCore(request, index, transform);
+        }
+
+        bool IIdentityPrimitivePartitioner<ulong>.TryCreateIdentityPrimitivePartitions(
+            LibraDexIdentityPrimitiveRequest request,
+            int workerCount,
+            out LibraDexIdentityPrimitivePartitionSet<ulong>? partitions,
+            out string? unsupportedReason)
+        {
+            return TryCreateStringIdentityPartitions(
+                request,
+                index,
+                transform,
+                allowCaseNormalizedBytes: true,
+                workerCount,
+                out partitions,
+                out unsupportedReason);
         }
 
         long IIdentityPrimitiveExecutor.CountIdentityPrimitive(LibraDexIdentityPrimitiveRequest request)
@@ -3651,10 +4803,15 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
 
         IReadOnlyList<object> IIdentityPrimitiveExecutor.ExecuteAllIdentities()
         {
-            return IterateAll(index).ToArray();
+            return BoxIdentityIterator(IterateAll(index)).ToArray();
         }
 
         IEnumerable<object> IIdentityPrimitiveExecutor.IterateIdentityUniverse()
+        {
+            return BoxIdentityIterator(IterateAll(index));
+        }
+
+        IEnumerable<ulong> IIdentityPrimitiveExecutor<ulong>.IterateIdentityUniverseTyped()
         {
             return IterateAll(index);
         }
@@ -3765,7 +4922,10 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
                     }
                 }
 
-                if (byteMatcher is not null && !TryMatchEncodedStringPayload(currentKey, byteMatcher))
+                LibraDexUtf8MatchResult byteMatch = byteMatcher is null
+                    ? LibraDexUtf8MatchResult.RequiresManaged
+                    : EvaluateEncodedStringPayload(currentKey, byteMatcher);
+                if (byteMatch == LibraDexUtf8MatchResult.NoMatch)
                 {
                     continue;
                 }
@@ -3776,7 +4936,9 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
                     continue;
                 }
 
-                if (byteMatcher is null && textFilter is not null && !textFilter(key))
+                if (byteMatch == LibraDexUtf8MatchResult.RequiresManaged &&
+                    textFilter is not null &&
+                    !textFilter(key))
                 {
                     continue;
                 }
@@ -3831,12 +4993,14 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         }
     }
 
-    private sealed class LibraDexStringScalar8SortKeyProjectionIndex : IIndex, IIdentityPrimitiveExecutor, IDisposable
+    private sealed class LibraDexStringScalar8SortKeyProjectionIndex : IIndex, IIdentityPrimitiveExecutor, IIdentityPrimitiveExecutor<ulong>, IDisposable
     {
+        private readonly Catalog catalog;
         private readonly VarKeyScalar8Index index;
 
-        internal LibraDexStringScalar8SortKeyProjectionIndex(string group, string name, VarKeyScalar8Index index)
+        internal LibraDexStringScalar8SortKeyProjectionIndex(Catalog catalog, string group, string name, VarKeyScalar8Index index)
         {
+            this.catalog = catalog;
             Group = group;
             Name = name;
             this.index = index;
@@ -3845,6 +5009,8 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         public string Name { get; }
 
         public string Group { get; }
+
+        public Catalog Catalog => catalog;
 
         public Type KeyType => typeof(byte[]);
 
@@ -3857,6 +5023,12 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         public CatalogIndexKeyFamily KeyFamily => CatalogIndexKeyFamily.Blob;
 
         public CatalogIndexIdentityFamily IdentityFamily => CatalogIndexIdentityFamily.Scalar;
+
+        /// <summary>
+        /// Gets the physical variable-key/scalar-8 projection owned by this private sort-key wrapper.<br/>
+        /// The containing string facade uses this only for coordinated native population across maintained projection roots.<br/>
+        /// </summary>
+        internal VarKeyScalar8Index PhysicalIndex => index;
 
         public LibraDexIndexShapeSpec? LogicalShape => null;
 
@@ -3977,10 +5149,15 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
 
         IReadOnlyList<object> IIdentityPrimitiveExecutor.ExecuteIdentityPrimitive(LibraDexIdentityPrimitiveRequest request)
         {
-            return IterateByteIdentityPrimitiveCore(request, index).ToArray();
+            return BoxIdentityIterator(IterateByteIdentityPrimitiveCore(request, index)).ToArray();
         }
 
         IEnumerable<object> IIdentityPrimitiveExecutor.IterateIdentityPrimitive(LibraDexIdentityPrimitiveRequest request)
+        {
+            return BoxIdentityIterator(IterateByteIdentityPrimitiveCore(request, index));
+        }
+
+        IEnumerable<ulong> IIdentityPrimitiveExecutor<ulong>.IterateIdentityPrimitiveTyped(LibraDexIdentityPrimitiveRequest request)
         {
             return IterateByteIdentityPrimitiveCore(request, index);
         }
@@ -4015,10 +5192,15 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
 
         IReadOnlyList<object> IIdentityPrimitiveExecutor.ExecuteAllIdentities()
         {
-            return IterateAll(index).ToArray();
+            return BoxIdentityIterator(IterateAll(index)).ToArray();
         }
 
         IEnumerable<object> IIdentityPrimitiveExecutor.IterateIdentityUniverse()
+        {
+            return BoxIdentityIterator(IterateAll(index));
+        }
+
+        IEnumerable<ulong> IIdentityPrimitiveExecutor<ulong>.IterateIdentityUniverseTyped()
         {
             return IterateAll(index);
         }
@@ -4030,7 +5212,7 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         /// <param name="request">The identity primitive request produced by the condition bridge.</param>
         /// <param name="index">The maintained sort-key projection index.</param>
         /// <returns>The matching scalar identities as runtime objects.</returns>
-        private static IEnumerable<object> IterateByteIdentityPrimitiveCore(LibraDexIdentityPrimitiveRequest request, VarKeyScalar8Index index)
+        private static IEnumerable<ulong> IterateByteIdentityPrimitiveCore(LibraDexIdentityPrimitiveRequest request, VarKeyScalar8Index index)
         {
             switch (request.CriteriaKind)
             {
@@ -4142,7 +5324,7 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         /// <param name="values">The primitive request values containing one enumerable of byte-array sort keys.</param>
         /// <param name="takeLimit">Optional identity limit.</param>
         /// <returns>The matching scalar identities as runtime objects.</returns>
-        private static IEnumerable<object> IterateByteMembership(VarKeyScalar8Index index, IReadOnlyList<object?> values, int? takeLimit)
+        private static IEnumerable<ulong> IterateByteMembership(VarKeyScalar8Index index, IReadOnlyList<object?> values, int? takeLimit)
         {
             int yielded = 0;
             foreach (object? value in values)
@@ -4155,7 +5337,7 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
                 foreach (object item in objects)
                 {
                     byte[] key = item as byte[] ?? throw new InvalidOperationException("Sort-key membership primitive requires byte[] values.");
-                    foreach (object identity in IterateLogicalByteRange(index, key, key, null))
+                    foreach (ulong identity in IterateLogicalByteRange(index, key, key, null))
                     {
                         yield return identity;
                         yielded++;
@@ -4168,12 +5350,12 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
             }
         }
 
-        private static IEnumerable<object> IterateLogicalByteRange(VarKeyScalar8Index index, byte[] lower, byte[] upper, int? takeLimit)
+        private static IEnumerable<ulong> IterateLogicalByteRange(VarKeyScalar8Index index, byte[] lower, byte[] upper, int? takeLimit)
         {
             return IterateLogicalByteRange(index, lower, upper, takeLimit, keyFilter: null);
         }
 
-        private static IEnumerable<object> IterateLogicalByteRange(VarKeyScalar8Index index, byte[] lower, byte[] upper, int? takeLimit, Func<byte[], bool>? keyFilter)
+        private static IEnumerable<ulong> IterateLogicalByteRange(VarKeyScalar8Index index, byte[] lower, byte[] upper, int? takeLimit, Func<byte[], bool>? keyFilter)
         {
             using VarKeyScalar8RangeReader reader = index.OpenRangeReader(lower, upper);
             int yielded = 0;
@@ -4194,7 +5376,7 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
             }
         }
 
-        private static IEnumerable<object> IterateLogicalByteBefore(VarKeyScalar8Index index, byte[] boundary, bool inclusive, int? takeLimit)
+        private static IEnumerable<ulong> IterateLogicalByteBefore(VarKeyScalar8Index index, byte[] boundary, bool inclusive, int? takeLimit)
         {
             return IterateLogicalByteRange(
                 index,
@@ -4204,7 +5386,7 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
                 inclusive ? null : key => key.AsSpan().SequenceCompareTo(boundary) < 0);
         }
 
-        private static IEnumerable<object> IterateLogicalByteAfter(VarKeyScalar8Index index, byte[] boundary, bool inclusive, int? takeLimit)
+        private static IEnumerable<ulong> IterateLogicalByteAfter(VarKeyScalar8Index index, byte[] boundary, bool inclusive, int? takeLimit)
         {
             return IterateLogicalByteRange(
                 index,
@@ -4390,7 +5572,10 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
             byte[]? foldedEncodedKey,
             byte[]? exactReversedEncodedKey,
             byte[]? sortKeyBytes,
-            byte[]? foldedReversedEncodedKey)
+            byte[]? foldedReversedEncodedKey,
+            byte[]? normalizedEncodedKey = null,
+            byte[]? normalizedReversedEncodedKey = null,
+            byte[][]? additionalSortKeyBytes = null)
         {
             Source = source;
             KeyState = keyState;
@@ -4399,6 +5584,9 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
             ExactReversedEncodedKey = exactReversedEncodedKey;
             SortKeyBytes = sortKeyBytes;
             FoldedReversedEncodedKey = foldedReversedEncodedKey;
+            NormalizedEncodedKey = normalizedEncodedKey;
+            NormalizedReversedEncodedKey = normalizedReversedEncodedKey;
+            AdditionalSortKeyBytes = additionalSortKeyBytes ?? Array.Empty<byte[]>();
         }
 
         internal string? Source { get; }
@@ -4414,6 +5602,12 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         internal byte[]? SortKeyBytes { get; }
 
         internal byte[]? FoldedReversedEncodedKey { get; }
+
+        internal byte[]? NormalizedEncodedKey { get; }
+
+        internal byte[]? NormalizedReversedEncodedKey { get; }
+
+        internal byte[][] AdditionalSortKeyBytes { get; }
     }
 
     /// <summary>
@@ -4510,6 +5704,20 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
             Span<byte> destination = RentSpan(key.Length + 1);
             destination[0] = LibraDexVarLenKeyCodec.ValueMarker;
             key.CopyTo(destination[1..]);
+            return destination;
+        }
+
+        /// <summary>
+        /// Wraps one already encoded UTF-8 string payload in LibraDex's exact string-value marker using reusable batch scratch.<br/>
+        /// The source bytes are copied once because routed string storage requires one contiguous marked key, while no string decode or UTF-8 re-encoding occurs.<br/>
+        /// </summary>
+        /// <param name="utf8Payload">A validated non-empty UTF-8 string payload without a length prefix or LibraDex marker.<br/></param>
+        /// <returns>The marked exact key span, valid until this scratch instance is reused.<br/></returns>
+        internal ReadOnlySpan<byte> EncodeUtf8Payload(ReadOnlySpan<byte> utf8Payload)
+        {
+            Span<byte> destination = RentSpan(checked(utf8Payload.Length + 1));
+            destination[0] = StringValueMarker;
+            utf8Payload.CopyTo(destination[1..]);
             return destination;
         }
 
@@ -4642,6 +5850,1272 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
             MaxRouterDepth = Math.Max(MaxRouterDepth, outcome.TargetRouterDepth);
         }
     }
+
+    private const int Utf8StackKeyThreshold = 512;
+    private static readonly UTF8Encoding StrictUtf8Encoding = new(
+        encoderShouldEmitUTF8Identifier: false,
+        throwOnInvalidBytes: true);
+
+    /// <summary>
+    /// Inserts one already encoded UTF-8 logical string without decoding and re-encoding its exact representation.<br/>
+    /// Empty payloads retain the dedicated empty-string identity route; non-empty payloads receive LibraDex's exact string marker in temporary stack or pooled storage.<br/>
+    /// When this logical index owns folded, reversed, or culture sort-key companions, the validated payload is decoded exactly once and LibraDex derives every maintained projection from that one string.<br/>
+    /// </summary>
+    /// <param name="utf8Key">The complete UTF-8 string payload without an external length prefix or LibraDex marker.<br/></param>
+    /// <param name="identity">The scalar identity to associate with the logical string.<br/></param>
+    /// <returns>The exact-index insertion result.<br/></returns>
+    /// <exception cref="ArgumentException">The supplied payload is not valid UTF-8.<br/></exception>
+    /// <exception cref="ArgumentOutOfRangeException">The marked exact key exceeds this index's persisted maximum key length.<br/></exception>
+    public LibraDexGenericInsertResult InsertUtf8(ReadOnlySpan<byte> utf8Key, ulong identity)
+    {
+        ThrowIfDisposed();
+        if (utf8Key.IsEmpty)
+        {
+            return Insert(string.Empty, identity);
+        }
+
+        if (catalog?.TryGetActiveIdentityGroupBatch(Group, out CatalogIdentityGroupBatchManager? groupBatch) == true)
+        {
+            return groupBatch.InsertUtf8(this, utf8Key, identity);
+        }
+
+        ThrowIfSessionDurabilityBatchActiveForImmediateMutation();
+        string? projectionSource = ValidateUtf8Payload(
+            utf8Key,
+            decodeForProjections: HasMaintainedProjections());
+        int encodedLength = checked(utf8Key.Length + 1);
+        byte[]? rented = null;
+        Span<byte> encodedKey = encodedLength <= Utf8StackKeyThreshold
+            ? stackalloc byte[encodedLength]
+            : (rented = ArrayPool<byte>.Shared.Rent(encodedLength)).AsSpan(0, encodedLength);
+        try
+        {
+            EncodeUtf8Payload(utf8Key, encodedKey);
+            VarKeyScalar8InsertOutcome exactResult = exact.InsertEncoded(encodedKey, identity);
+            if (projectionSource is not null)
+            {
+                InsertUtf8ProjectionTuplesImmediate(projectionSource, identity);
+            }
+
+            return RecordInsert(new LibraDexGenericInsertResult(
+                exactResult.Inserted,
+                exactResult.CreatedInitialShelfRoute,
+                default,
+                LibraDexOperationDiagnostics.FromDataKernel(exactResult.Commit)));
+        }
+        finally
+        {
+            if (rented is not null)
+            {
+                ArrayPool<byte>.Shared.Return(rented, clearArray: false);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Inserts one borrowed UTF-8 logical string inside the caller's active durability scope.<br/>
+    /// The caller-owned scratch supplies contiguous marked exact bytes, and any maintained Unicode projections are derived from one validated decode.<br/>
+    /// </summary>
+    /// <param name="utf8Key">The complete UTF-8 string payload without an external length prefix or LibraDex marker.<br/></param>
+    /// <param name="identity">The scalar identity to associate with the logical string.<br/></param>
+    /// <param name="scratch">The active group batch's reusable string encoding scratch.<br/></param>
+    /// <returns>The exact-index insertion result with publication telemetry deferred to the active group batch.<br/></returns>
+    internal LibraDexGenericInsertResult InsertUtf8InCurrentScope(
+        ReadOnlySpan<byte> utf8Key,
+        ulong identity,
+        LibraDexStringScalar8InsertScratch scratch)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(scratch);
+        if (utf8Key.IsEmpty)
+        {
+            return InsertStringKeyStateIdentity(NullKey.Empty, identity);
+        }
+
+        string? projectionSource = ValidateUtf8Payload(
+            utf8Key,
+            decodeForProjections: HasMaintainedProjections());
+        ReadOnlySpan<byte> encodedKey = scratch.EncodeUtf8Payload(utf8Key);
+        VarKeyScalar8InsertOutcome exactResult = exact.InsertEncodedInCurrentScope(encodedKey, identity);
+        RecordThreadInsertOutcome(Name, "exact", exactResult);
+        if (projectionSource is not null)
+        {
+            InsertUtf8ProjectionTuplesInCurrentScope(projectionSource, identity, scratch);
+        }
+
+        return new LibraDexGenericInsertResult(
+            exactResult.Inserted,
+            exactResult.CreatedInitialShelfRoute,
+            default,
+            default);
+    }
+
+    /// <summary>
+    /// Deletes one exact UTF-8 logical string tuple while maintaining every companion projection owned by this facade.<br/>
+    /// Exact-only indexes never decode the payload; projection-owning indexes decode once before mutation so invalid input cannot leave a partially changed tuple set.<br/>
+    /// </summary>
+    /// <param name="utf8Key">The complete UTF-8 string payload without an external length prefix or LibraDex marker.<br/></param>
+    /// <param name="identity">The scalar identity paired with the logical string.<br/></param>
+    /// <returns><see langword="true"/> when the exact tuple existed and was removed.<br/></returns>
+    public bool DeleteUtf8(ReadOnlySpan<byte> utf8Key, ulong identity)
+    {
+        ThrowIfDisposed();
+        if (utf8Key.IsEmpty)
+        {
+            bool emptyDeleted = DeleteExactTuple(string.Empty, identity);
+            if (emptyDeleted)
+            {
+                catalog.Stats.RecordDelete();
+            }
+
+            return emptyDeleted;
+        }
+
+        string? projectionSource = ValidateUtf8Payload(
+            utf8Key,
+            decodeForProjections: HasMaintainedProjections());
+        ThrowIfSessionDurabilityBatchActiveForImmediateMutation();
+        int encodedLength = checked(utf8Key.Length + 1);
+        byte[]? rented = null;
+        Span<byte> encodedKey = encodedLength <= Utf8StackKeyThreshold
+            ? stackalloc byte[encodedLength]
+            : (rented = ArrayPool<byte>.Shared.Rent(encodedLength)).AsSpan(0, encodedLength);
+        try
+        {
+            EncodeUtf8Payload(utf8Key, encodedKey);
+            if (!exact.DeleteEncodedExactTuple(encodedKey, identity))
+            {
+                return false;
+            }
+
+            if (projectionSource is not null)
+            {
+                DeleteProjectionTuplesImmediate(projectionSource, identity);
+            }
+
+            catalog.Stats.RecordDelete();
+            return true;
+        }
+        finally
+        {
+            if (rented is not null)
+            {
+                ArrayPool<byte>.Shared.Return(rented, clearArray: false);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Determines whether one exact UTF-8 logical string and scalar identity tuple exists without decoding the key or allocating a result collection.<br/>
+    /// Empty strings use the metadata-backed empty-key route; non-empty strings seek only their marked exact-key range.<br/>
+    /// </summary>
+    /// <param name="utf8Key">The complete UTF-8 string payload without an external length prefix or LibraDex marker.<br/></param>
+    /// <param name="identity">The scalar identity expected on the exact key route.<br/></param>
+    /// <returns><see langword="true"/> when the exact tuple exists.<br/></returns>
+    public bool ContainsTupleUtf8(ReadOnlySpan<byte> utf8Key, ulong identity)
+    {
+        ThrowIfDisposed();
+        if (utf8Key.IsEmpty)
+        {
+            return exact.Session.ContainsScalar8KeyStateIdentity(
+                exact.SlotIndex,
+                KeyStateRoute.Empty,
+                identity);
+        }
+
+        _ = ValidateUtf8Payload(utf8Key, decodeForProjections: false);
+        int encodedLength = checked(utf8Key.Length + 1);
+        byte[]? rented = null;
+        Span<byte> encodedKey = encodedLength <= Utf8StackKeyThreshold
+            ? stackalloc byte[encodedLength]
+            : (rented = ArrayPool<byte>.Shared.Rent(encodedLength)).AsSpan(0, encodedLength);
+        try
+        {
+            EncodeUtf8Payload(utf8Key, encodedKey);
+            using VarKeyScalar8RangeReader reader = exact.OpenEncodedRangeReader(encodedKey, encodedKey);
+            while (reader.MoveNext())
+            {
+                if (reader.CurrentEncodedIdentity == identity)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+        finally
+        {
+            if (rented is not null)
+            {
+                ArrayPool<byte>.Shared.Return(rented, clearArray: false);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Determines whether any scalar identity other than the permitted identity owns one exact UTF-8 logical string key.<br/>
+    /// Evaluation stops at the first different owner and does not materialize the key's complete identity list.<br/>
+    /// </summary>
+    /// <param name="utf8Key">The complete UTF-8 string payload without an external length prefix or LibraDex marker.<br/></param>
+    /// <param name="identity">The identity permitted to retain the key.<br/></param>
+    /// <returns><see langword="true"/> when a different identity owns the exact key.<br/></returns>
+    public bool ContainsOtherIdentityUtf8(ReadOnlySpan<byte> utf8Key, ulong identity)
+    {
+        ThrowIfDisposed();
+        if (utf8Key.IsEmpty)
+        {
+            long count = exact.Session.CountScalar8KeyStateIdentities(exact.SlotIndex, KeyStateRoute.Empty);
+            if (count == 0)
+            {
+                return false;
+            }
+
+            return count > 1 ||
+                !exact.Session.ContainsScalar8KeyStateIdentity(exact.SlotIndex, KeyStateRoute.Empty, identity);
+        }
+
+        _ = ValidateUtf8Payload(utf8Key, decodeForProjections: false);
+        int encodedLength = checked(utf8Key.Length + 1);
+        byte[]? rented = null;
+        Span<byte> encodedKey = encodedLength <= Utf8StackKeyThreshold
+            ? stackalloc byte[encodedLength]
+            : (rented = ArrayPool<byte>.Shared.Rent(encodedLength)).AsSpan(0, encodedLength);
+        try
+        {
+            EncodeUtf8Payload(utf8Key, encodedKey);
+            using VarKeyScalar8RangeReader reader = exact.OpenEncodedRangeReader(encodedKey, encodedKey);
+            while (reader.MoveNext())
+            {
+                if (reader.CurrentEncodedIdentity != identity)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+        finally
+        {
+            if (rented is not null)
+            {
+                ArrayPool<byte>.Shared.Return(rented, clearArray: false);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Validates one borrowed UTF-8 payload and this index's persisted exact-key length contract.<br/>
+    /// Exact-only callers validate without materializing a string; projection-owning callers receive the single decoded source needed to derive companion keys.<br/>
+    /// </summary>
+    /// <param name="utf8Key">The non-empty UTF-8 payload to validate.<br/></param>
+    /// <param name="decodeForProjections"><see langword="true"/> to decode and return the logical source string for maintained projections; otherwise only validate the bytes.<br/></param>
+    /// <returns>The decoded source when requested; otherwise <see langword="null"/>.<br/></returns>
+    private string? ValidateUtf8Payload(ReadOnlySpan<byte> utf8Key, bool decodeForProjections)
+    {
+        int encodedLength = checked(utf8Key.Length + 1);
+        if (encodedLength > exact.Handle.MaxKeyLength)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(utf8Key),
+                utf8Key.Length,
+                $"UTF-8 string payload length must be at most {exact.Handle.MaxKeyLength - 1} bytes for this index.");
+        }
+
+        try
+        {
+            if (decodeForProjections)
+            {
+                return StrictUtf8Encoding.GetString(utf8Key);
+            }
+
+            _ = StrictUtf8Encoding.GetCharCount(utf8Key);
+            return null;
+        }
+        catch (DecoderFallbackException exception)
+        {
+            throw new ArgumentException("String index UTF-8 payloads must contain valid complete UTF-8 text.", nameof(utf8Key), exception);
+        }
+    }
+
+    /// <summary>
+    /// Writes LibraDex's ordinary string-value marker before one validated UTF-8 payload in caller-owned temporary storage.<br/>
+    /// </summary>
+    /// <param name="utf8Key">The validated non-empty UTF-8 payload.<br/></param>
+    /// <param name="destination">The exact-sized marked-key destination.<br/></param>
+    private static void EncodeUtf8Payload(ReadOnlySpan<byte> utf8Key, Span<byte> destination)
+    {
+        destination[0] = StringValueMarker;
+        utf8Key.CopyTo(destination[1..]);
+    }
+
+    /// <summary>
+    /// Maintains every projection owned by this logical string facade after one immediate borrowed-UTF-8 exact insert.<br/>
+    /// </summary>
+    /// <param name="source">The one decoded logical source string.<br/></param>
+    /// <param name="identity">The scalar identity paired with the source.<br/></param>
+    private void InsertUtf8ProjectionTuplesImmediate(string source, ulong identity)
+    {
+        folded?.InsertProjected(source, identity);
+        exactReversed?.InsertProjected(Reverse(source), identity);
+        InsertSortKeyProjections(source, identity);
+        foldedReversed?.InsertProjected(Reverse(Fold(source, foldedCulture, foldedNormalization)), identity);
+        normalized?.InsertProjected(source, identity);
+        normalizedReversed?.InsertProjected(Reverse(NormalizeCanonical(source)), identity);
+    }
+
+    /// <summary>
+    /// Maintains every projection owned by this logical string facade inside the active identity-group durability scope.<br/>
+    /// </summary>
+    /// <param name="source">The one decoded logical source string.<br/></param>
+    /// <param name="identity">The scalar identity paired with the source.<br/></param>
+    /// <param name="scratch">Reusable group-batch string encoding scratch.<br/></param>
+    private void InsertUtf8ProjectionTuplesInCurrentScope(
+        string source,
+        ulong identity,
+        LibraDexStringScalar8InsertScratch scratch)
+    {
+        if (folded is not null)
+        {
+            if (IsInvariantCulture(foldedCulture) && foldedNormalization == LibraDexTextNormalization.None)
+            {
+                _ = folded.InsertEncodedInCurrentScope(scratch.EncodeInvariantFoldedString(source), identity);
+            }
+            else
+            {
+                _ = folded.InsertProjectedInCurrentScope(source, identity, scratch);
+            }
+        }
+
+        if (exactReversed is not null)
+        {
+            _ = exactReversed.InsertProjectedInCurrentScope(Reverse(source), identity, scratch);
+        }
+
+        InsertSortKeyProjectionsInCurrentScope(source, identity, scratch);
+
+        if (foldedReversed is not null)
+        {
+            _ = foldedReversed.InsertProjectedInCurrentScope(Reverse(Fold(source, foldedCulture, foldedNormalization)), identity, scratch);
+        }
+
+        if (normalized is not null)
+        {
+            _ = normalized.InsertProjectedInCurrentScope(source, identity, scratch);
+        }
+
+        if (normalizedReversed is not null)
+        {
+            _ = normalizedReversed.InsertProjectedInCurrentScope(Reverse(NormalizeCanonical(source)), identity, scratch);
+        }
+    }
+
+    /// <summary>
+    /// Opens runtime sort-key projection facades from persisted physical bindings and validates their collation signatures.<br/>
+    /// Legacy profiles with no recorded sort version remain reopenable; versioned profiles fail closed when the current globalization tables would produce incompatible key bytes.<br/>
+    /// </summary>
+    /// <param name="catalog">The catalog that owns every physical projection.<br/></param>
+    /// <param name="group">The logical identity group shared by the projections.<br/></param>
+    /// <param name="bindings">The physical slots and semantic profiles persisted for this logical string index.<br/></param>
+    /// <returns>The validated runtime projection array in persisted preference order.<br/></returns>
+    private static LibraDexStringSortKeyProjection[] CreateSortKeyProjections(
+        Catalog catalog,
+        string group,
+        IReadOnlyList<LibraDexStringSortKeyProjectionBinding> bindings)
+    {
+        ArgumentNullException.ThrowIfNull(bindings);
+        LibraDexStringSortKeyProjection[] result = new LibraDexStringSortKeyProjection[bindings.Count];
+        for (int i = 0; i < result.Length; i++)
+        {
+            LibraDexStringSortKeyProjectionBinding binding = bindings[i];
+            CultureInfo culture = ResolveCulture(binding.CultureName);
+            SortVersion currentVersion = culture.CompareInfo.Version;
+            if (binding.SortVersionFullVersion != 0 &&
+                (binding.SortVersionFullVersion != currentVersion.FullVersion ||
+                binding.SortVersionId != currentVersion.SortId))
+            {
+                throw new InvalidDataException(
+                    $"String sort-key projection '{binding.PhysicalName}' was created with collation version {binding.SortVersionFullVersion}/{binding.SortVersionId}, but the active runtime provides {currentVersion.FullVersion}/{currentVersion.SortId}. Rebuild the projection before opening it.");
+            }
+
+            result[i] = new LibraDexStringSortKeyProjection(
+                new LibraDexStringScalar8SortKeyProjectionIndex(catalog, group, binding.PhysicalName, binding.Index),
+                culture,
+                binding.CompareOptions);
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Resolves the exact maintained sort-key projection matching a requested culture and comparison-options profile.<br/>
+    /// No fallback is attempted because different collation profiles do not share an ordered byte domain.<br/>
+    /// </summary>
+    /// <param name="culture">The resolved requested culture.<br/></param>
+    /// <param name="compareOptions">The exact requested comparison options.<br/></param>
+    /// <returns>The compatible maintained projection, or null when this index does not own one.<br/></returns>
+    private LibraDexStringScalar8SortKeyProjectionIndex? FindSortKeyProjection(
+        CultureInfo culture,
+        CompareOptions compareOptions)
+    {
+        for (int i = 0; i < sortKeyProfiles.Length; i++)
+        {
+            LibraDexStringSortKeyProjection profile = sortKeyProfiles[i];
+            if (profile.CompareOptions == compareOptions && CulturesMatch(profile.Culture, culture))
+            {
+                return profile.Index;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Resolves one maintained sort-key projection by its deterministic owned physical name.<br/>
+    /// Projection tuple diagnostics use this after condition materialization has already selected the exact semantic profile.<br/>
+    /// </summary>
+    /// <param name="physicalName">The materialized projection index name.<br/></param>
+    /// <returns>The matching projection, or null when the name does not belong to this facade.<br/></returns>
+    private LibraDexStringScalar8SortKeyProjectionIndex? FindSortKeyProjection(string physicalName)
+    {
+        for (int i = 0; i < sortKeyProfiles.Length; i++)
+        {
+            if (string.Equals(sortKeyProfiles[i].Index.Name, physicalName, StringComparison.Ordinal))
+            {
+                return sortKeyProfiles[i].Index;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Resolves the exact comparison options requested by a string condition leaf.<br/>
+    /// An explicit method-level policy wins; otherwise the legacy ignore-case flag maps to <see cref="CompareOptions.IgnoreCase"/> and case-sensitive leaves map to <see cref="CompareOptions.None"/>.<br/>
+    /// </summary>
+    /// <param name="descriptor">The frozen condition leaf descriptor.<br/></param>
+    /// <returns>The comparison options that must match a maintained sort-key profile.<br/></returns>
+    private static CompareOptions ResolveRequestedSortKeyCompareOptions(LibraDexConditionLeafDescriptor descriptor)
+    {
+        return descriptor.StringComparisonPolicy?.CompareOptions ??
+            (descriptor.IgnoreCase ? CompareOptions.IgnoreCase : CompareOptions.None);
+    }
+
+    /// <summary>
+    /// Creates every configured sort-key byte sequence once for a reusable prepared string key.<br/>
+    /// The returned array follows persisted profile order so prepared insertion can address physical companions without another semantic lookup.<br/>
+    /// </summary>
+    /// <param name="key">The non-empty exact source key.<br/></param>
+    /// <returns>One sort-key byte array per maintained profile.<br/></returns>
+    private byte[][] CreatePreparedSortKeyBytes(string key)
+    {
+        byte[][] result = new byte[sortKeyProfiles.Length][];
+        for (int i = 0; i < result.Length; i++)
+        {
+            LibraDexStringSortKeyProjection profile = sortKeyProfiles[i];
+            result[i] = CreateSortKey(key, profile.Culture, profile.CompareOptions);
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Inserts one logical source value into every maintained culture-aware sort-key projection.<br/>
+    /// Each profile generates its own bytes because culture and comparison options are part of the persisted key domain.<br/>
+    /// </summary>
+    /// <param name="key">The exact source key.<br/></param>
+    /// <param name="identity">The scalar identity paired with the source key.<br/></param>
+    private void InsertSortKeyProjections(string? key, ulong identity)
+    {
+        for (int i = 0; i < sortKeyProfiles.Length; i++)
+        {
+            LibraDexStringSortKeyProjection profile = sortKeyProfiles[i];
+            _ = profile.Index.InsertProjected(CreateSortKey(key, profile.Culture, profile.CompareOptions), identity);
+        }
+    }
+
+    /// <summary>
+    /// Inserts one logical source value into every sort-key projection inside the caller's active durability scope.<br/>
+    /// The optional scratch object remains shared with the surrounding string projection maintenance path.<br/>
+    /// </summary>
+    /// <param name="key">The exact source key.<br/></param>
+    /// <param name="identity">The scalar identity paired with the source key.<br/></param>
+    /// <param name="scratch">Optional reusable projection scratch storage.<br/></param>
+    private void InsertSortKeyProjectionsInCurrentScope(
+        string? key,
+        ulong identity,
+        LibraDexStringScalar8InsertScratch? scratch)
+    {
+        for (int i = 0; i < sortKeyProfiles.Length; i++)
+        {
+            LibraDexStringSortKeyProjection profile = sortKeyProfiles[i];
+            _ = profile.Index.InsertProjectedInCurrentScope(
+                CreateSortKey(key, profile.Culture, profile.CompareOptions),
+                identity,
+                scratch);
+        }
+    }
+
+    /// <summary>
+    /// Inserts precomputed sort-key bytes into every configured projection.<br/>
+    /// Prepared bytes are validated against the current profile count so a key prepared by a differently configured facade cannot silently omit a culture subindex.<br/>
+    /// </summary>
+    /// <param name="prepared">The prepared logical string key.<br/></param>
+    /// <param name="identity">The scalar identity paired with the source key.<br/></param>
+    /// <param name="inCurrentScope">Whether to use the caller's active durability scope.<br/></param>
+    /// <param name="scratch">Optional reusable projection scratch storage for scoped insertion.<br/></param>
+    private void InsertPreparedSortKeyProjections(
+        LibraDexStringScalar8PreparedKey prepared,
+        ulong identity,
+        bool inCurrentScope,
+        LibraDexStringScalar8InsertScratch? scratch)
+    {
+        if (sortKeyProfiles.Length == 0)
+        {
+            return;
+        }
+
+        if (prepared.AdditionalSortKeyBytes.Length != sortKeyProfiles.Length - 1)
+        {
+            throw new InvalidOperationException("Prepared string key sort-profile count does not match the opened string index.");
+        }
+
+        for (int i = 0; i < sortKeyProfiles.Length; i++)
+        {
+            byte[] bytes = i == 0
+                ? RequirePreparedProjection(prepared.SortKeyBytes, "sort-key")
+                : prepared.AdditionalSortKeyBytes[i - 1];
+            if (inCurrentScope)
+            {
+                _ = sortKeyProfiles[i].Index.InsertProjectedInCurrentScope(bytes, identity, scratch);
+            }
+            else
+            {
+                _ = sortKeyProfiles[i].Index.InsertProjected(bytes, identity);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Deletes one logical source tuple from every maintained sort-key projection.<br/>
+    /// The caller chooses the immediate or active-scope physical delete path while profile-specific key generation remains centralized.<br/>
+    /// </summary>
+    /// <param name="key">The exact source key.<br/></param>
+    /// <param name="identity">The scalar identity paired with the source key.<br/></param>
+    /// <param name="immediate">Whether to use immediate projection deletion.<br/></param>
+    private void DeleteSortKeyProjections(string? key, ulong identity, bool immediate)
+    {
+        for (int i = 0; i < sortKeyProfiles.Length; i++)
+        {
+            LibraDexStringSortKeyProjection profile = sortKeyProfiles[i];
+            byte[] bytes = CreateSortKey(key, profile.Culture, profile.CompareOptions);
+            if (immediate)
+            {
+                profile.Index.DeleteProjectedExactTupleImmediate(bytes, identity);
+            }
+            else
+            {
+                profile.Index.DeleteProjectedExactTuple(bytes, identity);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Inserts one logical source tuple into every sort-key projection through a shared concurrent writer context.<br/>
+    /// All owned profiles therefore publish with the exact and other maintained projection rows in the same concurrent batch.<br/>
+    /// </summary>
+    /// <param name="writeContext">The shared concurrent writer context.<br/></param>
+    /// <param name="key">The exact source key.<br/></param>
+    /// <param name="identity">The scalar identity paired with the source key.<br/></param>
+    private void InsertSortKeyProjectionsForConcurrentBatch(
+        LibraDexWriteContext writeContext,
+        string? key,
+        ulong identity)
+    {
+        for (int i = 0; i < sortKeyProfiles.Length; i++)
+        {
+            LibraDexStringSortKeyProjection profile = sortKeyProfiles[i];
+            profile.Index.InsertProjectedForConcurrentBatch(
+                writeContext,
+                CreateSortKey(key, profile.Culture, profile.CompareOptions),
+                identity);
+        }
+    }
+
+    /// <summary>
+    /// Deletes one logical source tuple from every sort-key projection through a shared concurrent writer context.<br/>
+    /// Exact tuple semantics preserve other source rows that collide under one or more culture profiles.<br/>
+    /// </summary>
+    /// <param name="writeContext">The shared concurrent writer context.<br/></param>
+    /// <param name="key">The exact source key.<br/></param>
+    /// <param name="identity">The scalar identity paired with the source key.<br/></param>
+    private void DeleteSortKeyProjectionsForConcurrentBatch(
+        LibraDexWriteContext writeContext,
+        string? key,
+        ulong identity)
+    {
+        for (int i = 0; i < sortKeyProfiles.Length; i++)
+        {
+            LibraDexStringSortKeyProjection profile = sortKeyProfiles[i];
+            profile.Index.DeleteProjectedExactTupleForConcurrentBatch(
+                writeContext,
+                CreateSortKey(key, profile.Culture, profile.CompareOptions),
+                identity);
+        }
+    }
+
+    /// <summary>
+    /// Streams the complete logical string-index population in one maintained sort-key profile's byte order.<br/>
+    /// Ascending traversal emits the dedicated null and empty key states before ordinary sort-key rows; descending traversal reverses that composition while preserving requested direction within each state.<br/>
+    /// </summary>
+    /// <param name="profile">The exact maintained profile selected before iterator creation.<br/></param>
+    /// <param name="direction">The requested sort-key traversal direction.<br/></param>
+    /// <returns>A lazy sequence of scalar identities in complete culture-aware string order.<br/></returns>
+    private IEnumerable<ulong> IterateSortKeyIdentities(
+        LibraDexStringSortKeyProjection profile,
+        QueryDirection direction)
+    {
+        ThrowIfDisposed();
+        if (direction == QueryDirection.Ascending)
+        {
+            foreach (LibraDexObjectTuple tuple in IterateExactTuplePrimitive(
+                new LibraDexIdentityPrimitiveRequest(LibraDexCriteriaKind.KeyState, new object?[] { NullKey.Null }, Direction: direction)))
+            {
+                yield return (ulong)tuple.Identity;
+            }
+            foreach (LibraDexObjectTuple tuple in IterateExactTuplePrimitive(
+                new LibraDexIdentityPrimitiveRequest(LibraDexCriteriaKind.KeyState, new object?[] { NullKey.Empty }, Direction: direction)))
+            {
+                yield return (ulong)tuple.Identity;
+            }
+        }
+
+        foreach (LibraDexObjectTuple tuple in profile.Index.IterateTuplePrimitive(
+            new LibraDexIdentityPrimitiveRequest(LibraDexCriteriaKind.All, Array.Empty<object?>(), Direction: direction)))
+        {
+            yield return (ulong)tuple.Identity;
+        }
+
+        if (direction == QueryDirection.Descending)
+        {
+            foreach (LibraDexObjectTuple tuple in IterateExactTuplePrimitive(
+                new LibraDexIdentityPrimitiveRequest(LibraDexCriteriaKind.KeyState, new object?[] { NullKey.Empty }, Direction: direction)))
+            {
+                yield return (ulong)tuple.Identity;
+            }
+            foreach (LibraDexObjectTuple tuple in IterateExactTuplePrimitive(
+                new LibraDexIdentityPrimitiveRequest(LibraDexCriteriaKind.KeyState, new object?[] { NullKey.Null }, Direction: direction)))
+            {
+                yield return (ulong)tuple.Identity;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Exposes the complete logical exact-string population as record identities in the same null, empty, and UTF-8 key order used by LibraDex tuple traversal.<br/>
+    /// Ascending and descending traversal both stream shape-native identities without decoding keys or materializing a whole-result tuple list.<br/>
+    /// Descending ordinary keys use reverse router and shelf-slot movement; dedicated null and empty states are emitted afterward in reverse identity order.<br/>
+    /// The sequence is lazy and independently enumerable, and callers own only its enumerator rather than a detached whole-result collection.<br/>
+    /// </summary>
+    /// <param name="direction">Requested exact-key traversal direction.<br/></param>
+    /// <returns>A lazy sequence of UInt64 identities covering null, empty, and ordinary exact string keys.<br/></returns>
+    public IEnumerable<ulong> IterateExactIdentities(QueryDirection direction = QueryDirection.Ascending)
+    {
+        ThrowIfDisposed();
+        if (direction == QueryDirection.Ascending)
+        {
+            foreach (object identity in IterateAll(exact))
+                yield return (ulong)identity;
+            yield break;
+        }
+        if (direction != QueryDirection.Descending)
+            throw new ArgumentOutOfRangeException(nameof(direction), direction, "Unknown query direction.");
+
+        using (VarKeyScalar8RangeReader reader = exact.OpenEncodedRangeReader(
+            FullLowerBound(),
+            FullUpperBound(exact.Handle.MaxKeyLength),
+            direction))
+        {
+            while (reader.MovePrevious())
+                yield return reader.CurrentEncodedIdentity;
+        }
+
+        ulong[] emptyIdentities = exact.Session.ReadScalar8KeyStateIdentities(exact.SlotIndex, KeyStateRoute.Empty);
+        for (int i = emptyIdentities.Length - 1; i >= 0; i--)
+            yield return emptyIdentities[i];
+
+        ulong[] nullIdentities = exact.Session.ReadScalar8KeyStateIdentities(exact.SlotIndex, KeyStateRoute.Null);
+        for (int i = nullIdentities.Length - 1; i >= 0; i--)
+            yield return nullIdentities[i];
+    }
+
+    private sealed class LibraDexStringSortKeyProjection
+    {
+        /// <summary>
+        /// Binds one opened physical sort-key index to its resolved semantic profile for hot mutation and planner lookup.<br/>
+        /// </summary>
+        /// <param name="index">The opened owned physical projection.<br/></param>
+        /// <param name="culture">The resolved culture used to generate its keys.<br/></param>
+        /// <param name="compareOptions">The exact comparison options used to generate its keys.<br/></param>
+        internal LibraDexStringSortKeyProjection(
+            LibraDexStringScalar8SortKeyProjectionIndex index,
+            CultureInfo culture,
+            CompareOptions compareOptions)
+        {
+            Index = index;
+            Culture = culture;
+            CompareOptions = compareOptions;
+        }
+
+        internal LibraDexStringScalar8SortKeyProjectionIndex Index { get; }
+
+        internal CultureInfo Culture { get; }
+
+        internal CompareOptions CompareOptions { get; }
+    }
+
+    bool ILibraDexIdentityInverseLookup.TryIdentityExistsFromInverse(object identity, out bool exists)
+    {
+        if (catalog is not null)
+            return catalog.TryIdentityExistsFromInverse(this, identity, out exists);
+
+        exists = false;
+        return false;
+    }
+
+    /// <summary>
+    /// Replaces one fresh exact-only string index from unordered borrowed UTF-8 payload copies through the native empty-root <c>VS8</c> builder.<br/>
+    /// Abraxas grouped backfill already owns stable UTF-8 byte arrays after releasing each Fractal/Inheto read window, so this overload adds the LibraDex value marker directly without allocating an intermediate CLR string per record.<br/>
+    /// Ordinary non-empty keys are packed as one unreachable topology and published through the stable root; null and empty keys retain their dedicated key-state routes and are appended only after the ordinary root is complete.<br/>
+    /// This deliberately rejects maintained projections because publishing only the exact member of a projected string facade would violate its logical mutation contract.<br/>
+    /// </summary>
+    /// <param name="entries">Unordered scalar identity and UTF-8 payload tuples; a null payload denotes the null-key sentinel and a zero-length payload denotes the empty-key sentinel.<br/></param>
+    /// <param name="cancellationToken">Cancellation checked during validation, encoding, native construction, and key-state insertion.<br/></param>
+    /// <param name="identityMultiplicityAlreadyValidated">Whether the authoritative owner already proved that each identity occurs at most once.<br/></param>
+    /// <returns>The number of distinct tuples accepted by the completed private index.<br/></returns>
+    internal long ReplaceExactFromUnorderedUtf8(
+        IReadOnlyList<(ulong Identity, byte[]? Utf8Key)> entries,
+        CancellationToken cancellationToken,
+        bool identityMultiplicityAlreadyValidated = false)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(entries);
+        if (exactReversed is not null ||
+            folded is not null ||
+            sortKeyProfiles.Length != 0 ||
+            foldedReversed is not null ||
+            normalized is not null ||
+            normalizedReversed is not null)
+        {
+            throw new InvalidOperationException("Native unordered UTF-8 string replacement currently requires an exact-only facade with no maintained projections.");
+        }
+
+        if (catalog.TryGetActiveIdentityGroupBatch(Group, out _))
+        {
+            throw new InvalidOperationException("Native unordered UTF-8 string replacement cannot run while an identity-group batch is active.");
+        }
+
+        EnsureNativeStringKeyStateRoutesAreEmpty(exact, "exact");
+        var ordinary = new List<VarKeyScalar8SortedTuple>(entries.Count);
+        var keyStates = new List<(NullKey State, ulong Identity)>();
+        HashSet<ulong>? identities = identityMultiplicityAlreadyValidated ? null : new HashSet<ulong>();
+        for (int i = 0; i < entries.Count; i++)
+        {
+            if ((i & 0x0FFF) == 0)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+
+            (ulong identity, byte[]? utf8Key) = entries[i];
+            if (identities is not null && !identities.Add(identity))
+            {
+                throw new InvalidOperationException($"Native unordered UTF-8 string replacement contains identity {identity:N0} more than once.");
+            }
+
+            if (utf8Key is null)
+            {
+                keyStates.Add((NullKey.Null, identity));
+                continue;
+            }
+
+            if (utf8Key.Length == 0)
+            {
+                keyStates.Add((NullKey.Empty, identity));
+                continue;
+            }
+
+            byte[] encodedKey = LibraDexVarLenKeyCodec.Encode(
+                utf8Key,
+                exact.Handle.MaxKeyLength,
+                nameof(entries));
+            ordinary.Add(new VarKeyScalar8SortedTuple(encodedKey, identity));
+        }
+
+        VarKeyScalar8SortedBuildResult build = exact.Session.BuildVarKeyScalar8FromUnordered(
+            exact.Handle.RootRouterOffset,
+            exact.Handle.MaxKeyLength,
+            exact.Handle.OptimizerRouteFanout,
+            CollectionsMarshal.AsSpan(ordinary),
+            allowDuplicateKeys: true,
+            singleKeyPerIdentity: true,
+            cancellationToken);
+        if (build.TupleCount != ordinary.Count)
+        {
+            throw new InvalidDataException($"Native unordered UTF-8 string replacement built {build.TupleCount:N0} ordinary tuples from {ordinary.Count:N0} validated inputs.");
+        }
+
+        keyStates.Sort(static (left, right) =>
+        {
+            int stateComparison = left.State.CompareTo(right.State);
+            return stateComparison != 0 ? stateComparison : left.Identity.CompareTo(right.Identity);
+        });
+        for (int i = 0; i < keyStates.Count; i++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            (NullKey state, ulong identity) = keyStates[i];
+            if (!InsertStringKeyStateIdentity(state, identity).Inserted)
+            {
+                throw new InvalidDataException($"Native unordered UTF-8 string replacement rejected {state} identity {identity:N0} at key-state ordinal {i:N0}.");
+            }
+        }
+
+        return checked((long)build.TupleCount + keyStates.Count);
+    }
+
+    /// <summary>
+    /// Replaces one fresh exact-only string index from unordered logical tuples through the native empty-root `VS8` builder.<br/>
+    /// Ordinary non-empty strings are UTF-8 encoded once per distinct ordinal value and packed as one unreachable topology; null and empty strings retain their dedicated key-state routes and are appended only after the ordinary root is complete.<br/>
+    /// This deliberately rejects maintained projections because publishing only the exact member of a projected string facade would violate its logical mutation contract.<br/>
+    /// </summary>
+    /// <param name="entries">Unordered logical string and scalar-8 identity tuples.<br/></param>
+    /// <param name="cancellationToken">Cancellation checked during validation, distinct-key encoding, native construction, and key-state insertion.<br/></param>
+    /// <param name="identityMultiplicityAlreadyValidated">Whether the authoritative owner already proved that each identity occurs at most once.<br/></param>
+    /// <returns>The number of distinct tuples accepted by the completed private index.<br/></returns>
+    internal long ReplaceExactFromUnordered(
+        IReadOnlyList<(string? Key, ulong Identity)> entries,
+        CancellationToken cancellationToken,
+        bool identityMultiplicityAlreadyValidated = false)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(entries);
+        if (exactReversed is not null ||
+            folded is not null ||
+            sortKeyProfiles.Length != 0 ||
+            foldedReversed is not null ||
+            normalized is not null ||
+            normalizedReversed is not null)
+        {
+            throw new InvalidOperationException("Native unordered string replacement currently requires an exact-only facade with no maintained projections.");
+        }
+
+        if (catalog.TryGetActiveIdentityGroupBatch(Group, out _))
+        {
+            throw new InvalidOperationException("Native unordered string replacement cannot run while an identity-group batch is active.");
+        }
+
+        if (exact.Session.ReadScalar8KeyStateIdentities(exact.SlotIndex, ToKeyStateRoute(NullKey.Null)).Length != 0 ||
+            exact.Session.ReadScalar8KeyStateIdentities(exact.SlotIndex, ToKeyStateRoute(NullKey.Empty)).Length != 0)
+        {
+            throw new InvalidOperationException("Native unordered string replacement currently requires empty null and empty key-state routes.");
+        }
+
+        var encodedByValue = new Dictionary<string, byte[]>(StringComparer.Ordinal);
+        var ordinary = new List<VarKeyScalar8SortedTuple>(entries.Count);
+        var keyStates = new List<(NullKey State, ulong Identity)>();
+        HashSet<ulong>? identities = identityMultiplicityAlreadyValidated ? null : new HashSet<ulong>();
+        for (int i = 0; i < entries.Count; i++)
+        {
+            if ((i & 0x0FFF) == 0)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+
+            (string? key, ulong identity) = entries[i];
+            if (identities is not null && !identities.Add(identity))
+            {
+                throw new InvalidOperationException($"Native unordered string replacement contains identity {identity:N0} more than once.");
+            }
+
+            if (TryClassifyStringKeyState(key, out NullKey keyState))
+            {
+                keyStates.Add((keyState, identity));
+                continue;
+            }
+
+            if (!encodedByValue.TryGetValue(key!, out byte[]? encodedKey))
+            {
+                encodedKey = Encode(key);
+                encodedByValue.Add(key!, encodedKey);
+            }
+
+            ordinary.Add(new VarKeyScalar8SortedTuple(encodedKey, identity));
+        }
+
+        VarKeyScalar8SortedBuildResult build = exact.Session.BuildVarKeyScalar8FromUnordered(
+            exact.Handle.RootRouterOffset,
+            exact.Handle.MaxKeyLength,
+            exact.Handle.OptimizerRouteFanout,
+            CollectionsMarshal.AsSpan(ordinary),
+            allowDuplicateKeys: true,
+            singleKeyPerIdentity: true,
+            cancellationToken);
+        if (build.TupleCount != ordinary.Count)
+        {
+            throw new InvalidDataException($"Native unordered string replacement built {build.TupleCount:N0} ordinary tuples from {ordinary.Count:N0} validated inputs.");
+        }
+
+        keyStates.Sort(static (left, right) =>
+        {
+            int stateComparison = left.State.CompareTo(right.State);
+            return stateComparison != 0 ? stateComparison : left.Identity.CompareTo(right.Identity);
+        });
+        for (int i = 0; i < keyStates.Count; i++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            (NullKey state, ulong identity) = keyStates[i];
+            if (!InsertStringKeyStateIdentity(state, identity).Inserted)
+            {
+                throw new InvalidDataException($"Native unordered string replacement rejected {state} identity {identity:N0} at key-state ordinal {i:N0}.");
+            }
+        }
+
+        return checked((long)build.TupleCount + keyStates.Count);
+    }
+
+    /// <summary>
+    /// Replaces one fresh exact-and-folded string index, including any maintained culture sort-key profiles, through native empty-root <c>VS8</c> builds.<br/>
+    /// Exact, folded, and sort-key bytes are prepared in one input pass; each distinct ordinal source or folded value is encoded once, and every maintained root is complete before key-state identities are appended through the ordinary facade contract.<br/>
+    /// The method deliberately accepts only forward exact/folded/sort-key shapes: reversed and normalized projections require their own complete native publication strategy rather than silently receiving partial maintenance.<br/>
+    /// A failure after one root has published leaves the owning catalog definition incomplete for its caller's preparing/repair protocol; callers must not publish logical readiness until this method returns successfully.<br/>
+    /// </summary>
+    /// <param name="entries">Unordered logical string and scalar-8 identity tuples.<br/></param>
+    /// <param name="cancellationToken">Cancellation checked during validation, folding, distinct-key encoding, native construction, and key-state insertion.<br/></param>
+    /// <param name="identityMultiplicityAlreadyValidated">Whether the authoritative owner already proved that each identity occurs at most once.<br/></param>
+    /// <returns>The number of distinct logical tuples accepted by both completed maintained projections.<br/></returns>
+    internal long ReplaceExactFoldedAndSortKeysFromUnordered(
+        IReadOnlyList<(string? Key, ulong Identity)> entries,
+        CancellationToken cancellationToken,
+        bool identityMultiplicityAlreadyValidated = false)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(entries);
+        if (exactReversed is not null ||
+            folded is null ||
+            foldedReversed is not null ||
+            normalized is not null ||
+            normalizedReversed is not null)
+        {
+            throw new InvalidOperationException("Native unordered exact/folded/sort-key string replacement requires forward exact and folded projections with no reversed or normalized companions.");
+        }
+
+        if (catalog.TryGetActiveIdentityGroupBatch(Group, out _))
+        {
+            throw new InvalidOperationException("Native unordered exact-and-folded string replacement cannot run while an identity-group batch is active.");
+        }
+
+        EnsureNativeStringKeyStateRoutesAreEmpty(exact, "exact");
+
+        var exactEncodedByValue = new Dictionary<string, byte[]>(StringComparer.Ordinal);
+        var foldedEncodedByValue = new Dictionary<string, byte[]>(StringComparer.Ordinal);
+        var exactOrdinary = new List<VarKeyScalar8SortedTuple>(entries.Count);
+        var foldedOrdinary = new List<VarKeyScalar8SortedTuple>(entries.Count);
+        var sortKeyOrdinary = new List<VarKeyScalar8SortedTuple>[sortKeyProfiles.Length];
+        for (int profileIndex = 0; profileIndex < sortKeyOrdinary.Length; profileIndex++)
+            sortKeyOrdinary[profileIndex] = new List<VarKeyScalar8SortedTuple>(entries.Count);
+        var keyStates = new List<(NullKey State, ulong Identity)>();
+        HashSet<ulong>? identities = identityMultiplicityAlreadyValidated ? null : new HashSet<ulong>();
+        for (int i = 0; i < entries.Count; i++)
+        {
+            if ((i & 0x0FFF) == 0)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+
+            (string? key, ulong identity) = entries[i];
+            if (identities is not null && !identities.Add(identity))
+            {
+                throw new InvalidOperationException($"Native unordered exact-and-folded string replacement contains identity {identity:N0} more than once.");
+            }
+
+            if (TryClassifyStringKeyState(key, out NullKey keyState))
+            {
+                keyStates.Add((keyState, identity));
+                continue;
+            }
+
+            if (!exactEncodedByValue.TryGetValue(key!, out byte[]? exactEncodedKey))
+            {
+                exactEncodedKey = Encode(key);
+                exactEncodedByValue.Add(key!, exactEncodedKey);
+            }
+
+            string foldedKey = Fold(key, foldedCulture, foldedNormalization)!;
+            if (!foldedEncodedByValue.TryGetValue(foldedKey, out byte[]? foldedEncodedKey))
+            {
+                foldedEncodedKey = Encode(foldedKey);
+                foldedEncodedByValue.Add(foldedKey, foldedEncodedKey);
+            }
+
+            exactOrdinary.Add(new VarKeyScalar8SortedTuple(exactEncodedKey, identity));
+            foldedOrdinary.Add(new VarKeyScalar8SortedTuple(foldedEncodedKey, identity));
+            for (int profileIndex = 0; profileIndex < sortKeyProfiles.Length; profileIndex++)
+            {
+                LibraDexStringSortKeyProjection profile = sortKeyProfiles[profileIndex];
+                byte[] sortKey = CreateSortKey(key, profile.Culture, profile.CompareOptions);
+                byte[] encodedSortKey = LibraDexVarLenKeyCodec.Encode(
+                    sortKey,
+                    profile.Index.PhysicalIndex.Handle.MaxKeyLength,
+                    nameof(entries));
+                sortKeyOrdinary[profileIndex].Add(new VarKeyScalar8SortedTuple(encodedSortKey, identity));
+            }
+        }
+
+        VarKeyScalar8SortedBuildResult exactBuild = BuildNativeStringProjection(exact, exactOrdinary, cancellationToken);
+        VarKeyScalar8SortedBuildResult foldedBuild = BuildNativeStringProjection(folded.PhysicalIndex, foldedOrdinary, cancellationToken);
+        if (exactBuild.TupleCount != foldedBuild.TupleCount || exactBuild.TupleCount != exactOrdinary.Count)
+        {
+            throw new InvalidDataException(
+                $"Native unordered exact-and-folded string replacement built {exactBuild.TupleCount:N0} exact and {foldedBuild.TupleCount:N0} folded tuples from {exactOrdinary.Count:N0} validated ordinary inputs.");
+        }
+        for (int profileIndex = 0; profileIndex < sortKeyProfiles.Length; profileIndex++)
+        {
+            VarKeyScalar8SortedBuildResult sortKeyBuild = BuildNativeStringProjection(
+                sortKeyProfiles[profileIndex].Index.PhysicalIndex,
+                sortKeyOrdinary[profileIndex],
+                cancellationToken);
+            if (sortKeyBuild.TupleCount != exactOrdinary.Count)
+            {
+                throw new InvalidDataException(
+                    $"Native unordered exact/folded/sort-key string replacement built {sortKeyBuild.TupleCount:N0} tuples for sort-key profile {profileIndex:N0} from {exactOrdinary.Count:N0} validated ordinary inputs.");
+            }
+        }
+
+        keyStates.Sort(static (left, right) =>
+        {
+            int stateComparison = left.State.CompareTo(right.State);
+            return stateComparison != 0 ? stateComparison : left.Identity.CompareTo(right.Identity);
+        });
+        for (int i = 0; i < keyStates.Count; i++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            (NullKey state, ulong identity) = keyStates[i];
+            if (!InsertStringKeyStateIdentity(state, identity).Inserted)
+            {
+                throw new InvalidDataException($"Native unordered exact-and-folded string replacement rejected {state} identity {identity:N0} at key-state ordinal {i:N0}.");
+            }
+        }
+
+        return checked((long)exactBuild.TupleCount + keyStates.Count);
+    }
+
+    /// <summary>
+    /// Verifies that the dedicated null and empty routes of the logical string facade's exact slot are empty before native replacement begins.<br/>
+    /// Native ordinary-key construction requires an empty root, and the exact slot alone owns logical key-state metadata; maintained projection slots intentionally contain only ordinary projected keys.<br/>
+    /// The precondition prevents a retry from silently duplicating sentinel identities.<br/>
+    /// </summary>
+    /// <param name="index">Physical variable-key/scalar-8 index whose sentinel routes are inspected.<br/></param>
+    /// <param name="projectionName">Diagnostic slot name included when the precondition is not satisfied.<br/></param>
+    private static void EnsureNativeStringKeyStateRoutesAreEmpty(VarKeyScalar8Index index, string projectionName)
+    {
+        if (index.Session.ReadScalar8KeyStateIdentities(index.SlotIndex, ToKeyStateRoute(NullKey.Null)).Length != 0 ||
+            index.Session.ReadScalar8KeyStateIdentities(index.SlotIndex, ToKeyStateRoute(NullKey.Empty)).Length != 0)
+        {
+            throw new InvalidOperationException($"Native unordered string replacement requires empty null and empty key-state routes for the {projectionName} projection.");
+        }
+    }
+
+    /// <summary>
+    /// Builds one physical forward string projection from already encoded unordered tuples through LibraDex's private-topology and stable-root publication path.<br/>
+    /// The helper centralizes physical shape parameters so exact and folded roots use identical validation, duplicate-key allowance, and single-key-per-identity semantics.<br/>
+    /// </summary>
+    /// <param name="index">Empty physical projection receiving the completed packed topology.<br/></param>
+    /// <param name="tuples">Encoded non-sentinel tuples in arbitrary order.<br/></param>
+    /// <param name="cancellationToken">Cancellation observed by the native builder before stable-root publication.<br/></param>
+    /// <returns>Native topology and tuple-count diagnostics for the completed projection.<br/></returns>
+    private static VarKeyScalar8SortedBuildResult BuildNativeStringProjection(
+        VarKeyScalar8Index index,
+        List<VarKeyScalar8SortedTuple> tuples,
+        CancellationToken cancellationToken)
+        => index.Session.BuildVarKeyScalar8FromUnordered(
+            index.Handle.RootRouterOffset,
+            index.Handle.MaxKeyLength,
+            index.Handle.OptimizerRouteFanout,
+            CollectionsMarshal.AsSpan(tuples),
+            allowDuplicateKeys: true,
+            singleKeyPerIdentity: true,
+            cancellationToken);
+
+    /// <summary>
+    /// Encodes one non-empty borrowed UTF-8 payload into the exact physical `VS8` key representation used by this facade.<br/>
+    /// The method is reserved for coordinated native population owners that must spill canonical keys before the record-local Inheto read window is released.<br/>
+    /// </summary>
+    /// <param name="utf8Key">Non-empty UTF-8 payload bytes copied from the authoritative record.<br/></param>
+    /// <returns>A newly owned encoded variable key including the LibraDex non-null value marker.<br/></returns>
+    internal byte[] EncodeExactUtf8KeyForNativeBuild(ReadOnlySpan<byte> utf8Key)
+    {
+        ThrowIfDisposed();
+        if (utf8Key.Length == 0)
+            throw new ArgumentException("Native ordinary string keys must be non-empty; empty values use the dedicated key-state route.", nameof(utf8Key));
+        return LibraDexVarLenKeyCodec.Encode(utf8Key, exact.Handle.MaxKeyLength, nameof(utf8Key));
+    }
+
+    /// <summary>
+    /// Returns the exact encoded byte count for one non-empty UTF-8 key owned by a coordinated native builder.<br/>
+    /// The result includes LibraDex's non-null value marker and validates the physical key limit before arena reservation.<br/>
+    /// </summary>
+    /// <param name="utf8Key">Non-empty UTF-8 payload borrowed from an authoritative record.<br/></param>
+    /// <returns>The exact encoded key length including its marker.<br/></returns>
+    internal int GetExactEncodedKeyLengthForNativeBuild(ReadOnlySpan<byte> utf8Key)
+    {
+        ThrowIfDisposed();
+        if (utf8Key.Length == 0)
+            throw new ArgumentException("Native ordinary string keys must be non-empty; empty values use the dedicated key-state route.", nameof(utf8Key));
+        return LibraDexVarLenKeyCodec.GetEncodedLength(utf8Key, exact.Handle.MaxKeyLength, nameof(utf8Key));
+    }
+
+    /// <summary>
+    /// Encodes one non-empty borrowed UTF-8 payload directly into caller-owned native-build storage.<br/>
+    /// The destination length must match <see cref="GetExactEncodedKeyLengthForNativeBuild(ReadOnlySpan{byte})"/> so no temporary key array is required.<br/>
+    /// </summary>
+    /// <param name="utf8Key">Non-empty UTF-8 payload borrowed from an authoritative record.<br/></param>
+    /// <param name="destination">Exact-size destination receiving the key-state marker and payload.<br/></param>
+    internal void EncodeExactUtf8KeyForNativeBuild(ReadOnlySpan<byte> utf8Key, Span<byte> destination)
+    {
+        ThrowIfDisposed();
+        if (utf8Key.Length == 0)
+            throw new ArgumentException("Native ordinary string keys must be non-empty; empty values use the dedicated key-state route.", nameof(utf8Key));
+        LibraDexVarLenKeyCodec.Encode(utf8Key, exact.Handle.MaxKeyLength, nameof(utf8Key), destination);
+    }
+
+    /// <summary>
+    /// Captures this exact-only facade's stable slot, root, and physical contracts for a later mixed-family detached publication.<br/>
+    /// The source remains caller-owned and must stay available until the group replacement returns; no storage is changed while the request is created.<br/>
+    /// </summary>
+    /// <param name="ordinary">Stable encoded tuples ordered by exact key then scalar identity.<br/></param>
+    /// <param name="allowDuplicateKeys">Whether distinct identities may share one exact key.<br/></param>
+    /// <param name="identityMultiplicityAlreadyValidated">Whether authoritative extraction already proved one tuple per identity.<br/></param>
+    /// <returns>A session-owned detached `VS8` replacement request.<br/></returns>
+    internal VarKeyScalar8DetachedBuildRequest CreateDetachedExactSortedBuildRequest(
+        IVarKeyScalar8SortedTupleSource ordinary,
+        bool allowDuplicateKeys,
+        bool identityMultiplicityAlreadyValidated)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(ordinary);
+        EnsureNativeExactOnlyBuildShape();
+        return new VarKeyScalar8DetachedBuildRequest(
+            exact.SlotIndex,
+            exact.Handle.RootRouterOffset,
+            exact.Handle.MaxKeyLength,
+            exact.Handle.OptimizerRouteFanout,
+            ordinary,
+            allowDuplicateKeys,
+            SingleKeyPerIdentity: true,
+            identityMultiplicityAlreadyValidated);
+    }
+
+    /// <summary>
+    /// Publishes detached scalar and exact-string replacement roots through this facade's owning catalog session.<br/>
+    /// All candidate roots are built and structurally counted before one directory image redirects any selected slot.<br/>
+    /// </summary>
+    /// <param name="scalarRequests">Existing `SS8-8` replacement requests from the same catalog.<br/></param>
+    /// <param name="variableRequests">Existing exact `VS8` replacement requests from the same catalog.<br/></param>
+    /// <param name="cancellationToken">Cancellation observed until the final directory publication boundary.<br/></param>
+    /// <returns>Per-family build evidence plus the shared directory commit.<br/></returns>
+    internal NativeSortedDetachedBuildGroupResult ReplaceNativeSortedRootsAtomically(
+        ReadOnlySpan<Scalar8Scalar8DetachedBuildRequest> scalarRequests,
+        ReadOnlySpan<VarKeyScalar8DetachedBuildRequest> variableRequests,
+        CancellationToken cancellationToken = default)
+    {
+        ThrowIfDisposed();
+        EnsureNativeExactOnlyBuildShape();
+        return exact.Session.ReplaceNativeSortedRootsAtomically(scalarRequests, variableRequests, cancellationToken);
+    }
+
+    /// <summary>Rejects projections that cannot be represented by one exact-root detached replacement request.<br/></summary>
+    private void EnsureNativeExactOnlyBuildShape()
+    {
+        if (exactReversed is not null ||
+            folded is not null ||
+            sortKeyProfiles.Length != 0 ||
+            foldedReversed is not null ||
+            normalized is not null ||
+            normalizedReversed is not null)
+        {
+            throw new InvalidOperationException("Native detached string replacement currently requires an exact-only facade with no maintained projections.");
+        }
+    }
+
+    /// <summary>
+    /// Replaces one fresh exact-only string index from a stable seekable source of already encoded, globally sorted ordinary tuples.<br/>
+    /// Ordinary topology is built through the bounded native `VS8` source path; null and empty identities retain their dedicated key-state routes and are appended only after the ordinary stable root is complete.<br/>
+    /// This method rejects maintained projections because a single-root population would otherwise publish an incomplete logical facade.<br/>
+    /// </summary>
+    /// <param name="ordinary">Stable ordinary tuples in encoded key-then-identity order.<br/></param>
+    /// <param name="nullIdentities">Authoritative null-key identities in strictly ascending order; the source may be a bounded seekable spill view.<br/></param>
+    /// <param name="emptyIdentities">Authoritative empty-key identities in strictly ascending order; the source may be a bounded seekable spill view.<br/></param>
+    /// <param name="allowDuplicateKeys">Whether distinct identities may share one non-null, non-empty key.<br/></param>
+    /// <param name="identityMultiplicityAlreadyValidated">Whether the authoritative extraction lifecycle already proved one tuple per identity.<br/></param>
+    /// <param name="cancellationToken">Cancellation observed through validation, physical construction, and sentinel insertion.<br/></param>
+    /// <returns>The number of ordinary and sentinel tuples accepted by the completed private index.<br/></returns>
+    internal long ReplaceExactFromSortedEncoded(
+        IVarKeyScalar8SortedTupleSource ordinary,
+        IReadOnlyList<ulong> nullIdentities,
+        IReadOnlyList<ulong> emptyIdentities,
+        bool allowDuplicateKeys,
+        bool identityMultiplicityAlreadyValidated,
+        CancellationToken cancellationToken)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(ordinary);
+        ArgumentNullException.ThrowIfNull(nullIdentities);
+        ArgumentNullException.ThrowIfNull(emptyIdentities);
+        EnsureNativeExactOnlyBuildShape();
+        if (catalog.TryGetActiveIdentityGroupBatch(Group, out _))
+            throw new InvalidOperationException("Native sorted encoded string replacement cannot run while an identity-group batch is active.");
+
+        EnsureNativeStringKeyStateRoutesAreEmpty(exact, "exact");
+        VarKeyScalar8SortedBuildResult build = exact.Session.BuildVarKeyScalar8FromSorted(
+            exact.Handle.RootRouterOffset,
+            exact.Handle.MaxKeyLength,
+            exact.Handle.OptimizerRouteFanout,
+            ordinary,
+            allowDuplicateKeys,
+            singleKeyPerIdentity: true,
+            identityMultiplicityAlreadyValidated,
+            cancellationToken);
+        InsertNativeStringKeyStateIdentities(NullKey.Null, nullIdentities, cancellationToken);
+        InsertNativeStringKeyStateIdentities(NullKey.Empty, emptyIdentities, cancellationToken);
+        return checked((long)build.TupleCount + nullIdentities.Count + emptyIdentities.Count);
+    }
+
+    /// <summary>
+    /// Inserts one dedicated string key-state population in ascending authoritative identity order after ordinary native topology publication.<br/>
+    /// </summary>
+    /// <param name="state">Null or empty key state owning the supplied identities.<br/></param>
+    /// <param name="identities">Authoritative scalar identities to publish.<br/></param>
+    /// <param name="cancellationToken">Cancellation observed between identity insertions.<br/></param>
+    private void InsertNativeStringKeyStateIdentities(
+        NullKey state,
+        IReadOnlyList<ulong> identities,
+        CancellationToken cancellationToken)
+    {
+        if (identities.Count == 0)
+            return;
+        ulong previous = 0;
+        for (int i = 0; i < identities.Count; i++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            ulong identity = identities[i];
+            if (i != 0 && identity <= previous)
+            {
+                string reason = identity == previous ? "repeats" : "is not ordered after";
+                throw new InvalidOperationException($"Native sorted encoded string replacement {reason} {state} identity {identity:N0} at ordinal {i:N0}.");
+            }
+            if (!InsertStringKeyStateIdentity(state, identity).Inserted)
+                throw new InvalidDataException($"Native sorted encoded string replacement rejected {state} identity {identity:N0} at ordinal {i:N0}.");
+            previous = identity;
+        }
+    }
 }
 
 /// <summary>
@@ -4651,6 +7125,7 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
 public sealed class LibraDexStringScalar8ConcurrentBatch : IDisposable
 {
     private readonly LibraDexStringScalar8Index index;
+    private readonly int maximumActionItems;
     private LibraDexWriteContext? writer;
     private long attemptedInsertCount;
     private long insertedCount;
@@ -4659,12 +7134,23 @@ public sealed class LibraDexStringScalar8ConcurrentBatch : IDisposable
     private long attemptedRekeyCount;
     private long changedRekeyCount;
     private long publishedContextCount;
+    private long currentStagedMutationCount;
+    private long maximumStagedMutationCount;
     private DataKernelCommitTelemetry lastPublishTelemetry;
     private bool completed;
 
-    internal LibraDexStringScalar8ConcurrentBatch(LibraDexStringScalar8Index index)
+    /// <summary>
+    /// Captures the owning logical string index and the cooperative writer-context publication bound.<br/>
+    /// The bound counts successful logical mutations whose physical work remained in the current writer context; immediate and fallback operations do not consume the bound.<br/>
+    /// </summary>
+    /// <param name="index">Logical string index whose exact and maintained projection roots receive mutations.<br/></param>
+    /// <param name="maximumActionItems">Maximum successful logical writer-context mutations retained before cooperative publication.<br/></param>
+    internal LibraDexStringScalar8ConcurrentBatch(
+        LibraDexStringScalar8Index index,
+        int maximumActionItems)
     {
         this.index = index;
+        this.maximumActionItems = maximumActionItems;
     }
 
     /// <summary>
@@ -4682,6 +7168,7 @@ public sealed class LibraDexStringScalar8ConcurrentBatch : IDisposable
         if (result.Inserted)
         {
             insertedCount++;
+            RecordStagedMutationAndRotate(result.QueuedInsertPath);
         }
 
         return result;
@@ -4702,6 +7189,7 @@ public sealed class LibraDexStringScalar8ConcurrentBatch : IDisposable
         if (result.Deleted)
         {
             deletedCount++;
+            RecordStagedMutationAndRotate(result.QueuedInsertPath);
         }
 
         return result;
@@ -4733,16 +7221,18 @@ public sealed class LibraDexStringScalar8ConcurrentBatch : IDisposable
         }
 
         LibraDexGenericInsertResult replacement = InsertCore(newKey, identity);
-        LibraDexGenericDeleteResult removal = DeleteCore(oldKey, identity);
         if (replacement.Inserted)
         {
             insertedCount++;
+            RecordStagedMutationAndRotate(replacement.QueuedInsertPath);
         }
 
+        LibraDexGenericDeleteResult removal = DeleteCore(oldKey, identity);
         if (removal.Deleted)
         {
             deletedCount++;
             changedRekeyCount++;
+            RecordStagedMutationAndRotate(removal.QueuedInsertPath);
         }
 
         return new LibraDexGenericRekeyResult(removal.Deleted, replacement, removal);
@@ -4766,7 +7256,10 @@ public sealed class LibraDexStringScalar8ConcurrentBatch : IDisposable
             attemptedRekeyCount,
             changedRekeyCount,
             publishedContextCount,
-            LibraDexOperationDiagnostics.FromDataKernel(lastPublishTelemetry));
+            LibraDexOperationDiagnostics.FromDataKernel(lastPublishTelemetry))
+        {
+            MaximumStagedMutationCount = maximumStagedMutationCount
+        };
     }
 
     /// <summary>
@@ -4817,7 +7310,7 @@ public sealed class LibraDexStringScalar8ConcurrentBatch : IDisposable
                 PublishCurrentWriter();
                 wait.SpinOnce();
             }
-            catch (InvalidOperationException)
+            catch (LibraDexWriteContextVarKeyScalar8TopologyFallbackException)
             {
                 PublishCurrentWriter();
                 LibraDexGenericInsertResult fallback = InsertImmediateFallback(key, identity);
@@ -4952,6 +7445,7 @@ public sealed class LibraDexStringScalar8ConcurrentBatch : IDisposable
         lastPublishTelemetry = index.PublishConcurrentBatchContext(current);
         publishedContextCount++;
         writer = null;
+        currentStagedMutationCount = 0;
     }
 
     private void AbortCurrentWriter()
@@ -4964,6 +7458,28 @@ public sealed class LibraDexStringScalar8ConcurrentBatch : IDisposable
 
         index.AbortConcurrentBatchContext(current);
         writer = null;
+        currentStagedMutationCount = 0;
+    }
+
+    /// <summary>
+    /// Counts one successful logical mutation only when it remains staged in the current private writer context, then cooperatively publishes at the configured action bound.<br/>
+    /// Serialized fallbacks and immediate key-state operations are already visible and therefore neither extend nor reset the current context's staged count.<br/>
+    /// The maximum count is retained for diagnostics so stress harnesses can prove that a public batch did not hold topology-read ownership beyond its requested cadence.<br/>
+    /// </summary>
+    /// <param name="path">Physical path reported by the completed logical mutation.<br/></param>
+    private void RecordStagedMutationAndRotate(Scalar8Scalar8QueuedInsertPath path)
+    {
+        if (path != Scalar8Scalar8QueuedInsertPath.WriterContext)
+        {
+            return;
+        }
+
+        currentStagedMutationCount++;
+        maximumStagedMutationCount = Math.Max(maximumStagedMutationCount, currentStagedMutationCount);
+        if (currentStagedMutationCount >= maximumActionItems)
+        {
+            PublishCurrentWriter();
+        }
     }
 
     private void ThrowIfCompleted()
@@ -4974,3 +7490,21 @@ public sealed class LibraDexStringScalar8ConcurrentBatch : IDisposable
         }
     }
 }
+
+/// <summary>
+/// Binds one owned physical sort-key index to the exact culture, comparison options, and globalization version that define its persisted byte domain.<br/>
+/// Catalog creation and reopen construct these bindings before the logical string facade validates and adopts them.<br/>
+/// </summary>
+/// <param name="Index">The opened physical var-key/scalar-identity companion index.<br/></param>
+/// <param name="PhysicalName">The deterministic owned physical index name.<br/></param>
+/// <param name="CultureName">The culture name, or an empty string for invariant culture.<br/></param>
+/// <param name="CompareOptions">The exact options used for sort-key generation.<br/></param>
+/// <param name="SortVersionFullVersion">The persisted sort-table version, or zero for a legacy unversioned projection.<br/></param>
+/// <param name="SortVersionId">The persisted sort identifier, or an empty GUID for a legacy unversioned projection.<br/></param>
+internal readonly record struct LibraDexStringSortKeyProjectionBinding(
+    VarKeyScalar8Index Index,
+    string PhysicalName,
+    string CultureName,
+    CompareOptions CompareOptions,
+    int SortVersionFullVersion,
+    Guid SortVersionId);

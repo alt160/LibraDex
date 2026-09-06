@@ -1,3 +1,5 @@
+using System.Globalization;
+
 namespace LibraDex;
 
 /// <summary>
@@ -43,6 +45,7 @@ public enum IdentityKeyMultiplicity
 /// `Exact` preserves the input text identity, `Folded` supports case-insensitive point lookup, and `SortKey` supports stable no-case range ordering without query-time collation.<br/>
 /// Every profile includes exact string storage because the current string facade uses exact storage for tuple capture, mutation, and projection maintenance.<br/>
 /// </summary>
+[Flags]
 public enum StringKeys
 {
     /// <summary>
@@ -52,22 +55,79 @@ public enum StringKeys
     Exact = 1,
 
     /// <summary>
+    /// Maintains normalized, case-folded text for no-case point and prefix lookup.<br/>
+    /// Exact storage remains implicit in every valid string-index profile.<br/>
+    /// </summary>
+    Folded = 2,
+
+    /// <summary>
+    /// Maintains culture sort-key bytes for no-case or culture-aware ordering and range lookup.<br/>
+    /// Exact storage remains implicit in every valid string-index profile.<br/>
+    /// </summary>
+    SortKey = 4,
+
+    /// <summary>
+    /// Maintains a canonically normalized, case-preserving Form-C projection in addition to exact storage.<br/>
+    /// Use this when canonically equivalent Unicode spellings should compare as the same text while letter case remains significant.<br/>
+    /// </summary>
+    Normalized = 8,
+
+    /// <summary>
     /// Stores exact and folded representations.<br/>
     /// This profile favors mixed case-sensitive and case-insensitive point lookup without paying for sort-key storage.<br/>
     /// </summary>
-    ExactAndFolded = 3,
+    ExactAndFolded = Exact | Folded,
 
     /// <summary>
     /// Stores exact and sort-key representations.<br/>
     /// This profile favors case-sensitive identity plus stable range ordering.<br/>
     /// </summary>
-    ExactAndSortKey = 5,
+    ExactAndSortKey = Exact | SortKey,
 
     /// <summary>
     /// Stores exact, folded, and sort-key representations.<br/>
     /// This is the widest string profile and should be selected deliberately because it creates multiple maintained key projections.<br/>
     /// </summary>
-    ExactFoldedAndSortKey = 7
+    ExactFoldedAndSortKey = Exact | Folded | SortKey,
+
+    /// <summary>
+    /// Stores exact and canonically normalized, case-preserving Form-C representations.<br/>
+    /// </summary>
+    ExactAndNormalized = Exact | Normalized,
+
+    /// <summary>
+    /// Stores exact, folded, and canonically normalized case-preserving representations.<br/>
+    /// </summary>
+    ExactFoldedAndNormalized = ExactAndFolded | Normalized,
+
+    /// <summary>
+    /// Stores exact, sort-key, and canonically normalized case-preserving representations.<br/>
+    /// </summary>
+    ExactSortKeyAndNormalized = ExactAndSortKey | Normalized,
+
+    /// <summary>
+    /// Stores every maintained string representation.<br/>
+    /// Select this deliberately because each projection increases persisted space and mutation work.<br/>
+    /// </summary>
+    All = ExactFoldedAndSortKey | Normalized
+}
+
+/// <summary>
+/// Identifies the canonical-normalization contract used to construct persisted string projection bytes.<br/>
+/// The value is catalog metadata: reopening a catalog must preserve the same transform used when its keys were written.<br/>
+/// </summary>
+public enum LibraDexTextNormalization
+{
+    /// <summary>
+    /// Preserves the legacy projection transform without canonical Unicode normalization.<br/>
+    /// Existing catalog formats decode to this value so later inserts cannot mix a new byte contract into an old projection.<br/>
+    /// </summary>
+    None = 0,
+
+    /// <summary>
+    /// Applies Unicode canonical composition Form C before projection-specific transformation.<br/>
+    /// </summary>
+    FormC = 1
 }
 
 /// <summary>
@@ -281,3 +341,14 @@ public sealed class IndexOptions
     /// </summary>
     public long ReadCacheMaxBytes { get; init; }
 }
+
+/// <summary>
+/// Describes one explicitly maintained culture-aware string sort-key projection.<br/>
+/// Culture and comparison options together form the semantic identity of the owned subindex; LibraDex never substitutes a different culture or a close comparison profile.<br/>
+/// Null or empty culture names select <see cref="CultureInfo.InvariantCulture"/>.<br/>
+/// </summary>
+/// <param name="CultureName">The .NET culture name, or null/empty for invariant culture.<br/></param>
+/// <param name="CompareOptions">The comparison options used to generate persisted sort-key bytes.<br/></param>
+public readonly record struct LibraDexStringSortKeyProfile(
+    string? CultureName = null,
+    CompareOptions CompareOptions = CompareOptions.IgnoreCase);
