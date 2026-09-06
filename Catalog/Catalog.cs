@@ -2406,7 +2406,7 @@ internal sealed class LibraDexTupleEqualityComparer<TValue> : IEqualityComparer<
     public int GetHashCode(TValue value)
     {
         if (typeof(TValue).IsValueType)
-            return EqualityComparer<TValue>.Default.GetHashCode(value);
+            return EqualityComparer<TValue>.Default.GetHashCode(value!);
         if (value is null)
             return 0;
         if (value is byte[] bytes)
