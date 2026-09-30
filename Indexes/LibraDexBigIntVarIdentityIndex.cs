@@ -11,6 +11,7 @@ public sealed class LibraDexBigIntVarIdentityIndex : IIndex, IIdentityPrimitiveE
     private readonly Catalog catalog;
     private readonly FixedNVarIdentityIndex inner;
     private readonly IndexKeys keyContract;
+    private readonly LibraDexIndexSortOrder sortOrder;
     private bool disposed;
 
     internal LibraDexBigIntVarIdentityIndex(
@@ -20,7 +21,8 @@ public sealed class LibraDexBigIntVarIdentityIndex : IIndex, IIdentityPrimitiveE
         FixedNVarIdentityIndex inner,
         int maxBytes,
         int maxIdentityBytes,
-        IndexKeys keyContract)
+        IndexKeys keyContract,
+        LibraDexIndexSortOrder sortOrder = LibraDexIndexSortOrder.Ascending)
     {
         this.catalog = catalog ?? throw new ArgumentNullException(nameof(catalog));
         ArgumentNullException.ThrowIfNull(inner);
@@ -32,6 +34,7 @@ public sealed class LibraDexBigIntVarIdentityIndex : IIndex, IIdentityPrimitiveE
         MaxBytes = maxBytes;
         MaxIdentityBytes = maxIdentityBytes;
         this.keyContract = keyContract;
+        this.sortOrder = sortOrder;
     }
 
     /// <summary>
@@ -72,6 +75,11 @@ public sealed class LibraDexBigIntVarIdentityIndex : IIndex, IIdentityPrimitiveE
     public CatalogIndexIdentityFamily IdentityFamily => CatalogIndexIdentityFamily.Blob;
 
     public LibraDexIndexShapeSpec? LogicalShape => null;
+
+    /// <summary>
+    /// Gets the persisted natural key traversal order for this BigInteger index.<br/>
+    /// </summary>
+    public LibraDexIndexSortOrder SortOrder => sortOrder;
 
     /// <summary>
     /// Adds one BigInteger key and raw identity byte array to this index.<br/>
@@ -258,7 +266,7 @@ public sealed class LibraDexBigIntVarIdentityIndex : IIndex, IIdentityPrimitiveE
             yield break;
 
         int yielded = 0;
-        foreach (FixedNVarIdentityTuple tuple in inner.IterateTuples())
+        foreach (FixedNVarIdentityTuple tuple in inner.IterateTuples(request.Direction))
         {
             BigInteger key = LibraDexBigIntCodec.Decode(tuple.Key, MaxBytes, LibraDexBigIntKeyStorage.FixedWidth);
             yield return new LibraDexObjectTuple(key, tuple.Identity);
@@ -282,16 +290,29 @@ public sealed class LibraDexBigIntVarIdentityIndex : IIndex, IIdentityPrimitiveE
         }
 
         int returned = 0;
-        foreach ((BigInteger lower, BigInteger upper) in ExpandPrimitiveRanges(request))
+        if (request.CriteriaKind == LibraDexCriteriaKind.All)
+        {
+            foreach (FixedNVarIdentityTuple tuple in inner.IterateTuples(request.Direction))
+            {
+                yield return tuple.Identity;
+                returned++;
+                if (request.TakeLimit is int allLimit && returned >= allLimit)
+                    yield break;
+            }
+            yield break;
+        }
+        foreach ((BigInteger lower, BigInteger upper) in ExpandOrderedPrimitiveRanges(request))
         {
             if (lower > upper)
             {
                 continue;
             }
 
-            foreach (byte[] identity in GetIdentities(lower, upper))
+            byte[] lowerEncoded = LibraDexBigIntCodec.Encode(lower, MaxBytes, LibraDexBigIntKeyStorage.FixedWidth);
+            byte[] upperEncoded = LibraDexBigIntCodec.Encode(upper, MaxBytes, LibraDexBigIntKeyStorage.FixedWidth);
+            foreach (FixedNVarIdentityTuple tuple in inner.IterateTuples(request.Direction, lowerEncoded, upperEncoded))
             {
-                yield return identity;
+                yield return tuple.Identity;
                 returned++;
                 if (request.TakeLimit is not null && returned >= request.TakeLimit.Value)
                 {
@@ -545,6 +566,19 @@ public sealed class LibraDexBigIntVarIdentityIndex : IIndex, IIdentityPrimitiveE
     {
         BigInteger maximum = (BigInteger.One << checked(MaxBytes * 8)) - BigInteger.One;
         return (-maximum, maximum);
+    }
+
+    /// <summary>
+    /// Orders point and range descriptors for descending key/identity traversal without collecting tuple results.<br/>
+    /// </summary>
+    /// <param name="request">The normalized primitive request.<br/></param>
+    /// <returns>Inclusive BigInteger extents in the requested direction.<br/></returns>
+    private IEnumerable<(BigInteger Lower, BigInteger Upper)> ExpandOrderedPrimitiveRanges(LibraDexIdentityPrimitiveRequest request)
+    {
+        IEnumerable<(BigInteger Lower, BigInteger Upper)> ranges = ExpandPrimitiveRanges(request);
+        return request.Direction == QueryDirection.Descending
+            ? ranges.OrderByDescending(static range => range.Upper).ThenByDescending(static range => range.Lower)
+            : ranges;
     }
 
     private void ThrowIfDisposed()

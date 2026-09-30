@@ -955,7 +955,8 @@ public sealed class LibraDexIndexShapeSpec
             StringKeys = StringKeys,
             GuidKeys = GuidKeys,
             DateKeys = DateKeys,
-            DateTimeKeyEncoding = DateTimeKeyEncoding
+            DateTimeKeyEncoding = DateTimeKeyEncoding,
+            SortOrder = SortOrder
         };
     }
 }

@@ -651,6 +651,7 @@ internal static class Indexes
         /// <param name="options">Optional DataKernel policy; defaults to a facade policy with the superblock at file offset zero.</param>
         /// <param name="developerMetadata">Optional superblock developer metadata.</param>
         /// <param name="telemetryOptions">Optional telemetry policy; enabled by default for early validation.</param>
+        /// <param name="descending">Whether the new SV16 index stores keys and equal-key identities physically highest-first.<br/></param>
         /// <returns>A runtime wrapper over the created routed raw-byte `SV16` index.</returns>
         internal static Scalar16VarIdentityIndex Create(
             string? path = null,
@@ -661,7 +662,8 @@ internal static class Indexes
             DataKernelOptions? options = null,
             SuperblockDeveloperMetadata? developerMetadata = null,
             DataKernelTelemetryOptions? telemetryOptions = null,
-            long readCacheMaxBytes = 0)
+            long readCacheMaxBytes = 0,
+            bool descending = false)
         {
             ValidateMaxIdentityLength(maxIdentityLength, nameof(maxIdentityLength), "SV16");
             ValidateReadCacheMaxBytes(readCacheMaxBytes);
@@ -675,7 +677,7 @@ internal static class Indexes
                 _ => throw new ArgumentOutOfRangeException(nameof(backingKind), backingKind, "Unsupported LibraDex backing kind.")
             };
 
-            return CreateIndexInSession(session, slotIndex, name, maxIdentityLength, ownsSession: true, readCacheMaxBytes: readCacheMaxBytes);
+            return CreateIndexInSession(session, slotIndex, name, maxIdentityLength, ownsSession: true, readCacheMaxBytes: readCacheMaxBytes, descending: descending);
         }
 
         /// <summary>
@@ -710,7 +712,7 @@ internal static class Indexes
                     throw new InvalidDataException("The requested SV16 index slot is not active.");
                 }
 
-                return new Scalar16VarIdentityIndex(session, slotIndex, slot.Name, slot.RootRouterOffset, maxIdentityLength, ownsSession: true, readCacheMaxBytes: readCacheMaxBytes);
+                return new Scalar16VarIdentityIndex(session, slotIndex, slot.Name, slot.RootRouterOffset, maxIdentityLength, ownsSession: true, readCacheMaxBytes: readCacheMaxBytes, descending: (slot.Flags & Scalar16VarIdentityIndex.DescendingSlotFlag) != 0);
             }
             catch
             {
@@ -732,6 +734,7 @@ internal static class Indexes
         /// <param name="developerMetadata">Optional superblock developer metadata for newly created sessions.</param>
         /// <param name="telemetryOptions">Optional telemetry policy; enabled by default for early validation.</param>
         /// <param name="readCacheMaxBytes">The optional per-index immutable-shelf cache ceiling; zero means no limit.</param>
+        /// <param name="descending">The physical direction to use only when a new SV16 index is created; an existing slot retains its persisted direction.<br/></param>
         /// <returns>A runtime wrapper over the opened or created routed raw-byte `SV16` index.</returns>
         internal static Scalar16VarIdentityIndex CreateOrOpen(
             string? path = null,
@@ -742,13 +745,14 @@ internal static class Indexes
             DataKernelOptions? options = null,
             SuperblockDeveloperMetadata? developerMetadata = null,
             DataKernelTelemetryOptions? telemetryOptions = null,
-            long readCacheMaxBytes = 0)
+            long readCacheMaxBytes = 0,
+            bool descending = false)
         {
             ValidateMaxIdentityLength(maxIdentityLength, nameof(maxIdentityLength), "SV16");
             ValidateReadCacheMaxBytes(readCacheMaxBytes);
             if (backingKind == DataKernelBackingKind.Memory)
             {
-                return Create(path, backingKind, slotIndex, name, maxIdentityLength, options, developerMetadata, telemetryOptions, readCacheMaxBytes);
+                return Create(path, backingKind, slotIndex, name, maxIdentityLength, options, developerMetadata, telemetryOptions, readCacheMaxBytes, descending);
             }
 
             string requiredPath = RequirePath(path, "SV16");
@@ -756,7 +760,7 @@ internal static class Indexes
             DataKernelTelemetryOptions effectiveTelemetry = telemetryOptions ?? DataKernelTelemetryOptions.EnabledOptions;
             if (!File.Exists(requiredPath))
             {
-                return Create(requiredPath, DataKernelBackingKind.File, slotIndex, name, maxIdentityLength, effectiveOptions, developerMetadata, effectiveTelemetry, readCacheMaxBytes);
+                return Create(requiredPath, DataKernelBackingKind.File, slotIndex, name, maxIdentityLength, effectiveOptions, developerMetadata, effectiveTelemetry, readCacheMaxBytes, descending);
             }
 
             LibraDexFileSession session = LibraDexFileSession.Open(requiredPath, effectiveOptions, effectiveTelemetry);
@@ -764,10 +768,10 @@ internal static class Indexes
             {
                 if (TryFindSlot(session, slotIndex, out IndexDirectorySlotSnapshot slot))
                 {
-                    return new Scalar16VarIdentityIndex(session, slotIndex, slot.Name, slot.RootRouterOffset, maxIdentityLength, ownsSession: true, readCacheMaxBytes: readCacheMaxBytes);
+                    return new Scalar16VarIdentityIndex(session, slotIndex, slot.Name, slot.RootRouterOffset, maxIdentityLength, ownsSession: true, readCacheMaxBytes: readCacheMaxBytes, descending: (slot.Flags & Scalar16VarIdentityIndex.DescendingSlotFlag) != 0);
                 }
 
-                return CreateIndexInSession(session, slotIndex, name, maxIdentityLength, ownsSession: true, readCacheMaxBytes: readCacheMaxBytes);
+                return CreateIndexInSession(session, slotIndex, name, maxIdentityLength, ownsSession: true, readCacheMaxBytes: readCacheMaxBytes, descending: descending);
             }
             catch
             {
@@ -782,7 +786,8 @@ internal static class Indexes
             string name,
             int maxIdentityLength,
             bool ownsSession,
-            long readCacheMaxBytes)
+            long readCacheMaxBytes,
+            bool descending)
         {
             try
             {
@@ -791,8 +796,8 @@ internal static class Indexes
                     throw new InvalidOperationException("The requested SV16 index slot is already active.");
                 }
 
-                (RouterSnapshot root, _) = session.CreateRootRouterIndex(CreateSlot(slotIndex, name));
-                return new Scalar16VarIdentityIndex(session, slotIndex, name, root.Offset, maxIdentityLength, ownsSession, readCacheMaxBytes);
+                (RouterSnapshot root, _) = session.CreateRootRouterIndex(CreateSlot(slotIndex, name) with { Flags = descending ? Scalar16VarIdentityIndex.DescendingSlotFlag : (byte)0 });
+                return new Scalar16VarIdentityIndex(session, slotIndex, name, root.Offset, maxIdentityLength, ownsSession, readCacheMaxBytes, descending);
             }
             catch
             {
@@ -1000,6 +1005,7 @@ internal static class Indexes
         /// <param name="options">Optional DataKernel policy; defaults to a facade policy with the superblock at file offset zero.</param>
         /// <param name="developerMetadata">Optional superblock developer metadata.</param>
         /// <param name="telemetryOptions">Optional telemetry policy; enabled by default for early validation.</param>
+        /// <param name="descending">Whether to persist key-then-identity tuples in descending physical order.</param>
         /// <returns>A runtime wrapper over the created routed raw-byte `VS16` index.</returns>
         internal static VarKeyScalar16Index Create(
             string? path = null,
@@ -1009,7 +1015,8 @@ internal static class Indexes
             int maxKeyLength = 1024,
             DataKernelOptions? options = null,
             SuperblockDeveloperMetadata? developerMetadata = null,
-            DataKernelTelemetryOptions? telemetryOptions = null)
+            DataKernelTelemetryOptions? telemetryOptions = null,
+            bool descending = false)
         {
             ValidateMaxKeyLength(maxKeyLength, nameof(maxKeyLength), "VS16");
             DataKernelOptions effectiveOptions = options ?? CreateDefaultOptions();
@@ -1022,7 +1029,7 @@ internal static class Indexes
                 _ => throw new ArgumentOutOfRangeException(nameof(backingKind), backingKind, "Unsupported LibraDex backing kind.")
             };
 
-            return CreateIndexInSession(session, slotIndex, name, maxKeyLength, ownsSession: true);
+            return CreateIndexInSession(session, slotIndex, name, maxKeyLength, ownsSession: true, descending);
         }
 
         /// <summary>
@@ -1054,7 +1061,7 @@ internal static class Indexes
                     throw new InvalidDataException("The requested VS16 index slot is not active.");
                 }
 
-                VarKeyScalar16IndexHandle handle = new(slot.RootRouterOffset, maxKeyLength, OptimizerRouteFanout: 16, DefaultOptimizerPolicy());
+                VarKeyScalar16IndexHandle handle = new(slot.RootRouterOffset, maxKeyLength, OptimizerRouteFanout: 16, DefaultOptimizerPolicy(), (slot.Flags & VarKeyScalar16IndexHandle.DescendingSlotFlag) != 0);
                 handle.Validate();
                 return new VarKeyScalar16Index(session, handle, slotIndex, slot.Name, ownsSession: true);
             }
@@ -1077,6 +1084,7 @@ internal static class Indexes
         /// <param name="options">Optional DataKernel policy; defaults to a facade policy with the superblock at file offset zero.</param>
         /// <param name="developerMetadata">Optional superblock developer metadata for newly created sessions.</param>
         /// <param name="telemetryOptions">Optional telemetry policy; enabled by default for early validation.</param>
+        /// <param name="descending">The physical direction to use only when creating a missing index; existing indexes recover their persisted direction.</param>
         /// <returns>A runtime wrapper over the opened or created routed raw-byte `VS16` index.</returns>
         internal static VarKeyScalar16Index CreateOrOpen(
             string? path = null,
@@ -1086,12 +1094,13 @@ internal static class Indexes
             int maxKeyLength = 1024,
             DataKernelOptions? options = null,
             SuperblockDeveloperMetadata? developerMetadata = null,
-            DataKernelTelemetryOptions? telemetryOptions = null)
+            DataKernelTelemetryOptions? telemetryOptions = null,
+            bool descending = false)
         {
             ValidateMaxKeyLength(maxKeyLength, nameof(maxKeyLength), "VS16");
             if (backingKind == DataKernelBackingKind.Memory)
             {
-                return Create(path, backingKind, slotIndex, name, maxKeyLength, options, developerMetadata, telemetryOptions);
+                return Create(path, backingKind, slotIndex, name, maxKeyLength, options, developerMetadata, telemetryOptions, descending);
             }
 
             string requiredPath = RequirePath(path, "VS16");
@@ -1099,7 +1108,7 @@ internal static class Indexes
             DataKernelTelemetryOptions effectiveTelemetry = telemetryOptions ?? DataKernelTelemetryOptions.EnabledOptions;
             if (!File.Exists(requiredPath))
             {
-                return Create(requiredPath, DataKernelBackingKind.File, slotIndex, name, maxKeyLength, effectiveOptions, developerMetadata, effectiveTelemetry);
+                return Create(requiredPath, DataKernelBackingKind.File, slotIndex, name, maxKeyLength, effectiveOptions, developerMetadata, effectiveTelemetry, descending);
             }
 
             LibraDexFileSession session = LibraDexFileSession.Open(requiredPath, effectiveOptions, effectiveTelemetry);
@@ -1107,12 +1116,12 @@ internal static class Indexes
             {
                 if (TryFindSlot(session, slotIndex, out IndexDirectorySlotSnapshot slot))
                 {
-                    VarKeyScalar16IndexHandle handle = new(slot.RootRouterOffset, maxKeyLength, OptimizerRouteFanout: 16, DefaultOptimizerPolicy());
+                    VarKeyScalar16IndexHandle handle = new(slot.RootRouterOffset, maxKeyLength, OptimizerRouteFanout: 16, DefaultOptimizerPolicy(), (slot.Flags & VarKeyScalar16IndexHandle.DescendingSlotFlag) != 0);
                     handle.Validate();
                     return new VarKeyScalar16Index(session, handle, slotIndex, slot.Name, ownsSession: true);
                 }
 
-                return CreateIndexInSession(session, slotIndex, name, maxKeyLength, ownsSession: true);
+                return CreateIndexInSession(session, slotIndex, name, maxKeyLength, ownsSession: true, descending);
             }
             catch
             {
@@ -1121,7 +1130,7 @@ internal static class Indexes
             }
         }
 
-        private static VarKeyScalar16Index CreateIndexInSession(LibraDexFileSession session, int slotIndex, string name, int maxKeyLength, bool ownsSession)
+        private static VarKeyScalar16Index CreateIndexInSession(LibraDexFileSession session, int slotIndex, string name, int maxKeyLength, bool ownsSession, bool descending)
         {
             try
             {
@@ -1130,7 +1139,8 @@ internal static class Indexes
                     throw new InvalidOperationException("The requested VS16 index slot is already active.");
                 }
 
-                (VarKeyScalar16IndexHandle handle, _, _) = session.CreateVarKeyScalar16RootRouterIndex(CreateSlot(slotIndex, name), maxKeyLength, optimizerRouteFanout: 16, DefaultOptimizerPolicy());
+                IndexDirectorySlotSnapshot slot = CreateSlot(slotIndex, name) with { Flags = descending ? VarKeyScalar16IndexHandle.DescendingSlotFlag : (byte)0 };
+                (VarKeyScalar16IndexHandle handle, _, _) = session.CreateVarKeyScalar16RootRouterIndex(slot, maxKeyLength, optimizerRouteFanout: 16, DefaultOptimizerPolicy());
                 return new VarKeyScalar16Index(session, handle, slotIndex, name, ownsSession);
             }
             catch
@@ -1177,7 +1187,8 @@ internal static class Indexes
             int maxIdentityLength = 1024,
             DataKernelOptions? options = null,
             SuperblockDeveloperMetadata? developerMetadata = null,
-            DataKernelTelemetryOptions? telemetryOptions = null)
+            DataKernelTelemetryOptions? telemetryOptions = null,
+            bool descending = false)
         {
             ValidateMaxLengths(maxKeyLength, maxIdentityLength);
             DataKernelOptions effectiveOptions = options ?? CreateDefaultOptions();
@@ -1191,7 +1202,7 @@ internal static class Indexes
                 _ => throw new ArgumentOutOfRangeException(nameof(backingKind), backingKind, "Unsupported LibraDex backing kind.")
             };
 
-            return CreateIndexInSession(session, slotIndex, name, maxKeyLength, maxIdentityLength, ownsSession: true);
+            return CreateIndexInSession(session, slotIndex, name, maxKeyLength, maxIdentityLength, ownsSession: true, descending);
         }
 
         /// <summary>
@@ -1238,7 +1249,7 @@ internal static class Indexes
                     throw new InvalidDataException("The requested VV index slot is not active.");
                 }
 
-                return new VarKeyVarIdentityIndex(session, slotIndex, slot.Name, slot.RootRouterOffset, maxKeyLength, maxIdentityLength, ownsSession: true);
+                return new VarKeyVarIdentityIndex(session, slotIndex, slot.Name, slot.RootRouterOffset, maxKeyLength, maxIdentityLength, ownsSession: true, descending: (slot.Flags & VarKeyVarIdentityIndex.DescendingSlotFlag) != 0);
             }
             catch
             {
@@ -1272,12 +1283,13 @@ internal static class Indexes
             int maxIdentityLength = 1024,
             DataKernelOptions? options = null,
             SuperblockDeveloperMetadata? developerMetadata = null,
-            DataKernelTelemetryOptions? telemetryOptions = null)
+            DataKernelTelemetryOptions? telemetryOptions = null,
+            bool descending = false)
         {
             ValidateMaxLengths(maxKeyLength, maxIdentityLength);
             if (backingKind == DataKernelBackingKind.Memory)
             {
-                return Create(path, backingKind, slotIndex, name, maxKeyLength, maxIdentityLength, options, developerMetadata, telemetryOptions);
+                return Create(path, backingKind, slotIndex, name, maxKeyLength, maxIdentityLength, options, developerMetadata, telemetryOptions, descending);
             }
 
             string requiredPath = RequirePath(path);
@@ -1285,7 +1297,7 @@ internal static class Indexes
             DataKernelTelemetryOptions effectiveTelemetry = telemetryOptions ?? DataKernelTelemetryOptions.EnabledOptions;
             if (!File.Exists(requiredPath))
             {
-                return Create(requiredPath, DataKernelBackingKind.File, slotIndex, name, maxKeyLength, maxIdentityLength, effectiveOptions, developerMetadata, effectiveTelemetry);
+                return Create(requiredPath, DataKernelBackingKind.File, slotIndex, name, maxKeyLength, maxIdentityLength, effectiveOptions, developerMetadata, effectiveTelemetry, descending);
             }
 
             LibraDexFileSession session = LibraDexFileSession.Open(requiredPath, effectiveOptions, effectiveTelemetry);
@@ -1293,10 +1305,10 @@ internal static class Indexes
             {
                 if (TryFindSlot(session, slotIndex, out IndexDirectorySlotSnapshot slot))
                 {
-                    return new VarKeyVarIdentityIndex(session, slotIndex, slot.Name, slot.RootRouterOffset, maxKeyLength, maxIdentityLength, ownsSession: true);
+                    return new VarKeyVarIdentityIndex(session, slotIndex, slot.Name, slot.RootRouterOffset, maxKeyLength, maxIdentityLength, ownsSession: true, descending: (slot.Flags & VarKeyVarIdentityIndex.DescendingSlotFlag) != 0);
                 }
 
-                return CreateIndexInSession(session, slotIndex, name, maxKeyLength, maxIdentityLength, ownsSession: true);
+                return CreateIndexInSession(session, slotIndex, name, maxKeyLength, maxIdentityLength, ownsSession: true, descending);
             }
             catch
             {
@@ -1311,7 +1323,8 @@ internal static class Indexes
             string name,
             int maxKeyLength,
             int maxIdentityLength,
-            bool ownsSession)
+            bool ownsSession,
+            bool descending)
         {
             try
             {
@@ -1320,8 +1333,8 @@ internal static class Indexes
                     throw new InvalidOperationException("The requested VV index slot is already active.");
                 }
 
-                (RouterSnapshot root, _) = session.CreateRootRouterIndex(CreateSlot(slotIndex, name));
-                return new VarKeyVarIdentityIndex(session, slotIndex, name, root.Offset, maxKeyLength, maxIdentityLength, ownsSession);
+                (RouterSnapshot root, _) = session.CreateRootRouterIndex(CreateSlot(slotIndex, name) with { Flags = descending ? VarKeyVarIdentityIndex.DescendingSlotFlag : (byte)0 });
+                return new VarKeyVarIdentityIndex(session, slotIndex, name, root.Offset, maxKeyLength, maxIdentityLength, ownsSession, descending);
             }
             catch
             {

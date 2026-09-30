@@ -41,6 +41,8 @@ internal readonly ref struct Scalar16Scalar16ReadOnly
 
     public uint Flags => Scalar16Scalar16Layout.ReadFlags(bytes);
 
+    public bool IsDescending => (Flags & Scalar16Scalar16Layout.DescendingFlag) != 0;
+
     public ushort ItemCount => Scalar16Scalar16Layout.ReadItemCount(bytes);
 
     public ushort PhysicalItemCount => ItemCount;
@@ -54,7 +56,8 @@ internal readonly ref struct Scalar16Scalar16ReadOnly
         Magic == Scalar16Scalar16Layout.Magic &&
         FormatVersion == Scalar16Scalar16Layout.FormatVersion &&
         HeaderSize == Scalar16Scalar16Layout.HeaderSize &&
-        ItemCount <= profile.MaxItemCount;
+        ItemCount <= profile.MaxItemCount &&
+        IsDescending == profile.Descending;
 
     /// <summary>
     /// Counts fixed deleted-slot sentinels in the physical slot table.<br/>
@@ -139,13 +142,14 @@ internal readonly ref struct Scalar16Scalar16ReadOnly
         int high = ItemCount;
         ReadOnlySpan<byte> localBytes = bytes;
         Scalar16Scalar16Profile localProfile = profile;
+        bool descending = IsDescending;
 
         while (low < high)
         {
             int middle = low + ((high - low) >> 1);
             ushort itemOffset = Scalar16Scalar16Layout.ReadSlot(localBytes, localProfile, middle);
             int comparison = Scalar16Scalar16Layout.CompareItemTuple(localBytes, itemOffset, encodedKeyHigh, encodedKeyLow, encodedIdentityHigh, encodedIdentityLow);
-            if (comparison < 0)
+            if (descending ? comparison > 0 : comparison < 0)
             {
                 low = middle + 1;
             }
@@ -171,13 +175,14 @@ internal readonly ref struct Scalar16Scalar16ReadOnly
         int high = ItemCount;
         ReadOnlySpan<byte> localBytes = bytes;
         Scalar16Scalar16Profile localProfile = profile;
+        bool descending = IsDescending;
 
         while (low < high)
         {
             int middle = low + ((high - low) >> 1);
             ushort itemOffset = Scalar16Scalar16Layout.ReadSlot(localBytes, localProfile, middle);
             int comparison = Scalar16Scalar16Layout.CompareItemKey(localBytes, itemOffset, encodedKeyHigh, encodedKeyLow);
-            if (comparison < 0)
+            if (descending ? comparison > 0 : comparison < 0)
             {
                 low = middle + 1;
             }
@@ -249,15 +254,18 @@ internal readonly ref struct Scalar16Scalar16ReadOnly
         }
 
         int copied = 0;
-        int slotIndex = LowerBoundKey(lowerKeyHigh, lowerKeyLow);
+        bool descending = IsDescending;
+        int slotIndex = descending ? LowerBoundKey(upperKeyHigh, upperKeyLow) : LowerBoundKey(lowerKeyHigh, lowerKeyLow);
         ushort count = ItemCount;
         ReadOnlySpan<byte> localBytes = bytes;
         Scalar16Scalar16Profile localProfile = profile;
         for (int i = slotIndex; i < count; i++)
         {
             ushort itemOffset = Scalar16Scalar16Layout.ReadSlot(localBytes, localProfile, i);
-            int upperComparison = Scalar16Scalar16Layout.CompareItemKey(localBytes, itemOffset, upperKeyHigh, upperKeyLow);
-            if (upperComparison > 0)
+            int boundaryComparison = descending
+                ? Scalar16Scalar16Layout.CompareItemKey(localBytes, itemOffset, lowerKeyHigh, lowerKeyLow)
+                : Scalar16Scalar16Layout.CompareItemKey(localBytes, itemOffset, upperKeyHigh, upperKeyLow);
+            if (descending ? boundaryComparison < 0 : boundaryComparison > 0)
             {
                 break;
             }

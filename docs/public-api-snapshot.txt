@@ -3,7 +3,7 @@
 # Review changes before updating this file.
 
 Assembly: LibraDex
-ExportedTypes: 358
+ExportedTypes: 380
 
 type class LibraDex.AbraxasIdentityQueryAdapter<TIdentity>
   property System.String Group {get;}
@@ -501,6 +501,7 @@ type class LibraDex.CatalogOptions
   property System.Type RequiredIdentityType {get;set;}
   property LibraDex.LibraDexStringComparisonPolicy StringComparisonPolicy {get;set;}
   property static LibraDex.CatalogOptions UInt64Identities {get;}
+  property System.Boolean UseRecoverableFileFormat {get;set;}
 
 type class LibraDex.CatalogQueryTelemetry
   ctor ()
@@ -671,6 +672,7 @@ type interface LibraDex.IIndex
   property LibraDex.LibraDexIndexKeys Keys {get;}
   property LibraDex.LibraDexIndexShapeSpec LogicalShape {get;}
   property System.String Name {get;}
+  property LibraDex.LibraDexIndexSortOrder SortOrder {get;}
   method LibraDex.LibraDexGenericInsertResult Insert(System.Object key, System.Object identity)
   method LibraDex.LibraDexPreparedObjectSet PrepareInSet(System.Collections.Generic.IEnumerable<System.Object> keys)
   method System.Boolean Delete(System.Object key, System.Object identity)
@@ -799,6 +801,7 @@ type class LibraDex.LibraDexBatch<TKey,TIdentity>
   method LibraDex.LibraDexGenericBatchCommitResult Publish()
   method LibraDex.LibraDexGenericInsertResult Insert(TKey key, TIdentity identity)
   method System.Void Dispose()
+  method System.Void PrepareForExternalMutation()
 
 type class LibraDex.LibraDexBigIntScalar8Batch<TIdentity>
   property System.Int64 AttemptedDeleteCount {get;}
@@ -831,6 +834,7 @@ type class LibraDex.LibraDexBigIntScalar8Index<TIdentity>
   property LibraDex.LibraDexIndexShapeSpec LogicalShape {get;}
   property System.Int32 MaxBytes {get;}
   property System.String Name {get;}
+  property LibraDex.LibraDexIndexSortOrder SortOrder {get;}
   method LibraDex.LibraDexBigIntScalar8Batch<TIdentity> BeginBatch(LibraDex.LibraDexWriteIntent writeIntent = null)
   method LibraDex.LibraDexGenericInsertResult Add(LibraDex.ScalarNull keyState, TIdentity identity)
   method LibraDex.LibraDexGenericInsertResult Add(System.Numerics.BigInteger key, TIdentity identity)
@@ -874,6 +878,7 @@ type class LibraDex.LibraDexBigIntVarIdentityIndex
   property System.Int32 MaxBytes {get;}
   property System.Int32 MaxIdentityBytes {get;}
   property System.String Name {get;}
+  property LibraDex.LibraDexIndexSortOrder SortOrder {get;}
   method LibraDex.LibraDexGenericInsertResult Add(System.Numerics.BigInteger key, System.Byte[] identity)
   method LibraDex.LibraDexGenericInsertResult Insert(System.Numerics.BigInteger key, System.Byte[] identity)
   method LibraDex.LibraDexGenericInsertResult Insert(System.Object key, System.Object identity)
@@ -1265,21 +1270,69 @@ type class LibraDex.LibraDexCompositeConditionWhere
 
 type class LibraDex.LibraDexCompositeDatePartCondition
   method LibraDex.LibraDexCompositePartCriterion Between(System.DateTime lower, System.DateTime upper)
+  method LibraDex.LibraDexCompositePartCriterion DayEqual(System.Int32 day)
   method LibraDex.LibraDexCompositePartCriterion DayEqualTo(System.Int32 day)
+  method LibraDex.LibraDexCompositePartCriterion DayIn(System.Int32[] days)
+  method LibraDex.LibraDexCompositePartCriterion DayNotEqual(System.Int32 day)
+  method LibraDex.LibraDexCompositePartCriterion DayNotIn(System.Int32[] days)
+  method LibraDex.LibraDexCompositePartCriterion DayRange(System.Int32 startDay, System.Int32 endDay)
   method LibraDex.LibraDexCompositePartCriterion EqualTo(LibraDex.ScalarNull state)
   method LibraDex.LibraDexCompositePartCriterion EqualTo(System.DateTime value)
   method LibraDex.LibraDexCompositePartCriterion GreaterOrEqual(System.DateTime value)
   method LibraDex.LibraDexCompositePartCriterion GreaterThan(System.DateTime value)
+  method LibraDex.LibraDexCompositePartCriterion HourEqual(System.Int32 hour)
+  method LibraDex.LibraDexCompositePartCriterion HourIn(System.Int32[] hours)
+  method LibraDex.LibraDexCompositePartCriterion HourNotIn(System.Int32[] hours)
+  method LibraDex.LibraDexCompositePartCriterion HourNotInRange(System.Int32 startHour, System.Int32 endHour)
+  method LibraDex.LibraDexCompositePartCriterion HourRange(System.Int32 startHour, System.Int32 endHour)
+  method LibraDex.LibraDexCompositePartCriterion InQuarter(System.Int32 quarter)
+  method LibraDex.LibraDexCompositePartCriterion InQuarterRange(System.Int32 startQuarter, System.Int32 endQuarter)
+  method LibraDex.LibraDexCompositePartCriterion IsAfternoon()
+  method LibraDex.LibraDexCompositePartCriterion IsEvening()
+  method LibraDex.LibraDexCompositePartCriterion IsFirstOfMonth()
+  method LibraDex.LibraDexCompositePartCriterion IsHalfYearEnd()
+  method LibraDex.LibraDexCompositePartCriterion IsHalfYearStart()
+  method LibraDex.LibraDexCompositePartCriterion IsInLastDays(System.Int32 days)
+  method LibraDex.LibraDexCompositePartCriterion IsInLastHours(System.Int32 hours)
+  method LibraDex.LibraDexCompositePartCriterion IsInLastMinutes(System.Int32 minutes)
+  method LibraDex.LibraDexCompositePartCriterion IsLastOfMonth()
+  method LibraDex.LibraDexCompositePartCriterion IsMorning()
+  method LibraDex.LibraDexCompositePartCriterion IsNight()
+  method LibraDex.LibraDexCompositePartCriterion IsQuarterEnd()
+  method LibraDex.LibraDexCompositePartCriterion IsQuarterStart()
+  method LibraDex.LibraDexCompositePartCriterion IsToday()
+  method LibraDex.LibraDexCompositePartCriterion IsWeekday()
+  method LibraDex.LibraDexCompositePartCriterion IsWeekend()
+  method LibraDex.LibraDexCompositePartCriterion IsYesterday()
   method LibraDex.LibraDexCompositePartCriterion LessOrEqual(System.DateTime value)
   method LibraDex.LibraDexCompositePartCriterion LessThan(System.DateTime value)
+  method LibraDex.LibraDexCompositePartCriterion MonthDay(System.Int32 month, System.Int32 day)
+  method LibraDex.LibraDexCompositePartCriterion MonthEqual(System.Int32 month)
   method LibraDex.LibraDexCompositePartCriterion MonthEqualTo(System.Int32 month)
+  method LibraDex.LibraDexCompositePartCriterion MonthIn(System.Int32[] months)
+  method LibraDex.LibraDexCompositePartCriterion MonthNotEqual(System.Int32 month)
+  method LibraDex.LibraDexCompositePartCriterion MonthNotIn(System.Int32[] months)
+  method LibraDex.LibraDexCompositePartCriterion MonthNotInRange(System.Int32 startMonth, System.Int32 endMonth)
+  method LibraDex.LibraDexCompositePartCriterion MonthRange(System.Int32 startMonth, System.Int32 endMonth)
   method LibraDex.LibraDexCompositePartCriterion NotBetween(System.DateTime lower, System.DateTime upper)
+  method LibraDex.LibraDexCompositePartCriterion NotDayRange(System.Int32 startDay, System.Int32 endDay)
   method LibraDex.LibraDexCompositePartCriterion NotEqualTo(LibraDex.ScalarNull state)
   method LibraDex.LibraDexCompositePartCriterion NotEqualTo(System.DateTime value)
+  method LibraDex.LibraDexCompositePartCriterion OnOrAfterYear(System.Int32 year)
+  method LibraDex.LibraDexCompositePartCriterion OnOrBeforeYear(System.Int32 year)
+  method LibraDex.LibraDexCompositePartCriterion QuarterEqualTo(System.Int32 quarter)
   method LibraDex.LibraDexCompositePartCriterion YearEqual(System.Int32 year)
   method LibraDex.LibraDexCompositePartCriterion YearEqualTo(System.Int32 year)
+  method LibraDex.LibraDexCompositePartCriterion YearIn(System.Int32[] years)
+  method LibraDex.LibraDexCompositePartCriterion YearInMonths(System.Int32 year, System.Int32[] months)
   method LibraDex.LibraDexCompositePartCriterion YearMonth(System.Int32 year, System.Int32 month)
   method LibraDex.LibraDexCompositePartCriterion YearMonthDay(System.Int32 year, System.Int32 month, System.Int32 day)
+  method LibraDex.LibraDexCompositePartCriterion YearMonthDayIn(System.Collections.Generic.IEnumerable<System.ValueTuple<System.Int32,System.Int32,System.Int32>> values)
+  method LibraDex.LibraDexCompositePartCriterion YearMonthIn(System.Collections.Generic.IEnumerable<System.ValueTuple<System.Int32,System.Int32>> values)
+  method LibraDex.LibraDexCompositePartCriterion YearNotEqual(System.Int32 year)
+  method LibraDex.LibraDexCompositePartCriterion YearNotIn(System.Int32[] years)
+  method LibraDex.LibraDexCompositePartCriterion YearNotRange(System.Int32 startYear, System.Int32 endYear)
+  method LibraDex.LibraDexCompositePartCriterion YearQuarter(System.Int32 year, System.Int32 quarter)
   method LibraDex.LibraDexCompositePartCriterion YearRange(System.Int32 startYear, System.Int32 endYear)
 
 type class LibraDex.LibraDexCompositeEntryVisitor
@@ -1325,6 +1378,14 @@ type class LibraDex.LibraDexCompositeGuidPartCondition
   method LibraDex.LibraDexCompositePartCriterion NotInSet(System.Collections.Generic.IEnumerable<System.Guid> values)
   method LibraDex.LibraDexCompositePartCriterion StartsWith(System.Guid value, System.Int32 byteCount)
   method LibraDex.LibraDexCompositePartCriterion StartsWith(System.String value)
+
+type static-class LibraDex.LibraDexCompositeIdentityReaderExtensions
+  method static LibraDex.LibraDexCompositeIdentityReader<TIdentity> OpenCompositeIdentityReader<TIdentity>(LibraDex.CatalogIdentityGroupIndexes indexSet, System.String name)
+
+type class LibraDex.LibraDexCompositeIdentityReader<TIdentity>
+  property TIdentity Identity {get;}
+  method System.Boolean Read()
+  method System.Void Dispose()
 
 type class LibraDex.LibraDexCompositeIndexContinuation<TPart1,TPart2,TIdentity>
   property LibraDex.LibraDexCompositeIndexWhere<TPart1,TPart2,TIdentity> And {get;}
@@ -1438,8 +1499,17 @@ type static-class LibraDex.LibraDexCompositePart
   method static LibraDex.LibraDexCompositeFullKeyCondition FullKey()
   method static LibraDex.LibraDexCompositeFullKeyCondition FullKey(System.String delimiter)
   method static LibraDex.LibraDexCompositeGuidPartCondition Guid(System.String name)
+  method static LibraDex.LibraDexCompositePartComparisonCondition Compare(System.String leftPartName, System.String rightPartName)
   method static LibraDex.LibraDexCompositeScalarPartCondition<TValue> Scalar<TValue>(System.String name)
   method static LibraDex.LibraDexCompositeStringPartCondition String(System.String name)
+
+type class LibraDex.LibraDexCompositePartComparisonCondition
+  method LibraDex.LibraDexCompositePartCriterion EqualTo(System.Boolean ignoreCase = false, System.String culture = null)
+  method LibraDex.LibraDexCompositePartCriterion GreaterOrEqual(System.Boolean ignoreCase = false, System.String culture = null)
+  method LibraDex.LibraDexCompositePartCriterion GreaterThan(System.Boolean ignoreCase = false, System.String culture = null)
+  method LibraDex.LibraDexCompositePartCriterion LessOrEqual(System.Boolean ignoreCase = false, System.String culture = null)
+  method LibraDex.LibraDexCompositePartCriterion LessThan(System.Boolean ignoreCase = false, System.String culture = null)
+  method LibraDex.LibraDexCompositePartCriterion NotEqualTo(System.Boolean ignoreCase = false, System.String culture = null)
 
 type class LibraDex.LibraDexCompositePartCriterion
   property System.String Culture {get;}
@@ -1451,6 +1521,241 @@ type class LibraDex.LibraDexCompositePartCriterion
   property System.String PartName {get;}
   property LibraDex.LibraDexConditionValueKind ValueKind {get;}
   property System.Collections.Generic.IReadOnlyList<System.Object> Values {get;}
+
+type static-class LibraDex.LibraDexCompositeReaderArityExtensions
+  method static LibraDex.LibraDexCompositeReader<TPart1,TIdentity> OpenCompositeReader<TPart1,TIdentity>(LibraDex.CatalogIdentityGroupIndexes indexSet, System.String name)
+  method static LibraDex.LibraDexCompositeReader<TPart1,TPart2,TPart3,TPart4,TIdentity> OpenCompositeReader<TPart1,TPart2,TPart3,TPart4,TIdentity>(LibraDex.CatalogIdentityGroupIndexes indexSet, System.String name)
+  method static LibraDex.LibraDexCompositeReader<TPart1,TPart2,TPart3,TPart4,TPart5,TIdentity> OpenCompositeReader<TPart1,TPart2,TPart3,TPart4,TPart5,TIdentity>(LibraDex.CatalogIdentityGroupIndexes indexSet, System.String name)
+  method static LibraDex.LibraDexCompositeReader<TPart1,TPart2,TPart3,TPart4,TPart5,TPart6,TIdentity> OpenCompositeReader<TPart1,TPart2,TPart3,TPart4,TPart5,TPart6,TIdentity>(LibraDex.CatalogIdentityGroupIndexes indexSet, System.String name)
+  method static LibraDex.LibraDexCompositeReader<TPart1,TPart2,TPart3,TPart4,TPart5,TPart6,TPart7,TIdentity> OpenCompositeReader<TPart1,TPart2,TPart3,TPart4,TPart5,TPart6,TPart7,TIdentity>(LibraDex.CatalogIdentityGroupIndexes indexSet, System.String name)
+  method static LibraDex.LibraDexCompositeReader<TPart1,TPart2,TPart3,TPart4,TPart5,TPart6,TPart7,TPart8,TIdentity> OpenCompositeReader<TPart1,TPart2,TPart3,TPart4,TPart5,TPart6,TPart7,TPart8,TIdentity>(LibraDex.CatalogIdentityGroupIndexes indexSet, System.String name)
+  method static LibraDex.LibraDexCompositeReader<TPart1,TPart2,TPart3,TPart4,TPart5,TPart6,TPart7,TPart8,TPart9,TIdentity> OpenCompositeReader<TPart1,TPart2,TPart3,TPart4,TPart5,TPart6,TPart7,TPart8,TPart9,TIdentity>(LibraDex.CatalogIdentityGroupIndexes indexSet, System.String name)
+  method static LibraDex.LibraDexCompositeReader<TPart1,TPart2,TPart3,TPart4,TPart5,TPart6,TPart7,TPart8,TPart9,TPart10,TIdentity> OpenCompositeReader<TPart1,TPart2,TPart3,TPart4,TPart5,TPart6,TPart7,TPart8,TPart9,TPart10,TIdentity>(LibraDex.CatalogIdentityGroupIndexes indexSet, System.String name)
+  method static LibraDex.LibraDexCompositeReader<TPart1,TPart2,TPart3,TPart4,TPart5,TPart6,TPart7,TPart8,TPart9,TPart10,TPart11,TIdentity> OpenCompositeReader<TPart1,TPart2,TPart3,TPart4,TPart5,TPart6,TPart7,TPart8,TPart9,TPart10,TPart11,TIdentity>(LibraDex.CatalogIdentityGroupIndexes indexSet, System.String name)
+  method static LibraDex.LibraDexCompositeReader<TPart1,TPart2,TPart3,TPart4,TPart5,TPart6,TPart7,TPart8,TPart9,TPart10,TPart11,TPart12,TIdentity> OpenCompositeReader<TPart1,TPart2,TPart3,TPart4,TPart5,TPart6,TPart7,TPart8,TPart9,TPart10,TPart11,TPart12,TIdentity>(LibraDex.CatalogIdentityGroupIndexes indexSet, System.String name)
+  method static LibraDex.LibraDexCompositeReader<TPart1,TPart2,TPart3,TPart4,TPart5,TPart6,TPart7,TPart8,TPart9,TPart10,TPart11,TPart12,TPart13,TIdentity> OpenCompositeReader<TPart1,TPart2,TPart3,TPart4,TPart5,TPart6,TPart7,TPart8,TPart9,TPart10,TPart11,TPart12,TPart13,TIdentity>(LibraDex.CatalogIdentityGroupIndexes indexSet, System.String name)
+  method static LibraDex.LibraDexCompositeReader<TPart1,TPart2,TPart3,TPart4,TPart5,TPart6,TPart7,TPart8,TPart9,TPart10,TPart11,TPart12,TPart13,TPart14,TIdentity> OpenCompositeReader<TPart1,TPart2,TPart3,TPart4,TPart5,TPart6,TPart7,TPart8,TPart9,TPart10,TPart11,TPart12,TPart13,TPart14,TIdentity>(LibraDex.CatalogIdentityGroupIndexes indexSet, System.String name)
+  method static LibraDex.LibraDexCompositeReader<TPart1,TPart2,TPart3,TPart4,TPart5,TPart6,TPart7,TPart8,TPart9,TPart10,TPart11,TPart12,TPart13,TPart14,TPart15,TIdentity> OpenCompositeReader<TPart1,TPart2,TPart3,TPart4,TPart5,TPart6,TPart7,TPart8,TPart9,TPart10,TPart11,TPart12,TPart13,TPart14,TPart15,TIdentity>(LibraDex.CatalogIdentityGroupIndexes indexSet, System.String name)
+  method static LibraDex.LibraDexCompositeReader<TPart1,TPart2,TPart3,TPart4,TPart5,TPart6,TPart7,TPart8,TPart9,TPart10,TPart11,TPart12,TPart13,TPart14,TPart15,TPart16,TIdentity> OpenCompositeReader<TPart1,TPart2,TPart3,TPart4,TPart5,TPart6,TPart7,TPart8,TPart9,TPart10,TPart11,TPart12,TPart13,TPart14,TPart15,TPart16,TIdentity>(LibraDex.CatalogIdentityGroupIndexes indexSet, System.String name)
+
+type class LibraDex.LibraDexCompositeReaderBase
+  method System.Boolean IsNull(System.Int32 partIndex)
+  method System.Boolean Read()
+  method System.ReadOnlyMemory<System.Byte> GetIdentityRawMem()
+  method System.ReadOnlyMemory<System.Byte> GetRawMem(System.Int32 partIndex)
+  method System.ReadOnlyMemory<System.Byte> GetUtf8Mem(System.Int32 partIndex)
+  method System.ReadOnlySpan<System.Byte> GetIdentityRawSpan()
+  method System.ReadOnlySpan<System.Byte> GetRawSpan(System.Int32 partIndex)
+  method System.ReadOnlySpan<System.Byte> GetUtf8Span(System.Int32 partIndex)
+  method System.Void Dispose()
+
+type static-class LibraDex.LibraDexCompositeReaderExtensions
+  method static LibraDex.LibraDexCompositeReader<TPart1,TPart2,TIdentity> OpenCompositeReader<TPart1,TPart2,TIdentity>(LibraDex.CatalogIdentityGroupIndexes indexSet, System.String name)
+  method static LibraDex.LibraDexCompositeReader<TPart1,TPart2,TIdentity> OpenReader<TPart1,TPart2,TIdentity>(LibraDex.LibraDexCompositeIndex<TPart1,TPart2,TIdentity> index)
+  method static LibraDex.LibraDexCompositeReader<TPart1,TPart2,TPart3,TIdentity> OpenCompositeReader<TPart1,TPart2,TPart3,TIdentity>(LibraDex.CatalogIdentityGroupIndexes indexSet, System.String name)
+  method static LibraDex.LibraDexCompositeReader<TPart1,TPart2,TPart3,TIdentity> OpenReader<TPart1,TPart2,TPart3,TIdentity>(LibraDex.LibraDexCompositeIndex<TPart1,TPart2,TPart3,TIdentity> index)
+
+type class LibraDex.LibraDexCompositeReader<TPart1,TPart2,TPart3,TPart4,TPart5,TPart6,TPart7,TPart8,TPart9,TIdentity>
+  property TIdentity Identity {get;}
+  property TPart1 Part1 {get;}
+  property TPart2 Part2 {get;}
+  property TPart3 Part3 {get;}
+  property TPart4 Part4 {get;}
+  property TPart5 Part5 {get;}
+  property TPart6 Part6 {get;}
+  property TPart7 Part7 {get;}
+  property TPart8 Part8 {get;}
+  property TPart9 Part9 {get;}
+
+type class LibraDex.LibraDexCompositeReader<TPart1,TPart2,TPart3,TPart4,TPart5,TPart6,TPart7,TPart8,TPart9,TPart10,TIdentity>
+  property TIdentity Identity {get;}
+  property TPart1 Part1 {get;}
+  property TPart10 Part10 {get;}
+  property TPart2 Part2 {get;}
+  property TPart3 Part3 {get;}
+  property TPart4 Part4 {get;}
+  property TPart5 Part5 {get;}
+  property TPart6 Part6 {get;}
+  property TPart7 Part7 {get;}
+  property TPart8 Part8 {get;}
+  property TPart9 Part9 {get;}
+
+type class LibraDex.LibraDexCompositeReader<TPart1,TPart2,TPart3,TPart4,TPart5,TPart6,TPart7,TPart8,TPart9,TPart10,TPart11,TIdentity>
+  property TIdentity Identity {get;}
+  property TPart1 Part1 {get;}
+  property TPart10 Part10 {get;}
+  property TPart11 Part11 {get;}
+  property TPart2 Part2 {get;}
+  property TPart3 Part3 {get;}
+  property TPart4 Part4 {get;}
+  property TPart5 Part5 {get;}
+  property TPart6 Part6 {get;}
+  property TPart7 Part7 {get;}
+  property TPart8 Part8 {get;}
+  property TPart9 Part9 {get;}
+
+type class LibraDex.LibraDexCompositeReader<TPart1,TPart2,TPart3,TPart4,TPart5,TPart6,TPart7,TPart8,TPart9,TPart10,TPart11,TPart12,TIdentity>
+  property TIdentity Identity {get;}
+  property TPart1 Part1 {get;}
+  property TPart10 Part10 {get;}
+  property TPart11 Part11 {get;}
+  property TPart12 Part12 {get;}
+  property TPart2 Part2 {get;}
+  property TPart3 Part3 {get;}
+  property TPart4 Part4 {get;}
+  property TPart5 Part5 {get;}
+  property TPart6 Part6 {get;}
+  property TPart7 Part7 {get;}
+  property TPart8 Part8 {get;}
+  property TPart9 Part9 {get;}
+
+type class LibraDex.LibraDexCompositeReader<TPart1,TPart2,TPart3,TPart4,TPart5,TPart6,TPart7,TPart8,TPart9,TPart10,TPart11,TPart12,TPart13,TIdentity>
+  property TIdentity Identity {get;}
+  property TPart1 Part1 {get;}
+  property TPart10 Part10 {get;}
+  property TPart11 Part11 {get;}
+  property TPart12 Part12 {get;}
+  property TPart13 Part13 {get;}
+  property TPart2 Part2 {get;}
+  property TPart3 Part3 {get;}
+  property TPart4 Part4 {get;}
+  property TPart5 Part5 {get;}
+  property TPart6 Part6 {get;}
+  property TPart7 Part7 {get;}
+  property TPart8 Part8 {get;}
+  property TPart9 Part9 {get;}
+
+type class LibraDex.LibraDexCompositeReader<TPart1,TPart2,TPart3,TPart4,TPart5,TPart6,TPart7,TPart8,TPart9,TPart10,TPart11,TPart12,TPart13,TPart14,TIdentity>
+  property TIdentity Identity {get;}
+  property TPart1 Part1 {get;}
+  property TPart10 Part10 {get;}
+  property TPart11 Part11 {get;}
+  property TPart12 Part12 {get;}
+  property TPart13 Part13 {get;}
+  property TPart14 Part14 {get;}
+  property TPart2 Part2 {get;}
+  property TPart3 Part3 {get;}
+  property TPart4 Part4 {get;}
+  property TPart5 Part5 {get;}
+  property TPart6 Part6 {get;}
+  property TPart7 Part7 {get;}
+  property TPart8 Part8 {get;}
+  property TPart9 Part9 {get;}
+
+type class LibraDex.LibraDexCompositeReader<TPart1,TPart2,TPart3,TPart4,TPart5,TPart6,TPart7,TPart8,TPart9,TPart10,TPart11,TPart12,TPart13,TPart14,TPart15,TIdentity>
+  property TIdentity Identity {get;}
+  property TPart1 Part1 {get;}
+  property TPart10 Part10 {get;}
+  property TPart11 Part11 {get;}
+  property TPart12 Part12 {get;}
+  property TPart13 Part13 {get;}
+  property TPart14 Part14 {get;}
+  property TPart15 Part15 {get;}
+  property TPart2 Part2 {get;}
+  property TPart3 Part3 {get;}
+  property TPart4 Part4 {get;}
+  property TPart5 Part5 {get;}
+  property TPart6 Part6 {get;}
+  property TPart7 Part7 {get;}
+  property TPart8 Part8 {get;}
+  property TPart9 Part9 {get;}
+
+type class LibraDex.LibraDexCompositeReader<TPart1,TPart2,TPart3,TPart4,TPart5,TPart6,TPart7,TPart8,TPart9,TPart10,TPart11,TPart12,TPart13,TPart14,TPart15,TPart16,TIdentity>
+  property TIdentity Identity {get;}
+  property TPart1 Part1 {get;}
+  property TPart10 Part10 {get;}
+  property TPart11 Part11 {get;}
+  property TPart12 Part12 {get;}
+  property TPart13 Part13 {get;}
+  property TPart14 Part14 {get;}
+  property TPart15 Part15 {get;}
+  property TPart16 Part16 {get;}
+  property TPart2 Part2 {get;}
+  property TPart3 Part3 {get;}
+  property TPart4 Part4 {get;}
+  property TPart5 Part5 {get;}
+  property TPart6 Part6 {get;}
+  property TPart7 Part7 {get;}
+  property TPart8 Part8 {get;}
+  property TPart9 Part9 {get;}
+
+type class LibraDex.LibraDexCompositeReader<TPart1,TIdentity>
+  property TIdentity Identity {get;}
+  property TPart1 Part1 {get;}
+
+type class LibraDex.LibraDexCompositeReader<TPart1,TPart2,TIdentity>
+  property TIdentity Identity {get;}
+  property TPart1 Part1 {get;}
+  property TPart2 Part2 {get;}
+  method System.Boolean IsNull(System.Int32 partIndex)
+  method System.Boolean Read()
+  method System.ReadOnlyMemory<System.Byte> GetIdentityRawMem()
+  method System.ReadOnlyMemory<System.Byte> GetRawMem(System.Int32 partIndex)
+  method System.ReadOnlyMemory<System.Byte> GetUtf8Mem(System.Int32 partIndex)
+  method System.ReadOnlySpan<System.Byte> GetIdentityRawSpan()
+  method System.ReadOnlySpan<System.Byte> GetRawSpan(System.Int32 partIndex)
+  method System.ReadOnlySpan<System.Byte> GetUtf8Span(System.Int32 partIndex)
+  method System.Void Dispose()
+
+type class LibraDex.LibraDexCompositeReader<TPart1,TPart2,TPart3,TIdentity>
+  property TIdentity Identity {get;}
+  property TPart1 Part1 {get;}
+  property TPart2 Part2 {get;}
+  property TPart3 Part3 {get;}
+  method System.Boolean IsNull(System.Int32 partIndex)
+  method System.Boolean Read()
+  method System.ReadOnlyMemory<System.Byte> GetIdentityRawMem()
+  method System.ReadOnlyMemory<System.Byte> GetRawMem(System.Int32 partIndex)
+  method System.ReadOnlyMemory<System.Byte> GetUtf8Mem(System.Int32 partIndex)
+  method System.ReadOnlySpan<System.Byte> GetIdentityRawSpan()
+  method System.ReadOnlySpan<System.Byte> GetRawSpan(System.Int32 partIndex)
+  method System.ReadOnlySpan<System.Byte> GetUtf8Span(System.Int32 partIndex)
+  method System.Void Dispose()
+
+type class LibraDex.LibraDexCompositeReader<TPart1,TPart2,TPart3,TPart4,TIdentity>
+  property TIdentity Identity {get;}
+  property TPart1 Part1 {get;}
+  property TPart2 Part2 {get;}
+  property TPart3 Part3 {get;}
+  property TPart4 Part4 {get;}
+
+type class LibraDex.LibraDexCompositeReader<TPart1,TPart2,TPart3,TPart4,TPart5,TIdentity>
+  property TIdentity Identity {get;}
+  property TPart1 Part1 {get;}
+  property TPart2 Part2 {get;}
+  property TPart3 Part3 {get;}
+  property TPart4 Part4 {get;}
+  property TPart5 Part5 {get;}
+
+type class LibraDex.LibraDexCompositeReader<TPart1,TPart2,TPart3,TPart4,TPart5,TPart6,TIdentity>
+  property TIdentity Identity {get;}
+  property TPart1 Part1 {get;}
+  property TPart2 Part2 {get;}
+  property TPart3 Part3 {get;}
+  property TPart4 Part4 {get;}
+  property TPart5 Part5 {get;}
+  property TPart6 Part6 {get;}
+
+type class LibraDex.LibraDexCompositeReader<TPart1,TPart2,TPart3,TPart4,TPart5,TPart6,TPart7,TIdentity>
+  property TIdentity Identity {get;}
+  property TPart1 Part1 {get;}
+  property TPart2 Part2 {get;}
+  property TPart3 Part3 {get;}
+  property TPart4 Part4 {get;}
+  property TPart5 Part5 {get;}
+  property TPart6 Part6 {get;}
+  property TPart7 Part7 {get;}
+
+type class LibraDex.LibraDexCompositeReader<TPart1,TPart2,TPart3,TPart4,TPart5,TPart6,TPart7,TPart8,TIdentity>
+  property TIdentity Identity {get;}
+  property TPart1 Part1 {get;}
+  property TPart2 Part2 {get;}
+  property TPart3 Part3 {get;}
+  property TPart4 Part4 {get;}
+  property TPart5 Part5 {get;}
+  property TPart6 Part6 {get;}
+  property TPart7 Part7 {get;}
+  property TPart8 Part8 {get;}
 
 type class LibraDex.LibraDexCompositeResultContinuation
   method LibraDex.LibraDexConditionResultEnd<System.Byte[]> Return()
@@ -1915,12 +2220,19 @@ type enum LibraDex.LibraDexConditionOperatorKind
   field static LibraDex.LibraDexConditionOperatorKind Contains
   field static LibraDex.LibraDexConditionOperatorKind DayEqualTo
   field static LibraDex.LibraDexConditionOperatorKind DayIn
+  field static LibraDex.LibraDexConditionOperatorKind DayNotEqualTo
+  field static LibraDex.LibraDexConditionOperatorKind DayNotIn
   field static LibraDex.LibraDexConditionOperatorKind DayNotRange
   field static LibraDex.LibraDexConditionOperatorKind DayRange
   field static LibraDex.LibraDexConditionOperatorKind EndsWith
   field static LibraDex.LibraDexConditionOperatorKind EqualTo
   field static LibraDex.LibraDexConditionOperatorKind GreaterOrEqual
   field static LibraDex.LibraDexConditionOperatorKind GreaterThan
+  field static LibraDex.LibraDexConditionOperatorKind HourEqualTo
+  field static LibraDex.LibraDexConditionOperatorKind HourIn
+  field static LibraDex.LibraDexConditionOperatorKind HourNotIn
+  field static LibraDex.LibraDexConditionOperatorKind HourNotRange
+  field static LibraDex.LibraDexConditionOperatorKind HourRange
   field static LibraDex.LibraDexConditionOperatorKind InQuarter
   field static LibraDex.LibraDexConditionOperatorKind InQuarterRange
   field static LibraDex.LibraDexConditionOperatorKind InSet
@@ -1950,6 +2262,7 @@ type enum LibraDex.LibraDexConditionOperatorKind
   field static LibraDex.LibraDexConditionOperatorKind MonthDay
   field static LibraDex.LibraDexConditionOperatorKind MonthEqualTo
   field static LibraDex.LibraDexConditionOperatorKind MonthIn
+  field static LibraDex.LibraDexConditionOperatorKind MonthNotEqualTo
   field static LibraDex.LibraDexConditionOperatorKind MonthNotIn
   field static LibraDex.LibraDexConditionOperatorKind MonthNotRange
   field static LibraDex.LibraDexConditionOperatorKind MonthRange
@@ -3032,6 +3345,7 @@ type class LibraDex.LibraDexIndex<TKey,TIdentity>
   property System.Int64 ReadCacheMaxBytes {get;}
   property System.Int64 RootRouterOffset {get;}
   property System.Int32 SlotIndex {get;}
+  property LibraDex.LibraDexIndexSortOrder SortOrder {get;}
   property LibraDex.LibraDexIndexStats<TKey,TIdentity> Stats {get;}
   property LibraDex.LibraDexIndexWhere<TKey,TIdentity> Where {get;}
   method LibraDex.LibraDexBatch<TKey,TIdentity> BeginBatch(LibraDex.LibraDexWriteIntent writeIntent = null)
@@ -3678,6 +3992,7 @@ type class LibraDex.LibraDexRoutedCompositeIndex
   property System.Type KeyType {get;}
   property LibraDex.LibraDexIndexShapeSpec LogicalShape {get;}
   property System.String Name {get;}
+  property LibraDex.LibraDexIndexSortOrder SortOrder {get;}
   property LibraDex.LibraDexCompositeConditionWhere Where {get;}
   method LibraDex.LibraDexGenericInsertResult Add(LibraDex.LibraDexCompositeKey key, System.Object identity)
   method LibraDex.LibraDexGenericInsertResult Insert(LibraDex.LibraDexCompositeKey key, System.Object identity)
@@ -3688,6 +4003,7 @@ type class LibraDex.LibraDexRoutedCompositeIndex
   method System.Boolean Rekey(System.Object identity, LibraDex.LibraDexCompositeKey oldKey, LibraDex.LibraDexCompositeKey newKey)
   method System.Boolean Rekey(System.Object identity, System.Object oldKey, System.Object newKey)
   method System.Int64 DeleteAll()
+  method System.Int64 InsertBatch<TIdentity>(System.Collections.Generic.IReadOnlyList<LibraDex.LibraDexCompositeKey> keys, System.Collections.Generic.IReadOnlyList<TIdentity> identities)
   method System.Int64 Rekey(System.Object identity, LibraDex.LibraDexCompositeKey newKey)
   method System.Int64 Rekey(System.Object identity, System.Object newKey)
   method System.Int64 ReplaceFromUnordered(System.Collections.Generic.IEnumerable<System.ValueTuple<LibraDex.LibraDexCompositeKey,System.Object>> entries, System.Threading.CancellationToken cancellationToken = null)
@@ -3964,6 +4280,7 @@ type class LibraDex.LibraDexStringScalar8Index
   property LibraDex.LibraDexIndexKeys<System.String,System.UInt64> Keys {get;}
   property LibraDex.LibraDexIndexShapeSpec LogicalShape {get;}
   property System.String Name {get;}
+  property LibraDex.LibraDexIndexSortOrder SortOrder {get;}
   property LibraDex.LibraDexStringComparisonPolicy StringComparisonPolicy {get;}
   method LibraDex.IIndex ResolveIndex(System.String indexName)
   method LibraDex.IIndex ResolveProjection(LibraDex.LibraDexConditionLeafDescriptor descriptor, LibraDex.LibraDexConditionLeafClassification classification)
@@ -4066,6 +4383,7 @@ type class LibraDex.LibraDexUInt64VarIdentityIndex
   property LibraDex.LibraDexIndexShapeSpec LogicalShape {get;}
   property System.Int32 MaxIdentityBytes {get;}
   property System.String Name {get;}
+  property LibraDex.LibraDexIndexSortOrder SortOrder {get;}
   method LibraDex.LibraDexGenericInsertResult Insert(System.Object key, System.Object identity)
   method LibraDex.LibraDexGenericInsertResult Insert(System.UInt64 key, System.Byte[] identity)
   method LibraDex.LibraDexPreparedObjectSet PrepareInSet(System.Collections.Generic.IEnumerable<System.Object> keys)
@@ -4296,6 +4614,7 @@ type class LibraDex.LibraDexVariableBlobScalar8Index<TIdentity>
   property LibraDex.LibraDexIndexShapeSpec LogicalShape {get;}
   property System.Int32 MaxKeyBytes {get;}
   property System.String Name {get;}
+  property LibraDex.LibraDexIndexSortOrder SortOrder {get;}
   method LibraDex.LibraDexGenericInsertResult Insert(System.Byte[] key, TIdentity identity)
   method LibraDex.LibraDexGenericInsertResult Insert(System.Object key, System.Object identity)
   method LibraDex.LibraDexPreparedObjectSet PrepareInSet(System.Collections.Generic.IEnumerable<System.Object> keys)

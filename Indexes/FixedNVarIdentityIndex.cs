@@ -111,10 +111,13 @@ internal sealed class FixedNVarIdentityIndex : IDisposable
     /// Both key and identity arrays are owned copies suitable for maintenance work after cursor advancement.<br/>
     /// </summary>
     /// <returns>Authoritative tuples in physical key/identity order.<br/></returns>
-    internal IEnumerable<FixedNVarIdentityTuple> IterateTuples()
+    internal IEnumerable<FixedNVarIdentityTuple> IterateTuples(
+        QueryDirection direction = QueryDirection.Ascending,
+        byte[]? lowerKey = null,
+        byte[]? upperKey = null)
     {
         ThrowIfDisposed();
-        return session.IterateFixedNVarIdentityTuples(handle);
+        return session.IterateFixedNVarIdentityTuples(handle, direction, lowerKey, upperKey);
     }
 
     public void Dispose()

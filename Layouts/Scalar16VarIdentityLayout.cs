@@ -13,6 +13,7 @@ internal static class Scalar16VarIdentityLayout
     public const int SlotKeyPrefixSize = sizeof(uint);
     public const int SlotSize = SlotOffsetSize + SlotKeyPrefixSize;
     public const int MaxRecordOffset = 0xFF_FFFF;
+    public const uint DescendingFlag = 1U;
 
     public const int MagicOffset = 0;
     public const int FormatVersionOffset = 4;
@@ -207,7 +208,7 @@ internal static class Scalar16VarIdentityLayout
         WriteMagic(target, Magic);
         WriteFormatVersion(target, FormatVersion);
         WriteHeaderSize(target, HeaderSize);
-        WriteFlags(target, 0);
+        WriteFlags(target, profile.Descending ? DescendingFlag : 0);
         WriteItemCount(target, 0);
         WriteShelfExtentSize(target, profile.ShelfExtentSize);
         WriteSlotStreamLength(target, 0);

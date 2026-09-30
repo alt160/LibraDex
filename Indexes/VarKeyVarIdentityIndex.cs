@@ -9,6 +9,7 @@ namespace LibraDex;
 internal sealed class VarKeyVarIdentityIndex : IDisposable
 {
     internal const int DefaultMaxRouterHops = 64;
+    internal const byte DescendingSlotFlag = 0x01;
 
     private readonly LibraDexFileSession session;
     private readonly bool ownsSession;
@@ -23,7 +24,8 @@ internal sealed class VarKeyVarIdentityIndex : IDisposable
         long rootRouterOffset,
         int maxKeyLength,
         int maxIdentityLength,
-        bool ownsSession)
+        bool ownsSession,
+        bool descending = false)
     {
         this.session = session;
         this.ownsSession = ownsSession;
@@ -32,6 +34,7 @@ internal sealed class VarKeyVarIdentityIndex : IDisposable
         RootRouterOffset = rootRouterOffset;
         MaxPhysicalKeyLength = maxKeyLength;
         MaxIdentityLength = maxIdentityLength;
+        Descending = descending;
     }
 
     /// <summary>
@@ -65,6 +68,12 @@ internal sealed class VarKeyVarIdentityIndex : IDisposable
     /// The value is an API-level guard over the current routed `VV` profile family, not a text or blob codec decision.<br/>
     /// </summary>
     public int MaxIdentityLength { get; }
+
+    /// <summary>
+    /// Gets whether tuples are physically stored and read in descending key-then-identity order.<br/>
+    /// The value is recovered from the index-directory slot when a file-backed index is reopened.<br/>
+    /// </summary>
+    public bool Descending { get; }
 
     /// <summary>
     /// Gets the DataKernel backing kind used by the owning session.<br/>
@@ -226,7 +235,8 @@ internal sealed class VarKeyVarIdentityIndex : IDisposable
             encodedKey,
             identity,
             allowDuplicateKeys,
-            maxRouterHops: DefaultMaxRouterHops);
+            maxRouterHops: DefaultMaxRouterHops,
+            descending: Descending);
         return VarKeyVarIdentityIndexInsertResult.FromStorage(result);
     }
 
@@ -368,7 +378,8 @@ internal sealed class VarKeyVarIdentityIndex : IDisposable
             LibraDexVarLenKeyCodec.Encode(lowerKey, MaxPhysicalKeyLength, nameof(lowerKey)),
             LibraDexVarLenKeyCodec.Encode(upperKey, MaxPhysicalKeyLength, nameof(upperKey)),
             maxRouterHops: DefaultMaxRouterHops,
-            decodeLogicalKeys: true);
+            decodeLogicalKeys: true,
+            descending: Descending);
     }
 
     /// <summary>
@@ -388,7 +399,8 @@ internal sealed class VarKeyVarIdentityIndex : IDisposable
             LibraDexVarLenKeyCodec.Encode(lowerKey, MaxPhysicalKeyLength, nameof(lowerKey)),
             LibraDexVarLenKeyCodec.Encode(upperKey, MaxPhysicalKeyLength, nameof(upperKey)),
             maxRouterHops: DefaultMaxRouterHops,
-            decodeLogicalKeys: true);
+            decodeLogicalKeys: true,
+            descending: Descending);
     }
 
     internal VarKeyVarIdentityRangeReader OpenEncodedRangeReader(ReadOnlySpan<byte> lowerKey, ReadOnlySpan<byte> upperKey)
@@ -401,7 +413,8 @@ internal sealed class VarKeyVarIdentityIndex : IDisposable
             lowerKey,
             upperKey,
             maxRouterHops: DefaultMaxRouterHops,
-            decodeLogicalKeys: false);
+            decodeLogicalKeys: false,
+            descending: Descending);
     }
 
     /// <summary>
@@ -673,7 +686,8 @@ internal sealed class VarKeyVarIdentityBatch : IDisposable
             encodedKey,
             identity,
             allowDuplicateKeys,
-            maxRouterHops: VarKeyVarIdentityIndex.DefaultMaxRouterHops);
+            maxRouterHops: VarKeyVarIdentityIndex.DefaultMaxRouterHops,
+            descending: index.Descending);
 
         VarKeyVarIdentityIndexInsertResult publicResult = VarKeyVarIdentityIndexInsertResult.FromStorage(result);
         attemptedInsertCount++;

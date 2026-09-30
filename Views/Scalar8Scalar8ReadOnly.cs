@@ -43,6 +43,8 @@ internal readonly ref struct Scalar8Scalar8ReadOnly
 
     public bool IsDuplicateRun => Scalar8Scalar8Layout.HasDuplicateRunFlag(bytes);
 
+    public bool IsDescending => (Flags & Scalar8Scalar8Layout.DescendingFlag) != 0;
+
     public long DuplicateRunNextOffset => IsDuplicateRun ? Scalar8Scalar8Layout.ReadDuplicateRunNextOffset(bytes) : 0;
 
     public ushort ItemCount => Scalar8Scalar8Layout.ReadItemCount(bytes);
@@ -131,12 +133,12 @@ internal readonly ref struct Scalar8Scalar8ReadOnly
         if (IsDuplicateRun)
         {
             ulong runKey = Scalar8Scalar8Layout.ReadDuplicateRunKey(bytes);
-            if (runKey < encodedKey)
+            if (IsDescending ? runKey > encodedKey : runKey < encodedKey)
             {
                 return ItemCount;
             }
 
-            if (runKey > encodedKey)
+            if (IsDescending ? runKey < encodedKey : runKey > encodedKey)
             {
                 return 0;
             }
@@ -147,7 +149,7 @@ internal readonly ref struct Scalar8Scalar8ReadOnly
             {
                 int middle = runLow + ((runHigh - runLow) >> 1);
                 ulong identity = Scalar8Scalar8Layout.ReadDuplicateRunIdentity(bytes, middle);
-                if (identity < encodedIdentity)
+                if (IsDescending ? identity > encodedIdentity : identity < encodedIdentity)
                 {
                     runLow = middle + 1;
                 }
@@ -164,13 +166,14 @@ internal readonly ref struct Scalar8Scalar8ReadOnly
         int high = ItemCount;
         ReadOnlySpan<byte> localBytes = bytes;
         Scalar8Scalar8Profile localProfile = profile;
+        bool descending = IsDescending;
 
         while (low < high)
         {
             int middle = low + ((high - low) >> 1);
             ushort itemOffset = Scalar8Scalar8Layout.ReadSlot(localBytes, localProfile, middle);
             int comparison = Scalar8Scalar8Layout.CompareItemTuple(localBytes, itemOffset, encodedKey, encodedIdentity);
-            if (comparison < 0)
+            if (descending ? comparison > 0 : comparison < 0)
             {
                 low = middle + 1;
             }
@@ -194,20 +197,21 @@ internal readonly ref struct Scalar8Scalar8ReadOnly
         if (IsDuplicateRun)
         {
             ulong runKey = Scalar8Scalar8Layout.ReadDuplicateRunKey(bytes);
-            return runKey < encodedKey ? ItemCount : 0;
+            return (IsDescending ? runKey > encodedKey : runKey < encodedKey) ? ItemCount : 0;
         }
 
         int low = 0;
         int high = ItemCount;
         ReadOnlySpan<byte> localBytes = bytes;
         Scalar8Scalar8Profile localProfile = profile;
+        bool descending = IsDescending;
 
         while (low < high)
         {
             int middle = low + ((high - low) >> 1);
             ushort itemOffset = Scalar8Scalar8Layout.ReadSlot(localBytes, localProfile, middle);
             ulong itemKey = Scalar8Scalar8Layout.ReadItemKey(localBytes, itemOffset);
-            if (itemKey < encodedKey)
+            if (descending ? itemKey > encodedKey : itemKey < encodedKey)
             {
                 low = middle + 1;
             }
@@ -304,7 +308,7 @@ internal readonly ref struct Scalar8Scalar8ReadOnly
         }
 
         int copied = 0;
-        int slotIndex = LowerBoundKey(lowerEncodedKey);
+        int slotIndex = LowerBoundKey(IsDescending ? upperEncodedKey : lowerEncodedKey);
         ushort count = ItemCount;
         ReadOnlySpan<byte> localBytes = bytes;
         Scalar8Scalar8Profile localProfile = profile;
@@ -312,7 +316,7 @@ internal readonly ref struct Scalar8Scalar8ReadOnly
         {
             ushort itemOffset = Scalar8Scalar8Layout.ReadSlot(localBytes, localProfile, i);
             ulong itemKey = Scalar8Scalar8Layout.ReadItemKey(localBytes, itemOffset);
-            if (itemKey > upperEncodedKey)
+            if (IsDescending ? itemKey < lowerEncodedKey : itemKey > upperEncodedKey)
             {
                 break;
             }

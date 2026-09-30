@@ -1232,7 +1232,7 @@ internal static class LibraDexIdentityExecutionPlanner
             throw new NotSupportedException("The identity criterion leaf is not backed by an executable LibraDex index.");
         }
 
-        LibraDexIdentityPrimitiveRequest request = new(criterion.CriteriaKind.Value, criterion.Values);
+        LibraDexIdentityPrimitiveRequest request = CreatePlanNaturalRequest(criterion);
         if (criterion.Index is IIdentityPrimitiveExecutor<TIdentity> typedExecutor)
         {
             return typedExecutor.IterateIdentityPrimitiveTyped(request);
@@ -1379,8 +1379,26 @@ internal static class LibraDexIdentityExecutionPlanner
             throw new NotSupportedException("The identity criterion leaf is not backed by an executable LibraDex primitive executor.");
         }
 
-        return primitiveExecutor.IterateIdentityPrimitive(
-            new LibraDexIdentityPrimitiveRequest(criterion.CriteriaKind.Value, criterion.Values));
+        return primitiveExecutor.IterateIdentityPrimitive(CreatePlanNaturalRequest(criterion));
+    }
+
+    /// <summary>
+    /// Creates one primitive request in the selected index's persisted natural traversal order.<br/>
+    /// Descending metadata is implemented as native reverse traversal over the ascending physical tree, preserving one storage shape and query-time explicit direction semantics.<br/>
+    /// </summary>
+    /// <param name="criterion">The materialized primitive leaf whose index owns the natural-order contract.<br/></param>
+    /// <param name="takeLimit">The optional physical row limit that may be pushed into the primitive executor.<br/></param>
+    /// <returns>A primitive request whose direction matches the index's persisted sort order.<br/></returns>
+    private static LibraDexIdentityPrimitiveRequest CreatePlanNaturalRequest(IIdentityCriterion criterion, int? takeLimit = null)
+    {
+        QueryDirection direction = criterion.Index?.SortOrder == LibraDexIndexSortOrder.Descending
+            ? QueryDirection.Descending
+            : QueryDirection.Ascending;
+        return new LibraDexIdentityPrimitiveRequest(
+            criterion.CriteriaKind ?? throw new NotSupportedException("The identity criterion leaf is not backed by an executable LibraDex index."),
+            criterion.Values,
+            takeLimit,
+            direction);
     }
 
     private static List<object> ExecuteLeaf(IIdentityCriterion criterion)
@@ -1395,8 +1413,7 @@ internal static class LibraDexIdentityExecutionPlanner
             throw new NotSupportedException("The identity criterion leaf is not backed by an executable LibraDex primitive executor.");
         }
 
-        return primitiveExecutor.ExecuteIdentityPrimitive(
-            new LibraDexIdentityPrimitiveRequest(criterion.CriteriaKind.Value, criterion.Values)).ToList();
+        return primitiveExecutor.ExecuteIdentityPrimitive(CreatePlanNaturalRequest(criterion)).ToList();
     }
 
     private static LibraDexIdentityNodeExecution ExecuteLeafWithStats(IIdentityCriterion criterion)
@@ -1590,8 +1607,7 @@ internal static class LibraDexIdentityExecutionPlanner
             return false;
         }
 
-        identities = primitiveExecutor.ExecuteIdentityPrimitive(
-            new LibraDexIdentityPrimitiveRequest(criterion.CriteriaKind.Value, criterion.Values, takeLimit));
+        identities = primitiveExecutor.ExecuteIdentityPrimitive(CreatePlanNaturalRequest(criterion, takeLimit));
         return true;
     }
 
@@ -1655,7 +1671,7 @@ internal static class LibraDexIdentityExecutionPlanner
         }
 
         using IEnumerator<object> enumerator = primitiveExecutor.IterateIdentityPrimitive(
-            new LibraDexIdentityPrimitiveRequest(criterion.CriteriaKind.Value, criterion.Values, TakeLimit: 1)).GetEnumerator();
+            CreatePlanNaturalRequest(criterion, takeLimit: 1)).GetEnumerator();
         exists = enumerator.MoveNext();
         return true;
     }

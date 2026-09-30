@@ -9,6 +9,7 @@ public sealed class LibraDexUInt64VarIdentityIndex : IIndex, IIdentityPrimitiveE
     private readonly Catalog catalog;
     private readonly Scalar8VarIdentityIndex inner;
     private readonly IndexKeys keyContract;
+    private readonly LibraDexIndexSortOrder sortOrder;
     private bool disposed;
 
     internal LibraDexUInt64VarIdentityIndex(
@@ -16,7 +17,8 @@ public sealed class LibraDexUInt64VarIdentityIndex : IIndex, IIdentityPrimitiveE
         string group,
         string name,
         Scalar8VarIdentityIndex inner,
-        IndexKeys keyContract)
+        IndexKeys keyContract,
+        LibraDexIndexSortOrder sortOrder = LibraDexIndexSortOrder.Ascending)
     {
         this.catalog = catalog ?? throw new ArgumentNullException(nameof(catalog));
         ArgumentNullException.ThrowIfNull(inner);
@@ -24,6 +26,7 @@ public sealed class LibraDexUInt64VarIdentityIndex : IIndex, IIdentityPrimitiveE
         Name = name;
         this.inner = inner;
         this.keyContract = keyContract;
+        this.sortOrder = sortOrder;
     }
 
     /// <summary>
@@ -60,6 +63,11 @@ public sealed class LibraDexUInt64VarIdentityIndex : IIndex, IIdentityPrimitiveE
     public CatalogIndexIdentityFamily IdentityFamily => CatalogIndexIdentityFamily.Blob;
 
     public LibraDexIndexShapeSpec? LogicalShape => null;
+
+    /// <summary>
+    /// Gets the persisted natural key traversal order for this UInt64 index.<br/>
+    /// </summary>
+    public LibraDexIndexSortOrder SortOrder => sortOrder;
 
     /// <summary>
     /// Inserts one UInt64 key and variable-length identity byte payload into the `SV8` index.<br/>
@@ -437,14 +445,14 @@ public sealed class LibraDexUInt64VarIdentityIndex : IIndex, IIdentityPrimitiveE
         }
 
         int returned = 0;
-        foreach ((ulong lower, ulong upper) in ExpandPrimitiveRanges(request))
+        foreach ((ulong lower, ulong upper) in ExpandOrderedPrimitiveRanges(request))
         {
             if (lower > upper)
             {
                 continue;
             }
 
-            using Scalar8VarIdentityRangeReader reader = inner.OpenRangeReader(lower, upper);
+            using Scalar8VarIdentityRangeReader reader = inner.OpenRangeReader(lower, upper, request.Direction);
             while (reader.MoveNext())
             {
                 yield return reader.MaterializeCurrentIdentity();
@@ -477,14 +485,14 @@ public sealed class LibraDexUInt64VarIdentityIndex : IIndex, IIdentityPrimitiveE
         }
 
         int returned = 0;
-        foreach ((ulong lower, ulong upper) in ExpandPrimitiveRanges(request))
+        foreach ((ulong lower, ulong upper) in ExpandOrderedPrimitiveRanges(request))
         {
             if (lower > upper)
             {
                 continue;
             }
 
-            using Scalar8VarIdentityRangeReader reader = inner.OpenRangeReader(lower, upper);
+            using Scalar8VarIdentityRangeReader reader = inner.OpenRangeReader(lower, upper, request.Direction);
             while (reader.MoveNext())
             {
                 yield return new LibraDexObjectTuple(reader.CurrentEncodedKey, reader.MaterializeCurrentIdentity());
@@ -649,6 +657,20 @@ public sealed class LibraDexUInt64VarIdentityIndex : IIndex, IIdentityPrimitiveE
     /// <summary>
     /// Throws when this facade has already been disposed.<br/>
     /// </summary>
+    /// <summary>
+    /// Orders independent membership or multirange extents by their highest key for reverse tuple traversal.<br/>
+    /// A single range remains lazy, while a descending multi-extent request buffers only its small range descriptors, never result identities.<br/>
+    /// </summary>
+    /// <param name="request">The normalized primitive request.<br/></param>
+    /// <returns>Inclusive key extents in requested traversal order.<br/></returns>
+    private static IEnumerable<(ulong Lower, ulong Upper)> ExpandOrderedPrimitiveRanges(LibraDexIdentityPrimitiveRequest request)
+    {
+        IEnumerable<(ulong Lower, ulong Upper)> ranges = ExpandPrimitiveRanges(request);
+        return request.Direction == QueryDirection.Descending
+            ? ranges.OrderByDescending(static range => range.Upper).ThenByDescending(static range => range.Lower)
+            : ranges;
+    }
+
     private void ThrowIfDisposed()
     {
         if (disposed)

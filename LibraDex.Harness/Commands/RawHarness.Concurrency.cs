@@ -49,6 +49,7 @@ internal static partial class RawHarness
         RunInternalScalar8Scalar8WriterContextProbe();
         RunInternalScalar8Scalar8StalePhysicalRouteClaimProbe();
         RunInternalVarKeyScalar8WriterContextProbe();
+        RunInternalVarKeyScalar8TerminalSiblingFallbackProbe();
         RunInternalVarKeyScalar8StalePhysicalRouteClaimProbe();
         RunInternalVarKeyScalar8ColdRootPrefixOwnerProbe();
         RunInternalVarKeyScalar16WriterContextProbe();
@@ -7378,6 +7379,117 @@ internal static partial class RawHarness
             identities[terminalBaseCount] != (ulong)(7000 + terminalBaseCount))
         {
             throw new InvalidDataException("VS8 writer-context terminal identity local insert readback failed.");
+        }
+    }
+
+    /// <summary>
+    /// Proves a one-shot `VS8` insert deepens a valid terminal-identity route when a different key with the same routed prefix arrives.<br/>
+    /// The writer-context fast path must classify that topology as a serialized fallback rather than corruption, and the fallback must preserve the terminal key's identities while adding the sibling key.<br/>
+    /// </summary>
+    private static void RunInternalVarKeyScalar8TerminalSiblingFallbackProbe()
+    {
+        using LibraDexFileSession session = LibraDexFileSession.InitializeMemory(
+            CreateDesignPerfOptions(),
+            CreateDesignPerfMetadata(9910),
+            DataKernelTelemetryOptions.FromLevel(LibraDexDiagnosticsLevel.Detailed));
+        VarLenOptimizerMaintenancePolicy policy = new(VarLenOptimizerMaintenanceMode.Disabled, 0, 0, 0, 0);
+        (VarKeyScalar8IndexHandle handle, _, _) = session.CreateVarKeyScalar8RootRouterIndex(
+            CreateHarnessSlot(0, "vs8termsibling", 0),
+            maxKeyLength: 64,
+            optimizerRouteFanout: 16,
+            policy);
+        using VarKeyScalar8Index index = new(session, handle, 0, "vs8termsibling", ownsSession: false);
+        byte[] terminalKey = [0x77, 0x01, 0x01];
+        int terminalCount = 0;
+        while (true)
+        {
+            VarKeyScalar8InsertOutcome fill = index.InsertEncoded(
+                terminalKey,
+                checked((ulong)(10000 + terminalCount)),
+                allowDuplicateKeys: true);
+            if (!fill.Inserted)
+            {
+                throw new InvalidDataException($"VS8 terminal sibling fallback fixture failed at item {terminalCount}.");
+            }
+
+            terminalCount++;
+            VarKeyScalar8RoutePathTarget path = session.WalkVarKeyScalar8RoutePathTarget(
+                handle.RootRouterOffset,
+                terminalKey,
+                LibraDexFileSession.DefaultVarKeyScalar8MaxRouterHops);
+            if (path.Target.Kind == VarKeyScalar8RouteTargetKind.TerminalIdentityRoot)
+            {
+                break;
+            }
+
+            if (terminalCount > 4096)
+            {
+                throw new InvalidDataException("VS8 terminal sibling fallback fixture did not reach terminal identity topology.");
+            }
+        }
+
+        byte[] siblingKey = [0x77, 0x01, 0x02];
+        const ulong siblingIdentity = 9000000;
+        VarKeyScalar8InsertOutcome sibling = index.InsertEncoded(siblingKey, siblingIdentity, allowDuplicateKeys: true);
+        if (!sibling.Inserted)
+        {
+            throw new InvalidDataException("VS8 terminal sibling fallback did not insert the sibling key.");
+        }
+
+        ulong[] terminalIdentities = new ulong[terminalCount];
+        int terminalRead = session.ReadVarKeyScalar8IdentityRange(
+            handle.RootRouterOffset,
+            handle.MaxKeyLength,
+            terminalKey,
+            terminalKey,
+            terminalIdentities);
+        if (terminalRead != terminalCount || terminalIdentities[terminalCount - 1] != checked((ulong)(10000 + terminalCount - 1)))
+        {
+            throw new InvalidDataException("VS8 terminal sibling fallback did not preserve the terminal key identities.");
+        }
+
+        ulong[] siblingIdentities = new ulong[2];
+        int siblingRead = session.ReadVarKeyScalar8IdentityRange(
+            handle.RootRouterOffset,
+            handle.MaxKeyLength,
+            siblingKey,
+            siblingKey,
+            siblingIdentities);
+        if (siblingRead != 1 || siblingIdentities[0] != siblingIdentity)
+        {
+            throw new InvalidDataException("VS8 terminal sibling fallback did not publish the sibling identity exactly once.");
+        }
+
+        using VarKeyScalar8RangeReader reader = index.OpenEncodedRangeReader([0x00], [0xFF, 0xFF, 0xFF]);
+        int ordinal = 0;
+        while (reader.MoveNext())
+        {
+            if (ordinal < terminalCount)
+            {
+                ulong expectedIdentity = checked((ulong)(10000 + ordinal));
+                if (!reader.CurrentKey.SequenceEqual(terminalKey) || reader.CurrentEncodedIdentity != expectedIdentity)
+                {
+                    throw new InvalidDataException($"VS8 terminal sibling fallback changed global tuple order at terminal ordinal {ordinal}.");
+                }
+            }
+            else if (ordinal == terminalCount)
+            {
+                if (!reader.CurrentKey.SequenceEqual(siblingKey) || reader.CurrentEncodedIdentity != siblingIdentity)
+                {
+                    throw new InvalidDataException("VS8 terminal sibling fallback did not emit the sibling tuple after the terminal-key run.");
+                }
+            }
+            else
+            {
+                throw new InvalidDataException("VS8 terminal sibling fallback emitted an unexpected extra tuple.");
+            }
+
+            ordinal++;
+        }
+
+        if (ordinal != terminalCount + 1)
+        {
+            throw new InvalidDataException($"VS8 terminal sibling fallback streamed {ordinal} tuples; expected {terminalCount + 1}.");
         }
     }
 

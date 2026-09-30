@@ -58,6 +58,7 @@ internal readonly record struct Scalar8Scalar8MutationBounds(
 /// <param name="ItemRegionOffset">The byte offset where the fixed-width physical item region starts.</param>
 /// <param name="ItemRegionSize">The byte length reserved for the physical item region.</param>
 /// <param name="UnusedTailBytes">The unused bytes left at the end of the fixed shelf extent after partitioning.</param>
+/// <param name="Descending">Whether new shelves store key and identity tuples in descending order.</param>
 internal readonly record struct Scalar8Scalar8Profile(
     int ShelfExtentSize,
     ushort MaxItemCount,
@@ -65,7 +66,8 @@ internal readonly record struct Scalar8Scalar8Profile(
     int SlotRegionSize,
     int ItemRegionOffset,
     int ItemRegionSize,
-    int UnusedTailBytes)
+    int UnusedTailBytes,
+    bool Descending = false)
 {
     /// <summary>
     /// Creates a `Scalar8Scalar8` shelf profile from a fixed shelf extent size.<br/>
@@ -363,6 +365,7 @@ internal readonly record struct Scalar8Scalar16MutationBounds(
 /// <param name="ItemRegionOffset">The byte offset where the fixed-width physical item region starts.</param>
 /// <param name="ItemRegionSize">The byte length reserved for the physical item region.</param>
 /// <param name="UnusedTailBytes">The unused bytes left at the end of the fixed shelf extent after partitioning.</param>
+/// <param name="Descending">Whether new shelves store key and identity tuples in descending order.</param>
 internal readonly record struct Scalar8Scalar16Profile(
     int ShelfExtentSize,
     ushort MaxItemCount,
@@ -370,7 +373,8 @@ internal readonly record struct Scalar8Scalar16Profile(
     int SlotRegionSize,
     int ItemRegionOffset,
     int ItemRegionSize,
-    int UnusedTailBytes)
+    int UnusedTailBytes,
+    bool Descending = false)
 {
     /// <summary>
     /// Creates a `Scalar8Scalar16` shelf profile from a fixed shelf extent size.<br/>
@@ -646,6 +650,7 @@ internal readonly record struct Scalar16Scalar8MutationBounds(
 /// <param name="ItemRegionOffset">The byte offset where the fixed-width physical item region starts.</param>
 /// <param name="ItemRegionSize">The byte length reserved for the physical item region.</param>
 /// <param name="UnusedTailBytes">The unused bytes left at the end of the fixed shelf extent after partitioning.</param>
+/// <param name="Descending">Whether new shelves store key and identity tuples in descending order.</param>
 internal readonly record struct Scalar16Scalar8Profile(
     int ShelfExtentSize,
     ushort MaxItemCount,
@@ -653,7 +658,8 @@ internal readonly record struct Scalar16Scalar8Profile(
     int SlotRegionSize,
     int ItemRegionOffset,
     int ItemRegionSize,
-    int UnusedTailBytes)
+    int UnusedTailBytes,
+    bool Descending = false)
 {
     /// <summary>
     /// Creates a `Scalar16Scalar8` shelf profile from a fixed shelf extent size.<br/>
@@ -890,7 +896,8 @@ internal readonly record struct Scalar16Scalar16Profile(
     int SlotRegionSize,
     int ItemRegionOffset,
     int ItemRegionSize,
-    int UnusedTailBytes)
+    int UnusedTailBytes,
+    bool Descending = false)
 {
     /// <summary>
     /// Creates a `Scalar16Scalar16` shelf profile from a fixed shelf extent size.<br/>
@@ -1126,6 +1133,7 @@ internal readonly record struct Fixed32Scalar8MutationBounds(
 /// <param name="ItemRegionOffset">The byte offset where the fixed-width physical item region starts.</param>
 /// <param name="ItemRegionSize">The byte length reserved for the physical item region.</param>
 /// <param name="UnusedTailBytes">The unused bytes left at the end of the fixed shelf extent after partitioning.</param>
+/// <param name="Descending">Whether new shelves store key and identity tuples in descending order.<br/></param>
 internal readonly record struct Fixed32Scalar8Profile(
     int ShelfExtentSize,
     ushort MaxItemCount,
@@ -1133,7 +1141,8 @@ internal readonly record struct Fixed32Scalar8Profile(
     int SlotRegionSize,
     int ItemRegionOffset,
     int ItemRegionSize,
-    int UnusedTailBytes)
+    int UnusedTailBytes,
+    bool Descending = false)
 {
     /// <summary>
     /// Creates a `Fixed32Scalar8` shelf profile from a fixed shelf extent size.<br/>
@@ -1381,6 +1390,7 @@ internal readonly record struct Fixed32Scalar16MutationBounds(
 /// <param name="ItemRegionOffset">The byte offset where the fixed-width physical item region starts.</param>
 /// <param name="ItemRegionSize">The byte length reserved for the physical item region.</param>
 /// <param name="UnusedTailBytes">The unused bytes left at the end of the fixed shelf extent after partitioning.</param>
+/// <param name="Descending">Whether sorted shelf slots follow descending encoded tuple order.</param>
 internal readonly record struct Fixed32Scalar16Profile(
     int ShelfExtentSize,
     ushort MaxItemCount,
@@ -1388,7 +1398,8 @@ internal readonly record struct Fixed32Scalar16Profile(
     int SlotRegionSize,
     int ItemRegionOffset,
     int ItemRegionSize,
-    int UnusedTailBytes)
+    int UnusedTailBytes,
+    bool Descending = false)
 {
     /// <summary>
     /// Creates a `Fixed32Scalar16` shelf profile from a fixed shelf extent size.<br/>

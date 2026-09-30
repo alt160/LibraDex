@@ -41,6 +41,8 @@ internal readonly ref struct Fixed32Scalar8ReadOnly
 
     public uint Flags => Fixed32Scalar8Layout.ReadFlags(bytes);
 
+    public bool IsDescending => (Flags & Fixed32Scalar8Layout.DescendingFlag) != 0;
+
     public ushort ItemCount => Fixed32Scalar8Layout.ReadItemCount(bytes);
 
     public ushort PhysicalItemCount => ItemCount;
@@ -137,7 +139,7 @@ internal readonly ref struct Fixed32Scalar8ReadOnly
     }
 
     /// <summary>
-    /// Finds the first sorted slot whose tuple is greater than or equal to the supplied encoded tuple.<br/>
+    /// Finds the first sorted slot at or beyond the supplied tuple in this shelf's physical direction.<br/>
     /// This lower-bound search compares `(key0, key1, key2, key3, identity)` without decoding persisted payloads.<br/>
     /// </summary>
     /// <param name="key0">The encoded sortable key part 0.</param>
@@ -152,13 +154,14 @@ internal readonly ref struct Fixed32Scalar8ReadOnly
         int high = ItemCount;
         ReadOnlySpan<byte> localBytes = bytes;
         Fixed32Scalar8Profile localProfile = profile;
+        bool descending = IsDescending;
 
         while (low < high)
         {
             int middle = low + ((high - low) >> 1);
             ushort itemOffset = Fixed32Scalar8Layout.ReadSlot(localBytes, localProfile, middle);
             int comparison = Fixed32Scalar8Layout.CompareItemTuple(localBytes, itemOffset, key0, key1, key2, key3, encodedIdentity);
-            if (comparison < 0)
+            if (descending ? comparison > 0 : comparison < 0)
             {
                 low = middle + 1;
             }
@@ -172,7 +175,7 @@ internal readonly ref struct Fixed32Scalar8ReadOnly
     }
 
     /// <summary>
-    /// Finds the first sorted slot whose key is greater than or equal to the supplied encoded key.<br/>
+    /// Finds the first sorted slot at or beyond the supplied key in this shelf's physical direction.<br/>
     /// This is the range-scan entry point for key-only lower bounds.<br/>
     /// </summary>
     /// <param name="key0">The encoded sortable key part 0.</param>
@@ -186,13 +189,14 @@ internal readonly ref struct Fixed32Scalar8ReadOnly
         int high = ItemCount;
         ReadOnlySpan<byte> localBytes = bytes;
         Fixed32Scalar8Profile localProfile = profile;
+        bool descending = IsDescending;
 
         while (low < high)
         {
             int middle = low + ((high - low) >> 1);
             ushort itemOffset = Fixed32Scalar8Layout.ReadSlot(localBytes, localProfile, middle);
             int comparison = Fixed32Scalar8Layout.CompareItemKey(localBytes, itemOffset, key0, key1, key2, key3);
-            if (comparison < 0)
+            if (descending ? comparison > 0 : comparison < 0)
             {
                 low = middle + 1;
             }
@@ -207,7 +211,7 @@ internal readonly ref struct Fixed32Scalar8ReadOnly
 
     /// <summary>
     /// Finds the first identity stored for an encoded key in sorted shelf order.<br/>
-    /// Duplicate-key indexes return the lowest encoded identity for the key.<br/>
+    /// Duplicate-key indexes return the first physical identity for the key, highest when the shelf is descending.<br/>
     /// </summary>
     /// <param name="key0">The encoded sortable key part 0.</param>
     /// <param name="key1">The encoded sortable key part 1.</param>
@@ -238,7 +242,7 @@ internal readonly ref struct Fixed32Scalar8ReadOnly
 
     /// <summary>
     /// Copies encoded identities whose keys are inside an inclusive encoded key range.<br/>
-    /// The scan starts with one key lower-bound and then walks sorted slots until a key exceeds the upper bound.<br/>
+    /// The scan starts at the first physical range bound and walks sorted slots through the opposite inclusive bound.<br/>
     /// </summary>
     /// <param name="lowerKey0">The inclusive lower encoded sortable key part 0.</param>
     /// <param name="lowerKey1">The inclusive lower encoded sortable key part 1.</param>
@@ -268,15 +272,19 @@ internal readonly ref struct Fixed32Scalar8ReadOnly
         }
 
         int copied = 0;
-        int slotIndex = LowerBoundKey(lowerKey0, lowerKey1, lowerKey2, lowerKey3);
+        int slotIndex = IsDescending
+            ? LowerBoundKey(upperKey0, upperKey1, upperKey2, upperKey3)
+            : LowerBoundKey(lowerKey0, lowerKey1, lowerKey2, lowerKey3);
         ushort count = ItemCount;
         ReadOnlySpan<byte> localBytes = bytes;
         Fixed32Scalar8Profile localProfile = profile;
         for (int i = slotIndex; i < count; i++)
         {
             ushort itemOffset = Fixed32Scalar8Layout.ReadSlot(localBytes, localProfile, i);
-            int upperComparison = Fixed32Scalar8Layout.CompareItemKey(localBytes, itemOffset, upperKey0, upperKey1, upperKey2, upperKey3);
-            if (upperComparison > 0)
+            int boundComparison = IsDescending
+                ? Fixed32Scalar8Layout.CompareItemKey(localBytes, itemOffset, lowerKey0, lowerKey1, lowerKey2, lowerKey3)
+                : Fixed32Scalar8Layout.CompareItemKey(localBytes, itemOffset, upperKey0, upperKey1, upperKey2, upperKey3);
+            if (IsDescending ? boundComparison < 0 : boundComparison > 0)
             {
                 break;
             }

@@ -313,7 +313,8 @@ internal sealed partial class LibraDexFileSession
 
     /// <summary>
     /// Counts scalar-8 identities from a null-or-empty key-state identity route without copying identities.<br/>
-    /// The count is read from the existing route root metadata, which is updated only when that route root is already being written for insert/delete/promotion.<br/>
+    /// Inline routes use their root count; promoted routes count the child terminal shelves that own the actual identities.<br/>
+    /// The promoted root's count is not authoritative after child-only inserts, so reading it would undercount without an identity scan.<br/>
     /// </summary>
     /// <param name="slotIndex">The fixed directory slot that owns the index.<br/></param>
     /// <param name="route">The key-state route to count.<br/></param>
@@ -326,9 +327,31 @@ internal sealed partial class LibraDexFileSession
             return 0;
         }
 
+        Span<byte> routeHeader = stackalloc byte[KeyStateIdentityRouteLayout.HeaderSize];
+        kernel.Read(routeOffset, routeHeader);
+        if (KeyStateIdentityRouteLayout.ReadMagic(routeHeader) == KeyStateIdentityRouteLayout.Magic &&
+            KeyStateIdentityRouteLayout.ReadFormatVersion(routeHeader) == KeyStateIdentityRouteLayout.FormatVersion &&
+            KeyStateIdentityRouteLayout.ReadHeaderSize(routeHeader) == KeyStateIdentityRouteLayout.HeaderSize &&
+            KeyStateIdentityRouteLayout.ReadStorageKind(routeHeader) == KeyStateIdentityRouteLayout.TerminalIdentityRootStorageKind &&
+            KeyStateIdentityRouteLayout.ReadIdentitySizeCode(routeHeader) == KeyStateIdentityRouteLayout.Scalar8IdentityCode &&
+            KeyStateIdentityRouteLayout.ReadChildRootOffset(routeHeader) > 0 &&
+            KeyStateIdentityRouteLayout.ReadItemCount(routeHeader) >= 0)
+        {
+            long childRootOffset = KeyStateIdentityRouteLayout.ReadChildRootOffset(routeHeader);
+            byte[] childRoot = ReadTerminalIdentityRootBytes(childRootOffset);
+            Span<byte> expectedKey = stackalloc byte[3] { (byte)'K', (byte)'S', (byte)route };
+            if (TerminalIdentityRootLayout.ReadShape(childRoot) != TerminalIdentityRootLayout.ShapeScalar8 ||
+                !IsTerminalIdentityRootForKey(childRoot, expectedKey, out _))
+            {
+                throw new InvalidDataException("The promoted scalar-8 key-state count root is invalid.");
+            }
+
+            return CountTerminalIdentity8RootNarrow(childRootOffset);
+        }
+
         byte[] routeBytes = ReadKeyStateRouteBytes(routeOffset);
         KeyStateIdentityRouteReadOnly identityRoute = new(routeBytes);
-        if (identityRoute.IsScalar8InlineValid || identityRoute.IsScalar8TerminalIdentityRootValid)
+        if (identityRoute.IsScalar8InlineValid)
         {
             return identityRoute.ItemCount;
         }
@@ -367,7 +390,8 @@ internal sealed partial class LibraDexFileSession
 
     /// <summary>
     /// Counts scalar-16 identities from a null-or-empty key-state identity route without copying identity lanes.<br/>
-    /// The count is read from the existing route root metadata, which is updated only when that route root is already being written for insert/delete/promotion.<br/>
+    /// Inline routes use their root count; promoted routes count the child terminal shelves that own the actual identities.<br/>
+    /// The promoted root's count is not authoritative after child-only inserts, so reading it would undercount without an identity scan.<br/>
     /// </summary>
     /// <param name="slotIndex">The fixed directory slot that owns the index.<br/></param>
     /// <param name="route">The key-state route to count.<br/></param>
@@ -380,9 +404,31 @@ internal sealed partial class LibraDexFileSession
             return 0;
         }
 
+        Span<byte> routeHeader = stackalloc byte[KeyStateIdentityRouteLayout.HeaderSize];
+        kernel.Read(routeOffset, routeHeader);
+        if (KeyStateIdentityRouteLayout.ReadMagic(routeHeader) == KeyStateIdentityRouteLayout.Magic &&
+            KeyStateIdentityRouteLayout.ReadFormatVersion(routeHeader) == KeyStateIdentityRouteLayout.FormatVersion &&
+            KeyStateIdentityRouteLayout.ReadHeaderSize(routeHeader) == KeyStateIdentityRouteLayout.HeaderSize &&
+            KeyStateIdentityRouteLayout.ReadStorageKind(routeHeader) == KeyStateIdentityRouteLayout.TerminalIdentityRootStorageKind &&
+            KeyStateIdentityRouteLayout.ReadIdentitySizeCode(routeHeader) == KeyStateIdentityRouteLayout.Scalar16IdentityCode &&
+            KeyStateIdentityRouteLayout.ReadChildRootOffset(routeHeader) > 0 &&
+            KeyStateIdentityRouteLayout.ReadItemCount(routeHeader) >= 0)
+        {
+            long childRootOffset = KeyStateIdentityRouteLayout.ReadChildRootOffset(routeHeader);
+            byte[] childRoot = ReadTerminalIdentityRootBytes(childRootOffset);
+            Span<byte> expectedKey = stackalloc byte[4] { (byte)'K', (byte)'S', (byte)route, 16 };
+            if (TerminalIdentityRootLayout.ReadShape(childRoot) != TerminalIdentityRootLayout.ShapeScalar16VarIdentity ||
+                !IsTerminalIdentityRootForKey(childRoot, expectedKey, out _))
+            {
+                throw new InvalidDataException("The promoted scalar-16 key-state count root is invalid.");
+            }
+
+            return CountTerminalVarIdentityRootNarrow(childRootOffset, TerminalIdentityRootLayout.ShapeScalar16VarIdentity);
+        }
+
         byte[] routeBytes = ReadKeyStateRouteBytes(routeOffset);
         KeyStateIdentityRouteReadOnly identityRoute = new(routeBytes);
-        if (identityRoute.IsScalar16InlineValid || identityRoute.IsScalar16TerminalIdentityRootValid)
+        if (identityRoute.IsScalar16InlineValid)
         {
             return identityRoute.ItemCount;
         }

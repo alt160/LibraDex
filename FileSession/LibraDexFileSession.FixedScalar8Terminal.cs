@@ -136,6 +136,8 @@ internal sealed partial class LibraDexFileSession
         List<ulong> identities = new(count + 1);
         for (int i = 0; i < count; i++)
             identities.Add(shelf.ReadIdentityAt(i));
+        if (profile.Descending)
+            identities.Reverse();
         int insertIndex = identities.BinarySearch(encodedIdentity);
         if (insertIndex >= 0)
         {
@@ -144,15 +146,21 @@ internal sealed partial class LibraDexFileSession
         }
 
         identities.Insert(~insertIndex, encodedIdentity);
+        if (profile.Descending)
+            identities.Reverse();
         Span<byte> keyBytes = stackalloc byte[Scalar16Scalar8Layout.KeySize];
         BinaryPrimitives.WriteUInt64BigEndian(keyBytes, encodedKeyHigh);
         BinaryPrimitives.WriteUInt64BigEndian(keyBytes.Slice(sizeof(ulong)), encodedKeyLow);
+        byte parentPrefix = keyBytes[pathTarget.Target.RouterDepth];
+        RefineDirectShelfOwner(pathTarget.ParentRouterOffset, pathTarget.Target.Offset,
+            checked((ushort)(pathTarget.Target.RouterDepth + 1)), parentPrefix, parentPrefix, parentPrefix);
         DataKernelCommitTelemetry telemetry = RewriteTerminalIdentity8Route(
             pathTarget.Target.Offset,
             TerminalIdentityRootLayout.ShapeFixedKeyScalar8Identity,
             keyBytes,
             profile.ShelfExtentSize,
-            identities);
+            identities,
+            descending: profile.Descending);
         result = CreateScalar16Scalar8TerminalInsertResult(pathTarget.Target.Offset, Scalar8Scalar8InsertResult.Inserted, telemetry);
         return true;
     }
@@ -269,6 +277,8 @@ internal sealed partial class LibraDexFileSession
         List<ulong> identities = new(count + 1);
         for (int i = 0; i < count; i++)
             identities.Add(shelf.ReadIdentityAt(i));
+        if (profile.Descending)
+            identities.Reverse();
         int insertIndex = identities.BinarySearch(encodedIdentity);
         if (insertIndex >= 0)
         {
@@ -277,14 +287,20 @@ internal sealed partial class LibraDexFileSession
         }
 
         identities.Insert(~insertIndex, encodedIdentity);
+        if (profile.Descending)
+            identities.Reverse();
         Span<byte> keyBytes = stackalloc byte[Fixed32Scalar8Layout.KeySize];
         WriteFixed32Scalar8KeyBytes(keyBytes, key0, key1, key2, key3);
+        byte parentPrefix = keyBytes[pathTarget.Target.RouterDepth];
+        RefineDirectShelfOwner(pathTarget.ParentRouterOffset, pathTarget.Target.Offset,
+            checked((ushort)(pathTarget.Target.RouterDepth + 1)), parentPrefix, parentPrefix, parentPrefix);
         DataKernelCommitTelemetry telemetry = RewriteTerminalIdentity8Route(
             pathTarget.Target.Offset,
             TerminalIdentityRootLayout.ShapeFixedKeyScalar8Identity,
             keyBytes,
             profile.ShelfExtentSize,
-            identities);
+            identities,
+            descending: profile.Descending);
         result = CreateFixed32Scalar8TerminalInsertResult(pathTarget.Target.Offset, Scalar8Scalar8InsertResult.Inserted, telemetry);
         return true;
     }

@@ -18,6 +18,8 @@ internal sealed class VarKeyScalar16ReadOnly
 
     public bool IsValid { get; }
 
+    public bool IsDescending => profile.Descending;
+
     public int ItemCount => IsValid ? recordOffsets.Length : 0;
 
     public int PhysicalItemCount => ItemCount;
@@ -36,7 +38,7 @@ internal sealed class VarKeyScalar16ReadOnly
         {
             int middle = low + ((high - low) >> 1);
             int comparison = CompareSlotKey(localBytes, middle, prefix, key);
-            if (comparison < 0)
+            if (profile.Descending ? comparison > 0 : comparison < 0)
             {
                 low = middle + 1;
             }
@@ -59,7 +61,7 @@ internal sealed class VarKeyScalar16ReadOnly
         {
             int middle = low + ((high - low) >> 1);
             int comparison = CompareSlotTuple(localBytes, middle, prefix, key, encodedIdentityHigh, encodedIdentityLow);
-            if (comparison < 0)
+            if (profile.Descending ? comparison > 0 : comparison < 0)
             {
                 low = middle + 1;
             }
@@ -96,12 +98,12 @@ internal sealed class VarKeyScalar16ReadOnly
         }
 
         int copied = 0;
-        int slotIndex = LowerBoundKey(lowerKey);
+        int slotIndex = LowerBoundKey(profile.Descending ? upperKey : lowerKey);
         ReadOnlySpan<byte> localBytes = bytes.Span;
         for (int i = slotIndex; i < ItemCount; i++)
         {
             ReadOnlySpan<byte> key = VarKeyScalar16Layout.ReadKey(localBytes, checked((int)recordOffsets[i]));
-            if (key.SequenceCompareTo(upperKey) > 0)
+            if (profile.Descending ? key.SequenceCompareTo(lowerKey) < 0 : key.SequenceCompareTo(upperKey) > 0)
             {
                 break;
             }
@@ -132,8 +134,8 @@ internal sealed class VarKeyScalar16ReadOnly
             return 0;
         }
 
-        int lowerSlot = LowerBoundKey(lowerKey);
-        int upperSlot = UpperBoundKey(upperKey);
+        int lowerSlot = LowerBoundKey(profile.Descending ? upperKey : lowerKey);
+        int upperSlot = UpperBoundKey(profile.Descending ? lowerKey : upperKey);
         return Math.Max(0, upperSlot - lowerSlot);
     }
 
@@ -153,7 +155,7 @@ internal sealed class VarKeyScalar16ReadOnly
         {
             int middle = low + ((high - low) >> 1);
             int comparison = CompareSlotKey(localBytes, middle, prefix, key);
-            if (comparison <= 0)
+            if (profile.Descending ? comparison >= 0 : comparison <= 0)
             {
                 low = middle + 1;
             }
@@ -179,7 +181,8 @@ internal sealed class VarKeyScalar16ReadOnly
             VarKeyScalar16Layout.ReadMagic(bytes) != VarKeyScalar16Layout.Magic ||
             VarKeyScalar16Layout.ReadFormatVersion(bytes) != VarKeyScalar16Layout.FormatVersion ||
             VarKeyScalar16Layout.ReadHeaderSize(bytes) != VarKeyScalar16Layout.HeaderSize ||
-            VarKeyScalar16Layout.ReadShelfExtentSize(bytes) != profile.ShelfExtentSize)
+            VarKeyScalar16Layout.ReadShelfExtentSize(bytes) != profile.ShelfExtentSize ||
+            ((VarKeyScalar16Layout.ReadFlags(bytes) & VarKeyScalar16Layout.DescendingFlag) != 0) != profile.Descending)
         {
             return false;
         }

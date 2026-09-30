@@ -440,7 +440,9 @@ internal sealed partial class LibraDexFileSession
                 long directTargetOffset = directView.GetTarget(directPrefixByte);
                 if (directTargetOffset == 0)
                 {
-                    throw new InvalidDataException("The routed SV8 target is unset.");
+                    return new Scalar8VarIdentityRoutePathTarget(
+                        new Scalar8VarIdentityRouteTarget(Scalar8VarIdentityRouteTargetKind.None, 0, directView.KeyDepth, directView.AllocationClassId),
+                        routerOffset, directPrefixByte, directPrefixByte);
                 }
 
                 Scalar8VarIdentityRouteTargetKind directKind = ToScalar8VarIdentityRouteTargetKind(directView.GetTargetKind(directPrefixByte));
@@ -482,7 +484,9 @@ internal sealed partial class LibraDexFileSession
             long targetOffset = reader.FindTarget(prefixByte, out int routeIndex);
             if (targetOffset == 0)
             {
-                throw new InvalidDataException("The routed SV8 target is unset.");
+                return new Scalar8VarIdentityRoutePathTarget(
+                    new Scalar8VarIdentityRouteTarget(Scalar8VarIdentityRouteTargetKind.None, 0, reader.KeyDepth, reader.AllocationClassId),
+                    routerOffset, prefixByte, routeIndex);
             }
 
             Scalar8VarIdentityRouteTargetKind kind = ClassifyScalar8VarIdentityRouteTarget(targetOffset);
@@ -585,6 +589,20 @@ internal sealed partial class LibraDexFileSession
         }
 
         Scalar8VarIdentityRouteTarget target = pathTarget.Target;
+        if (target.Kind == Scalar8VarIdentityRouteTargetKind.None)
+        {
+            var coldProfile = Scalar8VarIdentityProfile.Create(Scalar8VarIdentityProfile.DefaultInitial.ShelfExtentSize, maxIdentityLength);
+            byte[] coldBytes = Scalar8VarIdentity.CreateEmpty(coldProfile);
+            var inserted = Scalar8VarIdentity.InsertInPlace(coldBytes, coldProfile, encodedKey, identity, allowDuplicateKeys, out coldBytes);
+            if (inserted != Scalar8VarIdentityInsertResult.Inserted)
+                throw new InvalidDataException("A cold SV8 shelf rejected its initial tuple.");
+            FlushScalar8VarIdentityMutableBatchShelvesBeforeStructuralMutation();
+            var (offset, commit) = PublishColdFixedShelf(pathTarget.ParentRouterOffset, pathTarget.RoutePrefixByte, coldBytes);
+            attribution = new Scalar8VarIdentityWalkedWriteAttribution(routeWalkTicks, 0, 0, 0, 0,
+                collectAttribution ? Stopwatch.GetTimestamp() - started : 0);
+            return new Scalar8VarIdentityRoutedInsertResult(Scalar8VarIdentityRoutedInsertKind.WalkedNoSplit, inserted,
+                offset, offset, commit, 1, coldProfile.ShelfExtentSize, target.RouterDepth);
+        }
         if (target.Kind == Scalar8VarIdentityRouteTargetKind.TerminalVarIdentityRoot)
         {
             started = collectAttribution ? Stopwatch.GetTimestamp() : 0;
@@ -1025,8 +1043,9 @@ internal sealed partial class LibraDexFileSession
                 encodedKey,
                 leftReservation.Extent.Offset,
                 rightReservation.Extent.Offset,
-                selectedRightPrefix);
-            RepointMatchingScalar8VarIdentityRoutes(rootRouterOffset, target.Offset, childRouterOffset, target.RouterDepth);
+                selectedRightPrefix,
+                profile.Descending);
+            RepointMatchingScalar8VarIdentityRoutes(rootRouterOffset, target.Offset, childRouterOffset, target.RouterDepth, encodedKey);
             DataKernelCommitTelemetry telemetry = CommitAndInvalidateRouterReadCache();
             if (collectAttribution)
             {
@@ -1087,7 +1106,7 @@ internal sealed partial class LibraDexFileSession
                 leftShelf,
                 rightShelf,
                 profile);
-            RepointSameDepthScalar8VarIdentityRoutes(rootRouterOffset, target.Offset, selectedRightPrefix, leftReservation.Extent.Offset, rightReservation.Extent.Offset, target.RouterDepth);
+            RepointSameDepthScalar8VarIdentityRoutes(rootRouterOffset, target.Offset, selectedRightPrefix, leftReservation.Extent.Offset, rightReservation.Extent.Offset, target.RouterDepth, profile.Descending);
             DataKernelCommitTelemetry telemetry = CommitAndInvalidateRouterReadCache();
             if (collectAttribution)
             {
@@ -1275,14 +1294,16 @@ internal sealed partial class LibraDexFileSession
         long rootRouterOffset,
         int maxIdentityLength,
         ulong lowerEncodedKey,
-        ulong upperEncodedKey)
+        ulong upperEncodedKey,
+        QueryDirection direction = QueryDirection.Ascending,
+        bool physicalDescending = false)
     {
         if (lowerEncodedKey > upperEncodedKey)
         {
             throw new ArgumentException("The upper SV8 key must be greater than or equal to the lower key.", nameof(upperEncodedKey));
         }
 
-        return new Scalar8VarIdentityRangeReader(this, rootRouterOffset, maxIdentityLength, lowerEncodedKey, upperEncodedKey);
+        return new Scalar8VarIdentityRangeReader(this, rootRouterOffset, maxIdentityLength, lowerEncodedKey, upperEncodedKey, direction, physicalDescending);
     }
 
     /// <summary>
@@ -1803,7 +1824,7 @@ internal sealed partial class LibraDexFileSession
         }
 
         int shelfExtentSize = Scalar8VarIdentityLayout.ReadShelfExtentSize(header);
-        profile = Scalar8VarIdentityProfile.Create(shelfExtentSize, maxIdentityLength);
+        profile = Scalar8VarIdentityProfile.Create(shelfExtentSize, maxIdentityLength, (Scalar8VarIdentityLayout.ReadFlags(header) & 1U) != 0);
         byte[] shelfBytes = new byte[shelfExtentSize];
         kernel.Read(shelfOffset, shelfBytes);
         return shelfBytes;
@@ -2179,7 +2200,7 @@ internal sealed partial class LibraDexFileSession
         }
 
         int loadedShelfExtentSize = Scalar8VarIdentityLayout.ReadShelfExtentSize(header);
-        Scalar8VarIdentityProfile profile = Scalar8VarIdentityProfile.Create(loadedShelfExtentSize, maxIdentityLength);
+        Scalar8VarIdentityProfile profile = Scalar8VarIdentityProfile.Create(loadedShelfExtentSize, maxIdentityLength, (Scalar8VarIdentityLayout.ReadFlags(header) & 1U) != 0);
         byte[] shelfBytes = ArrayPool<byte>.Shared.Rent(loadedShelfExtentSize);
         header.CopyTo(shelfBytes.AsSpan(0, header.Length));
         kernel.Read(shelfOffset, shelfBytes.AsSpan(0, loadedShelfExtentSize));
@@ -2353,7 +2374,7 @@ internal sealed partial class LibraDexFileSession
         {
             ulong currentKey = mutableShelf.ReadKeyAt(sourceIndex);
             ReadOnlySpan<byte> currentIdentity = mutableShelf.ReadIdentityAt(sourceIndex);
-            if (!inserted && CompareScalar8VarIdentityTuple(currentKey, currentIdentity, incomingKey, incomingIdentity) > 0)
+            if (!inserted && CompareScalar8VarIdentityTuple(currentKey, currentIdentity, incomingKey, incomingIdentity, profile.Descending) > 0)
             {
                 keys[targetIndex] = incomingKey;
                 sourceSlots[targetIndex] = -1;
@@ -2511,7 +2532,9 @@ internal sealed partial class LibraDexFileSession
 
             long nextOffset = Scalar8VarIdentityLayout.ReadNextShelfOffset(currentBytes);
             ReadOnlySpan<byte> lastIdentity = shelf.ReadIdentityAt(shelf.ItemCount - 1);
-            if (Scalar8VarIdentityLayout.CompareIdentityBytes(identity, lastIdentity) <= 0 || nextOffset == 0)
+            if ((profile.Descending
+                    ? Scalar8VarIdentityLayout.CompareIdentityBytes(identity, lastIdentity) >= 0
+                    : Scalar8VarIdentityLayout.CompareIdentityBytes(identity, lastIdentity) <= 0) || nextOffset == 0)
             {
                 Scalar8VarIdentityInsertResult insertResult = Scalar8VarIdentity.Insert(
                     currentBytes,
@@ -2523,7 +2546,9 @@ internal sealed partial class LibraDexFileSession
                 if (insertResult == Scalar8VarIdentityInsertResult.Full)
                 {
                     if (nextOffset == 0 &&
-                        Scalar8VarIdentityLayout.CompareIdentityBytes(identity, lastIdentity) > 0 &&
+                        (profile.Descending
+                            ? Scalar8VarIdentityLayout.CompareIdentityBytes(identity, lastIdentity) < 0
+                            : Scalar8VarIdentityLayout.CompareIdentityBytes(identity, lastIdentity) > 0) &&
                         TryAppendScalar8VarIdentityDuplicateRunTail(
                             headShelfOffset,
                             currentOffset,
@@ -2625,7 +2650,7 @@ internal sealed partial class LibraDexFileSession
             if (!ownsIncomingTuple)
             {
                 int lastIndex = currentShelf.ItemCount - 1;
-                ownsIncomingTuple = CompareScalar8VarIdentityTuple(encodedKey, identity, currentShelf.ReadKeyAt(lastIndex), currentShelf.ReadIdentityAt(lastIndex)) <= 0;
+                ownsIncomingTuple = CompareScalar8VarIdentityTuple(encodedKey, identity, currentShelf.ReadKeyAt(lastIndex), currentShelf.ReadIdentityAt(lastIndex), profile.Descending) <= 0;
             }
 
             if (ownsIncomingTuple)
@@ -2842,7 +2867,9 @@ internal sealed partial class LibraDexFileSession
             return false;
         }
 
-        if (Scalar8VarIdentityLayout.CompareIdentityBytes(identity, tailMutableShelf.ReadIdentityAt(tailMutableShelf.ItemCount - 1)) <= 0)
+        if (profile.Descending
+            ? Scalar8VarIdentityLayout.CompareIdentityBytes(identity, tailMutableShelf.ReadIdentityAt(tailMutableShelf.ItemCount - 1)) >= 0
+            : Scalar8VarIdentityLayout.CompareIdentityBytes(identity, tailMutableShelf.ReadIdentityAt(tailMutableShelf.ItemCount - 1)) <= 0)
         {
             result = default;
             return false;
@@ -2948,7 +2975,8 @@ internal sealed partial class LibraDexFileSession
 
         Scalar8VarIdentityProfile profile = Scalar8VarIdentityProfile.Create(
             Scalar8VarIdentityLayout.ReadShelfExtentSize(header),
-            maxIdentityLength);
+            maxIdentityLength,
+            (Scalar8VarIdentityLayout.ReadFlags(header) & 1U) != 0);
         bool handled = TryInsertIntoScalar8VarIdentityDuplicateRunTailFast(
                 headShelfOffset,
                 tailShelfOffset,
@@ -3048,7 +3076,7 @@ internal sealed partial class LibraDexFileSession
 
         ulong lastKey = tailMutableShelf.ReadKeyAt(tailMutableShelf.ItemCount - 1);
         ReadOnlySpan<byte> lastIdentity = tailMutableShelf.ReadIdentityAt(tailMutableShelf.ItemCount - 1);
-        int order = CompareScalar8VarIdentityTuple(encodedKey, identity, lastKey, lastIdentity);
+        int order = CompareScalar8VarIdentityTuple(encodedKey, identity, lastKey, lastIdentity, profile.Descending);
         if (order < 0)
         {
             return false;
@@ -3171,7 +3199,9 @@ internal sealed partial class LibraDexFileSession
             return false;
         }
 
-        if (Scalar8VarIdentityLayout.CompareIdentityBytes(identity, terminalShelf.ReadIdentityAt(terminalShelf.ItemCount - 1)) <= 0)
+        if (profile.Descending
+            ? Scalar8VarIdentityLayout.CompareIdentityBytes(identity, terminalShelf.ReadIdentityAt(terminalShelf.ItemCount - 1)) >= 0
+            : Scalar8VarIdentityLayout.CompareIdentityBytes(identity, terminalShelf.ReadIdentityAt(terminalShelf.ItemCount - 1)) <= 0)
         {
             return false;
         }
@@ -3257,7 +3287,7 @@ internal sealed partial class LibraDexFileSession
 
         ulong lastKey = terminalShelf.ReadKeyAt(terminalShelf.ItemCount - 1);
         ReadOnlySpan<byte> lastIdentity = terminalShelf.ReadIdentityAt(terminalShelf.ItemCount - 1);
-        int order = CompareScalar8VarIdentityTuple(encodedKey, identity, lastKey, lastIdentity);
+        int order = CompareScalar8VarIdentityTuple(encodedKey, identity, lastKey, lastIdentity, profile.Descending);
         if (order < 0)
         {
             return false;
@@ -3428,7 +3458,9 @@ internal sealed partial class LibraDexFileSession
                     return false;
                 }
 
-                if (!incomingAdded && Scalar8VarIdentityLayout.CompareIdentityBytes(incomingIdentity, existingIdentity) < 0)
+                if (!incomingAdded && (profile.Descending
+                    ? Scalar8VarIdentityLayout.CompareIdentityBytes(incomingIdentity, existingIdentity) > 0
+                    : Scalar8VarIdentityLayout.CompareIdentityBytes(incomingIdentity, existingIdentity) < 0))
                 {
                     AddScalar8VarIdentityRef(ref identities, ref identityCount, new Scalar8VarIdentityIdentityRef(incomingIdentityBytes, 0, true));
                     incomingAdded = true;
@@ -3580,7 +3612,7 @@ internal sealed partial class LibraDexFileSession
             {
                 ulong currentKey = shelf.ReadKeyAt(i);
                 ReadOnlySpan<byte> currentIdentity = shelf.ReadIdentityAt(i);
-                if (!incomingAdded && CompareScalar8VarIdentityTuple(encodedKey, incomingIdentity, currentKey, currentIdentity) < 0)
+                if (!incomingAdded && CompareScalar8VarIdentityTuple(encodedKey, incomingIdentity, currentKey, currentIdentity, profile.Descending) < 0)
                 {
                     AddScalar8VarIdentityTuple(ref keys, ref identities, ref tupleCount, encodedKey, incomingIdentityRef);
                     incomingAdded = true;
@@ -3642,7 +3674,7 @@ internal sealed partial class LibraDexFileSession
             return false;
         }
 
-        byte selectedRightPrefix = GetScalar8VarIdentityPrefix(keys[boundary], splitDepth);
+        byte selectedRightPrefix = GetScalar8VarIdentityPrefix(keys[profile.Descending ? boundary - 1 : boundary], splitDepth);
         FlushScalar8VarIdentityMutableBatchShelvesBeforeStructuralMutation();
         scalar8VarIdentityMutableBatchShelves.Remove(headShelfOffset);
         long replacementOffset;
@@ -3654,7 +3686,8 @@ internal sealed partial class LibraDexFileSession
                 selectedRightPrefix,
                 leftHeadOffset,
                 rightHeadOffset,
-                checked((ushort)currentRouterDepth));
+                checked((ushort)currentRouterDepth),
+                profile.Descending);
             replacementOffset = leftHeadOffset;
         }
         else
@@ -3666,8 +3699,9 @@ internal sealed partial class LibraDexFileSession
                 keys[0],
                 leftHeadOffset,
                 rightHeadOffset,
-                selectedRightPrefix);
-            RepointMatchingScalar8VarIdentityRoutes(rootRouterOffset, headShelfOffset, replacementOffset, checked((ushort)currentRouterDepth));
+                selectedRightPrefix,
+                profile.Descending);
+            RepointMatchingScalar8VarIdentityRoutes(rootRouterOffset, headShelfOffset, replacementOffset, checked((ushort)currentRouterDepth), keys[0]);
         }
         DataKernelCommitTelemetry telemetry = CommitAndInvalidateRouterReadCache();
         result = new Scalar8VarIdentityRoutedInsertResult(
@@ -3860,7 +3894,7 @@ internal sealed partial class LibraDexFileSession
             {
                 ulong currentKey = shelf.ReadKeyAt(i);
                 ReadOnlySpan<byte> currentIdentity = shelf.ReadIdentityAt(i);
-                if (!incomingAdded && CompareScalar8VarIdentityTuple(encodedKey, incomingIdentity, currentKey, currentIdentity) < 0)
+                if (!incomingAdded && CompareScalar8VarIdentityTuple(encodedKey, incomingIdentity, currentKey, currentIdentity, profile.Descending) < 0)
                 {
                     AddScalar8VarIdentityTuple(ref keys, ref identities, ref tupleCount, encodedKey, incomingIdentityRef);
                     incomingAdded = true;
@@ -4436,7 +4470,7 @@ internal sealed partial class LibraDexFileSession
         {
             ulong currentKey = mutableShelf.ReadKeyAt(sourceIndex);
             ReadOnlySpan<byte> currentIdentity = mutableShelf.ReadIdentityAt(sourceIndex);
-            if (!inserted && CompareScalar8VarIdentityTuple(currentKey, currentIdentity, incomingKey, incomingIdentity) > 0)
+            if (!inserted && CompareScalar8VarIdentityTuple(currentKey, currentIdentity, incomingKey, incomingIdentity, profile.Descending) > 0)
             {
                 keys[targetIndex] = incomingKey;
                 sourceSlots[targetIndex] = -1;
@@ -4528,7 +4562,7 @@ internal sealed partial class LibraDexFileSession
         {
             ulong currentKey = mutableShelf.ReadKeyAt(sourceIndex);
             ReadOnlySpan<byte> currentIdentity = mutableShelf.ReadIdentityAt(sourceIndex);
-            if (!inserted && CompareScalar8VarIdentityTuple(currentKey, currentIdentity, incomingKey, incomingIdentity) > 0)
+            if (!inserted && CompareScalar8VarIdentityTuple(currentKey, currentIdentity, incomingKey, incomingIdentity, profile.Descending) > 0)
             {
                 keys[targetIndex] = incomingKey;
                 sourceSlots[targetIndex] = -1;
@@ -4747,7 +4781,7 @@ internal sealed partial class LibraDexFileSession
         out int leftCount,
         out int rightCount)
     {
-        selectedRightPrefix = GetScalar8VarIdentityPrefix(keys[boundary], splitDepth);
+        selectedRightPrefix = GetScalar8VarIdentityPrefix(keys[profile.Descending ? boundary - 1 : boundary], splitDepth);
         leftShelf = [];
         rightShelf = [];
         leftCount = boundary;
@@ -4922,14 +4956,15 @@ internal sealed partial class LibraDexFileSession
         ulong stemKey,
         long leftShelfOffset,
         long rightShelfOffset,
-        byte selectedRightPrefix)
+        byte selectedRightPrefix,
+        bool descending)
     {
         RawDataReservation splitRouterReservation = kernel.Reserve(RouterLayout.Size);
         RouterWriter splitWriter = new(splitRouterReservation.Span);
         splitWriter.InitializeExpandedOneByte(
             splitDepth,
             allocationClassId,
-            CreateSplitScalar8Scalar8RouteTargets(leftShelfOffset, rightShelfOffset, selectedRightPrefix));
+            CreateSplitScalar8Scalar8RouteTargets(descending ? rightShelfOffset : leftShelfOffset, descending ? leftShelfOffset : rightShelfOffset, selectedRightPrefix));
 
         long nextRouterOffset = splitRouterReservation.Extent.Offset;
         for (int depth = splitDepth - 1; depth >= firstDepth; depth--)
@@ -4941,8 +4976,8 @@ internal sealed partial class LibraDexFileSession
                 allocationClassId,
                 CreateVarKeyScalar8IntermediateSplitRouteTargets(
                     nextRouterOffset,
-                    leftShelfOffset,
-                    rightShelfOffset,
+                    descending ? rightShelfOffset : leftShelfOffset,
+                    descending ? leftShelfOffset : rightShelfOffset,
                     GetScalar8VarIdentityPrefix(stemKey, depth)));
             nextRouterOffset = intermediateReservation.Extent.Offset;
         }
@@ -5005,10 +5040,12 @@ internal sealed partial class LibraDexFileSession
     /// <param name="rootRouterOffset">The root router for the `SV8` index being mutated.<br/></param>
     /// <param name="sourceTargetOffset">The stale shelf offset to replace.<br/></param>
     /// <param name="replacementTargetOffset">The new shelf or router target offset.<br/></param>
-    private void RepointMatchingScalar8VarIdentityRoutes(long rootRouterOffset, long sourceTargetOffset, long replacementTargetOffset, ushort? requiredRouterDepth = null)
+    /// <param name="requiredRouterDepth">For a deeper transform, the final byte fixed by the common source stem; otherwise the optional owner-depth filter.<br/></param>
+    /// <param name="ownedStemKey">A proven common stem causes all incoming owners to be refined, rather than blindly repointed.<br/></param>
+    private void RepointMatchingScalar8VarIdentityRoutes(long rootRouterOffset, long sourceTargetOffset, long replacementTargetOffset, ushort? requiredRouterDepth = null, ulong? ownedStemKey = null)
     {
         using RouteVisitedOffsetSet visitedRouters = RouteVisitedOffsetSet.Rent();
-        RepointMatchingScalar8VarIdentityRoutesCore(rootRouterOffset, sourceTargetOffset, replacementTargetOffset, requiredRouterDepth, visitedRouters);
+        RepointMatchingScalar8VarIdentityRoutesCore(rootRouterOffset, sourceTargetOffset, replacementTargetOffset, requiredRouterDepth, visitedRouters, ownedStemKey);
     }
 
     /// <summary>
@@ -5024,7 +5061,8 @@ internal sealed partial class LibraDexFileSession
         long sourceTargetOffset,
         long replacementTargetOffset,
         ushort? requiredRouterDepth,
-        RouteVisitedOffsetSet visitedRouters)
+        RouteVisitedOffsetSet visitedRouters,
+        ulong? ownedStemKey)
     {
         if (routerOffset <= 0 || !visitedRouters.Add(routerOffset))
         {
@@ -5039,6 +5077,32 @@ internal sealed partial class LibraDexFileSession
             throw new InvalidDataException("The SV8 route graph contains an invalid router during route repointing.");
         }
 
+        bool refinedRangeParent = false;
+        if (ownedStemKey.HasValue && reader.KeyDepth <= requiredRouterDepth.GetValueOrDefault() && !reader.HasDirectIndex)
+        {
+            if (reader.PrefixByteCount != 1)
+                throw new InvalidDataException("SV8 byte walkers cannot publish a multi-byte incoming owner.");
+            long[] targets = new long[RouterLayout.MaxOneByteRouteCount];
+            byte ownedPrefix = GetScalar8VarIdentityPrefix(ownedStemKey.GetValueOrDefault(), reader.KeyDepth);
+            for (int prefix = 0; prefix < targets.Length; prefix++)
+            {
+                long target = reader.FindTarget((byte)prefix);
+                targets[prefix] = target == sourceTargetOffset
+                    ? prefix == ownedPrefix ? replacementTargetOffset : 0
+                    : target;
+                refinedRangeParent |= target == sourceTargetOffset;
+            }
+            if (refinedRangeParent)
+            {
+                var expanded = kernel.ReserveAt(routerOffset, RouterLayout.Size);
+                RouterWriter expandedWriter = new(expanded.Span);
+                expandedWriter.InitializeExpandedOneByte(reader.KeyDepth, reader.AllocationClassId, targets);
+                if (reader.IsArenaMember)
+                    expandedWriter.WriteArenaMetadata(reader.ArenaBaseDelta, reader.ArenaLength,
+                        reader.ArenaRouterPageSize, reader.ArenaRouterPageIndex, reader.ArenaRouterPageCount, reader.ArenaFlags);
+            }
+        }
+
         RawDataReservation rewrite = default;
         RouterWriter writer = default;
         bool rewriteStarted = false;
@@ -5048,7 +5112,8 @@ internal sealed partial class LibraDexFileSession
             long targetOffset = reader.GetRouteTargetAt(routeIndex);
             if (targetOffset == sourceTargetOffset)
             {
-                if (requiredRouterDepth.HasValue && reader.KeyDepth != requiredRouterDepth.GetValueOrDefault())
+                if (refinedRangeParent) continue;
+                if (!ownedStemKey.HasValue && requiredRouterDepth.HasValue && reader.KeyDepth != requiredRouterDepth.GetValueOrDefault())
                 {
                     continue;
                 }
@@ -5061,13 +5126,21 @@ internal sealed partial class LibraDexFileSession
                     rewriteStarted = true;
                 }
 
-                writer.WriteRouteTarget(routeIndex, replacementTargetOffset);
+                if (ownedStemKey.HasValue && reader.KeyDepth <= requiredRouterDepth.GetValueOrDefault())
+                {
+                    if (!reader.HasDirectIndex)
+                        throw new InvalidDataException("SV8 stem refinement requires direct incoming owners.");
+                    byte ownedPrefix = GetScalar8VarIdentityPrefix(ownedStemKey.GetValueOrDefault(), reader.KeyDepth);
+                    writer.WriteRouteTarget(routeIndex, routeIndex == ownedPrefix ? replacementTargetOffset : 0);
+                }
+                else
+                    writer.WriteRouteTarget(routeIndex, replacementTargetOffset);
                 continue;
             }
 
             if (ClassifyScalar8VarIdentityRouteTarget(targetOffset) == Scalar8VarIdentityRouteTargetKind.Router)
             {
-                RepointMatchingScalar8VarIdentityRoutesCore(targetOffset, sourceTargetOffset, replacementTargetOffset, requiredRouterDepth, visitedRouters);
+                RepointMatchingScalar8VarIdentityRoutesCore(targetOffset, sourceTargetOffset, replacementTargetOffset, requiredRouterDepth, visitedRouters, ownedStemKey);
             }
         }
     }
@@ -5088,10 +5161,11 @@ internal sealed partial class LibraDexFileSession
         byte selectedRightPrefix,
         long leftShelfOffset,
         long rightShelfOffset,
-        ushort requiredRouterDepth)
+        ushort requiredRouterDepth,
+        bool descending)
     {
         using RouteVisitedOffsetSet visitedRouters = RouteVisitedOffsetSet.Rent();
-        RepointSameDepthScalar8VarIdentityRoutesCore(rootRouterOffset, sourceShelfOffset, selectedRightPrefix, leftShelfOffset, rightShelfOffset, requiredRouterDepth, visitedRouters);
+        RepointSameDepthScalar8VarIdentityRoutesCore(rootRouterOffset, sourceShelfOffset, selectedRightPrefix, leftShelfOffset, rightShelfOffset, requiredRouterDepth, descending, visitedRouters);
     }
 
     /// <summary>
@@ -5111,6 +5185,7 @@ internal sealed partial class LibraDexFileSession
         long leftShelfOffset,
         long rightShelfOffset,
         ushort requiredRouterDepth,
+        bool descending,
         RouteVisitedOffsetSet visitedRouters)
     {
         if (routerOffset <= 0 || !visitedRouters.Add(routerOffset))
@@ -5143,14 +5218,16 @@ internal sealed partial class LibraDexFileSession
                     rewriteStarted = true;
                 }
 
-                long replacementOffset = routeIndex < selectedRightPrefix ? leftShelfOffset : rightShelfOffset;
+                long replacementOffset = routeIndex < selectedRightPrefix
+                    ? (descending ? rightShelfOffset : leftShelfOffset)
+                    : (descending ? leftShelfOffset : rightShelfOffset);
                 writer.WriteRouteTarget(routeIndex, replacementOffset);
                 continue;
             }
 
             if (ClassifyScalar8VarIdentityRouteTarget(targetOffset) == Scalar8VarIdentityRouteTargetKind.Router)
             {
-                RepointSameDepthScalar8VarIdentityRoutesCore(targetOffset, sourceShelfOffset, selectedRightPrefix, leftShelfOffset, rightShelfOffset, requiredRouterDepth, visitedRouters);
+                RepointSameDepthScalar8VarIdentityRoutesCore(targetOffset, sourceShelfOffset, selectedRightPrefix, leftShelfOffset, rightShelfOffset, requiredRouterDepth, descending, visitedRouters);
             }
         }
     }
@@ -5343,7 +5420,7 @@ internal sealed partial class LibraDexFileSession
         }
 
         using PooledTerminalVarIdentitySet identities = ReadScalar8VarIdentityTerminalIdentitiesPooled(rootOffset, expectedKey, shelfExtentSize);
-        int insertIndex = LowerBoundTerminalVarIdentity(identities, identity);
+        int insertIndex = LowerBoundTerminalVarIdentity(identities, identity, rootBytes[TerminalIdentityRootLayout.SortDirectionOffset] != 0);
         if (insertIndex < identities.Count && Scalar8VarIdentityLayout.IdentityBytesEqual(identities.ReadAt(insertIndex), identity))
         {
             return new Scalar8VarIdentityRoutedInsertResult(
@@ -5434,7 +5511,8 @@ internal sealed partial class LibraDexFileSession
         }
 
         ulong terminalKey = BinaryPrimitives.ReadUInt64BigEndian(rootBytes.AsSpan(TerminalIdentityRootLayout.KeyBytesOffset, Scalar8VarIdentityLayout.KeySize));
-        Scalar8VarIdentityProfile profile = Scalar8VarIdentityProfile.Create(4 * 1024, maxIdentityLength);
+        Scalar8VarIdentityProfile profile = Scalar8VarIdentityProfile.Create(4 * 1024, maxIdentityLength,
+            rootBytes[TerminalIdentityRootLayout.SortDirectionOffset] != 0);
         byte[] incomingShelf = Scalar8VarIdentity.CreateEmpty(profile);
         Scalar8VarIdentityInsertResult insertResult = Scalar8VarIdentity.InsertInPlace(
             incomingShelf,
@@ -5518,7 +5596,7 @@ internal sealed partial class LibraDexFileSession
 
         if (!incomingAdded)
         {
-            int insertIndex = LowerBoundTerminalVarIdentity(identities, incomingIdentity);
+            int insertIndex = LowerBoundTerminalVarIdentity(identities, incomingIdentity, profile.Descending);
             identities.InsertAt(insertIndex, incomingIdentity);
         }
 
@@ -5529,7 +5607,8 @@ internal sealed partial class LibraDexFileSession
             TerminalIdentityRootLayout.ShapeScalar8VarIdentity,
             keyBytes,
             terminalShelfExtentSize,
-            identities);
+            identities,
+            profile.Descending);
         scalar8VarIdentityMutableBatchShelves.Remove(pathTarget.Target.Offset);
         byte[] clearedSourceShelf = Scalar8VarIdentity.CreateEmpty(profile);
         RawDataReservation sourceRewrite = kernel.ReserveAt(pathTarget.Target.Offset, profile.ShelfExtentSize);
@@ -5628,7 +5707,9 @@ internal sealed partial class LibraDexFileSession
                 continue;
             }
 
-            if (!incomingAdded && Scalar8VarIdentityLayout.CompareIdentityBytes(incomingIdentity, currentIdentity) < 0)
+            if (!incomingAdded && (profile.Descending
+                ? Scalar8VarIdentityLayout.CompareIdentityBytes(incomingIdentity, currentIdentity) > 0
+                : Scalar8VarIdentityLayout.CompareIdentityBytes(incomingIdentity, currentIdentity) < 0))
             {
                 terminalIdentities[terminalCount++] = incomingIdentity.ToArray();
                 incomingAdded = true;
@@ -5690,7 +5771,8 @@ internal sealed partial class LibraDexFileSession
             TerminalIdentityRootLayout.ShapeScalar8VarIdentity,
             keyBytes,
             terminalShelfExtentSize,
-            terminalIdentities);
+            terminalIdentities,
+            profile.Descending);
         RawDataReservation remainderRewrite = kernel.ReserveAt(pathTarget.Target.Offset, profile.ShelfExtentSize);
         remainderShelf.CopyTo(remainderRewrite.Span);
         long replacementOffset = pathTarget.Target.RouterDepth >= Scalar8VarIdentityLayout.KeySize - 1
@@ -5837,7 +5919,7 @@ internal sealed partial class LibraDexFileSession
         return reservation.Extent.Offset;
     }
 
-    private long CreateScalar8VarIdentityTerminalRoute(byte shape, ReadOnlySpan<byte> keyBytes, int shelfExtentSize, ReadOnlySpan<byte[]> identities)
+    private long CreateScalar8VarIdentityTerminalRoute(byte shape, ReadOnlySpan<byte> keyBytes, int shelfExtentSize, ReadOnlySpan<byte[]> identities, bool descending = false)
     {
         long firstShelfOffset = 0;
         long previousShelfOffset = 0;
@@ -5874,6 +5956,7 @@ internal sealed partial class LibraDexFileSession
 
         RawDataReservation rootReservation = kernel.Reserve(TerminalIdentityRootLayout.Size);
         TerminalIdentityRootLayout.Initialize(rootReservation.Span, shape, keyBytes, shelfExtentSize, firstShelfOffset);
+        rootReservation.Span[TerminalIdentityRootLayout.SortDirectionOffset] = descending ? (byte)1 : (byte)0;
         TerminalIdentityRootLayout.WriteTailShelfOffset(rootReservation.Span, tailShelfOffset);
         return rootReservation.Extent.Offset;
     }
@@ -5887,7 +5970,7 @@ internal sealed partial class LibraDexFileSession
     /// <param name="shelfExtentSize">The terminal shelf extent size.<br/></param>
     /// <param name="identities">The pooled byte-native identity workspace in sorted identity order.<br/></param>
     /// <returns>The terminal root offset.</returns>
-    private long CreateScalar8VarIdentityTerminalRoute(byte shape, ReadOnlySpan<byte> keyBytes, int shelfExtentSize, PooledTerminalVarIdentitySet identities)
+    private long CreateScalar8VarIdentityTerminalRoute(byte shape, ReadOnlySpan<byte> keyBytes, int shelfExtentSize, PooledTerminalVarIdentitySet identities, bool descending = false)
     {
         long firstShelfOffset = 0;
         long previousShelfOffset = 0;
@@ -5924,12 +6007,14 @@ internal sealed partial class LibraDexFileSession
 
         RawDataReservation rootReservation = kernel.Reserve(TerminalIdentityRootLayout.Size);
         TerminalIdentityRootLayout.Initialize(rootReservation.Span, shape, keyBytes, shelfExtentSize, firstShelfOffset);
+        rootReservation.Span[TerminalIdentityRootLayout.SortDirectionOffset] = descending ? (byte)1 : (byte)0;
         TerminalIdentityRootLayout.WriteTailShelfOffset(rootReservation.Span, tailShelfOffset);
         return rootReservation.Extent.Offset;
     }
 
     private DataKernelCommitTelemetry RewriteScalar8VarIdentityTerminalRoute(long rootOffset, byte shape, ReadOnlySpan<byte> keyBytes, int shelfExtentSize, ReadOnlySpan<byte[]> identities)
     {
+        byte sortDirection = ReadTerminalIdentityRootBytes(rootOffset)[TerminalIdentityRootLayout.SortDirectionOffset];
         long oldFirstShelfOffset = ReadTerminalIdentityFirstShelfOffset(rootOffset, keyBytes);
         long firstShelfOffset = 0;
         long previousShelfOffset = 0;
@@ -5966,6 +6051,7 @@ internal sealed partial class LibraDexFileSession
 
         RawDataReservation rootRewrite = kernel.ReserveAt(rootOffset, TerminalIdentityRootLayout.Size);
         TerminalIdentityRootLayout.Initialize(rootRewrite.Span, shape, keyBytes, shelfExtentSize, firstShelfOffset);
+        rootRewrite.Span[TerminalIdentityRootLayout.SortDirectionOffset] = sortDirection;
         TerminalIdentityRootLayout.WriteTailShelfOffset(rootRewrite.Span, tailShelfOffset);
         ClearTerminalIdentityReadCaches();
         ReleaseTerminalVarIdentityShelfChain(oldFirstShelfOffset, shelfExtentSize);
@@ -5985,6 +6071,7 @@ internal sealed partial class LibraDexFileSession
     /// <returns>Commit telemetry for the route rewrite.</returns>
     private DataKernelCommitTelemetry RewriteScalar8VarIdentityTerminalRoute(long rootOffset, byte shape, ReadOnlySpan<byte> keyBytes, int shelfExtentSize, PooledTerminalVarIdentitySet identities)
     {
+        byte sortDirection = ReadTerminalIdentityRootBytes(rootOffset)[TerminalIdentityRootLayout.SortDirectionOffset];
         long oldFirstShelfOffset = ReadTerminalIdentityFirstShelfOffset(rootOffset, keyBytes);
         long firstShelfOffset = 0;
         long previousShelfOffset = 0;
@@ -6021,6 +6108,7 @@ internal sealed partial class LibraDexFileSession
 
         RawDataReservation rootRewrite = kernel.ReserveAt(rootOffset, TerminalIdentityRootLayout.Size);
         TerminalIdentityRootLayout.Initialize(rootRewrite.Span, shape, keyBytes, shelfExtentSize, firstShelfOffset);
+        rootRewrite.Span[TerminalIdentityRootLayout.SortDirectionOffset] = sortDirection;
         TerminalIdentityRootLayout.WriteTailShelfOffset(rootRewrite.Span, tailShelfOffset);
         ClearTerminalIdentityReadCaches();
         ReleaseTerminalVarIdentityShelfChain(oldFirstShelfOffset, shelfExtentSize);
@@ -6100,7 +6188,9 @@ internal sealed partial class LibraDexFileSession
 
             int count = TerminalVarIdentityShelfLayout.ReadItemCount(currentBytes);
             if (count != 0 &&
-                Scalar8VarIdentityLayout.CompareIdentityBytes(identity, TerminalVarIdentityShelfLayout.ReadIdentityAt(currentBytes, count - 1)) <= 0)
+                (rootBytes[TerminalIdentityRootLayout.SortDirectionOffset] != 0
+                    ? Scalar8VarIdentityLayout.CompareIdentityBytes(identity, TerminalVarIdentityShelfLayout.ReadIdentityAt(currentBytes, count - 1)) >= 0
+                    : Scalar8VarIdentityLayout.CompareIdentityBytes(identity, TerminalVarIdentityShelfLayout.ReadIdentityAt(currentBytes, count - 1)) <= 0))
             {
                 return false;
             }
@@ -6271,6 +6361,8 @@ internal sealed partial class LibraDexFileSession
             for (int i = 0; i < count; i++)
             {
                 int order = Scalar8VarIdentityLayout.CompareIdentityBytes(identity, TerminalVarIdentityShelfLayout.ReadIdentityAt(currentBytes, i));
+                if (rootBytes[TerminalIdentityRootLayout.SortDirectionOffset] != 0)
+                    order = -order;
                 if (order == 0)
                 {
                     result = new Scalar8VarIdentityRoutedInsertResult(
@@ -6535,7 +6627,9 @@ internal sealed partial class LibraDexFileSession
                 }
 
                 ReadOnlySpan<byte> currentIdentity = shelf.ReadIdentityAt(i);
-                if (!incomingAdded && Scalar8VarIdentityLayout.CompareIdentityBytes(incomingIdentity, currentIdentity) < 0)
+                if (!incomingAdded && (profile.Descending
+                    ? Scalar8VarIdentityLayout.CompareIdentityBytes(incomingIdentity, currentIdentity) > 0
+                    : Scalar8VarIdentityLayout.CompareIdentityBytes(incomingIdentity, currentIdentity) < 0))
                 {
                     AddTerminalVarIdentityBytes(ref identities, ref count, incomingIdentity.ToArray());
                     incomingAdded = true;
@@ -6612,7 +6706,9 @@ internal sealed partial class LibraDexFileSession
                 }
 
                 ReadOnlySpan<byte> currentIdentity = shelf.ReadIdentityAt(i);
-                if (!incomingAdded && Scalar8VarIdentityLayout.CompareIdentityBytes(incomingIdentity, currentIdentity) < 0)
+                if (!incomingAdded && (profile.Descending
+                    ? Scalar8VarIdentityLayout.CompareIdentityBytes(incomingIdentity, currentIdentity) > 0
+                    : Scalar8VarIdentityLayout.CompareIdentityBytes(incomingIdentity, currentIdentity) < 0))
                 {
                     identities.Add(incomingIdentity);
                     incomingAdded = true;
@@ -6760,14 +6856,14 @@ internal sealed partial class LibraDexFileSession
         return selected > sourceShelfExtentSize ? sourceShelfExtentSize : selected;
     }
 
-    private static int LowerBoundTerminalVarIdentity(ReadOnlySpan<byte[]> identities, ReadOnlySpan<byte> identity)
+    private static int LowerBoundTerminalVarIdentity(ReadOnlySpan<byte[]> identities, ReadOnlySpan<byte> identity, bool descending = false)
     {
         int low = 0;
         int high = identities.Length;
         while (low < high)
         {
             int middle = low + ((high - low) >> 1);
-            if (Scalar8VarIdentityLayout.CompareIdentityBytes(identities[middle], identity) < 0)
+            if ((descending ? -1 : 1) * Scalar8VarIdentityLayout.CompareIdentityBytes(identities[middle], identity) < 0)
             {
                 low = middle + 1;
             }
@@ -6787,14 +6883,14 @@ internal sealed partial class LibraDexFileSession
     /// <param name="identities">The pooled terminal identity workspace to search.<br/></param>
     /// <param name="identity">The identity bytes to locate.<br/></param>
     /// <returns>The insertion index for <paramref name="identity"/>.</returns>
-    private static int LowerBoundTerminalVarIdentity(PooledTerminalVarIdentitySet identities, ReadOnlySpan<byte> identity)
+    private static int LowerBoundTerminalVarIdentity(PooledTerminalVarIdentitySet identities, ReadOnlySpan<byte> identity, bool descending = false)
     {
         int low = 0;
         int high = identities.Count;
         while (low < high)
         {
             int middle = low + ((high - low) >> 1);
-            if (Scalar8VarIdentityLayout.CompareIdentityBytes(identities.ReadAt(middle), identity) < 0)
+            if ((descending ? -1 : 1) * Scalar8VarIdentityLayout.CompareIdentityBytes(identities.ReadAt(middle), identity) < 0)
             {
                 low = middle + 1;
             }
@@ -6952,19 +7048,20 @@ internal sealed partial class LibraDexFileSession
         TerminalVarIdentityShelfLayout.WriteRecordArenaEnd(target, recordArenaEnd + recordLength);
     }
 
-    private static int CompareScalar8VarIdentityTuple(ulong leftKey, ReadOnlySpan<byte> leftIdentity, ulong rightKey, ReadOnlySpan<byte> rightIdentity)
+    private static int CompareScalar8VarIdentityTuple(ulong leftKey, ReadOnlySpan<byte> leftIdentity, ulong rightKey, ReadOnlySpan<byte> rightIdentity, bool descending)
     {
         if (leftKey < rightKey)
         {
-            return -1;
+            return descending ? 1 : -1;
         }
 
         if (leftKey > rightKey)
         {
-            return 1;
+            return descending ? -1 : 1;
         }
 
-        return Scalar8VarIdentityLayout.CompareIdentityBytes(leftIdentity, rightIdentity);
+        int comparison = Scalar8VarIdentityLayout.CompareIdentityBytes(leftIdentity, rightIdentity);
+        return descending ? -comparison : comparison;
     }
 
     internal static byte GetScalar8VarIdentityPrefix(ulong encodedKey, int keyDepth)
@@ -7244,6 +7341,8 @@ internal sealed partial class LibraDexFileSession
                     throw new InvalidDataException("The terminal variable-identity delete root does not match the routed key and shape.");
                 }
 
+                bool descending = rootBytes[TerminalIdentityRootLayout.SortDirectionOffset] != 0;
+
                 if (firstShelfOffset == 0)
                 {
                     return false;
@@ -7274,7 +7373,7 @@ internal sealed partial class LibraDexFileSession
                     {
                         int previousCount = TerminalVarIdentityShelfLayout.ReadItemCount(previousBytes);
                         if (previousCount != 0 &&
-                            Scalar8VarIdentityLayout.CompareIdentityBytes(
+                            (descending ? -1 : 1) * Scalar8VarIdentityLayout.CompareIdentityBytes(
                                 TerminalVarIdentityShelfLayout.ReadIdentityAt(previousBytes, previousCount - 1),
                                 firstIdentity) >= 0)
                         {
@@ -7282,12 +7381,12 @@ internal sealed partial class LibraDexFileSession
                         }
                     }
 
-                    if (Scalar8VarIdentityLayout.CompareIdentityBytes(identity, firstIdentity) < 0)
+                    if ((descending ? -1 : 1) * Scalar8VarIdentityLayout.CompareIdentityBytes(identity, firstIdentity) < 0)
                     {
                         return false;
                     }
 
-                    if (Scalar8VarIdentityLayout.CompareIdentityBytes(identity, lastIdentity) > 0)
+                    if ((descending ? -1 : 1) * Scalar8VarIdentityLayout.CompareIdentityBytes(identity, lastIdentity) > 0)
                     {
                         previousOffset = currentOffset;
                         previousBytes = currentBytes;
@@ -7295,7 +7394,7 @@ internal sealed partial class LibraDexFileSession
                         continue;
                     }
 
-                    int deleteIndex = LowerBoundTerminalVarIdentityShelf(currentBytes, count, identity);
+                    int deleteIndex = LowerBoundTerminalVarIdentityShelf(currentBytes, count, identity, descending);
                     if (deleteIndex >= count ||
                         Scalar8VarIdentityLayout.CompareIdentityBytes(TerminalVarIdentityShelfLayout.ReadIdentityAt(currentBytes, deleteIndex), identity) != 0)
                     {
@@ -7380,14 +7479,14 @@ internal sealed partial class LibraDexFileSession
     /// <param name="count">The live identity count in the shelf.<br/></param>
     /// <param name="identity">The target raw identity bytes.<br/></param>
     /// <returns>The lower-bound slot index in the range zero through <paramref name="count"/>.<br/></returns>
-    private static int LowerBoundTerminalVarIdentityShelf(ReadOnlySpan<byte> shelfBytes, int count, ReadOnlySpan<byte> identity)
+    private static int LowerBoundTerminalVarIdentityShelf(ReadOnlySpan<byte> shelfBytes, int count, ReadOnlySpan<byte> identity, bool descending = false)
     {
         int low = 0;
         int high = count;
         while (low < high)
         {
             int middle = low + ((high - low) >> 1);
-            if (Scalar8VarIdentityLayout.CompareIdentityBytes(TerminalVarIdentityShelfLayout.ReadIdentityAt(shelfBytes, middle), identity) < 0)
+            if ((descending ? -1 : 1) * Scalar8VarIdentityLayout.CompareIdentityBytes(TerminalVarIdentityShelfLayout.ReadIdentityAt(shelfBytes, middle), identity) < 0)
             {
                 low = middle + 1;
             }

@@ -238,7 +238,7 @@ internal sealed partial class LibraDexFileSession
         }
 
         int extentSize = VarKeyScalar8Layout.ReadShelfExtentSize(header);
-        VarKeyScalar8Profile profile = VarKeyScalar8Profile.Create(extentSize, maxKeyLength);
+        VarKeyScalar8Profile profile = VarKeyScalar8Profile.Create(extentSize, maxKeyLength) with { Descending = (VarKeyScalar8Layout.ReadFlags(header) & VarKeyScalar8Layout.DescendingFlag) != 0 };
         int itemCount = VarKeyScalar8Layout.ReadItemCount(header);
         if (itemCount < 0)
             throw new InvalidDataException($"VS8 topology assessment found a negative shelf count at offset {offset}.");

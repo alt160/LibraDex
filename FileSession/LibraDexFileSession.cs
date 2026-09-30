@@ -18,9 +18,9 @@ namespace LibraDex;
 internal sealed partial class LibraDexFileSession : IDisposable
 {
     private const int DefaultScalar8Scalar8MaxRouterHops = 8;
-    private const int DefaultScalar16Scalar8MaxRouterHops = 8;
+    private const int DefaultScalar16Scalar8MaxRouterHops = Scalar16Scalar8Layout.KeySize + 1;
     private const int DefaultScalar8Scalar16MaxRouterHops = 8;
-    private const int DefaultScalar16Scalar16MaxRouterHops = 8;
+    private const int DefaultScalar16Scalar16MaxRouterHops = Scalar16Scalar16Layout.KeySize + 1;
     private const int DefaultFixed32Scalar8MaxRouterHops = 40;
     private const int DefaultFixed32Scalar16MaxRouterHops = 40;
     internal const int DefaultVarKeyScalar8MaxRouterHops = ushort.MaxValue + 1;
@@ -566,7 +566,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
             }
 
             ulong currentIdentity = existingShelf.ReadIdentityAt(i);
-            if (!inserted && currentIdentity > encodedIdentity)
+            if (!inserted && (profile.Descending ? currentIdentity < encodedIdentity : currentIdentity > encodedIdentity))
             {
                 identities[writeIndex++] = encodedIdentity;
                 inserted = true;
@@ -603,7 +603,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
             keyBytes,
             profile.ShelfExtentSize,
             identities,
-            obsoleteFirstShelfOffset: 0);
+            obsoleteFirstShelfOffset: 0,
+            descending: profile.Descending);
 
         bool linked = otherCount == 0
             ? TryReplaceSingleByteRouterPrefixOnlyIfCurrent(pathTarget.ParentRouterOffset, pathTarget.RoutePrefixByte, headShelfOffset, terminalRootOffset, obsoleteTargetLength: 0, out _)
@@ -685,7 +686,26 @@ internal sealed partial class LibraDexFileSession : IDisposable
                 default);
         }
 
-        int insertIndex = identities.BinarySearch(encodedIdentity);
+        int insertIndex;
+        if (profile.Descending)
+        {
+            int low = 0;
+            int high = identities.Count;
+            while (low < high)
+            {
+                int middle = low + ((high - low) >> 1);
+                if (identities[middle] > encodedIdentity)
+                    low = middle + 1;
+                else
+                    high = middle;
+            }
+
+            insertIndex = low < identities.Count && identities[low] == encodedIdentity ? low : ~low;
+        }
+        else
+        {
+            insertIndex = identities.BinarySearch(encodedIdentity);
+        }
         if (insertIndex >= 0)
         {
             return new Scalar8Scalar8RoutedInsertResult(
@@ -704,7 +724,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
             expectedKey,
             profile.ShelfExtentSize,
             identities,
-            obsoleteFirstShelfOffset);
+            obsoleteFirstShelfOffset,
+            descending: profile.Descending);
         return new Scalar8Scalar8RoutedInsertResult(
             Scalar8Scalar8RoutedInsertKind.WalkedNoSplit,
             Scalar8Scalar8InsertResult.Inserted,
@@ -815,7 +836,26 @@ internal sealed partial class LibraDexFileSession : IDisposable
                 default);
         }
 
-        int insertIndex = identities.BinarySearch(encodedIdentity);
+        int insertIndex;
+        if (profile.Descending)
+        {
+            int low = 0;
+            int high = identities.Count;
+            while (low < high)
+            {
+                int middle = low + ((high - low) >> 1);
+                if (identities[middle] > encodedIdentity)
+                    low = middle + 1;
+                else
+                    high = middle;
+            }
+
+            insertIndex = low < identities.Count && identities[low] == encodedIdentity ? low : ~low;
+        }
+        else
+        {
+            insertIndex = identities.BinarySearch(encodedIdentity);
+        }
         if (insertIndex >= 0)
         {
             return new Scalar8Scalar8RoutedInsertResult(
@@ -881,7 +921,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
                 return true;
             }
 
-            if (shelf.ItemCount != 0 && shelf.ReadIdentityAt(shelf.ItemCount - 1) >= encodedIdentity)
+            if (shelf.ItemCount != 0 && (profile.Descending
+                ? shelf.ReadIdentityAt(shelf.ItemCount - 1) <= encodedIdentity
+                : shelf.ReadIdentityAt(shelf.ItemCount - 1) >= encodedIdentity))
             {
                 return false;
             }
@@ -949,7 +991,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
         Scalar8Scalar8Layout.WriteMagic(target, Scalar8Scalar8Layout.Magic);
         Scalar8Scalar8Layout.WriteFormatVersion(target, Scalar8Scalar8Layout.FormatVersion);
         Scalar8Scalar8Layout.WriteHeaderSize(target, Scalar8Scalar8Layout.HeaderSize);
-        Scalar8Scalar8Layout.WriteFlags(target, Scalar8Scalar8Layout.DuplicateRunFlag);
+        Scalar8Scalar8Layout.WriteFlags(target, Scalar8Scalar8Layout.DuplicateRunFlag |
+            (profile.Descending ? Scalar8Scalar8Layout.DescendingFlag : 0));
         Scalar8Scalar8Layout.WriteItemCount(target, 1);
         Scalar8Scalar8Layout.WriteDuplicateRunKey(target, encodedKey);
         Scalar8Scalar8Layout.WriteDuplicateRunNextOffset(target, nextOffset);
@@ -1314,7 +1357,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
         Scalar8Scalar8Layout.WriteMagic(target, Scalar8Scalar8Layout.Magic);
         Scalar8Scalar8Layout.WriteFormatVersion(target, Scalar8Scalar8Layout.FormatVersion);
         Scalar8Scalar8Layout.WriteHeaderSize(target, Scalar8Scalar8Layout.HeaderSize);
-        Scalar8Scalar8Layout.WriteFlags(target, Scalar8Scalar8Layout.DuplicateRunFlag);
+        Scalar8Scalar8Layout.WriteFlags(target, Scalar8Scalar8Layout.DuplicateRunFlag |
+            (profile.Descending ? Scalar8Scalar8Layout.DescendingFlag : 0));
         Scalar8Scalar8Layout.WriteItemCount(target, checked((ushort)count));
         Scalar8Scalar8Layout.WriteDuplicateRunKey(target, encodedKey);
         Scalar8Scalar8Layout.WriteDuplicateRunNextOffset(target, nextOffset);
@@ -1330,7 +1374,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
         ReadOnlySpan<byte> keyBytes,
         int shelfExtentSize,
         IReadOnlyList<ulong> identities,
-        long obsoleteFirstShelfOffset = 0)
+        long obsoleteFirstShelfOffset = 0,
+        bool descending = false)
     {
         long firstShelfOffset = 0;
         long tailShelfOffset = 0;
@@ -1368,6 +1413,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
 
         RawDataReservation rootRewrite = kernel.ReserveAt(rootOffset, TerminalIdentityRootLayout.Size);
         TerminalIdentityRootLayout.Initialize(rootRewrite.Span, shape, keyBytes, shelfExtentSize, firstShelfOffset);
+        rootRewrite.Span[TerminalIdentityRootLayout.SortDirectionOffset] = descending ? (byte)1 : (byte)0;
         TerminalIdentityRootLayout.WriteTailShelfOffset(rootRewrite.Span, tailShelfOffset);
         ClearTerminalIdentityReadCaches();
         ReleaseTerminalIdentity8ShelfChain(obsoleteFirstShelfOffset, shelfExtentSize);
@@ -1414,7 +1460,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
                     }
                 }
 
-                telemetry = RewriteTerminalIdentity8Route(rootOffset, shape, keyBytes, shelfExtentSize, replacementIdentities, obsoleteFirstShelfOffset);
+                bool descending = ReadTerminalIdentityRootBytes(rootOffset)[TerminalIdentityRootLayout.SortDirectionOffset] != 0;
+                telemetry = RewriteTerminalIdentity8Route(rootOffset, shape, keyBytes, shelfExtentSize, replacementIdentities, obsoleteFirstShelfOffset, descending);
                 return true;
             }
             finally
@@ -1443,6 +1490,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
                 {
                     throw new InvalidDataException("The terminal identity root does not match the routed key.");
                 }
+
+                bool descending = rootBytes[TerminalIdentityRootLayout.SortDirectionOffset] != 0;
 
                 long persistedTailShelfOffset = TerminalIdentityRootLayout.ReadTailShelfOffset(rootBytes);
                 if (firstShelfOffset == 0)
@@ -1489,7 +1538,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
                     return false;
                 }
 
-                if (count != 0 && TerminalIdentity8ShelfLayout.ReadIdentity(currentBytes, count - 1) >= encodedIdentity)
+                if (count != 0 && (descending
+                    ? TerminalIdentity8ShelfLayout.ReadIdentity(currentBytes, count - 1) <= encodedIdentity
+                    : TerminalIdentity8ShelfLayout.ReadIdentity(currentBytes, count - 1) >= encodedIdentity))
                 {
                     return false;
                 }
@@ -1636,6 +1687,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
             throw new InvalidDataException("The terminal identity root does not match the routed key.");
         }
 
+        bool descending = rootBytes[TerminalIdentityRootLayout.SortDirectionOffset] != 0;
+
         if (firstShelfOffset == 0)
         {
             return false;
@@ -1663,7 +1716,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
             if (count != 0)
             {
                 ulong lastIdentity = TerminalIdentity8ShelfLayout.ReadIdentity(currentBytes, count - 1);
-                if (encodedIdentity > lastIdentity && nextOffset != 0)
+                if ((descending ? encodedIdentity < lastIdentity : encodedIdentity > lastIdentity) && nextOffset != 0)
                 {
                     currentOffset = nextOffset;
                     continue;
@@ -1675,7 +1728,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
                 return false;
             }
 
-            int insertIndex = FindTerminalIdentity8InsertIndex(currentBytes, count, encodedIdentity);
+            int insertIndex = FindTerminalIdentity8InsertIndex(currentBytes, count, encodedIdentity, descending);
             if (insertIndex < 0)
             {
                 result = new Scalar8Scalar8RoutedInsertResult(
@@ -1718,7 +1771,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
     private static int FindTerminalIdentity8InsertIndex(
         ReadOnlySpan<byte> shelfBytes,
         int count,
-        ulong encodedIdentity)
+        ulong encodedIdentity,
+        bool descending = false)
     {
         int low = 0;
         int high = count - 1;
@@ -1726,13 +1780,13 @@ internal sealed partial class LibraDexFileSession : IDisposable
         {
             int middle = low + ((high - low) >> 1);
             ulong current = TerminalIdentity8ShelfLayout.ReadIdentity(shelfBytes, middle);
-            if (encodedIdentity < current)
+            if (descending ? encodedIdentity > current : encodedIdentity < current)
             {
                 high = middle - 1;
                 continue;
             }
 
-            if (encodedIdentity > current)
+            if (descending ? encodedIdentity < current : encodedIdentity > current)
             {
                 low = middle + 1;
                 continue;
@@ -2029,7 +2083,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
         int deleted = 0;
         if (encodedIdentity.HasValue)
         {
-            int index = identities.BinarySearch(encodedIdentity.Value);
+            int index = profile.Descending
+                ? identities.IndexOf(encodedIdentity.Value)
+                : identities.BinarySearch(encodedIdentity.Value);
             if (index < 0)
             {
                 return 0;
@@ -2047,7 +2103,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
         if (deleted != 0)
         {
             long obsoleteFirstShelfOffset = ReadTerminalIdentityFirstShelfOffset(rootOffset, expectedKey);
-            _ = RewriteTerminalIdentity8Route(rootOffset, TerminalIdentityRootLayout.ShapeScalar8, expectedKey, profile.ShelfExtentSize, identities, obsoleteFirstShelfOffset);
+            _ = RewriteTerminalIdentity8Route(rootOffset, TerminalIdentityRootLayout.ShapeScalar8, expectedKey, profile.ShelfExtentSize, identities, obsoleteFirstShelfOffset, profile.Descending);
         }
 
         return deleted;
@@ -2141,6 +2197,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
                     throw new InvalidDataException("The terminal identity root does not match the routed key and shape.");
                 }
 
+                bool descending = rootBytes[TerminalIdentityRootLayout.SortDirectionOffset] != 0;
+
                 if (firstShelfOffset == 0)
                 {
                     return false;
@@ -2170,12 +2228,14 @@ internal sealed partial class LibraDexFileSession : IDisposable
                     ValidateTerminalIdentity8Shelf(currentBytes, shelfExtentSize);
                     int count = TerminalIdentity8ShelfLayout.ReadItemCount(currentBytes);
                     long nextOffset = TerminalIdentity8ShelfLayout.ReadNextShelfOffset(currentBytes);
-                    if (count != 0 && previousOffset != 0 && TerminalIdentity8ShelfLayout.ReadIdentity(currentBytes, 0) <= previousLastIdentity)
+                    if (count != 0 && previousOffset != 0 && (descending
+                        ? TerminalIdentity8ShelfLayout.ReadIdentity(currentBytes, 0) >= previousLastIdentity
+                        : TerminalIdentity8ShelfLayout.ReadIdentity(currentBytes, 0) <= previousLastIdentity))
                     {
                         throw new InvalidDataException("The terminal identity shelf chain is not strictly ordered across its shelf boundary.");
                     }
 
-                    int insertIndex = FindTerminalIdentity8InsertIndex(currentBytes, count, encodedIdentity);
+                    int insertIndex = FindTerminalIdentity8InsertIndex(currentBytes, count, encodedIdentity, descending);
                     if (insertIndex < 0)
                     {
                         insertResult = Scalar8Scalar8InsertResult.AlreadyPresent;
@@ -2184,7 +2244,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
 
                     ulong firstIdentity = count == 0 ? 0 : TerminalIdentity8ShelfLayout.ReadIdentity(currentBytes, 0);
                     ulong lastIdentity = count == 0 ? 0 : TerminalIdentity8ShelfLayout.ReadIdentity(currentBytes, count - 1);
-                    if (count != 0 && encodedIdentity > lastIdentity && nextOffset != 0)
+                    if (count != 0 && (descending ? encodedIdentity < lastIdentity : encodedIdentity > lastIdentity) && nextOffset != 0)
                     {
                         previousOffset = currentOffset;
                         previousLastIdentity = lastIdentity;
@@ -2240,7 +2300,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
                         return true;
                     }
 
-                    if (encodedIdentity < firstIdentity)
+                    if (descending ? encodedIdentity > firstIdentity : encodedIdentity < firstIdentity)
                     {
                         RawDataReservation prepend = kernel.Reserve(shelfExtentSize);
                         InitializeTerminalIdentity8SingleIdentityShelf(prepend.Span, encodedIdentity, currentOffset);
@@ -2299,7 +2359,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
                         return true;
                     }
 
-                    if (nextOffset == 0 && encodedIdentity > lastIdentity)
+                    if (nextOffset == 0 && (descending ? encodedIdentity < lastIdentity : encodedIdentity > lastIdentity))
                     {
                         RawDataReservation append = kernel.Reserve(shelfExtentSize);
                         InitializeTerminalIdentity8SingleIdentityShelf(append.Span, encodedIdentity, nextShelfOffset: 0);
@@ -2410,6 +2470,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
                     throw new InvalidDataException("The terminal identity delete root does not match the routed key and shape.");
                 }
 
+                bool descending = rootBytes[TerminalIdentityRootLayout.SortDirectionOffset] != 0;
+
                 if (firstShelfOffset == 0)
                 {
                     return true;
@@ -2435,7 +2497,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
                         if (count != 0)
                         {
                             ulong firstIdentity = TerminalIdentity8ShelfLayout.ReadIdentity(shelfBytes, 0);
-                            if (hasPrevious && firstIdentity <= previousLastIdentity)
+                            if (hasPrevious && (descending
+                                ? firstIdentity >= previousLastIdentity
+                                : firstIdentity <= previousLastIdentity))
                             {
                                 throw new InvalidDataException("The terminal identity delete-all chain is not strictly ordered across its shelf boundary.");
                             }
@@ -2486,17 +2550,19 @@ internal sealed partial class LibraDexFileSession : IDisposable
 
                     ulong firstIdentity = TerminalIdentity8ShelfLayout.ReadIdentity(currentBytes, 0);
                     ulong lastIdentity = TerminalIdentity8ShelfLayout.ReadIdentity(currentBytes, count - 1);
-                    if (previousOffset != 0 && firstIdentity <= previousLast)
+                    if (previousOffset != 0 && (descending
+                        ? firstIdentity >= previousLast
+                        : firstIdentity <= previousLast))
                     {
                         throw new InvalidDataException("The terminal identity exact-delete chain is not strictly ordered across its shelf boundary.");
                     }
 
-                    if (targetIdentity < firstIdentity)
+                    if (descending ? targetIdentity > firstIdentity : targetIdentity < firstIdentity)
                     {
                         return true;
                     }
 
-                    if (targetIdentity > lastIdentity)
+                    if (descending ? targetIdentity < lastIdentity : targetIdentity > lastIdentity)
                     {
                         previousOffset = currentOffset;
                         previousLast = lastIdentity;
@@ -2511,11 +2577,11 @@ internal sealed partial class LibraDexFileSession : IDisposable
                     {
                         int middle = low + ((high - low) >> 1);
                         ulong currentIdentity = TerminalIdentity8ShelfLayout.ReadIdentity(currentBytes, middle);
-                        if (targetIdentity < currentIdentity)
+                        if (descending ? targetIdentity > currentIdentity : targetIdentity < currentIdentity)
                         {
                             high = middle - 1;
                         }
-                        else if (targetIdentity > currentIdentity)
+                        else if (descending ? targetIdentity < currentIdentity : targetIdentity > currentIdentity)
                         {
                             low = middle + 1;
                         }
@@ -4491,6 +4557,10 @@ internal sealed partial class LibraDexFileSession : IDisposable
                         return false;
                     }
 
+                    RefineDirectShelfOwner(currentPathTarget.ParentRouterOffset, target.Offset, childRouterKeyDepth,
+                        GetScalar16Scalar8Prefix(encodedKeyHigh, encodedKeyLow, target.RouterDepth),
+                        GetScalar16Scalar8Prefix(existingReadOnly.ReadKeyHighAt(profile.Descending ? existingReadOnly.ItemCount - 1 : 0), existingReadOnly.ReadKeyLowAt(profile.Descending ? existingReadOnly.ItemCount - 1 : 0), target.RouterDepth),
+                        GetScalar16Scalar8Prefix(existingReadOnly.ReadKeyHighAt(profile.Descending ? 0 : existingReadOnly.ItemCount - 1), existingReadOnly.ReadKeyLowAt(profile.Descending ? 0 : existingReadOnly.ItemCount - 1), target.RouterDepth));
                     RawDataReservation leftAppend = kernel.Reserve(profile.ShelfExtentSize);
                     build.LeftShelfBytes.CopyTo(leftAppend.Span);
                     RawDataReservation rightAppend = kernel.Reserve(profile.ShelfExtentSize);
@@ -4951,6 +5021,10 @@ internal sealed partial class LibraDexFileSession : IDisposable
                         return false;
                     }
 
+                    RefineDirectShelfOwner(currentPathTarget.ParentRouterOffset, target.Offset, childRouterKeyDepth,
+                        currentPathTarget.ParentPrefixByte,
+                        GetScalar8Scalar8Prefix(existingReadOnly.ReadKeyAt(0), target.RouterDepth),
+                        GetScalar8Scalar8Prefix(existingReadOnly.ReadKeyAt(existingReadOnly.ItemCount - 1), target.RouterDepth));
                     RawDataReservation leftAppend = kernel.Reserve(profile.ShelfExtentSize);
                     build.LeftShelfBytes.CopyTo(leftAppend.Span);
                     RawDataReservation rightAppend = kernel.Reserve(profile.ShelfExtentSize);
@@ -5420,6 +5494,10 @@ internal sealed partial class LibraDexFileSession : IDisposable
                         return false;
                     }
 
+                    RefineDirectShelfOwner(currentPathTarget.ParentRouterOffset, target.Offset, childRouterKeyDepth,
+                        currentPathTarget.ParentPrefixByte,
+                        GetScalar16Scalar8Prefix(existingReadOnly.ReadKeyHighAt(0), existingReadOnly.ReadKeyLowAt(0), target.RouterDepth),
+                        GetScalar16Scalar8Prefix(existingReadOnly.ReadKeyHighAt(existingReadOnly.ItemCount - 1), existingReadOnly.ReadKeyLowAt(existingReadOnly.ItemCount - 1), target.RouterDepth));
                     RawDataReservation leftAppend = kernel.Reserve(profile.ShelfExtentSize);
                     build.LeftShelfBytes.CopyTo(leftAppend.Span);
                     RawDataReservation rightAppend = kernel.Reserve(profile.ShelfExtentSize);
@@ -5900,6 +5978,10 @@ internal sealed partial class LibraDexFileSession : IDisposable
                         return false;
                     }
 
+                    RefineDirectShelfOwner(currentPathTarget.ParentRouterOffset, target.Offset, childRouterKeyDepth,
+                        GetFixed32Scalar8Prefix(key0, key1, key2, key3, target.RouterDepth),
+                        GetFixed32Scalar8Prefix(existingReadOnly.ReadKeyPart0At(0), existingReadOnly.ReadKeyPart1At(0), existingReadOnly.ReadKeyPart2At(0), existingReadOnly.ReadKeyPart3At(0), target.RouterDepth),
+                        GetFixed32Scalar8Prefix(existingReadOnly.ReadKeyPart0At(existingReadOnly.ItemCount - 1), existingReadOnly.ReadKeyPart1At(existingReadOnly.ItemCount - 1), existingReadOnly.ReadKeyPart2At(existingReadOnly.ItemCount - 1), existingReadOnly.ReadKeyPart3At(existingReadOnly.ItemCount - 1), target.RouterDepth));
                     RawDataReservation leftAppend = kernel.Reserve(profile.ShelfExtentSize);
                     build.LeftShelfBytes.CopyTo(leftAppend.Span);
                     RawDataReservation rightAppend = kernel.Reserve(profile.ShelfExtentSize);
@@ -6551,6 +6633,10 @@ internal sealed partial class LibraDexFileSession : IDisposable
                         return false;
                     }
 
+                    RefineDirectShelfOwner(currentPathTarget.ParentRouterOffset, target.Offset, childRouterKeyDepth,
+                        GetFixed32Scalar16Prefix(key0, key1, key2, key3, target.RouterDepth),
+                        GetFixed32Scalar16Prefix(existingReadOnly.ReadKeyPart0At(0), existingReadOnly.ReadKeyPart1At(0), existingReadOnly.ReadKeyPart2At(0), existingReadOnly.ReadKeyPart3At(0), target.RouterDepth),
+                        GetFixed32Scalar16Prefix(existingReadOnly.ReadKeyPart0At(existingReadOnly.ItemCount - 1), existingReadOnly.ReadKeyPart1At(existingReadOnly.ItemCount - 1), existingReadOnly.ReadKeyPart2At(existingReadOnly.ItemCount - 1), existingReadOnly.ReadKeyPart3At(existingReadOnly.ItemCount - 1), target.RouterDepth));
                     RawDataReservation leftAppend = kernel.Reserve(profile.ShelfExtentSize);
                     build.LeftShelfBytes.CopyTo(leftAppend.Span);
                     RawDataReservation rightAppend = kernel.Reserve(profile.ShelfExtentSize);
@@ -8749,7 +8835,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
         }
 
         int shelfExtentSize = VarKeyScalar8Layout.ReadShelfExtentSize(header);
-        VarKeyScalar8Profile profile = VarKeyScalar8Profile.Create(shelfExtentSize, maxKeyLength);
+        VarKeyScalar8Profile profile = VarKeyScalar8Profile.Create(shelfExtentSize, maxKeyLength) with { Descending = (VarKeyScalar8Layout.ReadFlags(header) & VarKeyScalar8Layout.DescendingFlag) != 0 };
         byte[] shelfBytes = new byte[shelfExtentSize];
         header.CopyTo(shelfBytes.AsSpan(0, header.Length));
         kernel.Read(shelfOffset, shelfBytes);
@@ -8877,7 +8963,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
         }
 
         int shelfExtentSize = VarKeyScalar16Layout.ReadShelfExtentSize(header);
-        VarKeyScalar16Profile profile = VarKeyScalar16Profile.Create(shelfExtentSize, maxKeyLength);
+        VarKeyScalar16Profile profile = VarKeyScalar16Profile.Create(shelfExtentSize, maxKeyLength) with { Descending = (VarKeyScalar16Layout.ReadFlags(header) & VarKeyScalar16Layout.DescendingFlag) != 0 };
         byte[] shelfBytes = new byte[shelfExtentSize];
         header.CopyTo(shelfBytes.AsSpan(0, header.Length));
         kernel.Read(shelfOffset, shelfBytes);
@@ -9167,7 +9253,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
         }
 
         int shelfExtentSize = Scalar8VarIdentityLayout.ReadShelfExtentSize(header);
-        Scalar8VarIdentityProfile profile = Scalar8VarIdentityProfile.Create(shelfExtentSize, maxIdentityLength);
+        Scalar8VarIdentityProfile profile = Scalar8VarIdentityProfile.Create(shelfExtentSize, maxIdentityLength,
+            (Scalar8VarIdentityLayout.ReadFlags(header) & 1U) != 0);
         byte[] shelfBytes = ArrayPool<byte>.Shared.Rent(shelfExtentSize);
         header.CopyTo(shelfBytes.AsSpan(0, header.Length));
         kernel.Read(shelfOffset, shelfBytes.AsSpan(0, shelfExtentSize));
@@ -9212,7 +9299,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
         }
 
         int shelfExtentSize = Scalar16VarIdentityLayout.ReadShelfExtentSize(header);
-        Scalar16VarIdentityProfile profile = Scalar16VarIdentityProfile.Create(shelfExtentSize, maxIdentityLength);
+        Scalar16VarIdentityProfile profile = Scalar16VarIdentityProfile.Create(shelfExtentSize, maxIdentityLength,
+            (Scalar16VarIdentityLayout.ReadFlags(header) & Scalar16VarIdentityLayout.DescendingFlag) != 0);
         byte[] shelfBytes = new byte[shelfExtentSize];
         header.CopyTo(shelfBytes.AsSpan(0, header.Length));
         kernel.Read(shelfOffset, shelfBytes);
@@ -9243,7 +9331,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
         ArgumentNullException.ThrowIfNull(writeContext);
         if (writeContext.VarKeyScalar8RawMutableShelfBytes.TryGetValue(shelfOffset, out byte[]? existing))
         {
-            profile = VarKeyScalar8Profile.Create(VarKeyScalar8Layout.ReadShelfExtentSize(existing), maxKeyLength);
+            profile = VarKeyScalar8Profile.Create(VarKeyScalar8Layout.ReadShelfExtentSize(existing), maxKeyLength) with { Descending = (VarKeyScalar8Layout.ReadFlags(existing) & VarKeyScalar8Layout.DescendingFlag) != 0 };
             return existing;
         }
 
@@ -9974,7 +10062,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
         string path,
         DataKernelOptions options,
         SuperblockDeveloperMetadata developerMetadata,
-        DataKernelTelemetryOptions telemetryOptions)
+        DataKernelTelemetryOptions telemetryOptions,
+        ushort formatVersion = SuperblockLayout.LegacyFormatVersion)
     {
         if (options.ReservedPrefixBytes != 0)
         {
@@ -9985,6 +10074,20 @@ internal sealed partial class LibraDexFileSession : IDisposable
         try
         {
             RawDataReservation superblock = kernel.Reserve(SuperblockLayout.Size);
+            RawDataReservation recoveryControl = default;
+            if (formatVersion == SuperblockLayout.RecoverableFormatVersion)
+            {
+                recoveryControl = kernel.Reserve(PublicationRecoveryLayout.PageSize);
+                PublicationRecoveryLayout.InitializePage(recoveryControl.Span);
+            }
+            else if (formatVersion != SuperblockLayout.LegacyFormatVersion)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(formatVersion),
+                    formatVersion,
+                    "The LibraDex file-session format version is not supported.");
+            }
+
             RawDataReservation indexDirectory = kernel.Reserve(IndexDirectoryLayout.Size);
             RawDataReservation allocationDirectory = kernel.Reserve(FileAllocationDirectoryLayout.Size);
 
@@ -9994,7 +10097,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
                 Guid.NewGuid(),
                 DateTimeOffset.UtcNow.UtcDateTime.Ticks,
                 developerMetadata,
-                allocationDirectory.Extent.Offset);
+                allocationDirectory.Extent.Offset,
+                formatVersion);
 
             new IndexDirectoryWriter(indexDirectory.Span).InitializeEmpty();
             FileAllocationDirectoryLayout.Initialize(allocationDirectory.Span);
@@ -10097,7 +10201,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
                     superblockSnapshot.FileGuid,
                     superblockSnapshot.CreatedUtcTicks,
                     superblockSnapshot.DeveloperMetadata,
-                    allocationDirectory.Extent.Offset);
+                    allocationDirectory.Extent.Offset,
+                    superblockSnapshot.FormatVersion);
                 superblockSnapshot = SuperblockSnapshot.FromReader(new SuperblockReader(superblockRewrite.Span));
                 kernel.Commit();
                 kernel.ConfigureNewFileExtentAllocator(allocationDirectory.Extent.Offset, allocationDirectoryBytes);
@@ -10136,7 +10241,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
             Superblock.FileGuid,
             Superblock.CreatedUtcTicks,
             developerMetadata,
-            Superblock.AllocationDirectoryOffset);
+            Superblock.AllocationDirectoryOffset,
+            Superblock.FormatVersion);
 
         SuperblockSnapshot updated = SuperblockSnapshot.FromReader(new SuperblockReader(superblock.Span));
         DataKernelCommitTelemetry telemetry = CommitAndInvalidateRouterReadCache();
@@ -10748,6 +10854,43 @@ internal sealed partial class LibraDexFileSession : IDisposable
         if (length > header.Length)
         {
             kernel.Read(offset + header.Length, page.AsSpan(header.Length));
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Reads one composite node page into caller-owned storage without allocating a disconnected page array.<br/>
+    /// When <paramref name="destination"/> is shorter than the encoded page, the method reports the required <paramref name="length"/> and leaves the caller to provide a larger buffer before retrying.<br/>
+    /// </summary>
+    /// <param name="offset">The direct node page offset.</param>
+    /// <param name="destination">The caller-owned destination buffer.</param>
+    /// <param name="length">Receives the complete encoded page length when the header is valid.</param>
+    /// <returns><see langword="true"/> when a valid page header was read; otherwise <see langword="false"/>.</returns>
+    internal bool TryReadCompositeNodePage(long offset, Span<byte> destination, out int length)
+    {
+        length = 0;
+        if (offset <= 0)
+        {
+            return false;
+        }
+
+        Span<byte> header = stackalloc byte[22];
+        kernel.Read(offset, header);
+        if (!LibraDexCompositeNodePageCodec.TryReadLength(header, out length))
+        {
+            return false;
+        }
+
+        if (destination.Length < length)
+        {
+            return true;
+        }
+
+        header.CopyTo(destination);
+        if (length > header.Length)
+        {
+            kernel.Read(offset + header.Length, destination.Slice(header.Length, length - header.Length));
         }
 
         return true;
@@ -11868,7 +12011,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
             byte[] currentIdentity = new byte[FixedNScalar16Layout.IdentitySize];
             existingShelf.CopyKeyAt(slotOrdinal, currentKey);
             existingShelf.CopyIdentityAt(slotOrdinal, currentIdentity);
-            if (!inserted && CompareFixedNScalar16Tuple(currentKey, currentIdentity, key, encodedIdentity) > 0)
+            int tupleComparison = CompareFixedNScalar16Tuple(currentKey, currentIdentity, key, encodedIdentity);
+            if (!inserted && (handle.Profile.Descending ? tupleComparison < 0 : tupleComparison > 0))
             {
                 keys[writeIndex] = key.ToArray();
                 identities[writeIndex] = encodedIdentity.ToArray();
@@ -11897,14 +12041,15 @@ internal sealed partial class LibraDexFileSession : IDisposable
             identities[writeIndex] = encodedIdentity.ToArray();
         }
 
-        if (!TryChooseFixedNScalar16Split(keys, firstKeyDepth, out ushort splitKeyDepth, out byte rightPrefixByte))
+        if (!TryChooseFixedNScalar16Split(keys, firstKeyDepth, out ushort splitKeyDepth, out byte rightPrefixByte, handle.Profile.Descending))
         {
             DataKernelCommitTelemetry terminalCommit = RewriteFixedNVarIdentityTerminalRoute(
                 fullShelfOffset,
                 TerminalIdentityRootLayout.ShapeFixedKeyScalar16Identity,
                 keys[0],
                 handle.Profile.ShelfExtentSize,
-                identities);
+                identities,
+                handle.Profile.Descending);
             return (FixedNScalarInsertResult.Inserted, terminalCommit);
         }
 
@@ -12047,9 +12192,10 @@ internal sealed partial class LibraDexFileSession : IDisposable
         IReadOnlyList<byte[]> sortedKeys,
         ushort firstKeyDepth,
         out ushort splitKeyDepth,
-        out byte rightPrefixByte)
+        out byte rightPrefixByte,
+        bool descending = false)
     {
-        return TryChooseFixedNScalar8Split(sortedKeys, firstKeyDepth, out splitKeyDepth, out rightPrefixByte);
+        return TryChooseFixedNScalar8Split(sortedKeys, firstKeyDepth, out splitKeyDepth, out rightPrefixByte, descending);
     }
 
     private static int CompareFixedNScalar16Tuple(ReadOnlySpan<byte> leftKey, ReadOnlySpan<byte> leftIdentity, ReadOnlySpan<byte> rightKey, ReadOnlySpan<byte> rightIdentity)
@@ -12428,7 +12574,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
         int keyDepth = routerReader.KeyDepth;
         byte startPrefix = lowerKey[keyDepth];
         byte endPrefix = upperKey[keyDepth];
-        for (int prefix = startPrefix; prefix <= endPrefix; prefix++)
+        for (int prefix = profile.Descending ? endPrefix : startPrefix;
+            profile.Descending ? prefix >= startPrefix : prefix <= endPrefix;
+            prefix += profile.Descending ? -1 : 1)
         {
             long targetOffset = routerReader.FindTarget((byte)prefix);
             if (targetOffset == 0)
@@ -13078,7 +13226,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
         {
             byte[] currentKey = existingShelf.ReadKeyAt(slotOrdinal).ToArray();
             byte[] currentIdentity = existingShelf.ReadIdentityAt(slotOrdinal).ToArray();
-            if (!inserted && CompareFixedNVarIdentityTuple(currentKey, currentIdentity, key, identity) > 0)
+            if (!inserted && (handle.Profile.Descending
+                ? CompareFixedNVarIdentityTuple(currentKey, currentIdentity, key, identity) < 0
+                : CompareFixedNVarIdentityTuple(currentKey, currentIdentity, key, identity) > 0))
             {
                 keys[writeIndex] = key.ToArray();
                 identities[writeIndex] = identity.ToArray();
@@ -13107,14 +13257,15 @@ internal sealed partial class LibraDexFileSession : IDisposable
             identities[writeIndex] = identity.ToArray();
         }
 
-        if (!TryChooseFixedNVarIdentitySplit(keys, firstKeyDepth, out ushort splitKeyDepth, out byte rightPrefixByte))
+        if (!TryChooseFixedNVarIdentitySplit(keys, firstKeyDepth, out ushort splitKeyDepth, out byte rightPrefixByte, handle.Profile.Descending))
         {
             DataKernelCommitTelemetry terminalCommit = RewriteFixedNVarIdentityTerminalRoute(
                 fullShelfOffset,
                 TerminalIdentityRootLayout.ShapeFixedKeyVarIdentity,
                 keys[0],
                 handle.Profile.ShelfExtentSize,
-                identities);
+                identities,
+                handle.Profile.Descending);
             return (FixedNVarIdentityInsertResult.Inserted, terminalCommit);
         }
 
@@ -13253,9 +13404,10 @@ internal sealed partial class LibraDexFileSession : IDisposable
         IReadOnlyList<byte[]> sortedKeys,
         ushort firstKeyDepth,
         out ushort splitKeyDepth,
-        out byte rightPrefixByte)
+        out byte rightPrefixByte,
+        bool descending = false)
     {
-        return TryChooseFixedNScalar8Split(sortedKeys, firstKeyDepth, out splitKeyDepth, out rightPrefixByte);
+        return TryChooseFixedNScalar8Split(sortedKeys, firstKeyDepth, out splitKeyDepth, out rightPrefixByte, descending);
     }
 
     private static int CompareFixedNVarIdentityTuple(ReadOnlySpan<byte> leftKey, ReadOnlySpan<byte> leftIdentity, ReadOnlySpan<byte> rightKey, ReadOnlySpan<byte> rightIdentity)
@@ -13305,7 +13457,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
             byte[] currentKey = new byte[handle.Profile.KeySize];
             existingShelf.CopyKeyAt(slotOrdinal, currentKey);
             ulong currentIdentity = existingShelf.ReadIdentityAt(slotOrdinal);
-            if (!inserted && CompareFixedNScalar8Tuple(currentKey, currentIdentity, key, encodedIdentity) > 0)
+            int tupleComparison = CompareFixedNScalar8Tuple(currentKey, currentIdentity, key, encodedIdentity);
+            if (!inserted && (handle.Profile.Descending ? tupleComparison < 0 : tupleComparison > 0))
             {
                 keys[writeIndex] = key.ToArray();
                 identities[writeIndex] = encodedIdentity;
@@ -13334,13 +13487,14 @@ internal sealed partial class LibraDexFileSession : IDisposable
             identities[writeIndex] = encodedIdentity;
         }
 
-        if (!TryChooseFixedNScalar8Split(keys, firstKeyDepth, out ushort splitKeyDepth, out byte rightPrefixByte))
+        if (!TryChooseFixedNScalar8Split(keys, firstKeyDepth, out ushort splitKeyDepth, out byte rightPrefixByte, handle.Profile.Descending))
         {
             return RewriteFixedNScalar8TerminalRoute(
                 fullShelfOffset,
                 keys[0],
                 handle.Profile.ShelfExtentSize,
-                identities);
+                identities,
+                handle.Profile.Descending);
         }
 
         byte[] leftShelfBytes = new byte[handle.Profile.ShelfExtentSize];
@@ -13482,7 +13636,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
         IReadOnlyList<byte[]> sortedKeys,
         ushort firstKeyDepth,
         out ushort splitKeyDepth,
-        out byte rightPrefixByte)
+        out byte rightPrefixByte,
+        bool descending = false)
     {
         splitKeyDepth = 0;
         rightPrefixByte = 0;
@@ -13516,9 +13671,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
         for (int i = 1; i < sortedKeys.Count; i++)
         {
             byte currentPrefix = sortedKeys[i][firstDifferentDepth];
-            if (currentPrefix < priorPrefix)
-                throw new InvalidDataException($"The FSN transform source is not globally nondecreasing at split depth {firstDifferentDepth}.");
-            if (currentPrefix > priorPrefix)
+            if (descending ? currentPrefix > priorPrefix : currentPrefix < priorPrefix)
+                throw new InvalidDataException($"The FSN transform source is not globally {(descending ? "nonincreasing" : "nondecreasing")} at split depth {firstDifferentDepth}.");
+            if (currentPrefix != priorPrefix)
             {
                 int balanceDistance = Math.Abs(i - (sortedKeys.Count - i));
                 if (balanceDistance < bestBalanceDistance)
@@ -13533,7 +13688,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
         if (bestBoundaryIndex >= 0)
         {
             splitKeyDepth = checked((ushort)firstDifferentDepth);
-            rightPrefixByte = sortedKeys[bestBoundaryIndex][firstDifferentDepth];
+            rightPrefixByte = descending
+                ? sortedKeys[bestBoundaryIndex - 1][firstDifferentDepth]
+                : sortedKeys[bestBoundaryIndex][firstDifferentDepth];
             return true;
         }
 
@@ -13744,7 +13901,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
             return CountRoutedFixedNScalar8IdentityRangeByReaderLikeTraversal(routerReader, profile, lowerKey, upperKey, visitedShelves, visitedRouters);
         }
 
-        for (int prefix = startPrefix; prefix <= endPrefix; prefix++)
+        for (int prefix = profile.Descending ? endPrefix : startPrefix;
+            profile.Descending ? prefix >= startPrefix : prefix <= endPrefix;
+            prefix += profile.Descending ? -1 : 1)
         {
             long targetOffset = routerReader.FindTarget((byte)prefix);
             if (targetOffset == 0)
@@ -14247,7 +14406,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
         int keyDepth = routerReader.KeyDepth;
         byte startPrefix = lowerKey[keyDepth];
         byte endPrefix = upperKey[keyDepth];
-        for (int prefix = startPrefix; prefix <= endPrefix; prefix++)
+        for (int prefix = profile.Descending ? endPrefix : startPrefix;
+            profile.Descending ? prefix >= startPrefix : prefix <= endPrefix;
+            prefix += profile.Descending ? -1 : 1)
         {
             long targetOffset = routerReader.FindTarget((byte)prefix);
             if (targetOffset == 0)
@@ -14309,7 +14470,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
         int keyDepth = routerReader.KeyDepth;
         byte startPrefix = lowerKey[keyDepth];
         byte endPrefix = upperKey[keyDepth];
-        for (int prefix = startPrefix; prefix <= endPrefix; prefix++)
+        for (int prefix = profile.Descending ? endPrefix : startPrefix;
+            profile.Descending ? prefix >= startPrefix : prefix <= endPrefix;
+            prefix += profile.Descending ? -1 : 1)
         {
             long targetOffset = routerReader.FindTarget((byte)prefix);
             if (targetOffset == 0)
@@ -14367,7 +14530,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
         VarLenOptimizerMaintenancePolicy optimizerPolicy)
     {
         (RouterSnapshot router, DataKernelCommitTelemetry commit) = CreateRootRouterIndex(slot);
-        VarKeyScalar16IndexHandle handle = new(router.Offset, maxKeyLength, optimizerRouteFanout, optimizerPolicy);
+        VarKeyScalar16IndexHandle handle = new(router.Offset, maxKeyLength, optimizerRouteFanout, optimizerPolicy, (slot.Flags & VarKeyScalar16IndexHandle.DescendingSlotFlag) != 0);
         handle.Validate();
         return (handle, router, commit);
     }
@@ -18989,7 +19152,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
             long targetOffset = reader.FindTarget(prefixByte);
             if (targetOffset == 0)
             {
-                throw new InvalidDataException("The routed SS16-8 target is unset.");
+                return new Scalar16Scalar8RoutePathTarget(
+                    new Scalar16Scalar8RouteTarget(Scalar16Scalar8RouteTargetKind.None, 0, reader.KeyDepth, reader.AllocationClassId),
+                    routerOffset, prefixByte);
             }
 
             Scalar16Scalar8RouteTargetKind kind = ClassifyScalar16Scalar8RouteTarget(targetOffset);
@@ -19128,7 +19293,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
                 {
                     if (returnDefaultWhenUnset)
                         return default;
-                    throw new InvalidDataException("The routed FS32-8 target is unset.");
+                    return new Fixed32Scalar8RoutePathTarget(
+                        new Fixed32Scalar8RouteTarget(Fixed32Scalar8RouteTargetKind.None, 0, directView.KeyDepth, directView.AllocationClassId),
+                        routerOffset, directPrefixByte);
                 }
 
                 Fixed32Scalar8RouteTargetKind directKind = (Fixed32Scalar8RouteTargetKind)directView.GetTargetKind(directPrefixByte);
@@ -19172,7 +19339,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
             {
                 if (returnDefaultWhenUnset)
                     return default;
-                throw new InvalidDataException("The routed FS32-8 target is unset.");
+                return new Fixed32Scalar8RoutePathTarget(
+                    new Fixed32Scalar8RouteTarget(Fixed32Scalar8RouteTargetKind.None, 0, reader.KeyDepth, reader.AllocationClassId),
+                    routerOffset, prefixByte);
             }
 
             Fixed32Scalar8RouteTargetKind kind = ClassifyFixed32Scalar8RouteTarget(targetOffset);
@@ -19282,7 +19451,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
                 long directTargetOffset = directView.GetTarget(directPrefixByte);
                 if (directTargetOffset == 0)
                 {
-                    throw new InvalidDataException("The routed SS8-16 target is unset.");
+                    return new Scalar8Scalar16RoutePathTarget(
+                        new Scalar8Scalar16RouteTarget(Scalar8Scalar16RouteTargetKind.None, 0, directView.KeyDepth, directView.AllocationClassId),
+                        routerOffset, directPrefixByte);
                 }
 
                 Scalar8Scalar16RouteTargetKind directKind = (Scalar8Scalar16RouteTargetKind)directView.GetTargetKind(directPrefixByte);
@@ -19321,7 +19492,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
             long targetOffset = reader.FindTarget(prefixByte);
             if (targetOffset == 0)
             {
-                throw new InvalidDataException("The routed SS8-16 target is unset.");
+                return new Scalar8Scalar16RoutePathTarget(
+                    new Scalar8Scalar16RouteTarget(Scalar8Scalar16RouteTargetKind.None, 0, reader.KeyDepth, reader.AllocationClassId),
+                    routerOffset, prefixByte);
             }
 
             Scalar8Scalar16RouteTargetKind kind = ClassifyScalar8Scalar16RouteTarget(targetOffset);
@@ -19435,7 +19608,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
                 long directTargetOffset = directView.GetTarget(directPrefixByte);
                 if (directTargetOffset == 0)
                 {
-                    throw new InvalidDataException("The routed SS16-16 target is unset.");
+                    return new Scalar16Scalar16RoutePathTarget(
+                        new Scalar16Scalar16RouteTarget(Scalar16Scalar16RouteTargetKind.None, 0, directView.KeyDepth, directView.AllocationClassId),
+                        routerOffset, directPrefixByte);
                 }
 
                 Scalar16Scalar16RouteTargetKind directKind = (Scalar16Scalar16RouteTargetKind)directView.GetTargetKind(directPrefixByte);
@@ -19474,7 +19649,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
             long targetOffset = reader.FindTarget(prefixByte);
             if (targetOffset == 0)
             {
-                throw new InvalidDataException("The routed SS16-16 target is unset.");
+                return new Scalar16Scalar16RoutePathTarget(
+                    new Scalar16Scalar16RouteTarget(Scalar16Scalar16RouteTargetKind.None, 0, reader.KeyDepth, reader.AllocationClassId),
+                    routerOffset, prefixByte);
             }
 
             Scalar16Scalar16RouteTargetKind kind = ClassifyScalar16Scalar16RouteTarget(targetOffset);
@@ -24423,6 +24600,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
         int maxKeyLength,
         int requestedRouteCount,
         ReadOnlySpan<VarKeyScalar8SortedTuple> tuples,
+        bool descending,
         out DataKernelCommitTelemetry telemetry,
         out long replacementTargetOffset)
     {
@@ -24473,7 +24651,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
                         tuples,
                         replacementKeyDepth,
                         maxKeyLength,
-                        requestedRouteCount);
+                        requestedRouteCount,
+                        descending);
 
                     RewriteVarKeyScalar8ShelfParentReferences(
                         parentReferences,
@@ -25727,9 +25906,10 @@ internal sealed partial class LibraDexFileSession : IDisposable
         int targetIndex = 0;
         for (int sourceIndex = 0; sourceIndex < existingCount; sourceIndex++)
         {
-            ulong currentKey = existingShelf.ReadKeyAt(sourceIndex);
-            ulong currentIdentityHigh = existingShelf.ReadIdentityHighAt(sourceIndex);
-            ulong currentIdentityLow = existingShelf.ReadIdentityLowAt(sourceIndex);
+            int physicalIndex = profile.Descending ? existingCount - 1 - sourceIndex : sourceIndex;
+            ulong currentKey = existingShelf.ReadKeyAt(physicalIndex);
+            ulong currentIdentityHigh = existingShelf.ReadIdentityHighAt(physicalIndex);
+            ulong currentIdentityLow = existingShelf.ReadIdentityLowAt(physicalIndex);
             if (!inserted && CompareScalar8Scalar16Tuple(currentKey, currentIdentityHigh, currentIdentityLow, encodedKey, encodedIdentityHigh, encodedIdentityLow) > 0)
             {
                 keys[targetIndex] = encodedKey;
@@ -25850,7 +26030,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
             encodedIdentityHigh,
             encodedIdentityLow,
             allocationClassId,
-            childRouterKeyDepth: 1);
+            childRouterKeyDepth: 1,
+            parentRouterOffset: rootRouterOffset,
+            parentRoutePrefixByte: rootPrefixByte);
     }
 
     /// <summary>
@@ -25898,9 +26080,10 @@ internal sealed partial class LibraDexFileSession : IDisposable
         int targetIndex = 0;
         for (int sourceIndex = 0; sourceIndex < existingCount; sourceIndex++)
         {
-            ulong currentKey = existingShelf.ReadKeyAt(sourceIndex);
-            ulong currentIdentityHigh = existingShelf.ReadIdentityHighAt(sourceIndex);
-            ulong currentIdentityLow = existingShelf.ReadIdentityLowAt(sourceIndex);
+            int physicalIndex = profile.Descending ? existingCount - 1 - sourceIndex : sourceIndex;
+            ulong currentKey = existingShelf.ReadKeyAt(physicalIndex);
+            ulong currentIdentityHigh = existingShelf.ReadIdentityHighAt(physicalIndex);
+            ulong currentIdentityLow = existingShelf.ReadIdentityLowAt(physicalIndex);
             if (!inserted && CompareScalar8Scalar16Tuple(currentKey, currentIdentityHigh, currentIdentityLow, encodedKey, encodedIdentityHigh, encodedIdentityLow) > 0)
             {
                 keys[targetIndex] = encodedKey;
@@ -26012,7 +26195,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
             ulong encodedIdentityHigh,
             ulong encodedIdentityLow,
             ushort allocationClassId,
-            ushort childRouterKeyDepth)
+            ushort childRouterKeyDepth,
+            long parentRouterOffset,
+            byte parentRoutePrefixByte)
     {
         if (existingShelfBytes.Length != profile.ShelfExtentSize)
         {
@@ -26033,9 +26218,10 @@ internal sealed partial class LibraDexFileSession : IDisposable
         int targetIndex = 0;
         for (int sourceIndex = 0; sourceIndex < existingCount; sourceIndex++)
         {
-            ulong currentKey = existingShelf.ReadKeyAt(sourceIndex);
-            ulong currentIdentityHigh = existingShelf.ReadIdentityHighAt(sourceIndex);
-            ulong currentIdentityLow = existingShelf.ReadIdentityLowAt(sourceIndex);
+            int physicalIndex = profile.Descending ? existingCount - 1 - sourceIndex : sourceIndex;
+            ulong currentKey = existingShelf.ReadKeyAt(physicalIndex);
+            ulong currentIdentityHigh = existingShelf.ReadIdentityHighAt(physicalIndex);
+            ulong currentIdentityLow = existingShelf.ReadIdentityLowAt(physicalIndex);
             if (!inserted && CompareScalar8Scalar16Tuple(currentKey, currentIdentityHigh, currentIdentityLow, encodedKey, encodedIdentityHigh, encodedIdentityLow) > 0)
             {
                 keys[targetIndex] = encodedKey;
@@ -26064,6 +26250,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
         }
 
         (ushort splitKeyDepth, byte selectedRightPrefixByte) = ChooseScalar8Scalar8TransformSplitPlan(keys, childRouterKeyDepth, rightPrefixByte);
+        RefineDirectShelfOwner(parentRouterOffset, childRouterOffset, childRouterKeyDepth, parentRoutePrefixByte,
+            GetScalar8Scalar8Prefix(keys[0], checked((ushort)(childRouterKeyDepth - 1))),
+            GetScalar8Scalar8Prefix(keys[^1], checked((ushort)(childRouterKeyDepth - 1))));
         byte[] leftShelfBytes = new byte[profile.ShelfExtentSize];
         byte[] rightShelfBytes = new byte[profile.ShelfExtentSize];
         Scalar8Scalar16 leftShelf = new(leftShelfBytes, profile);
@@ -26206,9 +26395,10 @@ internal sealed partial class LibraDexFileSession : IDisposable
         int targetIndex = 0;
         for (int sourceIndex = 0; sourceIndex < existingCount; sourceIndex++)
         {
-            ulong currentKeyHigh = existingShelf.ReadKeyHighAt(sourceIndex);
-            ulong currentKeyLow = existingShelf.ReadKeyLowAt(sourceIndex);
-            ulong currentIdentity = existingShelf.ReadIdentityAt(sourceIndex);
+            int physicalIndex = profile.Descending ? existingCount - 1 - sourceIndex : sourceIndex;
+            ulong currentKeyHigh = existingShelf.ReadKeyHighAt(physicalIndex);
+            ulong currentKeyLow = existingShelf.ReadKeyLowAt(physicalIndex);
+            ulong currentIdentity = existingShelf.ReadIdentityAt(physicalIndex);
             if (!inserted && CompareScalar16Scalar8Tuple(currentKeyHigh, currentKeyLow, currentIdentity, encodedKeyHigh, encodedKeyLow, encodedIdentity) > 0)
             {
                 keyHighs[targetIndex] = encodedKeyHigh;
@@ -26350,7 +26540,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
             ulong currentKey2 = existingShelf.ReadKeyPart2At(sourceIndex);
             ulong currentKey3 = existingShelf.ReadKeyPart3At(sourceIndex);
             ulong currentIdentity = existingShelf.ReadIdentityAt(sourceIndex);
-            if (!inserted && CompareFixed32Scalar8Tuple(currentKey0, currentKey1, currentKey2, currentKey3, currentIdentity, key0, key1, key2, key3, encodedIdentity) > 0)
+            if (!inserted && (profile.Descending
+                ? CompareFixed32Scalar8Tuple(currentKey0, currentKey1, currentKey2, currentKey3, currentIdentity, key0, key1, key2, key3, encodedIdentity) < 0
+                : CompareFixed32Scalar8Tuple(currentKey0, currentKey1, currentKey2, currentKey3, currentIdentity, key0, key1, key2, key3, encodedIdentity) > 0))
             {
                 key0s[targetIndex] = key0;
                 key1s[targetIndex] = key1;
@@ -26487,8 +26679,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
         ulong[] identityLows = new ulong[existingCount + 1];
         bool inserted = false;
         int targetIndex = 0;
-        for (int sourceIndex = 0; sourceIndex < existingCount; sourceIndex++)
+        for (int sourceOrdinal = 0; sourceOrdinal < existingCount; sourceOrdinal++)
         {
+            int sourceIndex = profile.Descending ? existingCount - 1 - sourceOrdinal : sourceOrdinal;
             ulong currentKeyHigh = existingShelf.ReadKeyHighAt(sourceIndex);
             ulong currentKeyLow = existingShelf.ReadKeyLowAt(sourceIndex);
             ulong currentIdentityHigh = existingShelf.ReadIdentityHighAt(sourceIndex);
@@ -26616,7 +26809,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
             encodedKeyLow,
             encodedIdentity,
             allocationClassId,
-            childRouterKeyDepth: 1);
+            childRouterKeyDepth: 1,
+            parentRouterOffset: rootRouterOffset,
+            parentRoutePrefixByte: rootPrefixByte);
     }
 
     /// <summary>
@@ -26664,9 +26859,10 @@ internal sealed partial class LibraDexFileSession : IDisposable
         int targetIndex = 0;
         for (int sourceIndex = 0; sourceIndex < existingCount; sourceIndex++)
         {
-            ulong currentKeyHigh = existingShelf.ReadKeyHighAt(sourceIndex);
-            ulong currentKeyLow = existingShelf.ReadKeyLowAt(sourceIndex);
-            ulong currentIdentity = existingShelf.ReadIdentityAt(sourceIndex);
+            int physicalIndex = profile.Descending ? existingCount - 1 - sourceIndex : sourceIndex;
+            ulong currentKeyHigh = existingShelf.ReadKeyHighAt(physicalIndex);
+            ulong currentKeyLow = existingShelf.ReadKeyLowAt(physicalIndex);
+            ulong currentIdentity = existingShelf.ReadIdentityAt(physicalIndex);
             if (!inserted && CompareScalar16Scalar8Tuple(currentKeyHigh, currentKeyLow, currentIdentity, encodedKeyHigh, encodedKeyLow, encodedIdentity) > 0)
             {
                 keyHighs[targetIndex] = encodedKeyHigh;
@@ -26776,7 +26972,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
             ulong encodedKeyLow,
             ulong encodedIdentity,
             ushort allocationClassId,
-            ushort childRouterKeyDepth)
+            ushort childRouterKeyDepth,
+            long parentRouterOffset,
+            byte parentRoutePrefixByte)
     {
         if (existingShelfBytes.Length != profile.ShelfExtentSize)
         {
@@ -26797,9 +26995,10 @@ internal sealed partial class LibraDexFileSession : IDisposable
         int targetIndex = 0;
         for (int sourceIndex = 0; sourceIndex < existingCount; sourceIndex++)
         {
-            ulong currentKeyHigh = existingShelf.ReadKeyHighAt(sourceIndex);
-            ulong currentKeyLow = existingShelf.ReadKeyLowAt(sourceIndex);
-            ulong currentIdentity = existingShelf.ReadIdentityAt(sourceIndex);
+            int physicalIndex = profile.Descending ? existingCount - 1 - sourceIndex : sourceIndex;
+            ulong currentKeyHigh = existingShelf.ReadKeyHighAt(physicalIndex);
+            ulong currentKeyLow = existingShelf.ReadKeyLowAt(physicalIndex);
+            ulong currentIdentity = existingShelf.ReadIdentityAt(physicalIndex);
             if (!inserted && CompareScalar16Scalar8Tuple(currentKeyHigh, currentKeyLow, currentIdentity, encodedKeyHigh, encodedKeyLow, encodedIdentity) > 0)
             {
                 keyHighs[targetIndex] = encodedKeyHigh;
@@ -26828,6 +27027,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
         }
 
         (ushort splitKeyDepth, byte selectedRightPrefixByte) = ChooseScalar16Scalar8TransformSplitPlan(keyHighs, keyLows, childRouterKeyDepth, rightPrefixByte);
+        RefineDirectShelfOwner(parentRouterOffset, childRouterOffset, childRouterKeyDepth, parentRoutePrefixByte,
+            GetScalar16Scalar8Prefix(keyHighs[0], keyLows[0], checked((ushort)(childRouterKeyDepth - 1))),
+            GetScalar16Scalar8Prefix(keyHighs[^1], keyLows[^1], checked((ushort)(childRouterKeyDepth - 1))));
         byte[] leftShelfBytes = new byte[profile.ShelfExtentSize];
         byte[] rightShelfBytes = new byte[profile.ShelfExtentSize];
         Scalar16Scalar8 leftShelf = new(leftShelfBytes, profile);
@@ -26964,7 +27166,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
             key3,
             encodedIdentity,
             allocationClassId,
-            childRouterKeyDepth: 1);
+            childRouterKeyDepth: 1,
+            parentRouterOffset: rootRouterOffset,
+            parentRoutePrefixByte: rootPrefixByte);
     }
 
     /// <summary>
@@ -27023,7 +27227,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
             ulong currentKey2 = existingShelf.ReadKeyPart2At(sourceIndex);
             ulong currentKey3 = existingShelf.ReadKeyPart3At(sourceIndex);
             ulong currentIdentity = existingShelf.ReadIdentityAt(sourceIndex);
-            if (!inserted && CompareFixed32Scalar8Tuple(currentKey0, currentKey1, currentKey2, currentKey3, currentIdentity, key0, key1, key2, key3, encodedIdentity) > 0)
+            if (!inserted && (profile.Descending
+                ? CompareFixed32Scalar8Tuple(currentKey0, currentKey1, currentKey2, currentKey3, currentIdentity, key0, key1, key2, key3, encodedIdentity) < 0
+                : CompareFixed32Scalar8Tuple(currentKey0, currentKey1, currentKey2, currentKey3, currentIdentity, key0, key1, key2, key3, encodedIdentity) > 0))
             {
                 key0s[targetIndex] = key0;
                 key1s[targetIndex] = key1;
@@ -27067,7 +27273,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
             identities[targetIndex] = encodedIdentity;
         }
 
-        (ushort splitKeyDepth, byte selectedRightPrefixByte) = ChooseFixed32Scalar8TransformSplitPlan(key0s, key1s, key2s, key3s, childRouterKeyDepth, rightPrefixByte);
+        (ushort splitKeyDepth, byte selectedRightPrefixByte) = ChooseFixed32Scalar8TransformSplitPlan(key0s, key1s, key2s, key3s, childRouterKeyDepth, rightPrefixByte, profile.Descending);
         byte[] leftShelfBytes = new byte[profile.ShelfExtentSize];
         byte[] rightShelfBytes = new byte[profile.ShelfExtentSize];
         Fixed32Scalar8 leftShelf = new(leftShelfBytes, profile);
@@ -27142,7 +27348,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
             ulong key3,
             ulong encodedIdentity,
             ushort allocationClassId,
-            ushort childRouterKeyDepth)
+            ushort childRouterKeyDepth,
+            long parentRouterOffset,
+            byte parentRoutePrefixByte)
     {
         if (existingShelfBytes.Length != profile.ShelfExtentSize)
         {
@@ -27184,7 +27392,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
                 ulong currentKey2 = existingShelf.ReadKeyPart2At(sourceIndex);
                 ulong currentKey3 = existingShelf.ReadKeyPart3At(sourceIndex);
                 ulong currentIdentity = existingShelf.ReadIdentityAt(sourceIndex);
-                if (!inserted && CompareFixed32Scalar8Tuple(currentKey0, currentKey1, currentKey2, currentKey3, currentIdentity, key0, key1, key2, key3, encodedIdentity) > 0)
+                if (!inserted && (profile.Descending
+                    ? CompareFixed32Scalar8Tuple(currentKey0, currentKey1, currentKey2, currentKey3, currentIdentity, key0, key1, key2, key3, encodedIdentity) < 0
+                    : CompareFixed32Scalar8Tuple(currentKey0, currentKey1, currentKey2, currentKey3, currentIdentity, key0, key1, key2, key3, encodedIdentity) > 0))
                 {
                     key0s[targetIndex] = key0;
                     key1s[targetIndex] = key1;
@@ -27224,7 +27434,10 @@ internal sealed partial class LibraDexFileSession : IDisposable
                 transformPhaseStart = phaseEnd;
             }
 
-            (ushort splitKeyDepth, byte selectedRightPrefixByte) = ChooseFixed32Scalar8TransformSplitPlan(key0s, key1s, key2s, key3s, childRouterKeyDepth, rightPrefixByte);
+            (ushort splitKeyDepth, byte selectedRightPrefixByte) = ChooseFixed32Scalar8TransformSplitPlan(key0s, key1s, key2s, key3s, childRouterKeyDepth, rightPrefixByte, profile.Descending);
+            RefineDirectShelfOwner(parentRouterOffset, childRouterOffset, childRouterKeyDepth, parentRoutePrefixByte,
+                GetFixed32Scalar8Prefix(key0s[0], key1s[0], key2s[0], key3s[0], checked((ushort)(childRouterKeyDepth - 1))),
+                GetFixed32Scalar8Prefix(key0s[^1], key1s[^1], key2s[^1], key3s[^1], checked((ushort)(childRouterKeyDepth - 1))));
             if (transformAttribution is not null)
             {
                 long phaseEnd = Stopwatch.GetTimestamp();
@@ -27405,7 +27618,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
             encodedIdentityHigh,
             encodedIdentityLow,
             allocationClassId,
-            childRouterKeyDepth: 1);
+            childRouterKeyDepth: 1,
+            parentRouterOffset: rootRouterOffset,
+            parentRoutePrefixByte: rootPrefixByte);
     }
 
     /// <summary>
@@ -27454,8 +27669,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
         ulong[] identityLows = new ulong[existingCount + 1];
         bool inserted = false;
         int targetIndex = 0;
-        for (int sourceIndex = 0; sourceIndex < existingCount; sourceIndex++)
+        for (int sourceOrdinal = 0; sourceOrdinal < existingCount; sourceOrdinal++)
         {
+            int sourceIndex = profile.Descending ? existingCount - 1 - sourceOrdinal : sourceOrdinal;
             ulong currentKeyHigh = existingShelf.ReadKeyHighAt(sourceIndex);
             ulong currentKeyLow = existingShelf.ReadKeyLowAt(sourceIndex);
             ulong currentIdentityHigh = existingShelf.ReadIdentityHighAt(sourceIndex);
@@ -27574,7 +27790,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
             ulong encodedIdentityHigh,
             ulong encodedIdentityLow,
             ushort allocationClassId,
-            ushort childRouterKeyDepth)
+            ushort childRouterKeyDepth,
+            long parentRouterOffset,
+            byte parentRoutePrefixByte)
     {
         if (existingShelfBytes.Length != profile.ShelfExtentSize)
         {
@@ -27594,8 +27812,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
         ulong[] identityLows = new ulong[existingCount + 1];
         bool inserted = false;
         int targetIndex = 0;
-        for (int sourceIndex = 0; sourceIndex < existingCount; sourceIndex++)
+        for (int sourceOrdinal = 0; sourceOrdinal < existingCount; sourceOrdinal++)
         {
+            int sourceIndex = profile.Descending ? existingCount - 1 - sourceOrdinal : sourceOrdinal;
             ulong currentKeyHigh = existingShelf.ReadKeyHighAt(sourceIndex);
             ulong currentKeyLow = existingShelf.ReadKeyLowAt(sourceIndex);
             ulong currentIdentityHigh = existingShelf.ReadIdentityHighAt(sourceIndex);
@@ -27631,6 +27850,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
         }
 
         (ushort splitKeyDepth, byte selectedRightPrefixByte) = ChooseScalar16Scalar8TransformSplitPlan(keyHighs, keyLows, childRouterKeyDepth, rightPrefixByte);
+        RefineDirectShelfOwner(parentRouterOffset, childRouterOffset, childRouterKeyDepth, parentRoutePrefixByte,
+            GetScalar16Scalar8Prefix(keyHighs[0], keyLows[0], checked((ushort)(childRouterKeyDepth - 1))),
+            GetScalar16Scalar8Prefix(keyHighs[^1], keyLows[^1], checked((ushort)(childRouterKeyDepth - 1))));
         byte[] leftShelfBytes = new byte[profile.ShelfExtentSize];
         byte[] rightShelfBytes = new byte[profile.ShelfExtentSize];
         Scalar16Scalar16 leftShelf = new(leftShelfBytes, profile);
@@ -28458,7 +28680,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
         {
             ulong currentKey = existingShelf.ReadKeyAt(sourceIndex);
             ulong currentIdentity = existingShelf.ReadIdentityAt(sourceIndex);
-            if (!inserted && CompareScalar8Scalar8Tuple(currentKey, currentIdentity, encodedKey, encodedIdentity) > 0)
+            if (!inserted && (profile.Descending
+                ? CompareScalar8Scalar8Tuple(currentKey, currentIdentity, encodedKey, encodedIdentity) < 0
+                : CompareScalar8Scalar8Tuple(currentKey, currentIdentity, encodedKey, encodedIdentity) > 0))
             {
                 keys[targetIndex] = encodedKey;
                 identities[targetIndex] = encodedIdentity;
@@ -28575,7 +28799,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
         {
             ulong currentKey = existingShelf.ReadKeyAt(sourceIndex);
             ulong currentIdentity = existingShelf.ReadIdentityAt(sourceIndex);
-            if (!inserted && CompareScalar8Scalar8Tuple(currentKey, currentIdentity, encodedKey, encodedIdentity) > 0)
+            if (!inserted && (profile.Descending
+                ? CompareScalar8Scalar8Tuple(currentKey, currentIdentity, encodedKey, encodedIdentity) < 0
+                : CompareScalar8Scalar8Tuple(currentKey, currentIdentity, encodedKey, encodedIdentity) > 0))
             {
                 if (!allowDuplicateKeys && currentKey == encodedKey)
                 {
@@ -28766,7 +28992,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
         {
             ulong currentKey = existingShelf.ReadKeyAt(sourceIndex);
             ulong currentIdentity = existingShelf.ReadIdentityAt(sourceIndex);
-            if (!inserted && CompareScalar8Scalar8Tuple(currentKey, currentIdentity, encodedKey, encodedIdentity) > 0)
+            if (!inserted && (profile.Descending
+                ? CompareScalar8Scalar8Tuple(currentKey, currentIdentity, encodedKey, encodedIdentity) < 0
+                : CompareScalar8Scalar8Tuple(currentKey, currentIdentity, encodedKey, encodedIdentity) > 0))
             {
                 keys[targetIndex] = encodedKey;
                 identities[targetIndex] = encodedIdentity;
@@ -28998,7 +29226,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
         {
             ulong currentKey = existingShelf.ReadKeyAt(sourceIndex);
             ulong currentIdentity = existingShelf.ReadIdentityAt(sourceIndex);
-            if (!inserted && CompareScalar8Scalar8Tuple(currentKey, currentIdentity, encodedKey, encodedIdentity) > 0)
+            if (!inserted && (profile.Descending
+                ? CompareScalar8Scalar8Tuple(currentKey, currentIdentity, encodedKey, encodedIdentity) < 0
+                : CompareScalar8Scalar8Tuple(currentKey, currentIdentity, encodedKey, encodedIdentity) > 0))
             {
                 if (!allowDuplicateKeys && currentKey == encodedKey)
                 {
@@ -29210,7 +29440,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
         {
             ulong currentKey = existingShelf.ReadKeyAt(sourceIndex);
             ulong currentIdentity = existingShelf.ReadIdentityAt(sourceIndex);
-            if (!inserted && CompareScalar8Scalar8Tuple(currentKey, currentIdentity, encodedKey, encodedIdentity) > 0)
+            if (!inserted && (profile.Descending
+                ? CompareScalar8Scalar8Tuple(currentKey, currentIdentity, encodedKey, encodedIdentity) < 0
+                : CompareScalar8Scalar8Tuple(currentKey, currentIdentity, encodedKey, encodedIdentity) > 0))
             {
                 keys[targetIndex] = encodedKey;
                 identities[targetIndex] = encodedIdentity;
@@ -29325,9 +29557,10 @@ internal sealed partial class LibraDexFileSession : IDisposable
         int targetIndex = 0;
         for (int sourceIndex = 0; sourceIndex < existingCount; sourceIndex++)
         {
-            ulong currentKeyHigh = existingShelf.ReadKeyHighAt(sourceIndex);
-            ulong currentKeyLow = existingShelf.ReadKeyLowAt(sourceIndex);
-            ulong currentIdentity = existingShelf.ReadIdentityAt(sourceIndex);
+            int physicalIndex = profile.Descending ? existingCount - 1 - sourceIndex : sourceIndex;
+            ulong currentKeyHigh = existingShelf.ReadKeyHighAt(physicalIndex);
+            ulong currentKeyLow = existingShelf.ReadKeyLowAt(physicalIndex);
+            ulong currentIdentity = existingShelf.ReadIdentityAt(physicalIndex);
             if (!inserted && CompareScalar16Scalar8Tuple(currentKeyHigh, currentKeyLow, currentIdentity, encodedKeyHigh, encodedKeyLow, encodedIdentity) > 0)
             {
                 keyHighs[targetIndex] = encodedKeyHigh;
@@ -29457,7 +29690,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
             ulong currentKey2 = existingShelf.ReadKeyPart2At(sourceIndex);
             ulong currentKey3 = existingShelf.ReadKeyPart3At(sourceIndex);
             ulong currentIdentity = existingShelf.ReadIdentityAt(sourceIndex);
-            if (!inserted && CompareFixed32Scalar8Tuple(currentKey0, currentKey1, currentKey2, currentKey3, currentIdentity, key0, key1, key2, key3, encodedIdentity) > 0)
+            if (!inserted && (profile.Descending
+                ? CompareFixed32Scalar8Tuple(currentKey0, currentKey1, currentKey2, currentKey3, currentIdentity, key0, key1, key2, key3, encodedIdentity) < 0
+                : CompareFixed32Scalar8Tuple(currentKey0, currentKey1, currentKey2, currentKey3, currentIdentity, key0, key1, key2, key3, encodedIdentity) > 0))
             {
                 key0s[targetIndex] = key0;
                 key1s[targetIndex] = key1;
@@ -29491,7 +29726,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
             identities[targetIndex] = encodedIdentity;
         }
 
-        if (!TryChooseFixed32Scalar8TransformSplitRightPrefix(key0s, key1s, key2s, key3s, keyDepth, hintRightPrefixByte, out selectedRightPrefixByte))
+        if (!TryChooseFixed32Scalar8TransformSplitRightPrefix(key0s, key1s, key2s, key3s, keyDepth, hintRightPrefixByte, profile.Descending, out selectedRightPrefixByte))
         {
             return false;
         }
@@ -29581,9 +29816,10 @@ internal sealed partial class LibraDexFileSession : IDisposable
         int targetIndex = 0;
         for (int sourceIndex = 0; sourceIndex < existingCount; sourceIndex++)
         {
-            ulong currentKey = existingShelf.ReadKeyAt(sourceIndex);
-            ulong currentIdentityHigh = existingShelf.ReadIdentityHighAt(sourceIndex);
-            ulong currentIdentityLow = existingShelf.ReadIdentityLowAt(sourceIndex);
+            int physicalIndex = profile.Descending ? existingCount - 1 - sourceIndex : sourceIndex;
+            ulong currentKey = existingShelf.ReadKeyAt(physicalIndex);
+            ulong currentIdentityHigh = existingShelf.ReadIdentityHighAt(physicalIndex);
+            ulong currentIdentityLow = existingShelf.ReadIdentityLowAt(physicalIndex);
             if (!inserted && CompareScalar8Scalar16Tuple(currentKey, currentIdentityHigh, currentIdentityLow, encodedKey, encodedIdentityHigh, encodedIdentityLow) > 0)
             {
                 keys[targetIndex] = encodedKey;
@@ -29703,8 +29939,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
         ulong[] identityLows = new ulong[existingCount + 1];
         bool inserted = false;
         int targetIndex = 0;
-        for (int sourceIndex = 0; sourceIndex < existingCount; sourceIndex++)
+        for (int sourceOrdinal = 0; sourceOrdinal < existingCount; sourceOrdinal++)
         {
+            int sourceIndex = profile.Descending ? existingCount - 1 - sourceOrdinal : sourceOrdinal;
             ulong currentKeyHigh = existingShelf.ReadKeyHighAt(sourceIndex);
             ulong currentKeyLow = existingShelf.ReadKeyLowAt(sourceIndex);
             ulong currentIdentityHigh = existingShelf.ReadIdentityHighAt(sourceIndex);
@@ -29795,6 +30032,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
     {
         ulong firstKey = sortedKeys[0];
         ulong lastKey = sortedKeys[^1];
+        bool descending = firstKey > lastKey;
         for (ushort ownedDepth = 0; ownedDepth < keyDepth; ownedDepth++)
         {
             if (GetScalar8Scalar8Prefix(firstKey, ownedDepth) != GetScalar8Scalar8Prefix(lastKey, ownedDepth))
@@ -29812,7 +30050,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
         for (int i = 1; i < sortedKeys.Length; i++)
         {
             byte currentPrefix = GetScalar8Scalar8Prefix(sortedKeys[i], keyDepth);
-            if (currentPrefix < priorPrefix)
+            if (descending ? currentPrefix > priorPrefix : currentPrefix < priorPrefix)
             {
                 rightPrefixByte = 0;
                 return false;
@@ -29827,7 +30065,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
                 (balanceDistance == bestBalanceDistance && hintDistance < bestHintDistance))
             {
                 bestRightStart = i;
-                bestBoundary = currentPrefix;
+                bestBoundary = descending ? priorPrefix : currentPrefix;
                 bestBalanceDistance = balanceDistance;
                 bestHintDistance = hintDistance;
             }
@@ -29964,7 +30202,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
         ReadOnlySpan<ulong> sortedKey2s,
         ReadOnlySpan<ulong> sortedKey3s,
         ushort firstKeyDepth,
-        byte hintRightPrefixByte)
+        byte hintRightPrefixByte,
+        bool descending)
     {
         if (sortedKey0s.Length != sortedKey1s.Length || sortedKey0s.Length != sortedKey2s.Length || sortedKey0s.Length != sortedKey3s.Length)
         {
@@ -29987,7 +30226,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
         if (splitKeyDepth < firstKeyDepth)
             throw new InvalidDataException($"The FS32-8 transform source violates its routed prefix stem. FirstDifferentDepth={splitKeyDepth}; FirstOwnedDepth={firstKeyDepth}; Count={sortedKey0s.Length}.");
         if (splitKeyDepth >= Fixed32Scalar8Layout.KeySize ||
-            !TryChooseFixed32Scalar8TransformSplitRightPrefix(sortedKey0s, sortedKey1s, sortedKey2s, sortedKey3s, splitKeyDepth, hintRightPrefixByte, out byte rightPrefixByte))
+            !TryChooseFixed32Scalar8TransformSplitRightPrefix(sortedKey0s, sortedKey1s, sortedKey2s, sortedKey3s, splitKeyDepth, hintRightPrefixByte, descending, out byte rightPrefixByte))
             throw new InvalidDataException("The FS32-8 transform split path requires one globally ordered prefix transition after its owned stem.");
 
         return (splitKeyDepth, rightPrefixByte);
@@ -30013,6 +30252,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
         ReadOnlySpan<ulong> sortedKey3s,
         ushort keyDepth,
         byte hintRightPrefixByte,
+        bool descending,
         out byte rightPrefixByte)
     {
         for (ushort ownedDepth = 0; ownedDepth < keyDepth; ownedDepth++)
@@ -30033,12 +30273,12 @@ internal sealed partial class LibraDexFileSession : IDisposable
         for (int i = 1; i < sortedKey0s.Length; i++)
         {
             byte currentPrefix = GetFixed32Scalar8Prefix(sortedKey0s[i], sortedKey1s[i], sortedKey2s[i], sortedKey3s[i], keyDepth);
-            if (currentPrefix < priorPrefix)
+            if (descending ? currentPrefix > priorPrefix : currentPrefix < priorPrefix)
             {
                 rightPrefixByte = 0;
                 return false;
             }
-            if (currentPrefix > priorPrefix)
+            if (currentPrefix != priorPrefix)
             {
                 int balanceDistance = Math.Abs(i - (sortedKey0s.Length - i));
                 int hintDistance = Math.Abs(currentPrefix - hintRightPrefixByte);
@@ -30046,7 +30286,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
                     (balanceDistance == bestBalanceDistance && hintDistance < bestHintDistance))
                 {
                     bestRightStart = i;
-                    bestBoundary = currentPrefix;
+                    bestBoundary = descending ? priorPrefix : currentPrefix;
                     bestBalanceDistance = balanceDistance;
                     bestHintDistance = hintDistance;
                 }
@@ -30800,7 +31040,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
             ulong encodedIdentityLow,
             int maxRouterHops)
     {
-        Scalar16Scalar16RouteTarget target = WalkScalar16Scalar16RouteTarget(rootRouterOffset, encodedKeyHigh, encodedKeyLow, maxRouterHops);
+        Scalar16Scalar16RoutePathTarget pathTarget = WalkScalar16Scalar16RoutePathTarget(rootRouterOffset, encodedKeyHigh, encodedKeyLow, maxRouterHops);
+        Scalar16Scalar16RouteTarget target = pathTarget.Target;
         if (target.Kind != Scalar16Scalar16RouteTargetKind.Shelf)
         {
             throw new InvalidDataException("The classified route walker did not terminate at an SS16-16 shelf.");
@@ -30820,7 +31061,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
             encodedIdentityHigh,
             encodedIdentityLow,
             target.AllocationClassId,
-            nextRouterKeyDepth);
+            nextRouterKeyDepth,
+            pathTarget.ParentRouterOffset,
+            pathTarget.ParentPrefixByte);
     }
 
     /// <summary>
@@ -31015,6 +31258,18 @@ internal sealed partial class LibraDexFileSession : IDisposable
     {
         Scalar16Scalar16RoutePathTarget pathTarget = WalkScalar16Scalar16RoutePathTarget(rootRouterOffset, encodedKeyHigh, encodedKeyLow, maxRouterHops);
         Scalar16Scalar16RouteTarget target = pathTarget.Target;
+        if (target.Kind == Scalar16Scalar16RouteTargetKind.None)
+        {
+            byte[] bytes = new byte[profile.ShelfExtentSize];
+            Scalar16Scalar16 coldShelf = new(bytes, profile);
+            coldShelf.Initialize();
+            var inserted = coldShelf.Insert(encodedKeyHigh, encodedKeyLow, encodedIdentityHigh, encodedIdentityLow, allowDuplicateKeys);
+            if (inserted != Scalar16Scalar16InsertResult.Inserted)
+                throw new InvalidDataException("A cold Scalar16Scalar16 shelf rejected its initial tuple.");
+            var (offset, commit) = PublishColdFixedShelf(pathTarget.ParentRouterOffset,
+                GetScalar16Scalar8Prefix(encodedKeyHigh, encodedKeyLow, target.RouterDepth), bytes);
+            return new Scalar16Scalar16RoutedInsertResult(Scalar16Scalar16RoutedInsertKind.WalkedNoSplit, inserted, offset, offset, 0, commit);
+        }
         if (target.Kind == Scalar16Scalar16RouteTargetKind.TerminalIdentityRoot)
         {
             return InsertIntoScalar16Scalar16TerminalIdentityRoute(pathTarget, profile, encodedKeyHigh, encodedKeyLow, encodedIdentityHigh, encodedIdentityLow, allowDuplicateKeys);
@@ -31139,7 +31394,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
                 encodedIdentityHigh,
                 encodedIdentityLow,
                 target.AllocationClassId,
-                nextRouterKeyDepth);
+                nextRouterKeyDepth,
+            pathTarget.ParentRouterOffset,
+            pathTarget.ParentPrefixByte);
 
         Scalar16Scalar16RoutedInsertKind kind = transformResult == Scalar16Scalar16InsertResult.Inserted
             ? Scalar16Scalar16RoutedInsertKind.WalkedShelfTransformSplit
@@ -31274,7 +31531,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
             encodedIdentityHigh,
             encodedIdentityLow,
             target.AllocationClassId,
-            nextRouterKeyDepth);
+            nextRouterKeyDepth,
+            pathTarget.ParentRouterOffset,
+            pathTarget.ParentPrefixByte);
 
         Scalar16Scalar16RoutedInsertKind kind = transformResult == Scalar16Scalar16InsertResult.Inserted ? Scalar16Scalar16RoutedInsertKind.WalkedShelfTransformSplit : Scalar16Scalar16RoutedInsertKind.NoOp;
         return new Scalar16Scalar16RoutedInsertResult(kind, transformResult, childRouterOffset, transformLeftShelfOffset, transformRightShelfOffset, transformCommit);
@@ -31544,7 +31803,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
             ulong encodedIdentityLow,
             int maxRouterHops)
     {
-        Scalar8Scalar16RouteTarget target = WalkScalar8Scalar16RouteTarget(rootRouterOffset, encodedKey, maxRouterHops);
+        Scalar8Scalar16RoutePathTarget pathTarget = WalkScalar8Scalar16RoutePathTarget(rootRouterOffset, encodedKey, maxRouterHops);
+        Scalar8Scalar16RouteTarget target = pathTarget.Target;
         if (target.Kind != Scalar8Scalar16RouteTargetKind.Shelf)
         {
             throw new InvalidDataException("The classified route walker did not terminate at an SS8-16 shelf.");
@@ -31563,7 +31823,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
             encodedIdentityHigh,
             encodedIdentityLow,
             target.AllocationClassId,
-            nextRouterKeyDepth);
+            nextRouterKeyDepth,
+            pathTarget.ParentRouterOffset,
+            pathTarget.ParentPrefixByte);
     }
 
     /// <summary>
@@ -31748,6 +32010,18 @@ internal sealed partial class LibraDexFileSession : IDisposable
     {
         Scalar8Scalar16RoutePathTarget pathTarget = WalkScalar8Scalar16RoutePathTarget(rootRouterOffset, encodedKey, maxRouterHops);
         Scalar8Scalar16RouteTarget target = pathTarget.Target;
+        if (target.Kind == Scalar8Scalar16RouteTargetKind.None)
+        {
+            byte[] bytes = new byte[profile.ShelfExtentSize];
+            Scalar8Scalar16 coldShelf = new(bytes, profile);
+            coldShelf.Initialize();
+            var inserted = coldShelf.Insert(encodedKey, encodedIdentityHigh, encodedIdentityLow, allowDuplicateKeys);
+            if (inserted != Scalar8Scalar16InsertResult.Inserted)
+                throw new InvalidDataException("A cold Scalar8Scalar16 shelf rejected its initial tuple.");
+            var (offset, commit) = PublishColdFixedShelf(pathTarget.ParentRouterOffset,
+                GetScalar8Scalar8Prefix(encodedKey, target.RouterDepth), bytes);
+            return new Scalar8Scalar16RoutedInsertResult(Scalar8Scalar16RoutedInsertKind.WalkedNoSplit, inserted, offset, offset, 0, commit);
+        }
         if (target.Kind == Scalar8Scalar16RouteTargetKind.TerminalIdentityRoot)
         {
             return InsertIntoScalar8Scalar16TerminalIdentityRoute(pathTarget, profile, encodedKey, encodedIdentityHigh, encodedIdentityLow, allowDuplicateKeys);
@@ -31869,7 +32143,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
                 encodedIdentityHigh,
                 encodedIdentityLow,
                 target.AllocationClassId,
-                nextRouterKeyDepth);
+                nextRouterKeyDepth,
+            pathTarget.ParentRouterOffset,
+            pathTarget.ParentPrefixByte);
 
         Scalar8Scalar16RoutedInsertKind kind = transformResult == Scalar8Scalar16InsertResult.Inserted
             ? Scalar8Scalar16RoutedInsertKind.WalkedShelfTransformSplit
@@ -31998,7 +32274,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
             encodedIdentityHigh,
             encodedIdentityLow,
             target.AllocationClassId,
-            nextRouterKeyDepth);
+            nextRouterKeyDepth,
+            pathTarget.ParentRouterOffset,
+            pathTarget.ParentPrefixByte);
 
         Scalar8Scalar16RoutedInsertKind kind = transformResult == Scalar8Scalar16InsertResult.Inserted ? Scalar8Scalar16RoutedInsertKind.WalkedShelfTransformSplit : Scalar8Scalar16RoutedInsertKind.NoOp;
         return new Scalar8Scalar16RoutedInsertResult(kind, transformResult, childRouterOffset, transformLeftShelfOffset, transformRightShelfOffset, transformCommit);
@@ -32260,7 +32538,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
             ulong encodedIdentity,
             int maxRouterHops)
     {
-        Scalar16Scalar8RouteTarget target = WalkScalar16Scalar8RouteTarget(rootRouterOffset, encodedKeyHigh, encodedKeyLow, maxRouterHops);
+        Scalar16Scalar8RoutePathTarget pathTarget = WalkScalar16Scalar8RoutePathTarget(rootRouterOffset, encodedKeyHigh, encodedKeyLow, maxRouterHops);
+        Scalar16Scalar8RouteTarget target = pathTarget.Target;
         if (target.Kind != Scalar16Scalar8RouteTargetKind.Shelf)
         {
             throw new InvalidDataException("The classified route walker did not terminate at an SS16-8 shelf.");
@@ -32279,7 +32558,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
             encodedKeyLow,
             encodedIdentity,
             target.AllocationClassId,
-            nextRouterKeyDepth);
+            nextRouterKeyDepth,
+            pathTarget.ParentRouterOffset,
+            GetScalar16Scalar8Prefix(encodedKeyHigh, encodedKeyLow, target.RouterDepth));
     }
 
     /// <summary>
@@ -32314,7 +32595,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
             ulong encodedIdentity,
             int maxRouterHops)
     {
-        Fixed32Scalar8RouteTarget target = WalkFixed32Scalar8RouteTarget(rootRouterOffset, key0, key1, key2, key3, maxRouterHops);
+        Fixed32Scalar8RoutePathTarget pathTarget = WalkFixed32Scalar8RoutePathTarget(rootRouterOffset, key0, key1, key2, key3, maxRouterHops);
+        Fixed32Scalar8RouteTarget target = pathTarget.Target;
         if (target.Kind != Fixed32Scalar8RouteTargetKind.Shelf)
         {
             throw new InvalidDataException("The classified route walker did not terminate at an FS32-8 shelf.");
@@ -32335,7 +32617,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
             key3,
             encodedIdentity,
             target.AllocationClassId,
-            nextRouterKeyDepth);
+            nextRouterKeyDepth,
+            pathTarget.ParentRouterOffset,
+            GetFixed32Scalar8Prefix(key0, key1, key2, key3, target.RouterDepth));
     }
 
     /// <summary>
@@ -32623,7 +32907,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
         Fixed32BatchAttributionDiagnostics? attribution = Fixed32BatchAttributionDiagnostics.Current;
 
         Fixed32Scalar8ReadOnly sortedShelf = new(existingShelfBytes, profile);
-        if (allowRetainedSortedLeftImage &&
+        if (allowRetainedSortedLeftImage && !profile.Descending &&
             sortedShelf.IsValid &&
             sortedShelf.ItemCount == profile.MaxItemCount &&
             sortedShelf.DeletedItemCount == 0)
@@ -32868,6 +33152,18 @@ internal sealed partial class LibraDexFileSession : IDisposable
     {
         Scalar16Scalar8RoutePathTarget pathTarget = WalkScalar16Scalar8RoutePathTarget(rootRouterOffset, encodedKeyHigh, encodedKeyLow, maxRouterHops);
         Scalar16Scalar8RouteTarget target = pathTarget.Target;
+        if (target.Kind == Scalar16Scalar8RouteTargetKind.None)
+        {
+            byte[] bytes = new byte[profile.ShelfExtentSize];
+            Scalar16Scalar8 coldShelf = new(bytes, profile);
+            coldShelf.Initialize();
+            var inserted = coldShelf.Insert(encodedKeyHigh, encodedKeyLow, encodedIdentity, allowDuplicateKeys);
+            if (inserted != Scalar16Scalar8InsertResult.Inserted)
+                throw new InvalidDataException("A cold Scalar16Scalar8 shelf rejected its initial tuple.");
+            var (offset, commit) = PublishColdFixedShelf(pathTarget.ParentRouterOffset,
+                GetScalar16Scalar8Prefix(encodedKeyHigh, encodedKeyLow, target.RouterDepth), bytes);
+            return new Scalar16Scalar8RoutedInsertResult(Scalar16Scalar8RoutedInsertKind.WalkedNoSplit, inserted, offset, offset, 0, commit);
+        }
         if (target.Kind == Scalar16Scalar8RouteTargetKind.TerminalIdentityRoot)
         {
             return InsertIntoScalar16Scalar8TerminalIdentityRoute(
@@ -32995,7 +33291,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
                 encodedKeyLow,
                 encodedIdentity,
                 target.AllocationClassId,
-                nextRouterKeyDepth);
+                nextRouterKeyDepth,
+            pathTarget.ParentRouterOffset,
+            GetScalar16Scalar8Prefix(encodedKeyHigh, encodedKeyLow, target.RouterDepth));
 
         Scalar16Scalar8RoutedInsertKind kind = transformResult == Scalar16Scalar8InsertResult.Inserted
             ? Scalar16Scalar8RoutedInsertKind.WalkedShelfTransformSplit
@@ -33156,7 +33454,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
                 encodedKeyLow,
                 encodedIdentity,
                 target.AllocationClassId,
-                nextRouterKeyDepth);
+                nextRouterKeyDepth,
+            pathTarget.ParentRouterOffset,
+            GetScalar16Scalar8Prefix(encodedKeyHigh, encodedKeyLow, target.RouterDepth));
 
         Scalar16Scalar8RoutedInsertKind kind = transformResult == Scalar16Scalar8InsertResult.Inserted
             ? Scalar16Scalar8RoutedInsertKind.WalkedShelfTransformSplit
@@ -33397,6 +33697,18 @@ internal sealed partial class LibraDexFileSession : IDisposable
     {
         Fixed32Scalar8RoutePathTarget pathTarget = WalkFixed32Scalar8RoutePathTarget(rootRouterOffset, key0, key1, key2, key3, maxRouterHops);
         Fixed32Scalar8RouteTarget target = pathTarget.Target;
+        if (target.Kind == Fixed32Scalar8RouteTargetKind.None)
+        {
+            byte[] bytes = new byte[profile.ShelfExtentSize];
+            Fixed32Scalar8 coldShelf = new(bytes, profile);
+            coldShelf.Initialize();
+            var inserted = coldShelf.Insert(key0, key1, key2, key3, encodedIdentity, allowDuplicateKeys);
+            if (inserted != Fixed32Scalar8InsertResult.Inserted)
+                throw new InvalidDataException("A cold Fixed32Scalar8 shelf rejected its initial tuple.");
+            var (offset, commit) = PublishColdFixedShelf(pathTarget.ParentRouterOffset,
+                GetFixed32Scalar8Prefix(key0, key1, key2, key3, target.RouterDepth), bytes);
+            return new Fixed32Scalar8RoutedInsertResult(Fixed32Scalar8RoutedInsertKind.WalkedNoSplit, inserted, offset, offset, 0, commit);
+        }
         if (target.Kind == Fixed32Scalar8RouteTargetKind.TerminalIdentityRoot)
         {
             return InsertIntoFixed32Scalar8TerminalIdentityRoute(
@@ -33535,7 +33847,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
                 key3,
                 encodedIdentity,
                 target.AllocationClassId,
-                nextRouterKeyDepth);
+                nextRouterKeyDepth,
+            pathTarget.ParentRouterOffset,
+            GetFixed32Scalar8Prefix(key0, key1, key2, key3, target.RouterDepth));
 
         Fixed32Scalar8RoutedInsertKind kind = transformResult == Fixed32Scalar8InsertResult.Inserted
             ? Fixed32Scalar8RoutedInsertKind.WalkedShelfTransformSplit
@@ -33667,7 +33981,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
             key3,
             encodedIdentity,
             target.AllocationClassId,
-            nextRouterKeyDepth);
+            nextRouterKeyDepth,
+            pathTarget.ParentRouterOffset,
+            GetFixed32Scalar8Prefix(key0, key1, key2, key3, target.RouterDepth));
 
         Fixed32Scalar8RoutedInsertKind kind = transformResult == Fixed32Scalar8InsertResult.Inserted ? Fixed32Scalar8RoutedInsertKind.WalkedShelfTransformSplit : Fixed32Scalar8RoutedInsertKind.NoOp;
         return new Fixed32Scalar8RoutedInsertResult(kind, transformResult, childRouterOffset, transformLeftShelfOffset, transformRightShelfOffset, transformCommit);
@@ -33753,7 +34069,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
             key3,
             encodedIdentity,
             target.AllocationClassId,
-            nextRouterKeyDepth);
+            nextRouterKeyDepth,
+            pathTarget.ParentRouterOffset,
+            GetFixed32Scalar8Prefix(key0, key1, key2, key3, target.RouterDepth));
 
         Fixed32Scalar8RoutedInsertKind kind = transformResult == Fixed32Scalar8InsertResult.Inserted ? Fixed32Scalar8RoutedInsertKind.WalkedShelfTransformSplit : Fixed32Scalar8RoutedInsertKind.NoOp;
         return new Fixed32Scalar8RoutedInsertResult(kind, transformResult, childRouterOffset, transformLeftShelfOffset, transformRightShelfOffset, transformCommit);
@@ -34469,6 +34787,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
             throw new InvalidDataException("The routed terminal identity delete root does not match the required shape and encoded key.");
         }
 
+        bool descending = rootBytes[TerminalIdentityRootLayout.SortDirectionOffset] != 0;
+
         while (shelfOffset != 0)
         {
             byte[] shelfBytes = ReadTerminalIdentity8ShelfBytesForWriteContext(writeContext, shelfOffset, shelfExtentSize);
@@ -34483,7 +34803,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
                     break;
                 }
 
-                if (current > encodedIdentity)
+                if (descending ? current < encodedIdentity : current > encodedIdentity)
                 {
                     return false;
                 }
@@ -34981,6 +35301,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
                         requestedRouteCount,
                         key,
                         encodedIdentity,
+                        profile.Descending,
                         out DataKernelCommitTelemetry rootPrefixTelemetry,
                         out long rootPrefixTargetOffset,
                         out int rootPrefixTupleCount))
@@ -35016,6 +35337,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
                     profile.MaxKeyLength,
                     requestedRouteCount,
                     replacementTuples,
+                    profile.Descending,
                     out DataKernelCommitTelemetry recursiveTelemetry,
                     out long replacementTargetOffset))
                 {
@@ -35079,6 +35401,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
                         requestedRouteCount,
                         key,
                         encodedIdentity,
+                        profile.Descending,
                         out DataKernelCommitTelemetry rootPrefixTelemetry,
                         out long rootPrefixTargetOffset,
                         out int rootPrefixTupleCount))
@@ -35127,8 +35450,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
         VarKeyScalar8SortedTuple[] tuples = new VarKeyScalar8SortedTuple[checked(existingCount + 1)];
         bool inserted = false;
         int targetIndex = 0;
-        for (int sourceIndex = 0; sourceIndex < existingCount; sourceIndex++)
+        for (int sourceOrdinal = 0; sourceOrdinal < existingCount; sourceOrdinal++)
         {
+            int sourceIndex = existingShelf.Profile.Descending ? existingCount - 1 - sourceOrdinal : sourceOrdinal;
             ReadOnlySpan<byte> currentKey = existingShelf.ReadKeyAt(sourceIndex);
             ulong currentIdentity = existingShelf.ReadIdentityAt(sourceIndex);
             int comparison = CompareVarKeyScalar8Tuple(currentKey, currentIdentity, incomingKey, incomingIdentity);
@@ -35219,7 +35543,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
             {
                 ReadOnlySpan<byte> currentKey = existingShelf.ReadKeyAt(sourceIndex);
                 ulong currentIdentity = existingShelf.ReadIdentityAt(sourceIndex);
-                if (!inserted && CompareVarKeyScalar8Tuple(currentKey, currentIdentity, key, encodedIdentity) > 0)
+                if (!inserted && (profile.Descending
+                    ? CompareVarKeyScalar8Tuple(currentKey, currentIdentity, key, encodedIdentity) < 0
+                    : CompareVarKeyScalar8Tuple(currentKey, currentIdentity, key, encodedIdentity) > 0))
                 {
                     keyOffsets[targetIndex] = -1;
                     keyLengths[targetIndex] = key.Length;
@@ -35750,13 +36076,13 @@ internal sealed partial class LibraDexFileSession : IDisposable
         for (int i = 1; i < keyOffsets.Length; i++)
         {
             byte currentPrefix = GetVarKeyScalar8SplitSourcePrefix(existingShelfBytes, keyOffsets[i], keyLengths[i], incomingKey, keyDepth);
-            if (currentPrefix < priorPrefix)
+            if (profile.Descending ? currentPrefix > priorPrefix : currentPrefix < priorPrefix)
             {
                 sourceOrderValid = false;
                 rightPrefixByte = 0;
                 return false;
             }
-            if (currentPrefix > priorPrefix)
+            if (currentPrefix != priorPrefix)
             {
                 int leftCount = i;
                 int rightCount = keyOffsets.Length - i;
@@ -35776,7 +36102,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
                      (maximumUtilization == bestMaximumUtilization && balanceDistance == bestBalanceDistance && hintDistance < bestHintDistance)))
                 {
                     bestRightStart = i;
-                    bestBoundary = currentPrefix;
+                    bestBoundary = profile.Descending ? priorPrefix : currentPrefix;
                     bestMaximumUtilization = maximumUtilization;
                     bestBalanceDistance = balanceDistance;
                     bestHintDistance = hintDistance;
@@ -36038,7 +36364,21 @@ internal sealed partial class LibraDexFileSession : IDisposable
             identities.Add(existingShelf.ReadIdentityAt(i));
         }
 
-        int insertIndex = identities.BinarySearch(encodedIdentity);
+        int insertIndex = existingShelf.Profile.Descending ? -1 : identities.BinarySearch(encodedIdentity);
+        if (existingShelf.Profile.Descending)
+        {
+            int low = 0;
+            int high = identities.Count;
+            while (low < high)
+            {
+                int middle = low + ((high - low) >> 1);
+                if (identities[middle] > encodedIdentity)
+                    low = middle + 1;
+                else
+                    high = middle;
+            }
+            insertIndex = low < identities.Count && identities[low] == encodedIdentity ? low : ~low;
+        }
         if (insertIndex >= 0)
         {
             long elapsed = Stopwatch.GetTimestamp() - structuralStart;
@@ -36061,7 +36401,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
             key,
             existingShelf.Profile.ShelfExtentSize,
             identities,
-            obsoleteFirstShelfOffset: 0);
+            obsoleteFirstShelfOffset: 0,
+            descending: existingShelf.Profile.Descending);
         long structuralTicks = Stopwatch.GetTimestamp() - structuralStart;
         return new VarKeyScalar8RoutedInsertResult(
             VarKeyScalar8RoutedInsertKind.WalkedNoSplit,
@@ -36114,7 +36455,21 @@ internal sealed partial class LibraDexFileSession : IDisposable
                 routerDepth);
         }
 
-        int insertIndex = identities.BinarySearch(encodedIdentity);
+        int insertIndex = profile.Descending ? -1 : identities.BinarySearch(encodedIdentity);
+        if (profile.Descending)
+        {
+            int low = 0;
+            int high = identities.Count;
+            while (low < high)
+            {
+                int middle = low + ((high - low) >> 1);
+                if (identities[middle] > encodedIdentity)
+                    low = middle + 1;
+                else
+                    high = middle;
+            }
+            insertIndex = low < identities.Count && identities[low] == encodedIdentity ? low : ~low;
+        }
         if (insertIndex >= 0)
         {
             return new VarKeyScalar8RoutedInsertResult(
@@ -36667,7 +37022,22 @@ internal sealed partial class LibraDexFileSession : IDisposable
         int deleted = 0;
         if (encodedIdentity.HasValue)
         {
-            int index = identities.BinarySearch(encodedIdentity.Value);
+            bool descending = rootBytes[TerminalIdentityRootLayout.SortDirectionOffset] != 0;
+            int index = descending ? -1 : identities.BinarySearch(encodedIdentity.Value);
+            if (descending)
+            {
+                int low = 0;
+                int high = identities.Count;
+                while (low < high)
+                {
+                    int middle = low + ((high - low) >> 1);
+                    if (identities[middle] > encodedIdentity.Value)
+                        low = middle + 1;
+                    else
+                        high = middle;
+                }
+                index = low < identities.Count && identities[low] == encodedIdentity.Value ? low : ~low;
+            }
             if (index < 0)
             {
                 return 0;
@@ -36715,7 +37085,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
         VarKeyScalar8Layout.WriteMagic(target, VarKeyScalar8Layout.Magic);
         VarKeyScalar8Layout.WriteFormatVersion(target, VarKeyScalar8Layout.FormatVersion);
         VarKeyScalar8Layout.WriteHeaderSize(target, VarKeyScalar8Layout.HeaderSize);
-        VarKeyScalar8Layout.WriteFlags(target, VarKeyScalar8Layout.DuplicateRunFlag);
+        VarKeyScalar8Layout.WriteFlags(target, VarKeyScalar8Layout.DuplicateRunFlag |
+            (profile.Descending ? VarKeyScalar8Layout.DescendingFlag : 0));
         VarKeyScalar8Layout.WriteItemCount(target, count);
         VarKeyScalar8Layout.WriteShelfExtentSize(target, profile.ShelfExtentSize);
         VarKeyScalar8Layout.WriteDuplicateRunKeyLength(target, key.Length);
@@ -36917,7 +37288,10 @@ internal sealed partial class LibraDexFileSession : IDisposable
             long terminalReadStart = Stopwatch.GetTimestamp();
             byte[] rootBytes = ReadTerminalIdentityRootBytes(target.Offset);
             int shelfExtentSize = TerminalIdentityRootLayout.ReadShelfExtentSize(rootBytes);
-            VarKeyScalar8Profile terminalProfile = VarKeyScalar8Profile.Create(shelfExtentSize, maxKeyLength);
+            VarKeyScalar8Profile terminalProfile = VarKeyScalar8Profile.Create(shelfExtentSize, maxKeyLength) with
+            {
+                Descending = rootBytes[TerminalIdentityRootLayout.SortDirectionOffset] != 0
+            };
             long terminalReadTicks = Stopwatch.GetTimestamp() - terminalReadStart;
             RecordVarKeyScalar8PhaseAllocation("terminal-read", terminalReadTicks, StartVarKeyScalar8PhaseAllocatedBytes() - phaseAllocatedStart);
             if (TryDeepenMismatchedVarKeyScalar8TerminalIdentityRoute(pathTarget, terminalProfile, key, out _))
@@ -37157,6 +37531,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
                     requestedRouteCount,
                     key,
                     encodedIdentity,
+                    profile.Descending,
                     out DataKernelCommitTelemetry rootPrefixTelemetry,
                     out long rootPrefixTargetOffset,
                     out int rootPrefixTupleCount))
@@ -37355,6 +37730,18 @@ internal sealed partial class LibraDexFileSession : IDisposable
             if (TerminalIdentityRootLayout.ReadShape(rootBytes) != TerminalIdentityRootLayout.ShapeVarKey)
             {
                 throw new InvalidDataException("The routed VS8 terminal identity insert root has the wrong shape.");
+            }
+
+            int terminalKeyLength = TerminalIdentityRootLayout.ReadKeyLength(rootBytes);
+            if (terminalKeyLength <= 0 || terminalKeyLength > TerminalIdentityRootLayout.Size - TerminalIdentityRootLayout.KeyBytesOffset)
+            {
+                throw new InvalidDataException("The routed VS8 terminal identity insert root has an invalid key length.");
+            }
+
+            if (!rootBytes.AsSpan(TerminalIdentityRootLayout.KeyBytesOffset, terminalKeyLength).SequenceEqual(key))
+            {
+                throw new LibraDexWriteContextVarKeyScalar8TopologyFallbackException(
+                    "The VS8 writer-context route reached a valid terminal identity root for a different key and requires serialized route deepening.");
             }
 
             int shelfExtentSize = TerminalIdentityRootLayout.ReadShelfExtentSize(rootBytes);
@@ -37945,7 +38332,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
         ulong encodedIdentityHigh,
         ulong encodedIdentityLow,
         bool allowDuplicateKeys,
-        int maxRouterHops)
+        int maxRouterHops,
+        bool descending = false)
     {
         long routeWalkStart = Stopwatch.GetTimestamp();
         VarKeyScalar16RoutePathTarget pathTarget = WalkVarKeyScalar16RoutePathTarget(rootRouterOffset, key, maxRouterHops);
@@ -37957,7 +38345,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
                 rootRouterOffset,
                 pathTarget.ParentRouterOffset,
                 pathTarget.RoutePrefixByte,
-                VarKeyScalar16Profile.DefaultInitial,
+                VarKeyScalar16Profile.DefaultInitial with { Descending = descending },
                 key,
                 encodedIdentityHigh,
                 encodedIdentityLow,
@@ -37974,7 +38362,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
                 encodedIdentityHigh,
                 encodedIdentityLow,
                 allowDuplicateKeys,
-                maxRouterHops);
+                maxRouterHops,
+                descending);
         }
 
         if (target.Kind == VarKeyScalar16RouteTargetKind.TerminalIdentityRoot)
@@ -38094,7 +38483,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
                     encodedIdentityHigh,
                     encodedIdentityLow,
                     allowDuplicateKeys,
-                    maxRouterHops);
+                    maxRouterHops,
+                    descending);
             }
 
             ReleaseVarKeyScalar16MutableShelf(existingShelf, clearShelfBytes: true);
@@ -38148,7 +38538,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
                     encodedIdentityHigh,
                     encodedIdentityLow,
                     allowDuplicateKeys,
-                    maxRouterHops);
+                    maxRouterHops,
+                    descending);
             }
 
             ushort childRouterKeyDepth = parentRangeStart < parentRangeEnd
@@ -38331,7 +38722,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
         ReadOnlySpan<byte> lowerKey,
         ReadOnlySpan<byte> upperKey,
         Span<ulong> encodedIdentityHighs,
-        Span<ulong> encodedIdentityLows)
+        Span<ulong> encodedIdentityLows,
+        bool descending = false)
     {
         if (lowerKey.SequenceCompareTo(upperKey) > 0)
         {
@@ -38344,7 +38736,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
             rootRouterOffset,
             maxKeyLength,
             lowerKey,
-            upperKey);
+            upperKey,
+            descending: descending);
         while (copied < capacity && reader.MoveNext())
         {
             reader.ReadCurrentIdentity(out encodedIdentityHighs[copied], out encodedIdentityLows[copied]);
@@ -39543,7 +39936,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
                 throw new InvalidDataException($"The session-local VS8 read shelf cache contains an invalid extent. ShelfOffset={shelfOffset}; ShelfExtentSize={cachedShelfExtentSize}; CachedBytes={cachedShelfBytes.Length}.");
             }
 
-            profile = VarKeyScalar8Profile.Create(cachedShelfExtentSize, maxKeyLength);
+            profile = VarKeyScalar8Profile.Create(cachedShelfExtentSize, maxKeyLength) with { Descending = (VarKeyScalar8Layout.ReadFlags(cachedShelfBytes) & VarKeyScalar8Layout.DescendingFlag) != 0 };
             VarKeyScalar8ReadOnly cachedShelf = new(cachedShelfBytes, profile);
             if (!cachedShelf.IsValid)
             {
@@ -39568,7 +39961,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
             throw new InvalidDataException($"The persisted VS8 shelf header contains an invalid extent. ShelfOffset={shelfOffset}; ShelfExtentSize={shelfExtentSize}.");
         }
 
-        profile = VarKeyScalar8Profile.Create(shelfExtentSize, maxKeyLength);
+        profile = VarKeyScalar8Profile.Create(shelfExtentSize, maxKeyLength) with { Descending = (VarKeyScalar8Layout.ReadFlags(header) & VarKeyScalar8Layout.DescendingFlag) != 0 };
         byte[] shelfBytes = new byte[shelfExtentSize];
         header.CopyTo(shelfBytes.AsSpan(0, header.Length));
         kernel.Read(shelfOffset, shelfBytes);
@@ -39623,7 +40016,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
             varKeyScalar16ReadShelfCache.TryGetValue(shelfOffset, out byte[]? cachedShelfBytes))
         {
             int cachedShelfExtentSize = VarKeyScalar16Layout.ReadShelfExtentSize(cachedShelfBytes);
-            profile = VarKeyScalar16Profile.Create(cachedShelfExtentSize, maxKeyLength);
+            profile = VarKeyScalar16Profile.Create(cachedShelfExtentSize, maxKeyLength) with { Descending = (VarKeyScalar16Layout.ReadFlags(cachedShelfBytes) & VarKeyScalar16Layout.DescendingFlag) != 0 };
             VarKeyScalar16ReadOnly cachedShelf = new(cachedShelfBytes, profile);
             if (!cachedShelf.IsValid)
             {
@@ -39643,7 +40036,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
         }
 
         int shelfExtentSize = VarKeyScalar16Layout.ReadShelfExtentSize(header);
-        profile = VarKeyScalar16Profile.Create(shelfExtentSize, maxKeyLength);
+        profile = VarKeyScalar16Profile.Create(shelfExtentSize, maxKeyLength) with { Descending = (VarKeyScalar16Layout.ReadFlags(header) & VarKeyScalar16Layout.DescendingFlag) != 0 };
         byte[] shelfBytes = new byte[shelfExtentSize];
         header.CopyTo(shelfBytes.AsSpan(0, header.Length));
         kernel.Read(shelfOffset, shelfBytes);
@@ -39688,7 +40081,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
             }
 
             int shelfExtentSize = VarKeyScalar8Layout.ReadShelfExtentSize(header);
-            profile = VarKeyScalar8Profile.Create(shelfExtentSize, maxKeyLength);
+            profile = VarKeyScalar8Profile.Create(shelfExtentSize, maxKeyLength) with { Descending = (VarKeyScalar8Layout.ReadFlags(header) & VarKeyScalar8Layout.DescendingFlag) != 0 };
             shelfBytes = RentMutableShelfBytes(shelfExtentSize, out ownsBytes);
             rentSidecars = true;
             kernel.Read(shelfOffset, shelfBytes.AsSpan(0, shelfExtentSize));
@@ -39743,7 +40136,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
             }
 
             int shelfExtentSize = VarKeyScalar16Layout.ReadShelfExtentSize(header);
-            profile = VarKeyScalar16Profile.Create(shelfExtentSize, maxKeyLength);
+            profile = VarKeyScalar16Profile.Create(shelfExtentSize, maxKeyLength) with { Descending = (VarKeyScalar16Layout.ReadFlags(header) & VarKeyScalar16Layout.DescendingFlag) != 0 };
             shelfBytes = RentMutableShelfBytes(shelfExtentSize, out ownsBytes);
             rentSidecars = true;
             kernel.Read(shelfOffset, shelfBytes.AsSpan(0, shelfExtentSize));
@@ -40067,7 +40460,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
             {
                 ReadOnlySpan<byte> currentKey = existingShelf.ReadKeyAt(sourceIndex);
                 existingShelf.ReadIdentityAt(sourceIndex, out ulong currentIdentityHigh, out ulong currentIdentityLow);
-                if (!inserted && CompareVarKeyScalar16Tuple(currentKey, currentIdentityHigh, currentIdentityLow, key, encodedIdentityHigh, encodedIdentityLow) > 0)
+                int tupleComparison = CompareVarKeyScalar16Tuple(currentKey, currentIdentityHigh, currentIdentityLow, key, encodedIdentityHigh, encodedIdentityLow);
+                if (!inserted && (profile.Descending ? tupleComparison < 0 : tupleComparison > 0))
                 {
                     keyOffsets[targetIndex] = -1;
                     keyLengths[targetIndex] = key.Length;
@@ -40412,12 +40806,12 @@ internal sealed partial class LibraDexFileSession : IDisposable
         for (int i = 1; i < keyOffsets.Length; i++)
         {
             byte currentPrefix = GetVarKeyScalar16SplitSourcePrefix(existingShelfBytes, keyOffsets[i], keyLengths[i], incomingKey, keyDepth);
-            if (currentPrefix < priorPrefix)
+            if (profile.Descending ? currentPrefix > priorPrefix : currentPrefix < priorPrefix)
             {
                 rightPrefixByte = 0;
                 return false;
             }
-            if (currentPrefix > priorPrefix)
+            if (currentPrefix != priorPrefix)
             {
                 int leftCount = i;
                 int rightCount = keyOffsets.Length - i;
@@ -40437,7 +40831,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
                      (maximumUtilization == bestMaximumUtilization && balanceDistance == bestBalanceDistance && hintDistance < bestHintDistance)))
                 {
                     bestRightStart = i;
-                    bestBoundary = currentPrefix;
+                    bestBoundary = profile.Descending ? priorPrefix : currentPrefix;
                     bestMaximumUtilization = maximumUtilization;
                     bestBalanceDistance = balanceDistance;
                     bestHintDistance = hintDistance;
@@ -41112,7 +41506,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
     /// </summary>
     /// <returns>The commit telemetry, number of lower-level commit requests deferred into this publish, and session-local storage diagnostics.</returns>
     /// <exception cref="InvalidOperationException">Thrown when no durability batch is active.</exception>
-    internal (DataKernelCommitTelemetry Commit, long DeferredCommitRequests, LibraDexBatchStorageDiagnostics StorageDiagnostics) CommitDurabilityBatch(LibraDexWriteContext writeContext)
+    internal (DataKernelCommitTelemetry Commit, long DeferredCommitRequests, LibraDexBatchStorageDiagnostics StorageDiagnostics) CommitDurabilityBatch(LibraDexWriteContext writeContext, bool recoverablePublication = false)
     {
         if (!durabilityBatchActive)
         {
@@ -41140,7 +41534,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
             FlushDirtyScalar16VarIdentityMutableBatchShelves();
             FlushDirtyTerminalVarIdentityMutableBatchShelves();
             long deferredRequests = deferredDurabilityCommitRequests;
-            DataKernelCommitTelemetry telemetry = kernel.Commit();
+            DataKernelCommitTelemetry telemetry = recoverablePublication
+                ? kernel.CommitRecoverablePublication(SuperblockLayout.FileGuidOffset)
+                : kernel.Commit();
             foreach (long shelfOffset in fixed32Scalar8RetainedBatchShelfOffsets)
             {
                 fixed32Scalar8ReadCache.Remove(shelfOffset);
@@ -41469,7 +41865,10 @@ internal sealed partial class LibraDexFileSession : IDisposable
             int shelfExtentSize = mutableShelf.Value.Profile.ShelfExtentSize;
             _ = mutableShelf.Value.NormalizeDeletedSlotsForPublication();
             mutableShelf.Value.EnsureSlotBytesCurrent();
-            RewriteBatchShelfBytes(mutableShelf.Key, mutableShelf.Value.Bytes.AsSpan(0, shelfExtentSize));
+            // A pending append created under a coherent read snapshot must be superseded in the
+            // same commit; writing directly to the memory arena would be overwritten by that append.
+            RawDataReservation rewrite = kernel.ReserveAt(mutableShelf.Key, shelfExtentSize);
+            mutableShelf.Value.Bytes.AsSpan(0, shelfExtentSize).CopyTo(rewrite.Span);
             scalar16VarIdentityReadCache.Remove(mutableShelf.Key);
         }
     }
@@ -43027,7 +43426,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
                 {
                     if (returnDefaultWhenUnset)
                         return default;
-                    throw new InvalidDataException("The routed FS32-16 target is unset.");
+                    return new Fixed32Scalar16RoutePathTarget(
+                        new Fixed32Scalar16RouteTarget(Fixed32Scalar16RouteTargetKind.None, 0, directView.KeyDepth, directView.AllocationClassId),
+                        routerOffset, directPrefixByte);
                 }
 
                 Fixed32Scalar16RouteTargetKind directKind = (Fixed32Scalar16RouteTargetKind)directView.GetTargetKind(directPrefixByte);
@@ -43071,7 +43472,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
             {
                 if (returnDefaultWhenUnset)
                     return default;
-                throw new InvalidDataException("The routed FS32-16 target is unset.");
+                return new Fixed32Scalar16RoutePathTarget(
+                    new Fixed32Scalar16RouteTarget(Fixed32Scalar16RouteTargetKind.None, 0, reader.KeyDepth, reader.AllocationClassId),
+                    routerOffset, prefixByte);
             }
 
             Fixed32Scalar16RouteTargetKind kind = ClassifyFixed32Scalar16RouteTarget(targetOffset);
@@ -44116,7 +44519,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
             ulong currentKey2 = existingShelf.ReadKeyPart2At(sourceIndex);
             ulong currentKey3 = existingShelf.ReadKeyPart3At(sourceIndex);
             ulong currentIdentity = existingShelf.ReadIdentityAt(sourceIndex);
-            if (!inserted && CompareFixed32Scalar16Tuple(currentKey0, currentKey1, currentKey2, currentKey3, currentIdentity, key0, key1, key2, key3, encodedIdentity) > 0)
+            if (!inserted && (profile.Descending
+                ? CompareFixed32Scalar16Tuple(currentKey0, currentKey1, currentKey2, currentKey3, currentIdentity, key0, key1, key2, key3, encodedIdentity) < 0
+                : CompareFixed32Scalar16Tuple(currentKey0, currentKey1, currentKey2, currentKey3, currentIdentity, key0, key1, key2, key3, encodedIdentity) > 0))
             {
                 key0s[targetIndex] = key0;
                 key1s[targetIndex] = key1;
@@ -44250,7 +44655,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
             0,
             encodedIdentity,
             allocationClassId,
-            childRouterKeyDepth: 1);
+            childRouterKeyDepth: 1,
+            parentRouterOffset: rootRouterOffset,
+            parentRoutePrefixByte: rootPrefixByte);
     }
 
 
@@ -44314,7 +44721,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
             ulong currentKey3 = existingShelf.ReadKeyPart3At(sourceIndex);
             ulong currentIdentityHigh = existingShelf.ReadIdentityHighAt(sourceIndex);
             ulong currentIdentityLow = existingShelf.ReadIdentityLowAt(sourceIndex);
-            if (!inserted && CompareFixed32Scalar16Tuple(currentKey0, currentKey1, currentKey2, currentKey3, currentIdentityHigh, currentIdentityLow, key0, key1, key2, key3, encodedIdentityHigh, encodedIdentityLow) > 0)
+            if (!inserted && (profile.Descending
+                ? CompareFixed32Scalar16Tuple(currentKey0, currentKey1, currentKey2, currentKey3, currentIdentityHigh, currentIdentityLow, key0, key1, key2, key3, encodedIdentityHigh, encodedIdentityLow) < 0
+                : CompareFixed32Scalar16Tuple(currentKey0, currentKey1, currentKey2, currentKey3, currentIdentityHigh, currentIdentityLow, key0, key1, key2, key3, encodedIdentityHigh, encodedIdentityLow) > 0))
             {
                 key0s[targetIndex] = key0;
                 key1s[targetIndex] = key1;
@@ -44361,7 +44770,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
             identityLows[targetIndex] = encodedIdentityLow;
         }
 
-        (ushort splitKeyDepth, byte selectedRightPrefixByte) = ChooseFixed32Scalar16TransformSplitPlan(key0s, key1s, key2s, key3s, childRouterKeyDepth, rightPrefixByte);
+        (ushort splitKeyDepth, byte selectedRightPrefixByte) = ChooseFixed32Scalar16TransformSplitPlan(key0s, key1s, key2s, key3s, childRouterKeyDepth, rightPrefixByte, profile.Descending);
         byte[] leftShelfBytes = new byte[profile.ShelfExtentSize];
         byte[] rightShelfBytes = new byte[profile.ShelfExtentSize];
         Fixed32Scalar16 leftShelf = new(leftShelfBytes, profile);
@@ -44437,7 +44846,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
             ulong encodedIdentityHigh,
             ulong encodedIdentityLow,
             ushort allocationClassId,
-            ushort childRouterKeyDepth)
+            ushort childRouterKeyDepth,
+            long parentRouterOffset,
+            byte parentRoutePrefixByte)
     {
         if (existingShelfBytes.Length != profile.ShelfExtentSize)
         {
@@ -44482,7 +44893,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
             ulong currentKey3 = existingShelf.ReadKeyPart3At(sourceIndex);
             ulong currentIdentityHigh = existingShelf.ReadIdentityHighAt(sourceIndex);
             ulong currentIdentityLow = existingShelf.ReadIdentityLowAt(sourceIndex);
-            if (!inserted && CompareFixed32Scalar16Tuple(currentKey0, currentKey1, currentKey2, currentKey3, currentIdentityHigh, currentIdentityLow, key0, key1, key2, key3, encodedIdentityHigh, encodedIdentityLow) > 0)
+            if (!inserted && (profile.Descending
+                ? CompareFixed32Scalar16Tuple(currentKey0, currentKey1, currentKey2, currentKey3, currentIdentityHigh, currentIdentityLow, key0, key1, key2, key3, encodedIdentityHigh, encodedIdentityLow) < 0
+                : CompareFixed32Scalar16Tuple(currentKey0, currentKey1, currentKey2, currentKey3, currentIdentityHigh, currentIdentityLow, key0, key1, key2, key3, encodedIdentityHigh, encodedIdentityLow) > 0))
             {
                 key0s[targetIndex] = key0;
                 key1s[targetIndex] = key1;
@@ -44525,7 +44938,10 @@ internal sealed partial class LibraDexFileSession : IDisposable
             transformPhaseStart = phaseEnd;
         }
 
-        (ushort splitKeyDepth, byte selectedRightPrefixByte) = ChooseFixed32Scalar16TransformSplitPlan(key0s, key1s, key2s, key3s, childRouterKeyDepth, rightPrefixByte);
+            (ushort splitKeyDepth, byte selectedRightPrefixByte) = ChooseFixed32Scalar16TransformSplitPlan(key0s, key1s, key2s, key3s, childRouterKeyDepth, rightPrefixByte, profile.Descending);
+        RefineDirectShelfOwner(parentRouterOffset, childRouterOffset, childRouterKeyDepth, parentRoutePrefixByte,
+            GetFixed32Scalar16Prefix(key0s[0], key1s[0], key2s[0], key3s[0], checked((ushort)(childRouterKeyDepth - 1))),
+            GetFixed32Scalar16Prefix(key0s[^1], key1s[^1], key2s[^1], key3s[^1], checked((ushort)(childRouterKeyDepth - 1))));
         if (transformAttribution is not null)
         {
             long phaseEnd = Stopwatch.GetTimestamp();
@@ -44790,7 +45206,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
             ulong currentKey3 = existingShelf.ReadKeyPart3At(sourceIndex);
             ulong currentIdentityHigh = existingShelf.ReadIdentityHighAt(sourceIndex);
             ulong currentIdentityLow = existingShelf.ReadIdentityLowAt(sourceIndex);
-            if (!inserted && CompareFixed32Scalar16Tuple(currentKey0, currentKey1, currentKey2, currentKey3, currentIdentityHigh, currentIdentityLow, key0, key1, key2, key3, encodedIdentityHigh, encodedIdentityLow) > 0)
+            if (!inserted && (profile.Descending
+                ? CompareFixed32Scalar16Tuple(currentKey0, currentKey1, currentKey2, currentKey3, currentIdentityHigh, currentIdentityLow, key0, key1, key2, key3, encodedIdentityHigh, encodedIdentityLow) < 0
+                : CompareFixed32Scalar16Tuple(currentKey0, currentKey1, currentKey2, currentKey3, currentIdentityHigh, currentIdentityLow, key0, key1, key2, key3, encodedIdentityHigh, encodedIdentityLow) > 0))
             {
                 key0s[targetIndex] = key0;
                 key1s[targetIndex] = key1;
@@ -44827,7 +45245,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
             identityLows[targetIndex] = encodedIdentityLow;
         }
 
-        if (!TryChooseFixed32Scalar16TransformSplitRightPrefix(key0s, key1s, key2s, key3s, keyDepth, hintRightPrefixByte, out selectedRightPrefixByte))
+        if (!TryChooseFixed32Scalar16TransformSplitRightPrefix(key0s, key1s, key2s, key3s, keyDepth, hintRightPrefixByte, profile.Descending, out selectedRightPrefixByte))
         {
             return false;
         }
@@ -44883,7 +45301,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
         ReadOnlySpan<ulong> sortedKey2s,
         ReadOnlySpan<ulong> sortedKey3s,
         ushort firstKeyDepth,
-        byte hintRightPrefixByte)
+        byte hintRightPrefixByte,
+        bool descending)
     {
         if (sortedKey0s.Length != sortedKey1s.Length || sortedKey0s.Length != sortedKey2s.Length || sortedKey0s.Length != sortedKey3s.Length)
         {
@@ -44906,7 +45325,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
         if (splitKeyDepth < firstKeyDepth)
             throw new InvalidDataException($"The FS32-16 transform source violates its routed prefix stem. FirstDifferentDepth={splitKeyDepth}; FirstOwnedDepth={firstKeyDepth}; Count={sortedKey0s.Length}.");
         if (splitKeyDepth >= Fixed32Scalar16Layout.KeySize ||
-            !TryChooseFixed32Scalar16TransformSplitRightPrefix(sortedKey0s, sortedKey1s, sortedKey2s, sortedKey3s, splitKeyDepth, hintRightPrefixByte, out byte rightPrefixByte))
+            !TryChooseFixed32Scalar16TransformSplitRightPrefix(sortedKey0s, sortedKey1s, sortedKey2s, sortedKey3s, splitKeyDepth, hintRightPrefixByte, descending, out byte rightPrefixByte))
             throw new InvalidDataException("The FS32-16 transform split path requires one globally ordered prefix transition after its owned stem.");
 
         return (splitKeyDepth, rightPrefixByte);
@@ -44933,6 +45352,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
         ReadOnlySpan<ulong> sortedKey3s,
         ushort keyDepth,
         byte hintRightPrefixByte,
+        bool descending,
         out byte rightPrefixByte)
     {
         for (ushort ownedDepth = 0; ownedDepth < keyDepth; ownedDepth++)
@@ -44953,12 +45373,12 @@ internal sealed partial class LibraDexFileSession : IDisposable
         for (int i = 1; i < sortedKey0s.Length; i++)
         {
             byte currentPrefix = GetFixed32Scalar16Prefix(sortedKey0s[i], sortedKey1s[i], sortedKey2s[i], sortedKey3s[i], keyDepth);
-            if (currentPrefix < priorPrefix)
+            if (descending ? currentPrefix > priorPrefix : currentPrefix < priorPrefix)
             {
                 rightPrefixByte = 0;
                 return false;
             }
-            if (currentPrefix > priorPrefix)
+            if (currentPrefix != priorPrefix)
             {
                 int balanceDistance = Math.Abs(i - (sortedKey0s.Length - i));
                 int hintDistance = Math.Abs(currentPrefix - hintRightPrefixByte);
@@ -44966,7 +45386,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
                     (balanceDistance == bestBalanceDistance && hintDistance < bestHintDistance))
                 {
                     bestRightStart = i;
-                    bestBoundary = currentPrefix;
+                    bestBoundary = descending ? priorPrefix : currentPrefix;
                     bestBalanceDistance = balanceDistance;
                     bestHintDistance = hintDistance;
                 }
@@ -45124,7 +45544,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
             ulong encodedIdentity,
             int maxRouterHops)
     {
-        Fixed32Scalar16RouteTarget target = WalkFixed32Scalar16RouteTarget(rootRouterOffset, key0, key1, key2, key3, maxRouterHops);
+        Fixed32Scalar16RoutePathTarget pathTarget = WalkFixed32Scalar16RoutePathTarget(rootRouterOffset, key0, key1, key2, key3, maxRouterHops);
+        Fixed32Scalar16RouteTarget target = pathTarget.Target;
         if (target.Kind != Fixed32Scalar16RouteTargetKind.Shelf)
         {
             throw new InvalidDataException("The classified route walker did not terminate at an FS32-16 shelf.");
@@ -45146,7 +45567,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
             0,
             encodedIdentity,
             target.AllocationClassId,
-            nextRouterKeyDepth);
+            nextRouterKeyDepth,
+            pathTarget.ParentRouterOffset,
+            GetFixed32Scalar16Prefix(key0, key1, key2, key3, target.RouterDepth));
     }
 
 
@@ -45600,6 +46023,18 @@ internal sealed partial class LibraDexFileSession : IDisposable
     {
         Fixed32Scalar16RoutePathTarget pathTarget = WalkFixed32Scalar16RoutePathTarget(rootRouterOffset, key0, key1, key2, key3, maxRouterHops);
         Fixed32Scalar16RouteTarget target = pathTarget.Target;
+        if (target.Kind == Fixed32Scalar16RouteTargetKind.None)
+        {
+            byte[] bytes = new byte[profile.ShelfExtentSize];
+            Fixed32Scalar16 coldShelf = new(bytes, profile);
+            coldShelf.Initialize();
+            var inserted = coldShelf.Insert(key0, key1, key2, key3, encodedIdentityHigh, encodedIdentityLow, allowDuplicateKeys);
+            if (inserted != Fixed32Scalar16InsertResult.Inserted)
+                throw new InvalidDataException("A cold Fixed32Scalar16 shelf rejected its initial tuple.");
+            var (offset, commit) = PublishColdFixedShelf(pathTarget.ParentRouterOffset,
+                GetFixed32Scalar16Prefix(key0, key1, key2, key3, target.RouterDepth), bytes);
+            return new Fixed32Scalar16RoutedInsertResult(Fixed32Scalar16RoutedInsertKind.WalkedNoSplit, inserted, offset, offset, 0, commit);
+        }
         if (target.Kind == Fixed32Scalar16RouteTargetKind.TerminalIdentityRoot)
         {
             return InsertIntoFixed32Scalar16TerminalIdentityRoute(pathTarget, profile, key0, key1, key2, key3, encodedIdentityHigh, encodedIdentityLow, allowDuplicateKeys);
@@ -45730,7 +46165,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
                 encodedIdentityHigh,
                 encodedIdentityLow,
                 target.AllocationClassId,
-                nextRouterKeyDepth);
+                nextRouterKeyDepth,
+            pathTarget.ParentRouterOffset,
+            GetFixed32Scalar16Prefix(key0, key1, key2, key3, target.RouterDepth));
 
         Fixed32Scalar16RoutedInsertKind kind = transformResult == Fixed32Scalar16InsertResult.Inserted
             ? Fixed32Scalar16RoutedInsertKind.WalkedShelfTransformSplit
@@ -45877,7 +46314,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
             encodedIdentityHigh,
             encodedIdentityLow,
             target.AllocationClassId,
-            nextRouterKeyDepth);
+            nextRouterKeyDepth,
+            pathTarget.ParentRouterOffset,
+            GetFixed32Scalar16Prefix(key0, key1, key2, key3, target.RouterDepth));
 
         Fixed32Scalar16RoutedInsertKind kind = transformResult == Fixed32Scalar16InsertResult.Inserted ? Fixed32Scalar16RoutedInsertKind.WalkedShelfTransformSplit : Fixed32Scalar16RoutedInsertKind.NoOp;
         return new Fixed32Scalar16RoutedInsertResult(kind, transformResult, childRouterOffset, transformLeftShelfOffset, transformRightShelfOffset, transformCommit);
@@ -45926,7 +46365,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
         if (!existingReadOnly.IsValid)
             throw new InvalidDataException("The supplied FS32-16 split source shelf image is invalid.");
 
-        if (TrySplitRoutedFixed32Scalar16SortedTail(
+        bool parentDepthCannotSplit = false;
+        if (!profile.Descending && TrySplitRoutedFixed32Scalar16SortedTail(
             pathTarget.ParentRouterOffset,
             target.Offset,
             fullShelfBytes,
@@ -45939,7 +46379,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
             encodedIdentityHigh,
             encodedIdentityLow,
             allowDuplicateKeys,
-            out bool parentDepthCannotSplit,
+            out parentDepthCannotSplit,
             out long sortedRightShelfOffset,
             out DataKernelCommitTelemetry sortedTailCommit))
         {
@@ -45989,7 +46429,9 @@ internal sealed partial class LibraDexFileSession : IDisposable
             encodedIdentityHigh,
             encodedIdentityLow,
             target.AllocationClassId,
-            nextRouterKeyDepth);
+            nextRouterKeyDepth,
+            pathTarget.ParentRouterOffset,
+            GetFixed32Scalar16Prefix(key0, key1, key2, key3, target.RouterDepth));
 
         Fixed32Scalar16RoutedInsertKind kind = transformResult == Fixed32Scalar16InsertResult.Inserted ? Fixed32Scalar16RoutedInsertKind.WalkedShelfTransformSplit : Fixed32Scalar16RoutedInsertKind.NoOp;
         return new Fixed32Scalar16RoutedInsertResult(kind, transformResult, childRouterOffset, transformLeftShelfOffset, transformRightShelfOffset, transformCommit);

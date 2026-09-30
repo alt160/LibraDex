@@ -161,14 +161,16 @@ internal sealed partial class LibraDexFileSession
         long rootOffset,
         ReadOnlySpan<byte> key,
         int shelfExtentSize,
-        IReadOnlyList<ulong> identities)
+        IReadOnlyList<ulong> identities,
+        bool descending = false)
     {
         DataKernelCommitTelemetry telemetry = RewriteTerminalIdentity8Route(
             rootOffset,
             TerminalIdentityRootLayout.ShapeFixedKeyScalar8Identity,
             key,
             shelfExtentSize,
-            identities);
+            identities,
+            descending: descending);
         return (FixedNScalarInsertResult.Inserted, telemetry);
     }
 
@@ -206,6 +208,9 @@ internal sealed partial class LibraDexFileSession
         }
 
         List<ulong> identities = ReadTerminalIdentity8RouteIdentities(rootOffset, key, shelfExtentSize);
+        bool descending = ReadTerminalIdentityRootBytes(rootOffset)[TerminalIdentityRootLayout.SortDirectionOffset] != 0;
+        if (descending)
+            identities.Reverse();
         int insertIndex = identities.BinarySearch(encodedIdentity);
         if (insertIndex >= 0)
             return (FixedNScalarInsertResult.AlreadyPresent, default);
@@ -213,7 +218,9 @@ internal sealed partial class LibraDexFileSession
             return (FixedNScalarInsertResult.KeyConflict, default);
 
         identities.Insert(~insertIndex, encodedIdentity);
-        return RewriteFixedNScalar8TerminalRoute(rootOffset, key, shelfExtentSize, identities);
+        if (descending)
+            identities.Reverse();
+        return RewriteFixedNScalar8TerminalRoute(rootOffset, key, shelfExtentSize, identities, descending);
     }
 
     /// <summary>
@@ -231,7 +238,8 @@ internal sealed partial class LibraDexFileSession
         byte shape,
         ReadOnlySpan<byte> key,
         int shelfExtentSize,
-        ReadOnlySpan<byte[]> identities)
+        ReadOnlySpan<byte[]> identities,
+        bool descending = false)
     {
         int payloadCapacity = 0;
         for (int i = 0; i < identities.Length; i++)
@@ -241,7 +249,7 @@ internal sealed partial class LibraDexFileSession
         for (int i = 0; i < identities.Length; i++)
             pooled.Add(identities[i]);
 
-        return WriteNewFixedNVarIdentityTerminalRoute(rootOffset, shape, key, shelfExtentSize, pooled);
+        return WriteNewFixedNVarIdentityTerminalRoute(rootOffset, shape, key, shelfExtentSize, pooled, descending);
     }
 
     /// <summary>
@@ -259,7 +267,8 @@ internal sealed partial class LibraDexFileSession
         byte shape,
         ReadOnlySpan<byte> key,
         int shelfExtentSize,
-        PooledTerminalVarIdentitySet identities)
+        PooledTerminalVarIdentitySet identities,
+        bool descending)
     {
         long firstShelfOffset = 0;
         long previousShelfOffset = 0;
@@ -291,6 +300,7 @@ internal sealed partial class LibraDexFileSession
 
         RawDataReservation rootRewrite = kernel.ReserveAt(rootOffset, TerminalIdentityRootLayout.Size);
         TerminalIdentityRootLayout.Initialize(rootRewrite.Span, shape, key, shelfExtentSize, firstShelfOffset);
+        rootRewrite.Span[TerminalIdentityRootLayout.SortDirectionOffset] = descending ? (byte)1 : (byte)0;
         TerminalIdentityRootLayout.WriteTailShelfOffset(rootRewrite.Span, tailShelfOffset);
         ClearTerminalIdentityReadCaches();
         return CommitAndInvalidateRouterReadCache();
@@ -350,7 +360,8 @@ internal sealed partial class LibraDexFileSession
         }
 
         using PooledTerminalVarIdentitySet identities = ReadScalar8VarIdentityTerminalIdentitiesPooled(rootOffset, key, shelfExtentSize);
-        int insertIndex = LowerBoundTerminalVarIdentity(identities, identity);
+        bool descending = rootBytes[TerminalIdentityRootLayout.SortDirectionOffset] != 0;
+        int insertIndex = LowerBoundTerminalVarIdentity(identities, identity, descending);
         if (insertIndex < identities.Count && identities.ReadAt(insertIndex).SequenceEqual(identity))
             return (Scalar8VarIdentityInsertResult.AlreadyPresent, default);
 

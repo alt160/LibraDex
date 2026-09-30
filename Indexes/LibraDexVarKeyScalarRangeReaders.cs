@@ -57,6 +57,12 @@ internal sealed partial class LibraDexFileSession
                 captureDiagnostics,
                 direction,
                 coherentRead);
+            if (allowWriteUpgrade)
+            {
+                // Keep the upgradeable generation barrier, but do not let its memory snapshot
+                // bleed into writes to the unpublished destination index during maintenance.
+                coherentRead.Pause();
+            }
             coherentRead = null;
             return reader;
         }
@@ -75,6 +81,7 @@ internal sealed partial class LibraDexFileSession
     /// <param name="lowerKey">The inclusive lower raw key.</param>
     /// <param name="upperKey">The inclusive upper raw key.</param>
     /// <param name="maxRouterHops">The maximum number of router pages to follow.</param>
+    /// <param name="descending">Whether to visit higher-key route targets first.</param>
     /// <returns>A cursor positioned before the first matching row.</returns>
     /// <exception cref="ArgumentException">Thrown when <paramref name="upperKey"/> sorts before <paramref name="lowerKey"/>.</exception>
     /// <exception cref="ArgumentOutOfRangeException">Thrown when <paramref name="maxRouterHops"/> is not positive.</exception>
@@ -84,7 +91,8 @@ internal sealed partial class LibraDexFileSession
         ReadOnlySpan<byte> lowerKey,
         ReadOnlySpan<byte> upperKey,
         int maxRouterHops = DefaultVarKeyScalar16MaxRouterHops,
-        bool decodeLogicalKeys = false)
+        bool decodeLogicalKeys = false,
+        bool descending = false)
     {
         if (lowerKey.SequenceCompareTo(upperKey) > 0)
         {
@@ -96,7 +104,7 @@ internal sealed partial class LibraDexFileSession
             throw new ArgumentOutOfRangeException(nameof(maxRouterHops), maxRouterHops, "The VS16 range reader maximum router hop count must be positive.");
         }
 
-        return new VarKeyScalar16RangeReader(this, rootRouterOffset, maxKeyLength, lowerKey, upperKey, maxRouterHops, decodeLogicalKeys);
+        return new VarKeyScalar16RangeReader(this, rootRouterOffset, maxKeyLength, lowerKey, upperKey, maxRouterHops, decodeLogicalKeys, descending);
     }
 
     /// <summary>
@@ -156,7 +164,7 @@ internal sealed partial class LibraDexFileSession
                 $"The persisted VS8 streaming shelf header contains an invalid extent. ShelfOffset={shelfOffset}; ShelfExtentSize={shelfExtentSize}.");
         }
 
-        VarKeyScalar8Profile profile = VarKeyScalar8Profile.Create(shelfExtentSize, maxKeyLength);
+        VarKeyScalar8Profile profile = VarKeyScalar8Profile.Create(shelfExtentSize, maxKeyLength) with { Descending = (VarKeyScalar8Layout.ReadFlags(header) & VarKeyScalar8Layout.DescendingFlag) != 0 };
         byte[] rented = ArrayPool<byte>.Shared.Rent(shelfExtentSize);
         try
         {

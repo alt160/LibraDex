@@ -52,7 +52,8 @@ internal readonly record struct VarKeyScalar8RouteHintKey(
 
 internal readonly record struct VarKeyScalar8Profile(
     int ShelfExtentSize,
-    int MaxKeyLength)
+    int MaxKeyLength,
+    bool Descending = false)
 {
     public static readonly VarKeyScalar8Profile Default4KiB = Create(4 * 1024, 1024);
     public static readonly VarKeyScalar8Profile Default8KiB = Create(8 * 1024, 1024);
@@ -89,7 +90,7 @@ internal readonly record struct VarKeyScalar8Profile(
             : ShelfExtentSize <= 32 * 1024
                 ? 64 * 1024
                 : 128 * 1024;
-        return Create(nextSize, MaxKeyLength);
+        return Create(nextSize, MaxKeyLength) with { Descending = Descending };
     }
 }
 
@@ -257,7 +258,8 @@ internal readonly record struct VarKeyScalar16RouteHintKey(
 
 internal readonly record struct VarKeyScalar16Profile(
     int ShelfExtentSize,
-    int MaxKeyLength)
+    int MaxKeyLength,
+    bool Descending = false)
 {
     public static readonly VarKeyScalar16Profile Default4KiB = Create(4 * 1024, 1024);
     public static readonly VarKeyScalar16Profile Default8KiB = Create(8 * 1024, 1024);
@@ -294,7 +296,7 @@ internal readonly record struct VarKeyScalar16Profile(
             : ShelfExtentSize <= 32 * 1024
                 ? 64 * 1024
                 : 128 * 1024;
-        return Create(nextSize, MaxKeyLength);
+        return Create(nextSize, MaxKeyLength) with { Descending = Descending };
     }
 }
 

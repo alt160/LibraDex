@@ -7,6 +7,7 @@ internal sealed class Scalar8VarIdentityReadOnly : IVarIdentityReadOnlyShelf
     private readonly ReadOnlyMemory<byte> bytes;
     private readonly byte[]? ownedBytes;
     private readonly Scalar8VarIdentityProfile profile;
+    private readonly bool descending;
     private readonly uint[] recordOffsets;
     private readonly uint[] keyPrefixes;
 
@@ -31,6 +32,7 @@ internal sealed class Scalar8VarIdentityReadOnly : IVarIdentityReadOnlyShelf
         this.bytes = bytes;
         ownedBytes = bytes;
         this.profile = profile;
+        descending = bytes.Length >= Scalar8VarIdentityLayout.HeaderSize && (Scalar8VarIdentityLayout.ReadFlags(bytes) & 1U) != 0;
         IsValid = TryDecodeSlots(bytes, profile, validateRecords, out recordOffsets, out keyPrefixes);
     }
 
@@ -38,10 +40,13 @@ internal sealed class Scalar8VarIdentityReadOnly : IVarIdentityReadOnlyShelf
     {
         this.bytes = bytes;
         this.profile = profile;
+        descending = bytes.Length >= Scalar8VarIdentityLayout.HeaderSize && (Scalar8VarIdentityLayout.ReadFlags(bytes.Span) & 1U) != 0;
         IsValid = TryDecodeSlots(bytes.Span, profile, validateRecords, out recordOffsets, out keyPrefixes);
     }
 
     public bool IsValid { get; }
+
+    internal bool IsDescending => descending;
 
     public int ItemCount => IsValid ? recordOffsets.Length : 0;
 
@@ -218,15 +223,16 @@ internal sealed class Scalar8VarIdentityReadOnly : IVarIdentityReadOnlyShelf
         uint slotPrefix = keyPrefixes[slotIndex];
         if (slotPrefix < prefix)
         {
-            return -1;
+            return descending ? 1 : -1;
         }
 
         if (slotPrefix > prefix)
         {
-            return 1;
+            return descending ? -1 : 1;
         }
 
-        return Scalar8VarIdentityLayout.CompareRecordKey(localBytes, checked((int)recordOffsets[slotIndex]), encodedKey);
+        int comparison = Scalar8VarIdentityLayout.CompareRecordKey(localBytes, checked((int)recordOffsets[slotIndex]), encodedKey);
+        return descending ? -comparison : comparison;
     }
 
     private int CompareSlotTuple(ReadOnlySpan<byte> localBytes, int slotIndex, uint prefix, ulong encodedKey, ReadOnlySpan<byte> identity)
@@ -234,14 +240,15 @@ internal sealed class Scalar8VarIdentityReadOnly : IVarIdentityReadOnlyShelf
         uint slotPrefix = keyPrefixes[slotIndex];
         if (slotPrefix < prefix)
         {
-            return -1;
+            return descending ? 1 : -1;
         }
 
         if (slotPrefix > prefix)
         {
-            return 1;
+            return descending ? -1 : 1;
         }
 
-        return Scalar8VarIdentityLayout.CompareRecordTuple(localBytes, checked((int)recordOffsets[slotIndex]), encodedKey, identity);
+        int comparison = Scalar8VarIdentityLayout.CompareRecordTuple(localBytes, checked((int)recordOffsets[slotIndex]), encodedKey, identity);
+        return descending ? -comparison : comparison;
     }
 }

@@ -510,10 +510,10 @@ internal sealed class FixedNScalar16Index : IDisposable
     /// Keys and scalar-16 identities are returned as owned sortable bytes for facade-level decoding.<br/>
     /// </summary>
     /// <returns>Authoritative ordinary tuples in physical key/identity order.<br/></returns>
-    internal IEnumerable<FixedNScalar16Tuple> IterateTuples()
+    internal IEnumerable<FixedNScalar16Tuple> IterateTuples(QueryDirection direction = QueryDirection.Ascending, byte[]? lowerKey = null, byte[]? upperKey = null)
     {
         ThrowIfDisposed();
-        return session.IterateFixedNScalar16Tuples(handle);
+        return session.IterateFixedNScalar16Tuples(handle, direction, lowerKey, upperKey);
     }
 
     /// <summary>

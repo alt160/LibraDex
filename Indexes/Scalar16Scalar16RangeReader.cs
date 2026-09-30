@@ -17,6 +17,9 @@ internal sealed class Scalar16Scalar16RangeReader : IDisposable
     private long[] shelfOffsets;
     private int[] startSlots;
     private int[] endSlots;
+    private byte[] terminalShelfFlags;
+    private ulong[] terminalKeyHighs;
+    private ulong[] terminalKeyLows;
     private long[]? pendingOffsets;
     private int[]? pendingHops;
     private byte[]? pendingFlags;
@@ -32,6 +35,11 @@ internal sealed class Scalar16Scalar16RangeReader : IDisposable
     private int shelfCount;
     private int rowCount;
     private int pendingCount;
+    private long pendingTerminalRootOffset;
+    private long pendingTerminalShelfOffset;
+    private int pendingTerminalShelfExtent;
+    private ulong pendingTerminalKeyHigh;
+    private ulong pendingTerminalKeyLow;
     private int currentShelfIndex;
     private int currentSlotIndex = -1;
     private int ordinal = -1;
@@ -46,6 +54,9 @@ internal sealed class Scalar16Scalar16RangeReader : IDisposable
         shelfOffsets = ArrayPool<long>.Shared.Rent(DefaultShelfCapacity);
         startSlots = ArrayPool<int>.Shared.Rent(DefaultShelfCapacity);
         endSlots = ArrayPool<int>.Shared.Rent(DefaultShelfCapacity);
+        terminalShelfFlags = ArrayPool<byte>.Shared.Rent(DefaultShelfCapacity);
+        terminalKeyHighs = ArrayPool<ulong>.Shared.Rent(DefaultShelfCapacity);
+        terminalKeyLows = ArrayPool<ulong>.Shared.Rent(DefaultShelfCapacity);
     }
 
     internal Scalar16Scalar16RangeReader(
@@ -57,7 +68,7 @@ internal sealed class Scalar16Scalar16RangeReader : IDisposable
         ulong upperKeyHigh,
         ulong upperKeyLow,
         QueryDirection direction = QueryDirection.Ascending,
-        int maxRouterHops = 8)
+        int maxRouterHops = Scalar16Scalar16Layout.KeySize + 1)
         : this()
     {
         if (direction != QueryDirection.Ascending && direction != QueryDirection.Descending)
@@ -129,25 +140,57 @@ internal sealed class Scalar16Scalar16RangeReader : IDisposable
     /// Gets the encoded high key lane for the current row.<br/>
     /// The value is the first persisted sortable scalar lane used by the `SS16-16` shelf.<br/>
     /// </summary>
-    public ulong CurrentEncodedKeyHigh => CurrentShelf.ReadKeyHighAt(currentSlotIndex);
+    public ulong CurrentEncodedKeyHigh
+    {
+        get
+        {
+            Scalar16Scalar16ReadOnly shelf = CurrentShelf;
+            return terminalShelfFlags[currentShelfIndex] != 0 ? terminalKeyHighs[currentShelfIndex] : shelf.ReadKeyHighAt(currentSlotIndex);
+        }
+    }
 
     /// <summary>
     /// Gets the encoded low key lane for the current row.<br/>
     /// The value is the second persisted sortable scalar lane used by the `SS16-16` shelf.<br/>
     /// </summary>
-    public ulong CurrentEncodedKeyLow => CurrentShelf.ReadKeyLowAt(currentSlotIndex);
+    public ulong CurrentEncodedKeyLow
+    {
+        get
+        {
+            Scalar16Scalar16ReadOnly shelf = CurrentShelf;
+            return terminalShelfFlags[currentShelfIndex] != 0 ? terminalKeyLows[currentShelfIndex] : shelf.ReadKeyLowAt(currentSlotIndex);
+        }
+    }
 
     /// <summary>
     /// Gets the encoded high identity lane for the current row.<br/>
     /// The value is the first persisted sortable identity lane used by the `SS16-16` shelf.<br/>
     /// </summary>
-    public ulong CurrentEncodedIdentityHigh => CurrentShelf.ReadIdentityHighAt(currentSlotIndex);
+    public ulong CurrentEncodedIdentityHigh
+    {
+        get
+        {
+            Scalar16Scalar16ReadOnly shelf = CurrentShelf;
+            return terminalShelfFlags[currentShelfIndex] != 0
+                ? System.Buffers.Binary.BinaryPrimitives.ReadUInt64BigEndian(TerminalVarIdentityShelfLayout.ReadIdentityAt(shelves[currentShelfIndex], currentSlotIndex))
+                : shelf.ReadIdentityHighAt(currentSlotIndex);
+        }
+    }
 
     /// <summary>
     /// Gets the encoded low identity lane for the current row.<br/>
     /// The value is the second persisted sortable identity lane used by the `SS16-16` shelf.<br/>
     /// </summary>
-    public ulong CurrentEncodedIdentityLow => CurrentShelf.ReadIdentityLowAt(currentSlotIndex);
+    public ulong CurrentEncodedIdentityLow
+    {
+        get
+        {
+            Scalar16Scalar16ReadOnly shelf = CurrentShelf;
+            return terminalShelfFlags[currentShelfIndex] != 0
+                ? System.Buffers.Binary.BinaryPrimitives.ReadUInt64BigEndian(TerminalVarIdentityShelfLayout.ReadIdentityAt(shelves[currentShelfIndex], currentSlotIndex).Slice(sizeof(ulong)))
+                : shelf.ReadIdentityLowAt(currentSlotIndex);
+        }
+    }
 
     /// <summary>
     /// Advances the reader and returns the next encoded 16-byte identity lanes without a separate current-row property read.<br/>
@@ -166,9 +209,7 @@ internal sealed class Scalar16Scalar16RangeReader : IDisposable
             return false;
         }
 
-        Scalar16Scalar16ReadOnly shelf = new(shelves[currentShelfIndex], profile);
-        encodedIdentityHigh = shelf.ReadIdentityHighAt(currentSlotIndex);
-        encodedIdentityLow = shelf.ReadIdentityLowAt(currentSlotIndex);
+        ReadCurrentIdentity(out encodedIdentityHigh, out encodedIdentityLow);
         return true;
     }
 
@@ -181,6 +222,13 @@ internal sealed class Scalar16Scalar16RangeReader : IDisposable
     public void ReadCurrentIdentity(out ulong encodedIdentityHigh, out ulong encodedIdentityLow)
     {
         Scalar16Scalar16ReadOnly shelf = CurrentShelf;
+        if (terminalShelfFlags[currentShelfIndex] != 0)
+        {
+            ReadOnlySpan<byte> identity = TerminalVarIdentityShelfLayout.ReadIdentityAt(shelves[currentShelfIndex], currentSlotIndex);
+            encodedIdentityHigh = System.Buffers.Binary.BinaryPrimitives.ReadUInt64BigEndian(identity);
+            encodedIdentityLow = System.Buffers.Binary.BinaryPrimitives.ReadUInt64BigEndian(identity.Slice(sizeof(ulong)));
+            return;
+        }
         encodedIdentityHigh = shelf.ReadIdentityHighAt(currentSlotIndex);
         encodedIdentityLow = shelf.ReadIdentityLowAt(currentSlotIndex);
     }
@@ -208,17 +256,19 @@ internal sealed class Scalar16Scalar16RangeReader : IDisposable
         if (ordinal < 0)
         {
             currentShelfIndex = 0;
-            currentSlotIndex = startSlots[0];
+            currentSlotIndex = profile.Descending ? endSlots[0] - 1 : startSlots[0];
         }
         else
         {
-            currentSlotIndex++;
-            while (currentShelfIndex < shelfCount && currentSlotIndex >= endSlots[currentShelfIndex])
+            currentSlotIndex += profile.Descending ? -1 : 1;
+            while (currentShelfIndex < shelfCount && (profile.Descending
+                ? currentSlotIndex < startSlots[currentShelfIndex]
+                : currentSlotIndex >= endSlots[currentShelfIndex]))
             {
                 currentShelfIndex++;
                 if (currentShelfIndex < shelfCount)
                 {
-                    currentSlotIndex = startSlots[currentShelfIndex];
+                    currentSlotIndex = profile.Descending ? endSlots[currentShelfIndex] - 1 : startSlots[currentShelfIndex];
                 }
             }
         }
@@ -262,17 +312,19 @@ internal sealed class Scalar16Scalar16RangeReader : IDisposable
             if (ordinal < 0)
             {
                 currentShelfIndex = 0;
-                currentSlotIndex = endSlots[0] - 1;
+                currentSlotIndex = profile.Descending ? startSlots[0] : endSlots[0] - 1;
             }
             else
             {
-                currentSlotIndex--;
-                while (currentShelfIndex < shelfCount && currentSlotIndex < startSlots[currentShelfIndex])
+                currentSlotIndex += profile.Descending ? 1 : -1;
+                while (currentShelfIndex < shelfCount && (profile.Descending
+                    ? currentSlotIndex >= endSlots[currentShelfIndex]
+                    : currentSlotIndex < startSlots[currentShelfIndex]))
                 {
                     currentShelfIndex++;
                     if (currentShelfIndex < shelfCount)
                     {
-                        currentSlotIndex = endSlots[currentShelfIndex] - 1;
+                        currentSlotIndex = profile.Descending ? startSlots[currentShelfIndex] : endSlots[currentShelfIndex] - 1;
                     }
                 }
             }
@@ -293,19 +345,21 @@ internal sealed class Scalar16Scalar16RangeReader : IDisposable
         if (ordinal < 0 || ordinal >= rowCount)
         {
             currentShelfIndex = shelfCount - 1;
-            currentSlotIndex = endSlots[currentShelfIndex] - 1;
+            currentSlotIndex = profile.Descending ? startSlots[currentShelfIndex] : endSlots[currentShelfIndex] - 1;
             ordinal = rowCount - 1;
             currentRowInvalidated = false;
             return true;
         }
 
-        currentSlotIndex--;
-        while (currentShelfIndex >= 0 && currentSlotIndex < startSlots[currentShelfIndex])
+        currentSlotIndex += profile.Descending ? 1 : -1;
+        while (currentShelfIndex >= 0 && (profile.Descending
+            ? currentSlotIndex >= endSlots[currentShelfIndex]
+            : currentSlotIndex < startSlots[currentShelfIndex]))
         {
             currentShelfIndex--;
             if (currentShelfIndex >= 0)
             {
-                currentSlotIndex = endSlots[currentShelfIndex] - 1;
+                currentSlotIndex = profile.Descending ? startSlots[currentShelfIndex] : endSlots[currentShelfIndex] - 1;
             }
         }
 
@@ -342,11 +396,9 @@ internal sealed class Scalar16Scalar16RangeReader : IDisposable
             return false;
         }
 
-        Scalar16Scalar16ReadOnly shelf = new(shelves[currentShelfIndex], profile);
-        encodedKeyHigh = shelf.ReadKeyHighAt(currentSlotIndex);
-        encodedKeyLow = shelf.ReadKeyLowAt(currentSlotIndex);
-        encodedIdentityHigh = shelf.ReadIdentityHighAt(currentSlotIndex);
-        encodedIdentityLow = shelf.ReadIdentityLowAt(currentSlotIndex);
+        encodedKeyHigh = CurrentEncodedKeyHigh;
+        encodedKeyLow = CurrentEncodedKeyLow;
+        ReadCurrentIdentity(out encodedIdentityHigh, out encodedIdentityLow);
         return true;
     }
 
@@ -453,6 +505,9 @@ internal sealed class Scalar16Scalar16RangeReader : IDisposable
         ArrayPool<long>.Shared.Return(shelfOffsets, clearArray: false);
         ArrayPool<int>.Shared.Return(startSlots, clearArray: false);
         ArrayPool<int>.Shared.Return(endSlots, clearArray: false);
+        ArrayPool<byte>.Shared.Return(terminalShelfFlags, clearArray: false);
+        ArrayPool<ulong>.Shared.Return(terminalKeyHighs, clearArray: false);
+        ArrayPool<ulong>.Shared.Return(terminalKeyLows, clearArray: false);
         if (pendingOffsets is not null)
         {
             ArrayPool<long>.Shared.Return(pendingOffsets, clearArray: false);
@@ -483,6 +538,9 @@ internal sealed class Scalar16Scalar16RangeReader : IDisposable
         visitedRouters = null;
         session = null;
         shelfOffsets = Array.Empty<long>();
+        terminalShelfFlags = Array.Empty<byte>();
+        terminalKeyHighs = Array.Empty<ulong>();
+        terminalKeyLows = Array.Empty<ulong>();
         shelfCount = 0;
         rowCount = 0;
         pendingCount = 0;
@@ -534,30 +592,34 @@ internal sealed class Scalar16Scalar16RangeReader : IDisposable
         }
 
         LibraDexFileSession localSession = session ?? throw new ObjectDisposedException(nameof(Scalar16Scalar16RangeReader));
-        Scalar16Scalar16 shelf = new(shelves[currentShelfIndex], profile);
-        bool terminalProjection = localSession.ClassifyScalar16Scalar16RouteTarget(shelfOffsets[currentShelfIndex]) == Scalar16Scalar16RouteTargetKind.TerminalIdentityRoot;
-        if (terminalProjection)
+        if (terminalShelfFlags[currentShelfIndex] != 0)
         {
-            Scalar16Scalar16ReadOnly current = new(shelves[currentShelfIndex], profile);
             Span<byte> keyBytes = stackalloc byte[Scalar16Scalar16Layout.KeySize];
-            System.Buffers.Binary.BinaryPrimitives.WriteUInt64BigEndian(keyBytes, current.ReadKeyHighAt(currentSlotIndex));
-            System.Buffers.Binary.BinaryPrimitives.WriteUInt64BigEndian(keyBytes.Slice(sizeof(ulong)), current.ReadKeyLowAt(currentSlotIndex));
-            if (localSession.DeleteFixedScalar16TerminalIdentity(shelfOffsets[currentShelfIndex], keyBytes, profile.ShelfExtentSize, current.ReadIdentityHighAt(currentSlotIndex), current.ReadIdentityLowAt(currentSlotIndex)) != 1)
+            System.Buffers.Binary.BinaryPrimitives.WriteUInt64BigEndian(keyBytes, terminalKeyHighs[currentShelfIndex]);
+            System.Buffers.Binary.BinaryPrimitives.WriteUInt64BigEndian(keyBytes.Slice(sizeof(ulong)), terminalKeyLows[currentShelfIndex]);
+            ReadOnlySpan<byte> identity = TerminalVarIdentityShelfLayout.ReadIdentityAt(shelves[currentShelfIndex], currentSlotIndex);
+            if (localSession.DeleteFixedScalar16TerminalIdentity(
+                shelfOffsets[currentShelfIndex], keyBytes, profile.ShelfExtentSize,
+                System.Buffers.Binary.BinaryPrimitives.ReadUInt64BigEndian(identity),
+                System.Buffers.Binary.BinaryPrimitives.ReadUInt64BigEndian(identity.Slice(sizeof(ulong)))) != 1)
                 return false;
+            currentRowInvalidated = true;
+            return true;
         }
 
+        Scalar16Scalar16 shelf = new(shelves[currentShelfIndex], profile);
         int removed = shelf.RemoveSlotRange(currentSlotIndex, 1);
         if (removed != 1)
         {
             return false;
         }
 
-        if (!terminalProjection)
-            _ = localSession.StageScalar16Scalar16ShelfRewriteForBatch(shelfOffsets[currentShelfIndex], profile, shelves[currentShelfIndex]);
+        _ = localSession.StageScalar16Scalar16ShelfRewriteForBatch(shelfOffsets[currentShelfIndex], profile, shelves[currentShelfIndex]);
         endSlots[currentShelfIndex]--;
         rowCount--;
         ordinal--;
-        currentSlotIndex--;
+        if (!profile.Descending)
+            currentSlotIndex--;
         currentRowInvalidated = true;
         return true;
     }
@@ -588,14 +650,13 @@ internal sealed class Scalar16Scalar16RangeReader : IDisposable
         Span<byte> terminalKeyBytes = stackalloc byte[Scalar16Scalar16Layout.KeySize];
         for (int i = 0; i < shelfCount; i++)
         {
-            if (localSession.ClassifyScalar16Scalar16RouteTarget(shelfOffsets[i]) == Scalar16Scalar16RouteTargetKind.TerminalIdentityRoot)
+            if (terminalShelfFlags[i] != 0)
             {
                 if (shelfOffsets[i] == deletedTerminalRoot)
                     continue;
 
-                Scalar16Scalar16ReadOnly terminalProjection = new(shelves[i], profile);
-                System.Buffers.Binary.BinaryPrimitives.WriteUInt64BigEndian(terminalKeyBytes, terminalProjection.ReadKeyHighAt(startSlots[i]));
-                System.Buffers.Binary.BinaryPrimitives.WriteUInt64BigEndian(terminalKeyBytes.Slice(sizeof(ulong)), terminalProjection.ReadKeyLowAt(startSlots[i]));
+                System.Buffers.Binary.BinaryPrimitives.WriteUInt64BigEndian(terminalKeyBytes, terminalKeyHighs[i]);
+                System.Buffers.Binary.BinaryPrimitives.WriteUInt64BigEndian(terminalKeyBytes.Slice(sizeof(ulong)), terminalKeyLows[i]);
                 deleted += localSession.DeleteFixedScalar16TerminalRoute(shelfOffsets[i], terminalKeyBytes, profile.ShelfExtentSize);
                 deletedTerminalRoot = shelfOffsets[i];
                 continue;
@@ -606,12 +667,14 @@ internal sealed class Scalar16Scalar16RangeReader : IDisposable
                 : shelves[i];
             Scalar16Scalar16ReadOnly readOnly = new(shelfBytes, profile);
             int startSlot = localSession.IsDurabilityBatchActive
-                ? readOnly.LowerBoundKey(lowerKeyHigh, lowerKeyLow)
+                ? readOnly.LowerBoundKey(profile.Descending ? upperKeyHigh : lowerKeyHigh, profile.Descending ? upperKeyLow : lowerKeyLow)
                 : startSlots[i];
             int endSlot = localSession.IsDurabilityBatchActive ? startSlot : endSlots[i];
             if (localSession.IsDurabilityBatchActive)
             {
-                while (endSlot < readOnly.ItemCount && CompareKey(readOnly.ReadKeyHighAt(endSlot), readOnly.ReadKeyLowAt(endSlot), upperKeyHigh, upperKeyLow) <= 0)
+                while (endSlot < readOnly.ItemCount && (profile.Descending
+                    ? CompareKey(readOnly.ReadKeyHighAt(endSlot), readOnly.ReadKeyLowAt(endSlot), lowerKeyHigh, lowerKeyLow) >= 0
+                    : CompareKey(readOnly.ReadKeyHighAt(endSlot), readOnly.ReadKeyLowAt(endSlot), upperKeyHigh, upperKeyLow) <= 0))
                 {
                     endSlot++;
                 }
@@ -648,6 +711,25 @@ internal sealed class Scalar16Scalar16RangeReader : IDisposable
         EnsureAllRangesLoaded();
         for (int i = 0; i < shelfCount; i++)
         {
+            if (terminalShelfFlags[i] != 0)
+            {
+                for (int slot = startSlots[i]; slot < endSlots[i]; slot++)
+                {
+                    ReadOnlySpan<byte> identity = TerminalVarIdentityShelfLayout.ReadIdentityAt(shelves[i], slot);
+                    if (System.Buffers.Binary.BinaryPrimitives.ReadUInt64BigEndian(identity) != encodedIdentityHigh ||
+                        System.Buffers.Binary.BinaryPrimitives.ReadUInt64BigEndian(identity.Slice(sizeof(ulong))) != encodedIdentityLow)
+                        continue;
+                    Span<byte> keyBytes = stackalloc byte[Scalar16Scalar16Layout.KeySize];
+                    System.Buffers.Binary.BinaryPrimitives.WriteUInt64BigEndian(keyBytes, terminalKeyHighs[i]);
+                    System.Buffers.Binary.BinaryPrimitives.WriteUInt64BigEndian(keyBytes.Slice(sizeof(ulong)), terminalKeyLows[i]);
+                    return localSession.DeleteFixedScalar16TerminalIdentity(
+                        shelfOffsets[i], keyBytes, profile.ShelfExtentSize,
+                        encodedIdentityHigh, encodedIdentityLow) == 1;
+                }
+
+                continue;
+            }
+
             Scalar16Scalar16ReadOnly readOnly = new(shelves[i], profile);
             for (int slot = startSlots[i]; slot < endSlots[i]; slot++)
             {
@@ -655,14 +737,6 @@ internal sealed class Scalar16Scalar16RangeReader : IDisposable
                     readOnly.ReadIdentityLowAt(slot) != encodedIdentityLow)
                 {
                     continue;
-                }
-
-                if (localSession.ClassifyScalar16Scalar16RouteTarget(shelfOffsets[i]) == Scalar16Scalar16RouteTargetKind.TerminalIdentityRoot)
-                {
-                    Span<byte> keyBytes = stackalloc byte[Scalar16Scalar16Layout.KeySize];
-                    System.Buffers.Binary.BinaryPrimitives.WriteUInt64BigEndian(keyBytes, readOnly.ReadKeyHighAt(slot));
-                    System.Buffers.Binary.BinaryPrimitives.WriteUInt64BigEndian(keyBytes.Slice(sizeof(ulong)), readOnly.ReadKeyLowAt(slot));
-                    return localSession.DeleteFixedScalar16TerminalIdentity(shelfOffsets[i], keyBytes, profile.ShelfExtentSize, encodedIdentityHigh, encodedIdentityLow) == 1;
                 }
 
                 Scalar16Scalar16 shelf = new(shelves[i], profile);
@@ -683,9 +757,11 @@ internal sealed class Scalar16Scalar16RangeReader : IDisposable
             throw new InvalidDataException("The routed SS16-16 range target shelf is invalid.");
         }
 
-        int startSlot = shelf.LowerBoundKey(lowerKeyHigh, lowerKeyLow);
+        int startSlot = shelf.LowerBoundKey(profile.Descending ? upperKeyHigh : lowerKeyHigh, profile.Descending ? upperKeyLow : lowerKeyLow);
         int endSlot = startSlot;
-        while (endSlot < shelf.ItemCount && CompareKey(shelf.ReadKeyHighAt(endSlot), shelf.ReadKeyLowAt(endSlot), upperKeyHigh, upperKeyLow) <= 0)
+        while (endSlot < shelf.ItemCount && (profile.Descending
+            ? CompareKey(shelf.ReadKeyHighAt(endSlot), shelf.ReadKeyLowAt(endSlot), lowerKeyHigh, lowerKeyLow) >= 0
+            : CompareKey(shelf.ReadKeyHighAt(endSlot), shelf.ReadKeyLowAt(endSlot), upperKeyHigh, upperKeyLow) <= 0))
         {
             endSlot++;
         }
@@ -704,6 +780,7 @@ internal sealed class Scalar16Scalar16RangeReader : IDisposable
         shelfOffsets[shelfCount] = shelfOffset;
         startSlots[shelfCount] = startSlot;
         endSlots[shelfCount] = endSlot;
+        terminalShelfFlags[shelfCount] = 0;
         shelfCount++;
         rowCount = checked(rowCount + endSlot - startSlot);
     }
@@ -719,6 +796,19 @@ internal sealed class Scalar16Scalar16RangeReader : IDisposable
         RouteVisitedOffsetSet localVisitedShelves = visitedShelves ?? throw new ObjectDisposedException(nameof(Scalar16Scalar16RangeReader));
         RouteVisitedOffsetSet localVisitedRouters = visitedRouters ?? throw new ObjectDisposedException(nameof(Scalar16Scalar16RangeReader));
         int previousRowCount = rowCount;
+        while (pendingTerminalShelfOffset != 0)
+        {
+            long shelfOffset = pendingTerminalShelfOffset;
+            pendingTerminalShelfOffset = 0;
+            if (!localVisitedShelves.Add(shelfOffset))
+                break;
+            byte[] terminalBytes = localSession.ReadTerminalVarIdentityShelfBytes(shelfOffset, pendingTerminalShelfExtent);
+            pendingTerminalShelfOffset = TerminalVarIdentityShelfLayout.ReadNextShelfOffset(terminalBytes);
+            AddTerminalIdentityChunk(pendingTerminalRootOffset, pendingTerminalKeyHigh, pendingTerminalKeyLow, terminalBytes);
+            if (rowCount > previousRowCount)
+                return true;
+        }
+
         byte[] routerBytes = routerScratch ??= ArrayPool<byte>.Shared.Rent(RouterLayout.Size);
         Span<byte> routerPage = routerBytes.AsSpan(0, RouterLayout.Size);
         while (pendingCount > 0)
@@ -840,8 +930,8 @@ internal sealed class Scalar16Scalar16RangeReader : IDisposable
     }
 
     /// <summary>
-    /// Projects one fixed-key scalar-16 terminal route into bounded ordinary `SS16-16` cursor shelves.<br/>
-    /// The terminal key is decoded once and canonical identities remain in persisted order.<br/>
+    /// Opens one fixed-key scalar-16 terminal route in its persisted physical direction.<br/>
+    /// Matching traversal retains one identity-only shelf at a time; reverse traversal loads the chain before its first row.<br/>
     /// </summary>
     private void AddTerminalIdentityRootRanges(long rootOffset, LibraDexFileSession localSession)
     {
@@ -851,47 +941,80 @@ internal sealed class Scalar16Scalar16RangeReader : IDisposable
             TerminalIdentityRootLayout.ReadShelfExtentSize(rootBytes) != profile.ShelfExtentSize)
             throw new InvalidDataException("The routed SS16-16 terminal identity root does not match its owning index shape.");
 
+        if ((rootBytes[TerminalIdentityRootLayout.SortDirectionOffset] != 0) != profile.Descending)
+            throw new InvalidDataException("The routed SS16-16 terminal identity root physical order does not match its index profile.");
+
         ReadOnlySpan<byte> keyBytes = rootBytes.AsSpan(TerminalIdentityRootLayout.KeyBytesOffset, Scalar16Scalar16Layout.KeySize);
         ulong keyHigh = System.Buffers.Binary.BinaryPrimitives.ReadUInt64BigEndian(keyBytes);
         ulong keyLow = System.Buffers.Binary.BinaryPrimitives.ReadUInt64BigEndian(keyBytes.Slice(sizeof(ulong)));
         if (CompareKey(keyHigh, keyLow, lowerKeyHigh, lowerKeyLow) < 0 || CompareKey(keyHigh, keyLow, upperKeyHigh, upperKeyLow) > 0)
             return;
 
-        byte[][] identities = localSession.ReadFixedScalar16TerminalIdentities(rootOffset, keyBytes, profile.ShelfExtentSize);
-        int capacity = profile.MaxItemCount;
-        if (!descendingTraversal)
+        pendingTerminalRootOffset = rootOffset;
+        pendingTerminalShelfExtent = TerminalIdentityRootLayout.ReadShelfExtentSize(rootBytes);
+        pendingTerminalKeyHigh = keyHigh;
+        pendingTerminalKeyLow = keyLow;
+        pendingTerminalShelfOffset = TerminalIdentityRootLayout.ReadFirstShelfOffset(rootBytes);
+        RouteVisitedOffsetSet localVisitedShelves = visitedShelves ?? throw new ObjectDisposedException(nameof(Scalar16Scalar16RangeReader));
+        if (profile.Descending != descendingTraversal)
         {
-            for (int start = 0; start < identities.Length; start += capacity)
-                AddTerminalIdentityChunk(rootOffset, keyHigh, keyLow, identities, start, Math.Min(capacity, identities.Length - start));
+            List<byte[]> chain = [];
+            while (pendingTerminalShelfOffset != 0)
+            {
+                long shelfOffset = pendingTerminalShelfOffset;
+                pendingTerminalShelfOffset = 0;
+                if (!localVisitedShelves.Add(shelfOffset))
+                    break;
+                byte[] shelfBytes = localSession.ReadTerminalVarIdentityShelfBytes(shelfOffset, pendingTerminalShelfExtent);
+                pendingTerminalShelfOffset = TerminalVarIdentityShelfLayout.ReadNextShelfOffset(shelfBytes);
+                chain.Add(shelfBytes);
+            }
+
+            pendingTerminalShelfOffset = 0;
+            for (int i = chain.Count - 1; i >= 0; i--)
+                AddTerminalIdentityChunk(rootOffset, keyHigh, keyLow, chain[i]);
             return;
         }
 
-        int finalChunkStart = identities.Length == 0 ? 0 : ((identities.Length - 1) / capacity) * capacity;
-        for (int start = finalChunkStart; start >= 0 && start < identities.Length; start -= capacity)
-            AddTerminalIdentityChunk(rootOffset, keyHigh, keyLow, identities, start, Math.Min(capacity, identities.Length - start));
+        while (pendingTerminalShelfOffset != 0)
+        {
+            long shelfOffset = pendingTerminalShelfOffset;
+            pendingTerminalShelfOffset = 0;
+            if (!localVisitedShelves.Add(shelfOffset))
+                break;
+            byte[] shelfBytes = localSession.ReadTerminalVarIdentityShelfBytes(shelfOffset, pendingTerminalShelfExtent);
+            pendingTerminalShelfOffset = TerminalVarIdentityShelfLayout.ReadNextShelfOffset(shelfBytes);
+            int previousCount = rowCount;
+            AddTerminalIdentityChunk(rootOffset, keyHigh, keyLow, shelfBytes);
+            if (rowCount > previousCount)
+                break;
+        }
     }
 
     /// <summary>
-    /// Builds one transient `SS16-16` projection shelf for a contiguous identity slice.<br/>
-    /// The cursor owns this ordinary-shelf image; persisted storage continues to retain the key once.<br/>
+    /// Retains one identity-only terminal shelf and its sixteen-byte fixed key as direct cursor state.<br/>
+    /// No ordinary `SS16-16` projection shelf or per-identity object is constructed.<br/>
     /// </summary>
-    private void AddTerminalIdentityChunk(long rootOffset, ulong keyHigh, ulong keyLow, IReadOnlyList<byte[]> identities, int start, int count)
+    private void AddTerminalIdentityChunk(long rootOffset, ulong keyHigh, ulong keyLow, byte[] shelfBytes)
     {
-        byte[] shelfBytes = ArrayPool<byte>.Shared.Rent(profile.ShelfExtentSize);
-        shelfBytes.AsSpan(0, profile.ShelfExtentSize).Clear();
-        Scalar16Scalar16 shelf = new(shelfBytes, profile);
-        shelf.Initialize();
-        for (int i = 0; i < count; i++)
+        int itemCount = TerminalVarIdentityShelfLayout.ReadItemCount(shelfBytes);
+        if (itemCount == 0)
         {
-            ReadOnlySpan<byte> identity = identities[start + i];
-            ulong high = System.Buffers.Binary.BinaryPrimitives.ReadUInt64BigEndian(identity);
-            ulong low = System.Buffers.Binary.BinaryPrimitives.ReadUInt64BigEndian(identity.Slice(sizeof(ulong)));
-            Scalar16Scalar16InsertResult insert = shelf.Insert(keyHigh, keyLow, high, low, allowDuplicateKeys: true);
-            if (insert != Scalar16Scalar16InsertResult.Inserted)
-                throw new InvalidDataException($"Expected SS16-16 terminal cursor projection insert, got {insert}.");
+            ArrayPool<byte>.Shared.Return(shelfBytes, clearArray: false);
+            return;
         }
 
-        AddShelfRange(rootOffset, shelfBytes);
+        if (shelfCount == shelves.Length)
+            GrowShelves();
+        shelves[shelfCount] = shelfBytes;
+        shelfOffsets[shelfCount] = rootOffset;
+        startSlots[shelfCount] = 0;
+        endSlots[shelfCount] = itemCount;
+        terminalShelfFlags[shelfCount] = 1;
+        terminalKeyHighs[shelfCount] = keyHigh;
+        terminalKeyLows[shelfCount] = keyLow;
+        shelfCount++;
+        rowCount = checked(rowCount + itemCount);
     }
 
     private void EnsureAllRangesLoaded()
@@ -952,18 +1075,30 @@ internal sealed class Scalar16Scalar16RangeReader : IDisposable
         long[] newShelfOffsets = ArrayPool<long>.Shared.Rent(newLength);
         int[] newStartSlots = ArrayPool<int>.Shared.Rent(newLength);
         int[] newEndSlots = ArrayPool<int>.Shared.Rent(newLength);
+        byte[] newTerminalFlags = ArrayPool<byte>.Shared.Rent(newLength);
+        ulong[] newTerminalKeyHighs = ArrayPool<ulong>.Shared.Rent(newLength);
+        ulong[] newTerminalKeyLows = ArrayPool<ulong>.Shared.Rent(newLength);
         Array.Copy(shelves, newShelves, shelfCount);
         shelfOffsets.AsSpan(0, shelfCount).CopyTo(newShelfOffsets);
         startSlots.AsSpan(0, shelfCount).CopyTo(newStartSlots);
         endSlots.AsSpan(0, shelfCount).CopyTo(newEndSlots);
+        terminalShelfFlags.AsSpan(0, shelfCount).CopyTo(newTerminalFlags);
+        terminalKeyHighs.AsSpan(0, shelfCount).CopyTo(newTerminalKeyHighs);
+        terminalKeyLows.AsSpan(0, shelfCount).CopyTo(newTerminalKeyLows);
         ArrayPool<byte[]>.Shared.Return(shelves, clearArray: true);
         ArrayPool<long>.Shared.Return(shelfOffsets, clearArray: false);
         ArrayPool<int>.Shared.Return(startSlots, clearArray: false);
         ArrayPool<int>.Shared.Return(endSlots, clearArray: false);
+        ArrayPool<byte>.Shared.Return(terminalShelfFlags, clearArray: false);
+        ArrayPool<ulong>.Shared.Return(terminalKeyHighs, clearArray: false);
+        ArrayPool<ulong>.Shared.Return(terminalKeyLows, clearArray: false);
         shelves = newShelves;
         shelfOffsets = newShelfOffsets;
         startSlots = newStartSlots;
         endSlots = newEndSlots;
+        terminalShelfFlags = newTerminalFlags;
+        terminalKeyHighs = newTerminalKeyHighs;
+        terminalKeyLows = newTerminalKeyLows;
     }
 
     private void PositionAtOrdinal(int targetOrdinal)
@@ -975,7 +1110,7 @@ internal sealed class Scalar16Scalar16RangeReader : IDisposable
             if (remaining < length)
             {
                 currentShelfIndex = i;
-                currentSlotIndex = startSlots[i] + remaining;
+                currentSlotIndex = profile.Descending ? endSlots[i] - 1 - remaining : startSlots[i] + remaining;
                 ordinal = targetOrdinal;
                 return;
             }
@@ -1002,7 +1137,7 @@ internal sealed class Scalar16Scalar16RangeReader : IDisposable
             if (remaining < length)
             {
                 currentShelfIndex = i;
-                currentSlotIndex = endSlots[i] - 1 - remaining;
+                currentSlotIndex = profile.Descending ? startSlots[i] + remaining : endSlots[i] - 1 - remaining;
                 ordinal = targetOrdinal;
                 return;
             }

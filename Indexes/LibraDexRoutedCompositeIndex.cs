@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Collections;
 using System.Buffers.Binary;
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace LibraDex;
 
@@ -18,11 +19,12 @@ public delegate void LibraDexCompositeEntryVisitor(ReadOnlySpan<object?> keyPart
 /// Each composite part is stored as its own tier value, so repeated leading values are represented once as a route node rather than duplicated into every terminal key.<br/>
 /// This slice intentionally proves condition semantics before the mini-router node format is persisted into DataKernel pages.<br/>
 /// </summary>
-public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExecutor, IIdentityPrimitiveMutator, IIdentityPrimitiveTupleExecutor, IIdentityPrimitiveTupleStreamer, IIdentityExactTupleMutator
+public sealed partial class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExecutor, IIdentityPrimitiveMutator, IIdentityPrimitiveTupleExecutor, IIdentityPrimitiveTupleStreamer, IIdentityExactTupleMutator
 {
     private const int MaxCompositeDepth = 16;
     private readonly Catalog catalog;
     private readonly LibraDexIndexShapeSpec shape;
+    private readonly LibraDexIndexSortOrder sortOrder;
     private readonly LibraDexFileSession? session;
     private readonly int? slotIndex;
     private readonly CompositeNode root = new();
@@ -36,13 +38,15 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
     /// <param name="session">The optional owning file session for durable snapshot updates.</param>
     /// <param name="slotIndex">The optional fixed catalog slot that anchors the durable snapshot.</param>
     /// <param name="entries">Optional reopened entries to load into the routed tier tree.</param>
+    /// <param name="sortOrder">The persisted natural tuple direction when creation options override the shape default.<br/></param>
     internal LibraDexRoutedCompositeIndex(
         Catalog catalog,
         LibraDexIndexShapeSpec shape,
         LibraDexFileSession? session,
         int? slotIndex,
-        IReadOnlyList<LibraDexCompositeEntry>? entries = null)
-        : this(catalog, shape, session, slotIndex, rootOffset: 0, itemCount: 0, entries)
+        IReadOnlyList<LibraDexCompositeEntry>? entries = null,
+        LibraDexIndexSortOrder? sortOrder = null)
+        : this(catalog, shape, session, slotIndex, rootOffset: 0, itemCount: 0, entries, sortOrder)
     {
     }
 
@@ -54,13 +58,15 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
     /// <param name="session">The optional owning file session for durable node updates.</param>
     /// <param name="slotIndex">The optional fixed catalog slot that anchors the durable root.</param>
     /// <param name="rootOffset">The durable root node page offset, or zero for memory-only indexes.</param>
+    /// <param name="sortOrder">The persisted natural tuple direction when creation options override the shape default.<br/></param>
     internal LibraDexRoutedCompositeIndex(
         Catalog catalog,
         LibraDexIndexShapeSpec shape,
         LibraDexFileSession? session,
         int? slotIndex,
-        long rootOffset)
-        : this(catalog, shape, session, slotIndex, rootOffset, itemCount: 0, entries: null)
+        long rootOffset,
+        LibraDexIndexSortOrder? sortOrder = null)
+        : this(catalog, shape, session, slotIndex, rootOffset, itemCount: 0, entries: null, sortOrder)
     {
     }
 
@@ -71,7 +77,8 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
         int? slotIndex,
         long rootOffset,
         long itemCount,
-        IReadOnlyList<LibraDexCompositeEntry>? entries = null)
+        IReadOnlyList<LibraDexCompositeEntry>? entries = null,
+        LibraDexIndexSortOrder? sortOrder = null)
     {
         this.catalog = catalog ?? throw new ArgumentNullException(nameof(catalog));
         ArgumentNullException.ThrowIfNull(shape);
@@ -86,6 +93,7 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
         }
 
         this.shape = shape;
+        this.sortOrder = sortOrder ?? shape.SortOrder;
         this.session = session;
         this.slotIndex = slotIndex;
         this.itemCount = itemCount;
@@ -108,6 +116,7 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
     /// <param name="slotIndex">The fixed catalog slot anchoring the root node.</param>
     /// <param name="rootOffset">The durable root node page offset.</param>
     /// <param name="itemCount">The logical tuple count stored in the catalog slot.</param>
+    /// <param name="sortOrder">The persisted natural tuple direction.<br/></param>
     /// <returns>A routed composite index loaded from node pages.</returns>
     internal static LibraDexRoutedCompositeIndex OpenFromNodePages(
         Catalog catalog,
@@ -115,9 +124,10 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
         LibraDexFileSession session,
         int slotIndex,
         long rootOffset,
-        long itemCount)
+        long itemCount,
+        LibraDexIndexSortOrder? sortOrder = null)
     {
-        LibraDexRoutedCompositeIndex index = new(catalog, shape, session, slotIndex, rootOffset, itemCount);
+        LibraDexRoutedCompositeIndex index = new(catalog, shape, session, slotIndex, rootOffset, itemCount, sortOrder: sortOrder);
         index.root.MarkUnloaded(rootOffset);
         return index;
     }
@@ -168,6 +178,11 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
     /// Gets the logical composite shape descriptor.<br/>
     /// </summary>
     public LibraDexIndexShapeSpec? LogicalShape => shape;
+
+    /// <summary>
+    /// Gets the persisted natural traversal order, including per-index creation-option overrides.<br/>
+    /// </summary>
+    public LibraDexIndexSortOrder SortOrder => sortOrder;
 
     /// <summary>
     /// Gets a composite condition root for this opened routed composite index.<br/>
@@ -238,7 +253,8 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
     /// <returns>An insert result describing whether a new terminal identity was added.</returns>
     public LibraDexGenericInsertResult Insert(LibraDexCompositeKey key, object identity)
     {
-        return AddEntry(key, identity, persist: true);
+        lock (this)
+            return AddEntry(key, identity, persist: true);
     }
 
     /// <summary>
@@ -273,7 +289,8 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
             catalog,
             shape,
             session: null,
-            slotIndex: null);
+            slotIndex: null,
+            sortOrder: sortOrder);
         foreach ((LibraDexCompositeKey key, object identity) in entries)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -302,9 +319,16 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
     /// </summary>
     /// <param name="key">The composite key values to route.</param>
     /// <param name="identity">The identity to store at the terminal path.</param>
-    /// <param name="persist">Whether to persist a replacement snapshot after a successful insert.</param>
+    /// <param name="persist">Whether to persist one immediate replacement root after a successful insert.<br/></param>
+    /// <param name="batchPath">Optional reusable path buffer for bounded bulk insertion.<br/></param>
+    /// <param name="dirtyNodes">Optional set receiving changed path nodes for grouped publication.<br/></param>
     /// <returns>An insert result describing whether a terminal identity was added.</returns>
-    private LibraDexGenericInsertResult AddEntry(LibraDexCompositeKey key, object identity, bool persist)
+    private LibraDexGenericInsertResult AddEntry(
+        LibraDexCompositeKey key,
+        object identity,
+        bool persist,
+        CompositeNode[]? batchPath = null,
+        HashSet<CompositeNode>? dirtyNodes = null)
     {
         ArgumentNullException.ThrowIfNull(key);
         ValidateIdentity(identity);
@@ -315,9 +339,9 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
         }
 
         CompositeNode node = root;
-        CompositeNode[] path = persist && session is not null && slotIndex is not null
+        CompositeNode[] path = batchPath ?? (persist && session is not null && slotIndex is not null
             ? new CompositeNode[shape.CompositeParts.Count + 1]
-            : Array.Empty<CompositeNode>();
+            : Array.Empty<CompositeNode>());
         if (path.Length != 0)
         {
             path[0] = root;
@@ -335,10 +359,15 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
         }
 
         EnsureNodeLoaded(node, shape.CompositeParts.Count);
-        bool inserted = node.AddIdentity(identity, KeyContract);
+        bool inserted = node.AddIdentity(identity, KeyContract, sortOrder == LibraDexIndexSortOrder.Descending);
         if (inserted)
         {
             itemCount++;
+            if (dirtyNodes is not null)
+            {
+                for (int tier = 0; tier < path.Length; tier++)
+                    dirtyNodes.Add(path[tier]);
+            }
         }
 
         if (inserted &&
@@ -579,11 +608,11 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
     {
         return request.CriteriaKind switch
         {
-            LibraDexCriteriaKind.All => EnumerateEntries()
+            LibraDexCriteriaKind.All => EnumerateEntries(request.Direction)
                 .Select(entry => new LibraDexObjectTuple(entry.Key, entry.Identity))
                 .ToArray(),
-            LibraDexCriteriaKind.Find => EnumerateExactTuples(RequireCompositeKey(request.Values, 0)).ToArray(),
-            LibraDexCriteriaKind.CompositeMatch => EnumerateCompositeMatchTuples(RequireCompositePredicate(request.Values, 0)).ToArray(),
+            LibraDexCriteriaKind.Find => EnumerateExactTuples(RequireCompositeKey(request.Values, 0), request.Direction).ToArray(),
+            LibraDexCriteriaKind.CompositeMatch => EnumerateCompositeMatchTuples(RequireCompositePredicate(request.Values, 0), request.Direction).ToArray(),
             _ => throw new NotSupportedException($"{request.CriteriaKind} is not connected to routed composite tuple execution.")
         };
     }
@@ -609,21 +638,23 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
 
     IReadOnlyList<object> IIdentityPrimitiveExecutor.ExecuteAllIdentities()
     {
-        return EnumerateIdentities(root, tier: 0).ToArray();
+        return EnumerateIdentities(root, tier: 0,
+            sortOrder == LibraDexIndexSortOrder.Descending ? QueryDirection.Descending : QueryDirection.Ascending).ToArray();
     }
 
     IEnumerable<object> IIdentityPrimitiveExecutor.IterateIdentityUniverse()
     {
-        return EnumerateIdentities(root, tier: 0);
+        return EnumerateIdentities(root, tier: 0,
+            sortOrder == LibraDexIndexSortOrder.Descending ? QueryDirection.Descending : QueryDirection.Ascending);
     }
 
     private IEnumerable<object> IterateIdentityPrimitive(LibraDexIdentityPrimitiveRequest request)
     {
         return request.CriteriaKind switch
         {
-            LibraDexCriteriaKind.All => ApplyTake(EnumerateIdentities(root, tier: 0), request.TakeLimit),
-            LibraDexCriteriaKind.Find => ApplyTake(FindExact(RequireCompositeKey(request.Values, 0)), request.TakeLimit),
-            LibraDexCriteriaKind.CompositeMatch => ApplyTake(FindCompositeMatch(RequireCompositePredicate(request.Values, 0)), request.TakeLimit),
+            LibraDexCriteriaKind.All => ApplyTake(EnumerateIdentities(root, tier: 0, request.Direction), request.TakeLimit),
+            LibraDexCriteriaKind.Find => ApplyTake(FindExact(RequireCompositeKey(request.Values, 0), request.Direction), request.TakeLimit),
+            LibraDexCriteriaKind.CompositeMatch => ApplyTake(FindCompositeMatch(RequireCompositePredicate(request.Values, 0), request.Direction), request.TakeLimit),
             _ => throw new NotSupportedException($"{request.CriteriaKind} is not connected to routed composite execution.")
         };
     }
@@ -655,9 +686,9 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
     {
         return request.CriteriaKind switch
         {
-            LibraDexCriteriaKind.All => IterateAllTupleObjects(request.TakeLimit),
-            LibraDexCriteriaKind.Find => ApplyTupleTake(EnumerateExactTuples(RequireCompositeKey(request.Values, 0)), request.TakeLimit),
-            LibraDexCriteriaKind.CompositeMatch => ApplyTupleTake(EnumerateCompositeMatchTuples(RequireCompositePredicate(request.Values, 0)), request.TakeLimit),
+            LibraDexCriteriaKind.All => IterateAllTupleObjects(request.TakeLimit, request.Direction),
+            LibraDexCriteriaKind.Find => ApplyTupleTake(EnumerateExactTuples(RequireCompositeKey(request.Values, 0), request.Direction), request.TakeLimit),
+            LibraDexCriteriaKind.CompositeMatch => ApplyTupleTake(EnumerateCompositeMatchTuples(RequireCompositePredicate(request.Values, 0), request.Direction), request.TakeLimit),
             _ => ((IIdentityPrimitiveTupleExecutor)this).ExecuteTuplePrimitive(request)
         };
     }
@@ -668,10 +699,10 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
     /// </summary>
     /// <param name="takeLimit">The optional maximum number of tuples to return.<br/></param>
     /// <returns>A forward-only tuple sequence over all composite entries.<br/></returns>
-    private IEnumerable<LibraDexObjectTuple> IterateAllTupleObjects(int? takeLimit)
+    private IEnumerable<LibraDexObjectTuple> IterateAllTupleObjects(int? takeLimit, QueryDirection direction = QueryDirection.Ascending)
     {
         int yielded = 0;
-        foreach (LibraDexCompositeEntry entry in EnumerateEntries())
+        foreach (LibraDexCompositeEntry entry in EnumerateEntries(direction))
         {
             if (takeLimit is not null && yielded >= takeLimit.Value)
             {
@@ -715,7 +746,7 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
         }
     }
 
-    private IEnumerable<object> FindExact(LibraDexCompositeKey key)
+    private IEnumerable<object> FindExact(LibraDexCompositeKey key, QueryDirection direction = QueryDirection.Ascending)
     {
         key.ValidateAgainst(shape);
         CompositeNode? node = root;
@@ -729,10 +760,11 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
         }
 
         EnsureNodeLoaded(node, shape.CompositeParts.Count);
-        foreach (object identity in node.Identities)
-        {
-            yield return identity;
-        }
+        bool reverse = (direction == QueryDirection.Descending) != (sortOrder == LibraDexIndexSortOrder.Descending);
+        for (int i = reverse ? node.Identities.Count - 1 : 0;
+            reverse ? i >= 0 : i < node.Identities.Count;
+            i += reverse ? -1 : 1)
+            yield return node.Identities[i];
     }
 
     /// <summary>
@@ -764,9 +796,9 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
     /// </summary>
     /// <param name="key">The complete composite key to locate.</param>
     /// <returns>The matching key/identity tuples.</returns>
-    private IEnumerable<LibraDexObjectTuple> EnumerateExactTuples(LibraDexCompositeKey key)
+    private IEnumerable<LibraDexObjectTuple> EnumerateExactTuples(LibraDexCompositeKey key, QueryDirection direction = QueryDirection.Ascending)
     {
-        foreach (object identity in FindExact(key))
+        foreach (object identity in FindExact(key, direction))
         {
             yield return new LibraDexObjectTuple(key, identity);
         }
@@ -897,13 +929,13 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
         return true;
     }
 
-    private IEnumerable<object> FindCompositeMatch(LibraDexCompositePredicate predicate)
+    private IEnumerable<object> FindCompositeMatch(LibraDexCompositePredicate predicate, QueryDirection direction = QueryDirection.Ascending)
     {
         predicate.ValidateAgainst(shape);
-        object?[] values = predicate.HasFullKeyCriterion
+        object?[] values = predicate.RequiresTerminalValues
             ? new object?[shape.CompositeParts.Count]
             : Array.Empty<object?>();
-        foreach (object identity in Traverse(root, tier: 0, predicate, values))
+        foreach (object identity in Traverse(root, tier: 0, predicate, values, direction))
         {
             yield return identity;
         }
@@ -918,7 +950,7 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
     private long CountCompositeMatch(LibraDexCompositePredicate predicate)
     {
         predicate.ValidateAgainst(shape);
-        object?[] values = predicate.HasFullKeyCriterion
+        object?[] values = predicate.RequiresTerminalValues
             ? new object?[shape.CompositeParts.Count]
             : Array.Empty<object?>();
         return CountCompositeMatch(root, tier: 0, predicate, values);
@@ -942,7 +974,7 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
         if (tier >= shape.CompositeParts.Count)
         {
             EnsureNodeLoaded(node, tier);
-            return MatchesFullKeyIfNeeded(predicate, fullKeyValues)
+            return MatchesTerminalCriteria(predicate, fullKeyValues)
                 ? node.Identities.Count
                 : 0;
         }
@@ -978,11 +1010,11 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
     /// </summary>
     /// <param name="predicate">The composite predicate materialized from the condition builder.</param>
     /// <returns>The matching key/identity tuples.</returns>
-    private IEnumerable<LibraDexObjectTuple> EnumerateCompositeMatchTuples(LibraDexCompositePredicate predicate)
+    private IEnumerable<LibraDexObjectTuple> EnumerateCompositeMatchTuples(LibraDexCompositePredicate predicate, QueryDirection direction = QueryDirection.Ascending)
     {
         predicate.ValidateAgainst(shape);
         object?[] values = new object?[shape.CompositeParts.Count];
-        foreach (LibraDexObjectTuple tuple in EnumerateCompositeMatchTuples(root, tier: 0, predicate, values))
+        foreach (LibraDexObjectTuple tuple in EnumerateCompositeMatchTuples(root, tier: 0, predicate, values, direction))
         {
             yield return tuple;
         }
@@ -1001,17 +1033,21 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
         CompositeNode node,
         int tier,
         LibraDexCompositePredicate predicate,
-        object?[] values)
+        object?[] values,
+        QueryDirection direction = QueryDirection.Ascending)
     {
+        bool reverse = (direction == QueryDirection.Descending) != (sortOrder == LibraDexIndexSortOrder.Descending);
         if (tier >= shape.CompositeParts.Count)
         {
             EnsureNodeLoaded(node, tier);
-            if (MatchesFullKeyIfNeeded(predicate, values))
+            if (MatchesTerminalCriteria(predicate, values))
             {
                 LibraDexCompositeKey key = LibraDexCompositeKey.TakePositionalValues(values.ToArray());
-                foreach (object identity in node.Identities)
+                for (int i = reverse ? node.Identities.Count - 1 : 0;
+                    reverse ? i >= 0 : i < node.Identities.Count;
+                    i += reverse ? -1 : 1)
                 {
-                    yield return new LibraDexObjectTuple(key, identity);
+                    yield return new LibraDexObjectTuple(key, node.Identities[i]);
                 }
             }
 
@@ -1021,10 +1057,13 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
         LibraDexCompositeKeyPartSpec part = shape.CompositeParts[tier];
         if (predicate.TryGetPart(part.Name, out LibraDexCompositePartCriterion? criterion))
         {
-            foreach (CompositeNode child in MatchedChildren(node, tier, criterion!))
+            IEnumerable<CompositeNode> matched = MatchedChildren(node, tier, criterion!);
+            if (reverse)
+                matched = matched.Reverse();
+            foreach (CompositeNode child in matched)
             {
                 values[tier] = child.RouteValue ?? throw new InvalidDataException("Composite tuple traversal encountered a child route without a component value.");
-                foreach (LibraDexObjectTuple tuple in EnumerateCompositeMatchTuples(child, tier + 1, predicate, values))
+                foreach (LibraDexObjectTuple tuple in EnumerateCompositeMatchTuples(child, tier + 1, predicate, values, direction))
                 {
                     yield return tuple;
                 }
@@ -1036,10 +1075,13 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
         }
 
         EnsureNodeLoaded(node, tier);
-        foreach (CompositeChild child in node.Children)
+        for (int i = reverse ? node.Children.Count - 1 : 0;
+            reverse ? i >= 0 : i < node.Children.Count;
+            i += reverse ? -1 : 1)
         {
+            CompositeChild child = node.Children[i];
             values[tier] = child.Node.RouteValue ?? throw new InvalidDataException("Composite tuple traversal encountered a child route without a component value.");
-            foreach (LibraDexObjectTuple tuple in EnumerateCompositeMatchTuples(child.Node, tier + 1, predicate, values))
+            foreach (LibraDexObjectTuple tuple in EnumerateCompositeMatchTuples(child.Node, tier + 1, predicate, values, direction))
             {
                 yield return tuple;
             }
@@ -1052,16 +1094,20 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
         CompositeNode node,
         int tier,
         LibraDexCompositePredicate predicate,
-        object?[] fullKeyValues)
+        object?[] fullKeyValues,
+        QueryDirection direction = QueryDirection.Ascending)
     {
+        bool reverse = (direction == QueryDirection.Descending) != (sortOrder == LibraDexIndexSortOrder.Descending);
         if (tier >= shape.CompositeParts.Count)
         {
             EnsureNodeLoaded(node, tier);
-            if (MatchesFullKeyIfNeeded(predicate, fullKeyValues))
+            if (MatchesTerminalCriteria(predicate, fullKeyValues))
             {
-                foreach (object identity in node.Identities)
+                for (int i = reverse ? node.Identities.Count - 1 : 0;
+                    reverse ? i >= 0 : i < node.Identities.Count;
+                    i += reverse ? -1 : 1)
                 {
-                    yield return identity;
+                    yield return node.Identities[i];
                 }
             }
 
@@ -1071,10 +1117,13 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
         LibraDexCompositeKeyPartSpec part = shape.CompositeParts[tier];
         if (predicate.TryGetPart(part.Name, out LibraDexCompositePartCriterion? criterion))
         {
-            foreach (CompositeNode child in MatchedChildren(node, tier, criterion!))
+            IEnumerable<CompositeNode> matched = MatchedChildren(node, tier, criterion!);
+            if (reverse)
+                matched = matched.Reverse();
+            foreach (CompositeNode child in matched)
             {
                 SetFullKeyValue(fullKeyValues, tier, child);
-                foreach (object identity in Traverse(child, tier + 1, predicate, fullKeyValues))
+                foreach (object identity in Traverse(child, tier + 1, predicate, fullKeyValues, direction))
                 {
                     yield return identity;
                 }
@@ -1086,10 +1135,13 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
         }
 
         EnsureNodeLoaded(node, tier);
-        foreach (CompositeChild child in node.Children)
+        for (int i = reverse ? node.Children.Count - 1 : 0;
+            reverse ? i >= 0 : i < node.Children.Count;
+            i += reverse ? -1 : 1)
         {
+            CompositeChild child = node.Children[i];
             SetFullKeyValue(fullKeyValues, tier, child.Node);
-            foreach (object identity in Traverse(child.Node, tier + 1, predicate, fullKeyValues))
+            foreach (object identity in Traverse(child.Node, tier + 1, predicate, fullKeyValues, direction))
             {
                 yield return identity;
             }
@@ -1109,7 +1161,7 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
         ThrowIfSessionDurabilityBatchActiveForMutation();
 
         predicate.ValidateAgainst(shape);
-        object?[] values = predicate.HasFullKeyCriterion
+        object?[] values = predicate.RequiresTerminalValues
             ? new object?[shape.CompositeParts.Count]
             : Array.Empty<object?>();
         long deleted = DeleteCompositeMatch(root, tier: 0, predicate, values);
@@ -1141,7 +1193,7 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
         EnsureNodeLoaded(node, tier);
         if (tier >= shape.CompositeParts.Count)
         {
-            if (MatchesFullKeyIfNeeded(predicate, fullKeyValues))
+            if (MatchesTerminalCriteria(predicate, fullKeyValues))
             {
                 return node.ClearIdentities();
             }
@@ -1193,16 +1245,92 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
     /// <param name="predicate">The composite predicate that may contain a full-key criterion.</param>
     /// <param name="fullKeyValues">The current routed path values in composite part order.</param>
     /// <returns><see langword="true"/> when no full-key predicate exists or the rendered key matches it.</returns>
-    private bool MatchesFullKeyIfNeeded(LibraDexCompositePredicate predicate, object?[] fullKeyValues)
+    private bool MatchesTerminalCriteria(LibraDexCompositePredicate predicate, object?[] fullKeyValues)
     {
-        if (!predicate.TryGetFullKeyPart(out LibraDexCompositePartCriterion? fullKeyCriterion))
+        if (predicate.TryGetFullKeyPart(out LibraDexCompositePartCriterion? fullKeyCriterion))
         {
-            return true;
+            LibraDexCompositePartCriterion criterion = fullKeyCriterion!;
+            byte[] fullKey = EncodeFullKey(shape, fullKeyValues, criterion);
+            if (!MatchesFullKeyBytes(shape, fullKey, criterion))
+                return false;
         }
 
-        LibraDexCompositePartCriterion criterion = fullKeyCriterion!;
-        byte[] fullKey = EncodeFullKey(shape, fullKeyValues, criterion);
-        return MatchesFullKeyBytes(shape, fullKey, criterion);
+        foreach (LibraDexCompositePartComparison comparison in predicate.PartComparisons)
+        {
+            if (!MatchesPartComparison(comparison, fullKeyValues))
+                return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Evaluates one declared-component comparison after a routed composite tuple is complete.<br/>
+    /// Null routes never match, matching property-comparison semantics that require both selected values to be present.<br/>
+    /// </summary>
+    private bool MatchesPartComparison(LibraDexCompositePartComparison comparison, object?[] values)
+    {
+        LibraDexCompositeKeyPartSpec leftPart = default;
+        LibraDexCompositeKeyPartSpec rightPart = default;
+        var leftOrdinal = -1;
+        var rightOrdinal = -1;
+        for (var i = 0; i < shape.CompositeParts.Count; i++)
+        {
+            LibraDexCompositeKeyPartSpec part = shape.CompositeParts[i];
+            if (string.Equals(part.Name, comparison.LeftPartName, StringComparison.Ordinal))
+            {
+                leftPart = part;
+                leftOrdinal = i;
+            }
+            if (string.Equals(part.Name, comparison.RightPartName, StringComparison.Ordinal))
+            {
+                rightPart = part;
+                rightOrdinal = i;
+            }
+        }
+        if (leftOrdinal < 0 || rightOrdinal < 0)
+        {
+            throw new InvalidOperationException("Validated composite comparison references an unavailable component.");
+        }
+
+        object left = values[leftOrdinal] ?? throw new InvalidOperationException("Composite comparison reached a missing left component value.");
+        object right = values[rightOrdinal] ?? throw new InvalidOperationException("Composite comparison reached a missing right component value.");
+        if (LibraDexCompositeKeyValueSemantics.IsPartNull(leftPart, left) ||
+            LibraDexCompositeKeyValueSemantics.IsPartNull(rightPart, right))
+        {
+            return false;
+        }
+
+        int result;
+        if (left is string leftText && right is string rightText)
+        {
+            CultureInfo culture = string.IsNullOrWhiteSpace(comparison.Culture)
+                ? CultureInfo.InvariantCulture
+                : CultureInfo.GetCultureInfo(comparison.Culture);
+            result = culture.CompareInfo.Compare(
+                leftText,
+                rightText,
+                comparison.IgnoreCase ? CompareOptions.IgnoreCase : CompareOptions.None);
+        }
+        else if (left is byte[] leftBytes && right is byte[] rightBytes)
+        {
+            result = leftBytes.AsSpan().SequenceCompareTo(rightBytes);
+        }
+        else
+        {
+            result = Comparer<object>.Default.Compare(left, right);
+        }
+
+        return comparison.Operator switch
+        {
+            LibraDexConditionOperatorKind.EqualTo => result == 0,
+            LibraDexConditionOperatorKind.NotEqualTo => result != 0,
+            LibraDexConditionOperatorKind.GreaterThan => result > 0,
+            LibraDexConditionOperatorKind.GreaterOrEqual => result >= 0,
+            LibraDexConditionOperatorKind.LessThan => result < 0,
+            LibraDexConditionOperatorKind.LessOrEqual => result <= 0,
+            _ => throw new InvalidOperationException($"Composite component comparison does not support {comparison.Operator}.")
+        };
     }
 
     /// <summary>
@@ -1706,6 +1834,7 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
         int year = ExtractStructuredYear(encoded);
         int month = ExtractStructuredMonth(encoded);
         int day = ExtractStructuredDay(encoded);
+        int hour = ExtractStructuredHour(encoded);
         return criterion.Operator switch
         {
             LibraDexConditionOperatorKind.YearEqualTo => year == RequireInt32(criterion.Values, 0),
@@ -1714,6 +1843,51 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
             LibraDexConditionOperatorKind.YearMonthDay => year == RequireInt32(criterion.Values, 0) && month == RequireInt32(criterion.Values, 1) && day == RequireInt32(criterion.Values, 2),
             LibraDexConditionOperatorKind.MonthEqualTo => month == RequireInt32(criterion.Values, 0),
             LibraDexConditionOperatorKind.DayEqualTo => day == RequireInt32(criterion.Values, 0),
+            LibraDexConditionOperatorKind.YearNotEqualTo => year != RequireInt32(criterion.Values, 0),
+            LibraDexConditionOperatorKind.YearIn => ContainsStructuredInt(RequireValue(criterion.Values, 0), year),
+            LibraDexConditionOperatorKind.YearNotIn => !ContainsStructuredInt(RequireValue(criterion.Values, 0), year),
+            LibraDexConditionOperatorKind.YearNotRange => year < RequireInt32(criterion.Values, 0) || year > RequireInt32(criterion.Values, 1),
+            LibraDexConditionOperatorKind.YearOnOrAfter => year >= RequireInt32(criterion.Values, 0),
+            LibraDexConditionOperatorKind.YearOnOrBefore => year <= RequireInt32(criterion.Values, 0),
+            LibraDexConditionOperatorKind.MonthIn => ContainsStructuredInt(RequireValue(criterion.Values, 0), month),
+            LibraDexConditionOperatorKind.MonthNotIn => !ContainsStructuredInt(RequireValue(criterion.Values, 0), month),
+            LibraDexConditionOperatorKind.MonthNotEqualTo => month != RequireInt32(criterion.Values, 0),
+            LibraDexConditionOperatorKind.MonthRange => month >= RequireInt32(criterion.Values, 0) && month <= RequireInt32(criterion.Values, 1),
+            LibraDexConditionOperatorKind.MonthNotRange => month < RequireInt32(criterion.Values, 0) || month > RequireInt32(criterion.Values, 1),
+            LibraDexConditionOperatorKind.DayIn => ContainsStructuredInt(RequireValue(criterion.Values, 0), day),
+            LibraDexConditionOperatorKind.DayNotIn => !ContainsStructuredInt(RequireValue(criterion.Values, 0), day),
+            LibraDexConditionOperatorKind.DayNotEqualTo => day != RequireInt32(criterion.Values, 0),
+            LibraDexConditionOperatorKind.DayRange => day >= RequireInt32(criterion.Values, 0) && day <= RequireInt32(criterion.Values, 1),
+            LibraDexConditionOperatorKind.DayNotRange => day < RequireInt32(criterion.Values, 0) || day > RequireInt32(criterion.Values, 1),
+            LibraDexConditionOperatorKind.HourEqualTo => hour == RequireInt32(criterion.Values, 0),
+            LibraDexConditionOperatorKind.HourIn => ContainsStructuredInt(RequireValue(criterion.Values, 0), hour),
+            LibraDexConditionOperatorKind.HourNotIn => !ContainsStructuredInt(RequireValue(criterion.Values, 0), hour),
+            LibraDexConditionOperatorKind.HourRange => hour >= RequireInt32(criterion.Values, 0) && hour <= RequireInt32(criterion.Values, 1),
+            LibraDexConditionOperatorKind.HourNotRange => hour < RequireInt32(criterion.Values, 0) || hour > RequireInt32(criterion.Values, 1),
+            LibraDexConditionOperatorKind.QuarterEqualTo or LibraDexConditionOperatorKind.InQuarter => GetQuarter(month) == RequireInt32(criterion.Values, 0),
+            LibraDexConditionOperatorKind.InQuarterRange => GetQuarter(month) >= RequireInt32(criterion.Values, 0) && GetQuarter(month) <= RequireInt32(criterion.Values, 1),
+            LibraDexConditionOperatorKind.YearMonthIn => ContainsYearMonth(RequireValue(criterion.Values, 0), year, month),
+            LibraDexConditionOperatorKind.YearMonthDayIn => ContainsYearMonthDay(RequireValue(criterion.Values, 0), year, month, day),
+            LibraDexConditionOperatorKind.YearInMonths => year == RequireInt32(criterion.Values, 0) && ContainsStructuredInt(RequireValue(criterion.Values, 1), month),
+            LibraDexConditionOperatorKind.MonthDay => month == RequireInt32(criterion.Values, 0) && day == RequireInt32(criterion.Values, 1),
+            LibraDexConditionOperatorKind.YearQuarter => year == RequireInt32(criterion.Values, 0) && GetQuarter(month) == RequireInt32(criterion.Values, 1),
+            LibraDexConditionOperatorKind.IsQuarterStart => day == 1 && (month is 1 or 4 or 7 or 10),
+            LibraDexConditionOperatorKind.IsQuarterEnd => IsCalendarDate(value, out DateOnly quarterEndDate) && day == DateTime.DaysInMonth(year, month) && (month is 3 or 6 or 9 or 12),
+            LibraDexConditionOperatorKind.IsHalfYearStart => day == 1 && (month is 1 or 7),
+            LibraDexConditionOperatorKind.IsHalfYearEnd => IsCalendarDate(value, out DateOnly halfYearEndDate) && day == DateTime.DaysInMonth(year, month) && (month is 6 or 12),
+            LibraDexConditionOperatorKind.IsFirstOfMonth => day == 1,
+            LibraDexConditionOperatorKind.IsLastOfMonth => IsCalendarDate(value, out DateOnly lastOfMonthDate) && day == DateTime.DaysInMonth(year, month),
+            LibraDexConditionOperatorKind.IsToday => IsCalendarDate(value, out DateOnly todayDate) && todayDate == DateOnly.FromDateTime(DateTime.UtcNow),
+            LibraDexConditionOperatorKind.IsYesterday => IsCalendarDate(value, out DateOnly yesterdayDate) && yesterdayDate == DateOnly.FromDateTime(DateTime.UtcNow.AddDays(-1)),
+            LibraDexConditionOperatorKind.IsInLastDays => IsWithinLastDays(value, RequireInt32(criterion.Values, 0)),
+            LibraDexConditionOperatorKind.IsInLastHours => IsWithinLast(value, TimeSpan.FromHours(RequireInt32(criterion.Values, 0))),
+            LibraDexConditionOperatorKind.IsInLastMinutes => IsWithinLast(value, TimeSpan.FromMinutes(RequireInt32(criterion.Values, 0))),
+            LibraDexConditionOperatorKind.IsWeekend => IsCalendarDate(value, out DateOnly weekendDate) && weekendDate.DayOfWeek is DayOfWeek.Saturday or DayOfWeek.Sunday,
+            LibraDexConditionOperatorKind.IsWeekday => IsCalendarDate(value, out DateOnly weekdayDate) && weekdayDate.DayOfWeek is not (DayOfWeek.Saturday or DayOfWeek.Sunday),
+            LibraDexConditionOperatorKind.IsMorning => hour is >= 5 and <= 11,
+            LibraDexConditionOperatorKind.IsAfternoon => hour is >= 12 and <= 16,
+            LibraDexConditionOperatorKind.IsEvening => hour is >= 17 and <= 21,
+            LibraDexConditionOperatorKind.IsNight => hour <= 4 || hour >= 22,
             LibraDexConditionOperatorKind.EqualTo => encoded == EncodeCompositeStructuredDate(RequireValue(criterion.Values, 0), part.DateTimeKeyEncoding),
             LibraDexConditionOperatorKind.NotEqualTo => encoded != EncodeCompositeStructuredDate(RequireValue(criterion.Values, 0), part.DateTimeKeyEncoding),
             LibraDexConditionOperatorKind.GreaterThan => encoded > EncodeCompositeStructuredDate(RequireValue(criterion.Values, 0), part.DateTimeKeyEncoding),
@@ -1724,8 +1898,34 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
                 encoded <= EncodeCompositeStructuredDate(RequireValue(criterion.Values, 1), part.DateTimeKeyEncoding),
             LibraDexConditionOperatorKind.NotBetween => encoded < EncodeCompositeStructuredDate(RequireValue(criterion.Values, 0), part.DateTimeKeyEncoding) ||
                 encoded > EncodeCompositeStructuredDate(RequireValue(criterion.Values, 1), part.DateTimeKeyEncoding),
+            LibraDexConditionOperatorKind.InSet => MatchesStructuredDateSet(encoded, part.DateTimeKeyEncoding, RequireValue(criterion.Values, 0)),
+            LibraDexConditionOperatorKind.NotInSet => !MatchesStructuredDateSet(encoded, part.DateTimeKeyEncoding, RequireValue(criterion.Values, 0)),
             _ => throw new NotSupportedException($"Composite structured date part operator {criterion.Operator} is not supported in this slice.")
         };
+    }
+
+    /// <summary>
+    /// Tests structured temporal membership without converting routed component values into a different CLR date type.<br/>
+    /// The captured set may contain DateTime, DateTimeOffset, DateOnly, or TimeOnly values; each is encoded using the persisted component encoding before comparison.<br/>
+    /// </summary>
+    /// <param name="encodedValue">The already encoded routed component value.<br/></param>
+    /// <param name="dateTimeKeyEncoding">The persisted structured-date encoding contract.<br/></param>
+    /// <param name="setOperand">The captured membership sequence.<br/></param>
+    /// <returns><see langword="true"/> when any set member has the same encoded temporal value.<br/></returns>
+    private static bool MatchesStructuredDateSet(ulong encodedValue, DateTimeKeyEncoding dateTimeKeyEncoding, object setOperand)
+    {
+        if (setOperand is not IEnumerable set)
+            throw new InvalidOperationException("Composite structured date membership predicates require an enumerable operand.");
+
+        foreach (object? candidate in set)
+        {
+            if (candidate is null)
+                throw new InvalidOperationException("Composite structured date membership predicates do not permit null operands.");
+            if (encodedValue == EncodeCompositeStructuredDate(candidate, dateTimeKeyEncoding))
+                return true;
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -1763,6 +1963,161 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
     }
 
     /// <summary>
+    /// Extracts the packed hour component without decoding a routed temporal key into a new CLR value.<br/>
+    /// </summary>
+    /// <param name="encoded">The persisted structured temporal scalar.<br/></param>
+    /// <returns>The hour from zero through twenty-three.<br/></returns>
+    private static int ExtractStructuredHour(ulong encoded)
+    {
+        return (int)((encoded >> 36) & 0x1F);
+    }
+
+    /// <summary>
+    /// Tests a captured structured component set without trusting later mutations of the caller's source collection.<br/>
+    /// </summary>
+    /// <param name="operand">The immutable membership payload captured by the public condition builder.<br/></param>
+    /// <param name="actual">The routed component value to test.<br/></param>
+    /// <returns><see langword="true"/> when the payload contains the routed component.<br/></returns>
+    private static bool ContainsStructuredInt(object operand, int actual)
+    {
+        if (operand is not IEnumerable values)
+            throw new InvalidOperationException("Composite structured component membership predicates require an enumerable operand.");
+
+        foreach (object? candidate in values)
+        {
+            if (candidate is int expected && expected == actual)
+                return true;
+            if (candidate is not int)
+                throw new InvalidOperationException("Composite structured component membership predicates require Int32 values.");
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Tests a captured year/month tuple collection against the routed date components.<br/>
+    /// </summary>
+    /// <param name="operand">The immutable year/month tuple payload.<br/></param>
+    /// <param name="year">The routed year component.<br/></param>
+    /// <param name="month">The routed month component.<br/></param>
+    /// <returns><see langword="true"/> when a captured tuple matches both components.<br/></returns>
+    private static bool ContainsYearMonth(object operand, int year, int month)
+    {
+        if (operand is not IEnumerable values)
+            throw new InvalidOperationException("Composite year/month membership predicates require an enumerable operand.");
+
+        foreach (object? candidate in values)
+        {
+            if (candidate is ValueTuple<int, int> pair && pair.Item1 == year && pair.Item2 == month)
+                return true;
+            if (candidate is not ValueTuple<int, int>)
+                throw new InvalidOperationException("Composite year/month membership predicates require (int year, int month) tuples.");
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Tests a captured year/month/day tuple collection against the routed date components.<br/>
+    /// </summary>
+    /// <param name="operand">The immutable year/month/day tuple payload.<br/></param>
+    /// <param name="year">The routed year component.<br/></param>
+    /// <param name="month">The routed month component.<br/></param>
+    /// <param name="day">The routed day component.<br/></param>
+    /// <returns><see langword="true"/> when a captured tuple matches all three components.<br/></returns>
+    private static bool ContainsYearMonthDay(object operand, int year, int month, int day)
+    {
+        if (operand is not IEnumerable values)
+            throw new InvalidOperationException("Composite year/month/day membership predicates require an enumerable operand.");
+
+        foreach (object? candidate in values)
+        {
+            if (candidate is ValueTuple<int, int, int> tuple && tuple.Item1 == year && tuple.Item2 == month && tuple.Item3 == day)
+                return true;
+            if (candidate is not ValueTuple<int, int, int>)
+                throw new InvalidOperationException("Composite year/month/day membership predicates require (int year, int month, int day) tuples.");
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Converts routed calendar-capable values into their date-only portion without inventing a calendar date for <see cref="TimeOnly"/>.<br/>
+    /// </summary>
+    /// <param name="value">The routed temporal component value.<br/></param>
+    /// <param name="date">The resulting calendar date when one exists.<br/></param>
+    /// <returns><see langword="true"/> for DateTime, DateTimeOffset, and DateOnly values; otherwise <see langword="false"/>.<br/></returns>
+    private static bool IsCalendarDate(object value, out DateOnly date)
+    {
+        switch (value)
+        {
+            case DateTime dateTime:
+                date = DateOnly.FromDateTime(dateTime);
+                return true;
+            case DateTimeOffset dateTimeOffset:
+                date = DateOnly.FromDateTime(dateTimeOffset.UtcDateTime);
+                return true;
+            case DateOnly dateOnly:
+                date = dateOnly;
+                return true;
+            default:
+                date = default;
+                return false;
+        }
+    }
+
+    /// <summary>
+    /// Tests a calendar-capable component against the UTC day window, preserving complete-day semantics for DateOnly values.<br/>
+    /// </summary>
+    /// <param name="value">The routed temporal component value.<br/></param>
+    /// <param name="days">The number of trailing UTC calendar days to include.<br/></param>
+    /// <returns><see langword="true"/> when the calendar date falls inside the inclusive window.<br/></returns>
+    private static bool IsWithinLastDays(object value, int days)
+    {
+        if (days < 0)
+            throw new ArgumentOutOfRangeException(nameof(days), days, "Trailing day count cannot be negative.");
+        if (!IsCalendarDate(value, out DateOnly date))
+            return false;
+
+        DateOnly now = DateOnly.FromDateTime(DateTime.UtcNow);
+        return date >= now.AddDays(-days) && date <= now;
+    }
+
+    /// <summary>
+    /// Tests an instant-capable component against a trailing UTC duration without applying a time-zone conversion to DateOnly or TimeOnly values.<br/>
+    /// </summary>
+    /// <param name="value">The routed temporal component value.<br/></param>
+    /// <param name="window">The inclusive trailing duration.<br/></param>
+    /// <returns><see langword="true"/> when the instant lies between now minus the duration and now.<br/></returns>
+    private static bool IsWithinLast(object value, TimeSpan window)
+    {
+        if (window < TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(window), window, "Trailing time window cannot be negative.");
+
+        DateTime? instant = value switch
+        {
+            DateTime dateTime => dateTime.ToUniversalTime(),
+            DateTimeOffset dateTimeOffset => dateTimeOffset.UtcDateTime,
+            _ => null
+        };
+        if (instant is null)
+            return false;
+
+        DateTime now = DateTime.UtcNow;
+        return instant.Value >= now - window && instant.Value <= now;
+    }
+
+    /// <summary>
+    /// Converts a one-based calendar month into its one-based quarter, returning zero for non-calendar values.<br/>
+    /// </summary>
+    /// <param name="month">The packed month component.<br/></param>
+    /// <returns>The corresponding quarter from one through four, or zero when no month exists.<br/></returns>
+    private static int GetQuarter(int month)
+    {
+        return month is >= 1 and <= 12 ? ((month - 1) / 3) + 1 : 0;
+    }
+
+    /// <summary>
     /// Applies one string criterion to a rendered or stored composite text value.<br/>
     /// The helper is shared by named string parts and explicit full-key predicates so wildcard and culture behavior stays aligned.<br/>
     /// </summary>
@@ -1771,6 +2126,16 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
     /// <returns><see langword="true"/> when the text satisfies the criterion.</returns>
     private static bool MatchesStringCriterion(string text, LibraDexCompositePartCriterion criterion)
     {
+        if (criterion.Values.Count == 1 && criterion.Values[0] is Regex regex)
+        {
+            return criterion.Operator switch
+            {
+                LibraDexConditionOperatorKind.MatchesPattern => regex.IsMatch(text),
+                LibraDexConditionOperatorKind.NotMatchesPattern => !regex.IsMatch(text),
+                _ => throw new NotSupportedException($"Composite regular-expression payload cannot be used with operator {criterion.Operator}.")
+            };
+        }
+
         LibraDexStringComparisonPolicy policy = LibraDexStringComparisonPolicy.FromLegacy(criterion.IgnoreCase, criterion.Culture);
         return criterion.Operator switch
         {
@@ -2378,9 +2743,13 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
         }
     }
 
-    private static CompositePartKey CreatePartKey(LibraDexCompositeKeyPartSpec part, object? value)
+    private CompositePartKey CreatePartKey(LibraDexCompositeKeyPartSpec part, object? value)
     {
-        return new CompositePartKey(part, NormalizePartValue(part, value));
+        object normalized = NormalizePartValue(part, value);
+        if (sortOrder == LibraDexIndexSortOrder.Descending)
+            part = part with { SortOrder = part.SortOrder == LibraDexIndexSortOrder.Descending
+                ? LibraDexIndexSortOrder.Ascending : LibraDexIndexSortOrder.Descending };
+        return new CompositePartKey(part, normalized);
     }
 
     private static object NormalizePartValue(LibraDexCompositeKeyPartSpec part, object? value)
@@ -2538,13 +2907,13 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
 
         for (int i = 0; i < page.Identities.Count; i++)
         {
-            _ = node.AddIdentity(page.Identities[i], KeyContract);
+            _ = node.AddIdentity(page.Identities[i], KeyContract, sortOrder == LibraDexIndexSortOrder.Descending);
         }
 
         for (int i = 0; i < page.Children.Count; i++)
         {
             LibraDexCompositeNodeChildPage childPage = page.Children[i];
-            CompositePartKey childKey = new(shape.CompositeParts[tier], childPage.Value);
+            CompositePartKey childKey = CreatePartKey(shape.CompositeParts[tier], childPage.Value);
             CompositeNode child = node.GetOrAdd(childKey);
             child.MarkUnloaded(childPage.Offset);
         }
@@ -2582,10 +2951,10 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
     /// The enumeration reconstructs explicit composite keys from the traversal path so the snapshot codec does not need to know about in-memory node internals.<br/>
     /// </summary>
     /// <returns>The current composite key/identity entries.</returns>
-    private IEnumerable<LibraDexCompositeEntry> EnumerateEntries()
+    private IEnumerable<LibraDexCompositeEntry> EnumerateEntries(QueryDirection direction = QueryDirection.Ascending)
     {
         object?[] values = new object?[shape.CompositeParts.Count];
-        foreach (LibraDexCompositeEntry entry in EnumerateEntries(root, tier: 0, values))
+        foreach (LibraDexCompositeEntry entry in EnumerateEntries(root, tier: 0, values, direction))
         {
             yield return entry;
         }
@@ -2599,24 +2968,30 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
     /// <param name="tier">The current composite part ordinal.</param>
     /// <param name="values">The reusable traversal path value buffer.</param>
     /// <returns>The composite key/identity entries below the node.</returns>
-    private IEnumerable<LibraDexCompositeEntry> EnumerateEntries(CompositeNode node, int tier, object?[] values)
+    private IEnumerable<LibraDexCompositeEntry> EnumerateEntries(CompositeNode node, int tier, object?[] values, QueryDirection direction = QueryDirection.Ascending)
     {
         EnsureNodeLoaded(node, tier);
+        bool reverse = (direction == QueryDirection.Descending) != (sortOrder == LibraDexIndexSortOrder.Descending);
         if (tier >= shape.CompositeParts.Count)
         {
             LibraDexCompositeKey key = LibraDexCompositeKey.TakePositionalValues(values.ToArray());
-            foreach (object identity in node.Identities)
+            for (int i = reverse ? node.Identities.Count - 1 : 0;
+                reverse ? i >= 0 : i < node.Identities.Count;
+                i += reverse ? -1 : 1)
             {
-                yield return new LibraDexCompositeEntry(key, identity);
+                yield return new LibraDexCompositeEntry(key, node.Identities[i]);
             }
 
             yield break;
         }
 
-        foreach (CompositeChild child in node.Children)
+        for (int i = reverse ? node.Children.Count - 1 : 0;
+            reverse ? i >= 0 : i < node.Children.Count;
+            i += reverse ? -1 : 1)
         {
+            CompositeChild child = node.Children[i];
             values[tier] = child.Key.Value;
-            foreach (LibraDexCompositeEntry entry in EnumerateEntries(child.Node, tier + 1, values))
+            foreach (LibraDexCompositeEntry entry in EnumerateEntries(child.Node, tier + 1, values, direction))
             {
                 yield return entry;
             }
@@ -2672,17 +3047,22 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
     /// <param name="node">The node to enumerate.</param>
     /// <param name="tier">The node's composite tier.</param>
     /// <returns>The identities stored at or below the supplied node.</returns>
-    private IEnumerable<object> EnumerateIdentities(CompositeNode node, int tier)
+    private IEnumerable<object> EnumerateIdentities(CompositeNode node, int tier, QueryDirection direction = QueryDirection.Ascending)
     {
         EnsureNodeLoaded(node, tier);
-        foreach (object identity in node.Identities)
+        bool reverse = (direction == QueryDirection.Descending) != (sortOrder == LibraDexIndexSortOrder.Descending);
+        for (int i = reverse ? node.Identities.Count - 1 : 0;
+            reverse ? i >= 0 : i < node.Identities.Count;
+            i += reverse ? -1 : 1)
         {
-            yield return identity;
+            yield return node.Identities[i];
         }
 
-        for (int i = 0; i < node.Children.Count; i++)
+        for (int i = reverse ? node.Children.Count - 1 : 0;
+            reverse ? i >= 0 : i < node.Children.Count;
+            i += reverse ? -1 : 1)
         {
-            foreach (object identity in EnumerateIdentities(node.Children[i].Node, tier + 1))
+            foreach (object identity in EnumerateIdentities(node.Children[i].Node, tier + 1, direction))
             {
                 yield return identity;
             }
@@ -2784,7 +3164,7 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
             return ~low;
         }
 
-        internal bool AddIdentity(object identity, IndexKeys keyContract)
+        internal bool AddIdentity(object identity, IndexKeys keyContract, bool descending)
         {
             if (keyContract == IndexKeys.Unique && identities.Count != 0)
             {
@@ -2799,8 +3179,37 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
                 }
             }
 
-            identities.Add(identity);
+            int low = 0;
+            int high = identities.Count;
+            while (low < high)
+            {
+                int mid = low + ((high - low) / 2);
+                int comparison = CompareIdentities(identities[mid], identity);
+                if (descending ? comparison > 0 : comparison < 0)
+                    low = mid + 1;
+                else
+                    high = mid;
+            }
+            identities.Insert(low, identity);
             return true;
+        }
+
+        /// <summary>
+        /// Compares terminal identities by their logical scalar or byte-string value so insertion maintains tuple order.<br/>
+        /// This makes both forward and reverse equal-key reads linear traversals of the stored terminal list.<br/>
+        /// </summary>
+        /// <param name="left">The existing terminal identity.<br/></param>
+        /// <param name="right">The incoming terminal identity.<br/></param>
+        /// <returns>A negative, zero, or positive comparison result.<br/></returns>
+        private static int CompareIdentities(object left, object right)
+        {
+            if (left is byte[] leftBytes && right is byte[] rightBytes)
+                return leftBytes.AsSpan().SequenceCompareTo(rightBytes);
+            if (left is string leftString && right is string rightString)
+                return string.CompareOrdinal(leftString, rightString);
+            if (left is IComparable comparable)
+                return comparable.CompareTo(right);
+            return Comparer<object>.Default.Compare(left, right);
         }
 
         /// <summary>
@@ -3005,23 +3414,29 @@ public sealed class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrimitiveExe
 internal sealed class LibraDexCompositePredicate
 {
     private readonly Dictionary<string, LibraDexCompositePartCriterion> criteria;
+    private readonly LibraDexCompositePartComparison[] partComparisons;
 
     internal LibraDexCompositePredicate(IEnumerable<LibraDexCompositePartCriterion> criteria)
     {
         ArgumentNullException.ThrowIfNull(criteria);
         this.criteria = new Dictionary<string, LibraDexCompositePartCriterion>(StringComparer.Ordinal);
+        var comparisons = new List<LibraDexCompositePartComparison>();
         foreach (LibraDexCompositePartCriterion criterion in criteria)
         {
             if (!this.criteria.TryAdd(criterion.PartName, criterion))
             {
                 throw new ArgumentException($"Composite condition contains duplicate predicate for part '{criterion.PartName}'.", nameof(criteria));
             }
+            if (criterion.PartComparison is not null)
+                comparisons.Add(criterion.PartComparison);
         }
 
         if (this.criteria.Count == 0)
         {
             throw new ArgumentException("Composite predicates require at least one part criterion.", nameof(criteria));
         }
+
+        partComparisons = comparisons.ToArray();
     }
 
     internal bool TryGetPart(string name, out LibraDexCompositePartCriterion? criterion)
@@ -3039,6 +3454,11 @@ internal sealed class LibraDexCompositePredicate
 
         foreach (LibraDexCompositePartCriterion criterion in criteria.Values)
         {
+            if (criterion.PartComparison is LibraDexCompositePartComparison comparison)
+            {
+                ValidatePartComparison(shape, comparison);
+                continue;
+            }
             if (string.Equals(criterion.PartName, LibraDexCompositePartCriterion.FullKeyPartName, StringComparison.Ordinal))
             {
                 if (!IsSupportedFullKeyCriterionValueKind(criterion.ValueKind))
@@ -3089,9 +3509,35 @@ internal sealed class LibraDexCompositePredicate
 
     internal bool HasFullKeyCriterion => criteria.ContainsKey(LibraDexCompositePartCriterion.FullKeyPartName);
 
+    internal bool RequiresTerminalValues => HasFullKeyCriterion || partComparisons.Length != 0;
+
+    internal IReadOnlyList<LibraDexCompositePartComparison> PartComparisons => partComparisons;
+
     internal bool TryGetFullKeyPart(out LibraDexCompositePartCriterion? criterion)
     {
         return criteria.TryGetValue(LibraDexCompositePartCriterion.FullKeyPartName, out criterion);
+    }
+
+    private static void ValidatePartComparison(LibraDexIndexShapeSpec shape, LibraDexCompositePartComparison comparison)
+    {
+        LibraDexCompositeKeyPartSpec left = shape.CompositeParts.FirstOrDefault(part => string.Equals(part.Name, comparison.LeftPartName, StringComparison.Ordinal));
+        LibraDexCompositeKeyPartSpec right = shape.CompositeParts.FirstOrDefault(part => string.Equals(part.Name, comparison.RightPartName, StringComparison.Ordinal));
+        if (string.IsNullOrEmpty(left.Name) || string.IsNullOrEmpty(right.Name))
+        {
+            throw new ArgumentException("Composite component comparisons require two declared component names.", nameof(shape));
+        }
+        if (left.KeyType != right.KeyType)
+        {
+            throw new ArgumentException($"Composite component comparison requires equal CLR component types; '{left.Name}' is {left.KeyType.FullName} and '{right.Name}' is {right.KeyType.FullName}.", nameof(shape));
+        }
+        if (left.KeyType == typeof(byte[]) && comparison.Operator is not (LibraDexConditionOperatorKind.EqualTo or LibraDexConditionOperatorKind.NotEqualTo))
+        {
+            throw new ArgumentException("Composite binary component comparisons support equality and inequality only.", nameof(shape));
+        }
+        if (left.KeyType == typeof(Guid) && comparison.Operator is not (LibraDexConditionOperatorKind.EqualTo or LibraDexConditionOperatorKind.NotEqualTo))
+        {
+            throw new ArgumentException("Composite GUID component comparisons support equality and inequality only.", nameof(shape));
+        }
     }
 
     private static bool IsSupportedFullKeyCriterionValueKind(LibraDexConditionValueKind valueKind)

@@ -71,7 +71,7 @@ internal sealed partial class LibraDexFileSession
     /// <param name="rootOffset">The terminal root to read.<br/></param>
     /// <param name="keyBytes">The exact canonical fixed key stored by the terminal root.<br/></param>
     /// <param name="shelfExtentSize">The persisted terminal shelf extent size.<br/></param>
-    /// <returns>Canonical 16-byte identities in ascending identity order.<br/></returns>
+    /// <returns>Canonical 16-byte identities in the terminal root's persisted physical order.<br/></returns>
     internal byte[][] ReadFixedScalar16TerminalIdentities(long rootOffset, ReadOnlySpan<byte> keyBytes, int shelfExtentSize)
     {
         byte[] rootBytes = ReadTerminalIdentityRootBytes(rootOffset);
@@ -164,7 +164,7 @@ internal sealed partial class LibraDexFileSession
 
             WriteFixedScalar16TerminalIdentity(current, shelf.ReadIdentityHighAt(i), shelf.ReadIdentityLowAt(i));
             int order = current.SequenceCompareTo(incoming);
-            if (!added && order > 0)
+            if (!added && (profile.Descending ? order < 0 : order > 0))
             {
                 identities.Add(incoming);
                 added = true;
@@ -183,11 +183,15 @@ internal sealed partial class LibraDexFileSession
 
         Span<byte> keyBytes = stackalloc byte[Scalar8Scalar16Layout.KeySize];
         BinaryPrimitives.WriteUInt64BigEndian(keyBytes, encodedKey);
+        byte parentPrefix = keyBytes[pathTarget.Target.RouterDepth];
+        RefineDirectShelfOwner(pathTarget.ParentRouterOffset, pathTarget.Target.Offset,
+            checked((ushort)(pathTarget.Target.RouterDepth + 1)), parentPrefix, parentPrefix, parentPrefix);
         DataKernelCommitTelemetry telemetry = RewriteFixedScalar16TerminalRoute(
             pathTarget.Target.Offset,
             keyBytes,
             profile.ShelfExtentSize,
-            identities);
+            identities,
+            profile.Descending);
         result = CreateScalar8Scalar16TerminalInsertResult(pathTarget.Target.Offset, Scalar8VarIdentityInsertResult.Inserted, telemetry);
         return true;
     }
@@ -284,7 +288,7 @@ internal sealed partial class LibraDexFileSession
 
             WriteFixedScalar16TerminalIdentity(current, shelf.ReadIdentityHighAt(i), shelf.ReadIdentityLowAt(i));
             int order = current.SequenceCompareTo(incoming);
-            if (!added && order > 0)
+            if (!added && (profile.Descending ? order < 0 : order > 0))
             {
                 identities.Add(incoming);
                 added = true;
@@ -304,11 +308,15 @@ internal sealed partial class LibraDexFileSession
         Span<byte> keyBytes = stackalloc byte[Scalar16Scalar16Layout.KeySize];
         BinaryPrimitives.WriteUInt64BigEndian(keyBytes, encodedKeyHigh);
         BinaryPrimitives.WriteUInt64BigEndian(keyBytes.Slice(sizeof(ulong)), encodedKeyLow);
+        byte parentPrefix = keyBytes[pathTarget.Target.RouterDepth];
+        RefineDirectShelfOwner(pathTarget.ParentRouterOffset, pathTarget.Target.Offset,
+            checked((ushort)(pathTarget.Target.RouterDepth + 1)), parentPrefix, parentPrefix, parentPrefix);
         DataKernelCommitTelemetry telemetry = RewriteFixedScalar16TerminalRoute(
             pathTarget.Target.Offset,
             keyBytes,
             profile.ShelfExtentSize,
-            identities);
+            identities,
+            profile.Descending);
         result = CreateScalar16Scalar16TerminalInsertResult(pathTarget.Target.Offset, Scalar8VarIdentityInsertResult.Inserted, telemetry);
         return true;
     }
@@ -408,7 +416,7 @@ internal sealed partial class LibraDexFileSession
 
             WriteFixedScalar16TerminalIdentity(current, shelf.ReadIdentityHighAt(i), shelf.ReadIdentityLowAt(i));
             int order = current.SequenceCompareTo(incoming);
-            if (!added && order > 0)
+            if (!added && (profile.Descending ? order < 0 : order > 0))
             {
                 identities.Add(incoming);
                 added = true;
@@ -427,11 +435,15 @@ internal sealed partial class LibraDexFileSession
 
         Span<byte> keyBytes = stackalloc byte[Fixed32Scalar16Layout.KeySize];
         WriteFixed32Scalar8KeyBytes(keyBytes, key0, key1, key2, key3);
+        byte parentPrefix = keyBytes[pathTarget.Target.RouterDepth];
+        RefineDirectShelfOwner(pathTarget.ParentRouterOffset, pathTarget.Target.Offset,
+            checked((ushort)(pathTarget.Target.RouterDepth + 1)), parentPrefix, parentPrefix, parentPrefix);
         DataKernelCommitTelemetry telemetry = RewriteFixedScalar16TerminalRoute(
             pathTarget.Target.Offset,
             keyBytes,
             profile.ShelfExtentSize,
-            identities);
+            identities,
+            descending: profile.Descending);
         result = CreateFixed32Scalar16TerminalInsertResult(pathTarget.Target.Offset, Scalar8VarIdentityInsertResult.Inserted, telemetry);
         return true;
     }
@@ -481,7 +493,8 @@ internal sealed partial class LibraDexFileSession
         }
 
         using PooledTerminalVarIdentitySet identities = ReadScalar8VarIdentityTerminalIdentitiesPooled(rootOffset, keyBytes, shelfExtentSize);
-        int insertIndex = LowerBoundTerminalVarIdentity(identities, identity);
+        bool descending = rootBytes[TerminalIdentityRootLayout.SortDirectionOffset] != 0;
+        int insertIndex = LowerBoundTerminalVarIdentity(identities, identity, descending);
         if (insertIndex < identities.Count && identities.ReadAt(insertIndex).SequenceEqual(identity))
             return new FixedScalar16TerminalMutationResult(Scalar8VarIdentityInsertResult.AlreadyPresent, default);
 
@@ -503,7 +516,8 @@ internal sealed partial class LibraDexFileSession
         long rootOffset,
         ReadOnlySpan<byte> keyBytes,
         int shelfExtentSize,
-        PooledTerminalVarIdentitySet identities)
+        PooledTerminalVarIdentitySet identities,
+        bool descending = false)
     {
         long firstShelfOffset = 0;
         long previousShelfOffset = 0;
@@ -540,6 +554,7 @@ internal sealed partial class LibraDexFileSession
             keyBytes,
             shelfExtentSize,
             firstShelfOffset);
+        rootRewrite.Span[TerminalIdentityRootLayout.SortDirectionOffset] = descending ? (byte)1 : (byte)0;
         TerminalIdentityRootLayout.WriteTailShelfOffset(rootRewrite.Span, tailShelfOffset);
         ClearTerminalIdentityReadCaches();
         return CommitAndInvalidateRouterReadCache();

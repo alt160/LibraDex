@@ -250,7 +250,8 @@ internal sealed partial class LibraDexFileSession
                 start,
                 end,
                 request.MaxKeyLength,
-                request.RequestedRouteCount);
+                request.RequestedRouteCount,
+                request.Descending);
             if (replacement.RootPrefix != rootPrefix || rootTargets[rootPrefix] != 0)
                 throw new InvalidDataException("The detached VS8 builder produced an invalid or duplicate root-prefix replacement.");
             rootTargets[rootPrefix] = replacement.TargetOffset;
@@ -294,7 +295,8 @@ internal readonly record struct VarKeyScalar8DetachedBuildRequest(
     IVarKeyScalar8SortedTupleSource Tuples,
     bool AllowDuplicateKeys,
     bool SingleKeyPerIdentity,
-    bool IdentityMultiplicityAlreadyValidated);
+    bool IdentityMultiplicityAlreadyValidated,
+    bool Descending = false);
 
 /// <summary>Identifies one built detached `VS8` root and the live generation it can replace.<br/></summary>
 internal readonly record struct VarKeyScalar8DetachedBuildResult(

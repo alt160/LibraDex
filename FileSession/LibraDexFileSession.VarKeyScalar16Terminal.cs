@@ -70,6 +70,7 @@ internal sealed partial class LibraDexFileSession
         Span<byte> identity = stackalloc byte[VarKeyScalar16TerminalIdentitySize];
         WriteVarKeyScalar16TerminalIdentity(identity, encodedIdentityHigh, encodedIdentityLow);
         int shelfExtentSize = TerminalIdentityRootLayout.ReadShelfExtentSize(rootBytes);
+        bool descending = rootBytes[TerminalIdentityRootLayout.SortDirectionOffset] != 0;
         long tailShelfOffset = TerminalIdentityRootLayout.ReadTailShelfOffset(rootBytes);
         if (TryAppendScalar8VarIdentityTerminalTail(
             pathTarget.Target.Offset,
@@ -113,7 +114,7 @@ internal sealed partial class LibraDexFileSession
             pathTarget.Target.Offset,
             key,
             shelfExtentSize);
-        int insertIndex = LowerBoundTerminalVarIdentity(identities, identity);
+        int insertIndex = LowerBoundTerminalVarIdentity(identities, identity, descending);
         if (insertIndex < identities.Count && identities.ReadAt(insertIndex).SequenceEqual(identity))
         {
             return CreateVarKeyScalar16TerminalResult(
@@ -196,7 +197,7 @@ internal sealed partial class LibraDexFileSession
             existingShelf.ReadIdentityAt(i, out ulong currentHigh, out ulong currentLow);
             WriteVarKeyScalar16TerminalIdentity(currentIdentity, currentHigh, currentLow);
             int order = currentIdentity.SequenceCompareTo(incomingIdentity);
-            if (!incomingAdded && order > 0)
+            if (!incomingAdded && (profile.Descending ? order < 0 : order > 0))
             {
                 identities.Add(incomingIdentity);
                 incomingAdded = true;
@@ -227,7 +228,8 @@ internal sealed partial class LibraDexFileSession
             TerminalIdentityRootLayout.ShapeVarKeyScalar16Identity,
             key,
             terminalShelfExtentSize,
-            identities);
+            identities,
+            profile.Descending);
         long replacementOffset = CreateVarKeyVarIdentityTerminalRouterChain(
             firstDepth: 0,
             pathTarget.Target.AllocationClassId,
@@ -273,7 +275,10 @@ internal sealed partial class LibraDexFileSession
         byte[] rootBytes = ReadTerminalIdentityRootBytes(pathTarget.Target.Offset);
         int terminalKeyLength = TerminalIdentityRootLayout.ReadKeyLength(rootBytes);
         ReadOnlySpan<byte> terminalKey = rootBytes.AsSpan(TerminalIdentityRootLayout.KeyBytesOffset, terminalKeyLength);
-        VarKeyScalar16Profile profile = VarKeyScalar16Profile.Create(4 * 1024, maxKeyLength);
+        VarKeyScalar16Profile profile = VarKeyScalar16Profile.Create(4 * 1024, maxKeyLength) with
+        {
+            Descending = rootBytes[TerminalIdentityRootLayout.SortDirectionOffset] != 0
+        };
         byte[] incomingShelf = VarKeyScalar16.CreateEmpty(profile);
         VarKeyScalar16InsertResult insertResult = VarKeyScalar16.Insert(
             incomingShelf,

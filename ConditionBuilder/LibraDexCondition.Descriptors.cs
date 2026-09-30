@@ -544,7 +544,47 @@ public enum LibraDexConditionOperatorKind
     /// <summary>
     /// Matches non-null string keys that do not contain the supplied text.<br/>
     /// </summary>
-    NotContains = 85
+    NotContains = 85,
+
+    /// <summary>
+    /// Matches structured date/time values whose month component differs from the supplied value.<br/>
+    /// </summary>
+    MonthNotEqualTo = 86,
+
+    /// <summary>
+    /// Matches structured date/time values whose day component differs from the supplied value.<br/>
+    /// </summary>
+    DayNotEqualTo = 87,
+
+    /// <summary>
+    /// Matches structured date/time values whose day component is not in the supplied reusable membership set.<br/>
+    /// </summary>
+    DayNotIn = 88,
+
+    /// <summary>
+    /// Matches structured date/time values whose hour component equals the supplied value.<br/>
+    /// </summary>
+    HourEqualTo = 89,
+
+    /// <summary>
+    /// Matches structured date/time values whose hour component is in the supplied reusable membership set.<br/>
+    /// </summary>
+    HourIn = 90,
+
+    /// <summary>
+    /// Matches structured date/time values whose hour component is not in the supplied reusable membership set.<br/>
+    /// </summary>
+    HourNotIn = 91,
+
+    /// <summary>
+    /// Matches structured date/time values whose hour component is in the supplied inclusive range.<br/>
+    /// </summary>
+    HourRange = 92,
+
+    /// <summary>
+    /// Matches structured date/time values whose hour component is outside the supplied inclusive range.<br/>
+    /// </summary>
+    HourNotRange = 93
 }
 
 /// <summary>

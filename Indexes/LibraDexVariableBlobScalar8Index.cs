@@ -11,6 +11,7 @@ public sealed class LibraDexVariableBlobScalar8Index<TIdentity> : IIndex, IIdent
     private readonly Catalog catalog;
     private readonly VarKeyScalar8Index inner;
     private readonly IndexKeys keyContract;
+    private readonly LibraDexIndexSortOrder sortOrder;
     private bool disposed;
 
     internal LibraDexVariableBlobScalar8Index(
@@ -18,7 +19,8 @@ public sealed class LibraDexVariableBlobScalar8Index<TIdentity> : IIndex, IIdent
         string group,
         string name,
         VarKeyScalar8Index inner,
-        IndexKeys keyContract)
+        IndexKeys keyContract,
+        LibraDexIndexSortOrder sortOrder = LibraDexIndexSortOrder.Ascending)
     {
         this.catalog = catalog ?? throw new ArgumentNullException(nameof(catalog));
         this.inner = inner ?? throw new ArgumentNullException(nameof(inner));
@@ -30,6 +32,7 @@ public sealed class LibraDexVariableBlobScalar8Index<TIdentity> : IIndex, IIdent
         Group = group;
         Name = name;
         this.keyContract = keyContract;
+        this.sortOrder = sortOrder;
     }
 
     /// <summary>
@@ -89,6 +92,11 @@ public sealed class LibraDexVariableBlobScalar8Index<TIdentity> : IIndex, IIdent
     /// Variable blob sizing is persisted directly in catalog metadata, so no additional shape descriptor is required.<br/>
     /// </summary>
     public LibraDexIndexShapeSpec? LogicalShape => null;
+
+    /// <summary>
+    /// Gets the persisted natural key traversal order for this variable-blob index.<br/>
+    /// </summary>
+    public LibraDexIndexSortOrder SortOrder => sortOrder;
 
     /// <summary>
     /// Gets strongly typed key-membership operations for this opened index.<br/>
@@ -248,8 +256,8 @@ public sealed class LibraDexVariableBlobScalar8Index<TIdentity> : IIndex, IIdent
         int yielded = 0;
         if (request.CriteriaKind == LibraDexCriteriaKind.All)
         {
-            using VarKeyScalar8RangeReader allReader = OpenAllReader();
-            foreach (TIdentity identity in IterateReader(allReader, request.TakeLimit, keyFilter: null))
+            using VarKeyScalar8RangeReader allReader = OpenAllReader(request.Direction);
+            foreach (TIdentity identity in IterateReader(allReader, request.TakeLimit, keyFilter: null, direction: request.Direction))
             {
                 yield return identity;
             }
@@ -264,8 +272,8 @@ public sealed class LibraDexVariableBlobScalar8Index<TIdentity> : IIndex, IIdent
                 request.Values[0] is LibraDexBinaryPatternPredicate compiled
                     ? compiled
                     : throw new InvalidOperationException("Variable blob binary-pattern execution requires one compiled binary predicate.");
-            using VarKeyScalar8RangeReader patternReader = OpenAllReader();
-            while (patternReader.MoveNext())
+            using VarKeyScalar8RangeReader patternReader = OpenAllReader(request.Direction);
+            while (MoveReader(patternReader, request.Direction))
             {
                 if (patternReader.CurrentKeyIsNull || !predicate.Matches(patternReader.CurrentKey))
                     continue;
@@ -286,8 +294,8 @@ public sealed class LibraDexVariableBlobScalar8Index<TIdentity> : IIndex, IIdent
                 request.Values[0] is LibraDexBinaryTypedSlicePredicate compiled
                     ? compiled
                     : throw new InvalidOperationException("Variable blob typed-slice execution requires one compiled binary typed-slice predicate.");
-            using VarKeyScalar8RangeReader typedSliceReader = OpenAllReader();
-            while (typedSliceReader.MoveNext())
+            using VarKeyScalar8RangeReader typedSliceReader = OpenAllReader(request.Direction);
+            while (MoveReader(typedSliceReader, request.Direction))
             {
                 if (typedSliceReader.CurrentKeyIsNull || !predicate.Matches(typedSliceReader.CurrentKey))
                     continue;
@@ -329,16 +337,16 @@ public sealed class LibraDexVariableBlobScalar8Index<TIdentity> : IIndex, IIdent
                 }
             }
 
-            using VarKeyScalar8RangeReader rangeReader = inner.OpenRangeReader(lower, upper);
-            foreach (TIdentity identity in IterateReader(rangeReader, request.TakeLimit, filter))
+            using VarKeyScalar8RangeReader rangeReader = inner.OpenRangeReader(lower, upper, request.Direction);
+            foreach (TIdentity identity in IterateReader(rangeReader, request.TakeLimit, filter, request.Direction))
                 yield return identity;
             yield break;
         }
 
-        foreach (byte[]? key in ExpandPointKeys(request))
+        foreach (byte[]? key in OrderedPointKeys(request))
         {
-            using VarKeyScalar8RangeReader reader = inner.OpenRangeReader(key, key);
-            while (reader.MoveNext())
+            using VarKeyScalar8RangeReader reader = inner.OpenRangeReader(key, key, request.Direction);
+            while (MoveReader(reader, request.Direction))
             {
                 yield return LibraDexGenericScalarCodec<TIdentity>.Decode8(reader.CurrentEncodedIdentity)!;
                 yielded++;
@@ -365,8 +373,8 @@ public sealed class LibraDexVariableBlobScalar8Index<TIdentity> : IIndex, IIdent
         int yielded = 0;
         if (request.CriteriaKind == LibraDexCriteriaKind.All)
         {
-            using VarKeyScalar8RangeReader allReader = OpenAllReader();
-            while (allReader.MoveNext())
+            using VarKeyScalar8RangeReader allReader = OpenAllReader(request.Direction);
+            while (MoveReader(allReader, request.Direction))
             {
                 byte[]? key = allReader.CurrentKeyIsNull ? null : allReader.CurrentKey.ToArray();
                 TIdentity identity = LibraDexGenericScalarCodec<TIdentity>.Decode8(allReader.CurrentEncodedIdentity);
@@ -392,8 +400,8 @@ public sealed class LibraDexVariableBlobScalar8Index<TIdentity> : IIndex, IIdent
             if (pattern is null && slice is null)
                 throw new InvalidOperationException("Variable blob tuple streaming requires one compiled binary predicate.");
 
-            using VarKeyScalar8RangeReader predicateReader = OpenAllReader();
-            while (predicateReader.MoveNext())
+            using VarKeyScalar8RangeReader predicateReader = OpenAllReader(request.Direction);
+            while (MoveReader(predicateReader, request.Direction))
             {
                 if (predicateReader.CurrentKeyIsNull ||
                     (pattern is not null && !pattern.Matches(predicateReader.CurrentKey)) ||
@@ -437,8 +445,8 @@ public sealed class LibraDexVariableBlobScalar8Index<TIdentity> : IIndex, IIdent
                     exclusiveBoundary = boundary;
             }
 
-            using VarKeyScalar8RangeReader rangeReader = inner.OpenRangeReader(lower, upper);
-            while (rangeReader.MoveNext())
+            using VarKeyScalar8RangeReader rangeReader = inner.OpenRangeReader(lower, upper, request.Direction);
+            while (MoveReader(rangeReader, request.Direction))
             {
                 int comparison = exclusiveBoundary is null
                     ? 0
@@ -462,10 +470,10 @@ public sealed class LibraDexVariableBlobScalar8Index<TIdentity> : IIndex, IIdent
             yield break;
         }
 
-        foreach (byte[]? key in ExpandPointKeys(request))
+        foreach (byte[]? key in OrderedPointKeys(request))
         {
-            using VarKeyScalar8RangeReader pointReader = inner.OpenRangeReader(key, key);
-            while (pointReader.MoveNext())
+            using VarKeyScalar8RangeReader pointReader = inner.OpenRangeReader(key, key, request.Direction);
+            while (MoveReader(pointReader, request.Direction))
             {
                 TIdentity identity = LibraDexGenericScalarCodec<TIdentity>.Decode8(pointReader.CurrentEncodedIdentity);
                 yield return new LibraDexObjectTuple(key, identity!);
@@ -506,9 +514,9 @@ public sealed class LibraDexVariableBlobScalar8Index<TIdentity> : IIndex, IIdent
         }
     }
 
-    private VarKeyScalar8RangeReader OpenAllReader()
+    private VarKeyScalar8RangeReader OpenAllReader(QueryDirection direction = QueryDirection.Ascending)
     {
-        return inner.OpenRangeReader(null, CreateUpperBound());
+        return inner.OpenRangeReader(null, CreateUpperBound(), direction);
     }
 
     private byte[] CreateUpperBound()
@@ -521,10 +529,11 @@ public sealed class LibraDexVariableBlobScalar8Index<TIdentity> : IIndex, IIdent
     private static IEnumerable<TIdentity> IterateReader(
         VarKeyScalar8RangeReader reader,
         int? takeLimit,
-        Func<byte[]?, bool>? keyFilter)
+        Func<byte[]?, bool>? keyFilter,
+        QueryDirection direction)
     {
         int yielded = 0;
-        while (reader.MoveNext())
+        while (MoveReader(reader, direction))
         {
             byte[]? key = reader.CurrentKeyIsNull ? null : reader.MaterializeCurrentKey();
             if (keyFilter is not null && !keyFilter(key))
@@ -620,5 +629,33 @@ public sealed class LibraDexVariableBlobScalar8Index<TIdentity> : IIndex, IIdent
     private void ThrowIfDisposed()
     {
         ObjectDisposedException.ThrowIf(disposed, this);
+    }
+
+    /// <summary>
+    /// Advances a variable-key reader in the request's physical traversal direction.<br/>
+    /// Both directions use the same index and yield complete key/identity tuple order without result sorting.<br/>
+    /// </summary>
+    /// <param name="reader">The positioned or unpositioned physical range reader.<br/></param>
+    /// <param name="direction">The requested key and identity traversal direction.<br/></param>
+    /// <returns><see langword="true"/> while another tuple is available.<br/></returns>
+    private static bool MoveReader(VarKeyScalar8RangeReader reader, QueryDirection direction)
+        => direction == QueryDirection.Descending ? reader.MovePrevious() : reader.MoveNext();
+
+    /// <summary>
+    /// Orders the small set of point routes in descending physical key order when requested.<br/>
+    /// Each matching key then streams its stored identity run backward without buffering the result tuples.<br/>
+    /// </summary>
+    /// <param name="request">The point, key-state, or membership primitive request.<br/></param>
+    /// <returns>Point keys in the request's natural traversal order.<br/></returns>
+    private IEnumerable<byte[]?> OrderedPointKeys(LibraDexIdentityPrimitiveRequest request)
+    {
+        IEnumerable<byte[]?> keys = ExpandPointKeys(request);
+        if (request.Direction != QueryDirection.Descending)
+            return keys;
+        List<byte[]?> ordered = keys.ToList();
+        ordered.Sort(static (left, right) =>
+            left is null ? right is null ? 0 : 1 :
+            right is null ? -1 : right.AsSpan().SequenceCompareTo(left));
+        return ordered;
     }
 }

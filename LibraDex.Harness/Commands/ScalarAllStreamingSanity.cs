@@ -62,6 +62,9 @@ internal static class ScalarAllStreamingSanity
         }
         CheckPromotedNullRoutes();
         CheckReadyMapAndBinaryRoutes();
+        CheckNullPrimitiveTupleStreaming();
+        CheckScanPredicateTupleStreaming();
+        CheckPreparedObjectSetSnapshot();
         return 0;
     }
 
@@ -136,5 +139,108 @@ internal static class ScalarAllStreamingSanity
                 throw new Exception("Cross-route Take boundary.");
         }
         Console.WriteLine("PASS ready-map invalidation/no implicit initialization, scalar/content equality, promoted binary null/empty All boundaries.");
+    }
+
+    /// <summary>Verifies that scalar-null and binary key-state tuple primitives yield their first row without capturing a promoted duplicate run.<br/>
+    /// The test also checks full membership, null-before-empty ordering, and Take boundaries so changing a closed executor to a lazy iterator cannot silently alter results.<br/>
+    /// Allocation is measured after one warm call and bounded independently of the total number of matching identities.<br/></summary>
+    private static void CheckNullPrimitiveTupleStreaming()
+    {
+        const int perRoute = 4000;
+        using var catalog = Catalog.CreateMemory();
+        using var scalar = catalog.Indexes["null-stream"]["scalar"].Create<int, ulong>();
+        using var binary = catalog.Indexes["null-stream"]["binary"].Blob.Scalar<ulong>(LibraDexScalarWidth.Bytes32).Create();
+        for (int i = 1; i <= perRoute; i++)
+        {
+            scalar.Insert(ScalarNull.Null, (ulong)i);
+            binary.Insert(NullKey.Null, (ulong)i);
+            binary.Insert(NullKey.Empty, (ulong)(perRoute + i));
+        }
+
+        var scalarStream = (IIdentityPrimitiveTupleStreamer)scalar;
+        var scalarRequest = new LibraDexIdentityPrimitiveRequest(LibraDexCriteriaKind.ScalarNull, new object?[] { ScalarNull.Null });
+        _ = scalarStream.IterateTuplePrimitive(scalarRequest with { TakeLimit = 1 }).Single();
+        long start = GC.GetAllocatedBytesForCurrentThread();
+        LibraDexObjectTuple scalarFirst = scalarStream.IterateTuplePrimitive(scalarRequest with { TakeLimit = 1 }).Single();
+        long scalarFirstBytes = GC.GetAllocatedBytesForCurrentThread() - start;
+        if (scalarFirst.Key is not null || scalarFirstBytes > 65536 ||
+            scalarStream.IterateTuplePrimitive(scalarRequest).Count() != perRoute)
+            throw new InvalidDataException($"Scalar-null tuple streaming failed: first={scalarFirstBytes:N0} B.");
+
+        var binaryStream = (IIdentityPrimitiveTupleStreamer)binary;
+        var binaryRequest = new LibraDexIdentityPrimitiveRequest(LibraDexCriteriaKind.KeyState, new object?[] { NullKey.NullOrEmpty });
+        _ = binaryStream.IterateTuplePrimitive(binaryRequest with { TakeLimit = 1 }).Single();
+        start = GC.GetAllocatedBytesForCurrentThread();
+        LibraDexObjectTuple binaryFirst = binaryStream.IterateTuplePrimitive(binaryRequest with { TakeLimit = 1 }).Single();
+        long binaryFirstBytes = GC.GetAllocatedBytesForCurrentThread() - start;
+        var rows = binaryStream.IterateTuplePrimitive(binaryRequest).ToArray();
+        if (binaryFirst.Key is not null || binaryFirstBytes > 65536 || rows.Length != perRoute * 2 ||
+            rows[perRoute - 1].Key is not null || rows[perRoute].Key is not byte[] { Length: 0 } ||
+            binaryStream.IterateTuplePrimitive(binaryRequest with { TakeLimit = perRoute + 1 }).Count() != perRoute + 1)
+            throw new InvalidDataException($"Binary key-state tuple streaming failed: first={binaryFirstBytes:N0} B, rows={rows.Length}.");
+
+        Console.WriteLine($"PASS null primitive streams: scalar first {scalarFirstBytes:N0} B, key-state first {binaryFirstBytes:N0} B, rows {perRoute:N0}/{rows.Length:N0}.");
+    }
+
+    /// <summary>Verifies that bitmask and numeric-transform tuple scans honor direction and Take without retaining all matched rows.<br/>
+    /// Both predicates match many stored keys, making an eager closed-executor fallback visible in first-result allocations.<br/></summary>
+    private static void CheckScanPredicateTupleStreaming()
+    {
+        const int count = 4000;
+        using var catalog = Catalog.CreateMemory();
+        using var flags = catalog.Indexes["predicate-stream"]["flags"].Create<long, ulong>();
+        using var numbers = catalog.Indexes["predicate-stream"]["numbers"].Create<double, ulong>();
+        flags.BuildFromSorted(Enumerable.Range(0, count).Select(i => new LibraDexSortedTuple<long, ulong>(i, (ulong)i + 1)).ToArray());
+        numbers.BuildFromSorted(Enumerable.Range(0, count).Select(i => new LibraDexSortedTuple<double, ulong>(i + 0.25, (ulong)i + 1)).ToArray());
+
+        var bitmask = LibraDexBitmaskPredicate.Create(typeof(long), 1L, 1L, LibraDexBitmaskComparisonMode.EqualTo);
+        var transform = new LibraDexNumericTransformPredicate(typeof(double),
+            new LibraDexNumericTransformDescriptor(LibraDexNumericTransformKind.Floor, 0, MidpointRounding.ToEven),
+            LibraDexConditionOperatorKind.GreaterOrEqual, new object?[] { 0.0 });
+        var cases = new[]
+        {
+            (Stream: (IIdentityPrimitiveTupleStreamer)flags,
+                Request: new LibraDexIdentityPrimitiveRequest(LibraDexCriteriaKind.Bitmask, new object?[] { bitmask }),
+                ExpectedCount: count / 2, First: 1.0, Last: 3999.0),
+            (Stream: (IIdentityPrimitiveTupleStreamer)numbers,
+                Request: new LibraDexIdentityPrimitiveRequest(LibraDexCriteriaKind.NumericTransform, new object?[] { transform }),
+                ExpectedCount: count, First: 0.25, Last: 3999.25)
+        };
+        foreach (var test in cases)
+        foreach (QueryDirection direction in new[] { QueryDirection.Ascending, QueryDirection.Descending })
+        {
+            var request = test.Request with { Direction = direction };
+            _ = test.Stream.IterateTuplePrimitive(request with { TakeLimit = 1 }).Single();
+            long start = GC.GetAllocatedBytesForCurrentThread();
+            LibraDexObjectTuple first = test.Stream.IterateTuplePrimitive(request with { TakeLimit = 1 }).Single();
+            long firstBytes = GC.GetAllocatedBytesForCurrentThread() - start;
+            double expectedFirst = direction == QueryDirection.Ascending ? test.First : test.Last;
+            if (Convert.ToDouble(first.Key) != expectedFirst || firstBytes > 65536 ||
+                test.Stream.IterateTuplePrimitive(request).Count() != test.ExpectedCount ||
+                test.Stream.IterateTuplePrimitive(request with { TakeLimit = 3 }).Count() != 3)
+                throw new InvalidDataException($"{request.CriteriaKind} tuple streaming failed: {direction}, first={first.Key}, allocated={firstBytes:N0} B.");
+            Console.WriteLine($"PASS {request.CriteriaKind} {direction}: first {firstBytes:N0} B; rows {test.ExpectedCount:N0}.");
+        }
+    }
+
+    /// <summary>Checks that a lazy prepared-set source is enumerated once and published as one stable value snapshot.<br/>
+    /// Concurrent consumers must observe the same list instance without replacing the caller's original Source and comparer metadata.<br/></summary>
+    private static void CheckPreparedObjectSetSnapshot()
+    {
+        int enumerations = 0;
+        IEnumerable<object> Source()
+        {
+            Interlocked.Increment(ref enumerations);
+            yield return 3;
+            yield return 5;
+        }
+
+        var prepared = new LibraDexPreparedObjectSet(typeof(int), null, Source());
+        IReadOnlyList<object>[] snapshots = new IReadOnlyList<object>[16];
+        Parallel.For(0, snapshots.Length, i => snapshots[i] = prepared.Values);
+        if (enumerations != 1 || snapshots.Any(snapshot => !ReferenceEquals(snapshot, snapshots[0])) ||
+            snapshots[0].Count != 2 || !ReferenceEquals(prepared.Values, snapshots[0]))
+            throw new InvalidDataException($"Prepared object set enumerated its source {enumerations} times.");
+        Console.WriteLine("PASS prepared object set snapshot: one source enumeration across 16 concurrent reads.");
     }
 }

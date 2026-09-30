@@ -12,7 +12,7 @@ namespace LibraDex;
 /// Provides the first raw byte movement core for LibraDex.<br/>
 /// This slice deliberately knows nothing about shelves, routers, indexes, or superblock layout beyond reserving the file prefix.<br/>
 /// </summary>
-internal sealed class DataKernel : IDisposable
+internal sealed partial class DataKernel : IDisposable
 {
     private const int InitialPendingSegmentCapacity = 16;
     private const int InitialCommitSliceCapacity = 16;
@@ -53,13 +53,15 @@ internal sealed class DataKernel : IDisposable
         DataKernelOptions options,
         DataKernelTelemetryOptions telemetryOptions,
         DataKernelBackingKind backingKind,
-        long nextAppendOffset)
+        long nextAppendOffset,
+        string? filePath = null)
     {
         this.handle = handle;
         this.options = options;
         this.telemetryOptions = telemetryOptions;
         this.backingKind = backingKind;
         this.nextAppendOffset = nextAppendOffset;
+        this.filePath = filePath;
     }
 
     /// <summary>
@@ -99,6 +101,12 @@ internal sealed class DataKernel : IDisposable
     {
         options.Validate();
 
+        string fullPath = Path.GetFullPath(path);
+        if (mode != FileMode.Open &&
+            (Path.Exists(fullPath + PublicationReadySuffix) ||
+             Path.Exists(fullPath + PublicationPrepareSuffix)))
+            throw new IOException("A recoverable publication is pending; open and recover the existing file before replacing it.");
+
         SafeFileHandle handle = File.OpenHandle(
             path,
             mode,
@@ -106,10 +114,14 @@ internal sealed class DataKernel : IDisposable
             FileShare.Read,
             FileOptions.RandomAccess);
 
-        long fileLength = RandomAccess.GetLength(handle);
-        long nextAppendOffset = Math.Max(fileLength, options.ReservedPrefixBytes);
-
-        return new DataKernel(handle, options, telemetryOptions, DataKernelBackingKind.File, nextAppendOffset);
+        try
+        {
+            RecoverPublication(handle, fullPath);
+            long fileLength = RandomAccess.GetLength(handle);
+            long nextAppendOffset = Math.Max(fileLength, options.ReservedPrefixBytes);
+            return new DataKernel(handle, options, telemetryOptions, DataKernelBackingKind.File, nextAppendOffset, fullPath);
+        }
+        catch { handle.Dispose(); throw; }
     }
 
     /// <summary>
@@ -459,14 +471,15 @@ internal sealed class DataKernel : IDisposable
             ThrowIfDisposed();
 
             int totalRead = 0;
+            int pendingReadChunks = 0;
             while (totalRead < destination.Length)
             {
-                int read = ReadPending(offset + totalRead, destination[totalRead..]);
+                int read = ReadPending(offset + totalRead, destination[totalRead..], out int backingReadLength);
                 if (read == 0)
                 {
                     read = backingKind == DataKernelBackingKind.File
-                        ? ReadFile(offset + totalRead, destination[totalRead..])
-                        : ReadMemory(offset + totalRead, destination[totalRead..]);
+                        ? ReadFile(offset + totalRead, destination.Slice(totalRead, backingReadLength))
+                        : ReadMemory(offset + totalRead, destination.Slice(totalRead, backingReadLength));
                 }
 
                 if (telemetryOptions.Enabled)
@@ -480,6 +493,15 @@ internal sealed class DataKernel : IDisposable
                 }
 
                 totalRead += read;
+                if (totalRead < destination.Length && ++pendingReadChunks == 8 && pendingSegments.Count >= 32)
+                {
+                    int overlaid = TryReadBackingWithPendingOverlay(offset + totalRead, destination[totalRead..]);
+                    if (overlaid != 0)
+                    {
+                        totalRead += overlaid;
+                        if (telemetryOptions.Enabled) readCallCount++;
+                    }
+                }
             }
 
             if (telemetryOptions.Enabled)
@@ -1839,16 +1861,31 @@ internal sealed class DataKernel : IDisposable
         }
     }
 
-    private int ReadPending(long offset, Span<byte> destination)
+    /// <summary>Copies the newest staged bytes containing the read start, stopping before any newer override begins.<br/>
+    /// A reverse scan tracks future starts only until a containing segment is found; older segments cannot override that source.<br/>
+    /// When no staged segment contains the start, bounds the backing read at the nearest staged start so it cannot skip pending data.<br/>
+    /// Preserves staging-order visibility, does not alter durability phase order, and allocates no buffers or range structures.<br/></summary>
+    /// <param name="offset">Absolute start of the remaining read.<br/></param>
+    /// <param name="destination">Remaining requested destination span.<br/></param>
+    /// <param name="backingReadLength">Maximum backing chunk when no pending bytes were copied.<br/></param>
+    /// <returns>Copied staged-byte count, or zero when a bounded backing read is required.<br/></returns>
+    private int ReadPending(long offset, Span<byte> destination, out int backingReadLength)
     {
+        backingReadLength = destination.Length;
         for (int i = pendingSegments.Count - 1; i >= 0; i--)
         {
             PendingSegment segment = pendingSegments[i];
+            if (segment.Offset > offset)
+            {
+                long distance = segment.Offset - offset;
+                if (distance < backingReadLength && segment.Length != 0) backingReadLength = (int)distance;
+                continue;
+            }
             long segmentEnd = segment.Offset + segment.Length;
-            if (offset >= segment.Offset && offset < segmentEnd)
+            if (offset < segmentEnd)
             {
                 int sourceOffset = checked((int)(offset - segment.Offset));
-                int readable = Math.Min(destination.Length, segment.Length - sourceOffset);
+                int readable = Math.Min(backingReadLength, segment.Length - sourceOffset);
                 segment.Buffer.AsSpan(segment.SourceOffset + sourceOffset, readable).CopyTo(destination);
                 return readable;
             }

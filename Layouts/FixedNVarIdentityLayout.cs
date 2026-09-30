@@ -126,7 +126,7 @@ internal static class FixedNVarIdentityLayout
         WriteMagic(target, Magic);
         WriteFormatVersion(target, FormatVersion);
         WriteHeaderSize(target, HeaderSize);
-        BinaryPrimitives.WriteUInt32LittleEndian(target.Slice(FlagsOffset, sizeof(uint)), 0);
+        BinaryPrimitives.WriteUInt32LittleEndian(target.Slice(FlagsOffset, sizeof(uint)), profile.Descending ? 1U : 0U);
         WriteItemCount(target, 0);
         WriteShelfExtentSize(target, profile.ShelfExtentSize);
         WriteSlotStreamLength(target, 0);

@@ -2418,6 +2418,10 @@ public sealed class CatalogNamedIndexBuilder
     public LibraDexIdentityMutationResult Delete(LibraDexConditionEndCondition condition)
     {
         ArgumentNullException.ThrowIfNull(condition);
+        if (catalog.Session.IsDurabilityBatchActive &&
+            (!owner.TryGetInfo(Group, Name, out CatalogIndexInfo batchTarget) ||
+             !catalog.TryPrepareActiveIndexBatchMutation(batchTarget.SlotIndex)))
+            throw new InvalidOperationException("Catalog condition delete cannot mutate an index outside the active index-owned durability batch.");
         CatalogIdentityGroupIndexes indexes = RequireConditionGroup(condition.Group);
         IIndex target = Open();
         IIdentityCriterion criterion = condition.Materialize(name => indexes.Index(name));
@@ -2434,6 +2438,10 @@ public sealed class CatalogNamedIndexBuilder
     public LibraDexIdentityMutationResult Delete<TResult>(LibraDexCondition<TResult> condition)
     {
         ArgumentNullException.ThrowIfNull(condition);
+        if (catalog.Session.IsDurabilityBatchActive &&
+            (!owner.TryGetInfo(Group, Name, out CatalogIndexInfo batchTarget) ||
+             !catalog.TryPrepareActiveIndexBatchMutation(batchTarget.SlotIndex)))
+            throw new InvalidOperationException("Catalog condition delete cannot mutate an index outside the active index-owned durability batch.");
         CatalogIdentityGroupIndexes indexes = RequireConditionGroup(condition.Group);
         return LibraDexIdentityExecutionPlanner.ExecuteTargetDelete(condition.IterateSelectedIdentities(indexes), Open());
     }
@@ -3248,7 +3256,7 @@ public sealed class CatalogNamedStringKeyBuilder
         if ((directions & LibraDexProjectionDirectionSet.Reversed) != 0)
         {
             exactReversedSlot = ResolveAutoSlot();
-            exactReversed = catalog.CreateVarKeyScalar8Index($"{name}#exact-rev", exactReversedSlot, StringVarKeyPhysicalMaxLength);
+            exactReversed = catalog.CreateVarKeyScalar8Index($"{name}#exact-rev", exactReversedSlot, StringVarKeyPhysicalMaxLength, sortOrder);
         }
 
         VarKeyScalar8Index? folded = null;
@@ -3256,7 +3264,7 @@ public sealed class CatalogNamedStringKeyBuilder
         if (HasFoldedText(stringKeys))
         {
             foldedSlot = ResolveAutoSlot();
-            folded = catalog.CreateVarKeyScalar8Index($"{name}#folded", foldedSlot, StringVarKeyPhysicalMaxLength);
+            folded = catalog.CreateVarKeyScalar8Index($"{name}#folded", foldedSlot, StringVarKeyPhysicalMaxLength, sortOrder);
         }
 
         List<LibraDexStringSortKeyProjectionBinding> sortKeyBindings = new(effectiveSortKeyProfiles.Count);
@@ -3270,7 +3278,7 @@ public sealed class CatalogNamedStringKeyBuilder
             SortVersion version = culture.CompareInfo.Version;
             int slot = ResolveAutoSlot();
             string physicalName = CreateSortKeyPhysicalName(name, i);
-            VarKeyScalar8Index physical = catalog.CreateVarKeyScalar8Index(physicalName, slot, StringVarKeyPhysicalMaxLength);
+            VarKeyScalar8Index physical = catalog.CreateVarKeyScalar8Index(physicalName, slot, StringVarKeyPhysicalMaxLength, sortOrder);
             string cultureName = culture.Equals(CultureInfo.InvariantCulture) ? string.Empty : culture.Name;
             sortKeyBindings.Add(new LibraDexStringSortKeyProjectionBinding(
                 physical,
@@ -3297,7 +3305,7 @@ public sealed class CatalogNamedStringKeyBuilder
             HasFoldedText(stringKeys))
         {
             foldedReversedSlot = ResolveAutoSlot();
-            foldedReversed = catalog.CreateVarKeyScalar8Index($"{name}#folded-rev", foldedReversedSlot, StringVarKeyPhysicalMaxLength);
+            foldedReversed = catalog.CreateVarKeyScalar8Index($"{name}#folded-rev", foldedReversedSlot, StringVarKeyPhysicalMaxLength, sortOrder);
         }
 
         VarKeyScalar8Index? normalized = null;
@@ -3305,7 +3313,7 @@ public sealed class CatalogNamedStringKeyBuilder
         if (HasNormalizedText(stringKeys))
         {
             normalizedSlot = ResolveAutoSlot();
-            normalized = catalog.CreateVarKeyScalar8Index($"{name}#normalized", normalizedSlot, StringVarKeyPhysicalMaxLength);
+            normalized = catalog.CreateVarKeyScalar8Index($"{name}#normalized", normalizedSlot, StringVarKeyPhysicalMaxLength, sortOrder);
         }
 
         VarKeyScalar8Index? normalizedReversed = null;
@@ -3314,7 +3322,7 @@ public sealed class CatalogNamedStringKeyBuilder
             HasNormalizedText(stringKeys))
         {
             normalizedReversedSlot = ResolveAutoSlot();
-            normalizedReversed = catalog.CreateVarKeyScalar8Index($"{name}#normalized-rev", normalizedReversedSlot, StringVarKeyPhysicalMaxLength);
+            normalizedReversed = catalog.CreateVarKeyScalar8Index($"{name}#normalized-rev", normalizedReversedSlot, StringVarKeyPhysicalMaxLength, sortOrder);
         }
 
         LibraDexStringComparisonPolicy? effectiveStringComparisonPolicy = stringComparisonPolicy ?? catalog.Options.StringComparisonPolicy;
@@ -3333,6 +3341,7 @@ public sealed class CatalogNamedStringKeyBuilder
             normalizedReversed,
             foldedCulture,
             LibraDexTextNormalization.FormC,
+            sortOrder,
             effectiveStringComparisonPolicy,
             identityLookupMode);
     }
@@ -3392,11 +3401,11 @@ public sealed class CatalogNamedStringKeyBuilder
         var published = false;
         try
         {
-            physical = catalog.CreateVarKeyScalar8Index(physicalName, slot, StringVarKeyPhysicalMaxLength);
+            physical = catalog.CreateVarKeyScalar8Index(physicalName, slot, StringVarKeyPhysicalMaxLength, info.SortOrder);
             created = true;
             using (LibraDexStringScalar8Index exact = Open(stringComparisonPolicy, IdentityLookupMode.Explicit))
             {
-                foreach (LibraDexRuntimeTuple tuple in owner[group].IterateTuples(exact))
+                foreach (LibraDexRuntimeTuple tuple in exact.IterateExactTuplesForProjectionBackfill())
                 {
                     string? value = tuple.Key switch
                     {
@@ -3486,12 +3495,12 @@ public sealed class CatalogNamedStringKeyBuilder
         }
 
         ValidateStringInfo(info);
-        VarKeyScalar8Index exact = catalog.OpenVarKeyScalar8Index(info.SlotIndex, info.VarKeyMaxKeyLength);
+        VarKeyScalar8Index exact = catalog.OpenVarKeyScalar8Index(info.SlotIndex, info.VarKeyMaxKeyLength, info.SortOrder);
         VarKeyScalar8Index? exactReversed = info.ExactReversedProjectionSlotIndex >= 0
-            ? catalog.OpenVarKeyScalar8Index(info.ExactReversedProjectionSlotIndex, info.VarKeyMaxKeyLength)
+            ? catalog.OpenVarKeyScalar8Index(info.ExactReversedProjectionSlotIndex, info.VarKeyMaxKeyLength, info.SortOrder)
             : null;
         VarKeyScalar8Index? folded = info.FoldedProjectionSlotIndex >= 0
-            ? catalog.OpenVarKeyScalar8Index(info.FoldedProjectionSlotIndex, info.VarKeyMaxKeyLength)
+            ? catalog.OpenVarKeyScalar8Index(info.FoldedProjectionSlotIndex, info.VarKeyMaxKeyLength, info.SortOrder)
             : null;
         IReadOnlyList<LibraDexStringSortKeyProjectionInfo> sortKeyProfiles = ResolveOpenSortKeyProfiles(info);
         List<LibraDexStringSortKeyProjectionBinding> sortKeyBindings = new(sortKeyProfiles.Count);
@@ -3499,7 +3508,7 @@ public sealed class CatalogNamedStringKeyBuilder
         {
             LibraDexStringSortKeyProjectionInfo profile = sortKeyProfiles[i];
             sortKeyBindings.Add(new LibraDexStringSortKeyProjectionBinding(
-                catalog.OpenVarKeyScalar8Index(profile.SlotIndex, info.VarKeyMaxKeyLength),
+                catalog.OpenVarKeyScalar8Index(profile.SlotIndex, info.VarKeyMaxKeyLength, info.SortOrder),
                 CreateSortKeyPhysicalName(name, i),
                 profile.CultureName,
                 profile.CompareOptions,
@@ -3507,13 +3516,13 @@ public sealed class CatalogNamedStringKeyBuilder
                 profile.SortVersionId));
         }
         VarKeyScalar8Index? foldedReversed = info.FoldedReversedProjectionSlotIndex >= 0
-            ? catalog.OpenVarKeyScalar8Index(info.FoldedReversedProjectionSlotIndex, info.VarKeyMaxKeyLength)
+            ? catalog.OpenVarKeyScalar8Index(info.FoldedReversedProjectionSlotIndex, info.VarKeyMaxKeyLength, info.SortOrder)
             : null;
         VarKeyScalar8Index? normalized = info.NormalizedProjectionSlotIndex >= 0
-            ? catalog.OpenVarKeyScalar8Index(info.NormalizedProjectionSlotIndex, info.VarKeyMaxKeyLength)
+            ? catalog.OpenVarKeyScalar8Index(info.NormalizedProjectionSlotIndex, info.VarKeyMaxKeyLength, info.SortOrder)
             : null;
         VarKeyScalar8Index? normalizedReversed = info.NormalizedReversedProjectionSlotIndex >= 0
-            ? catalog.OpenVarKeyScalar8Index(info.NormalizedReversedProjectionSlotIndex, info.VarKeyMaxKeyLength)
+            ? catalog.OpenVarKeyScalar8Index(info.NormalizedReversedProjectionSlotIndex, info.VarKeyMaxKeyLength, info.SortOrder)
             : null;
         return new LibraDexStringScalar8Index(
             catalog,
@@ -3528,6 +3537,7 @@ public sealed class CatalogNamedStringKeyBuilder
             normalizedReversed,
             info.FoldedCulture,
             info.FoldedNormalization,
+            info.SortOrder,
             ResolveOpenStringComparisonPolicy(info, stringComparisonPolicy),
             identityLookupMode);
     }

@@ -246,7 +246,8 @@ internal static class FixedNVarIdentity
             FixedNVarIdentityLayout.ReadMagic(bytes) != FixedNVarIdentityLayout.Magic ||
             FixedNVarIdentityLayout.ReadFormatVersion(bytes) != FixedNVarIdentityLayout.FormatVersion ||
             FixedNVarIdentityLayout.ReadHeaderSize(bytes) != FixedNVarIdentityLayout.HeaderSize ||
-            FixedNVarIdentityLayout.ReadShelfExtentSize(bytes) != profile.ShelfExtentSize)
+            FixedNVarIdentityLayout.ReadShelfExtentSize(bytes) != profile.ShelfExtentSize ||
+            (bytes[FixedNVarIdentityLayout.FlagsOffset] != 0) != profile.Descending)
         {
             return false;
         }
@@ -273,7 +274,7 @@ internal static class FixedNVarIdentity
         {
             int mid = low + ((high - low) / 2);
             int comparison = CompareSlotTuple(bytes, profile, mid, key, identity);
-            if (comparison < 0)
+            if (profile.Descending ? comparison > 0 : comparison < 0)
             {
                 low = mid + 1;
             }
@@ -294,7 +295,7 @@ internal static class FixedNVarIdentity
         {
             int mid = low + ((high - low) / 2);
             int comparison = CompareSlotKey(bytes, profile, mid, key);
-            if (comparison < 0)
+            if (profile.Descending ? comparison > 0 : comparison < 0)
             {
                 low = mid + 1;
             }
@@ -411,7 +412,7 @@ internal sealed class FixedNVarIdentityReadOnly
         {
             int mid = low + ((high - low) / 2);
             int comparison = CompareSlotTuple(mid, prefix, key, identity);
-            if (comparison < 0)
+            if (profile.Descending ? comparison > 0 : comparison < 0)
             {
                 low = mid + 1;
             }
@@ -433,7 +434,7 @@ internal sealed class FixedNVarIdentityReadOnly
         {
             int mid = low + ((high - low) / 2);
             int comparison = CompareSlotKey(mid, prefix, key);
-            if (comparison < 0)
+            if (profile.Descending ? comparison > 0 : comparison < 0)
             {
                 low = mid + 1;
             }
@@ -464,12 +465,13 @@ internal sealed class FixedNVarIdentityReadOnly
 
     public void CopyIdentitiesInKeyRange(ReadOnlySpan<byte> lowerKey, ReadOnlySpan<byte> upperKey, List<byte[]> identities)
     {
-        int start = LowerBoundKey(lowerKey);
-        uint upperPrefix = FixedNVarIdentityLayout.CreateKeyPrefix(upperKey);
+        int start = LowerBoundKey(profile.Descending ? upperKey : lowerKey);
+        ReadOnlySpan<byte> endKey = profile.Descending ? lowerKey : upperKey;
+        uint endPrefix = FixedNVarIdentityLayout.CreateKeyPrefix(endKey);
         for (int i = start; i < ItemCount; i++)
         {
-            int comparison = CompareSlotKey(i, upperPrefix, upperKey);
-            if (comparison > 0)
+            int comparison = CompareSlotKey(i, endPrefix, endKey);
+            if (profile.Descending ? comparison < 0 : comparison > 0)
             {
                 break;
             }
@@ -488,12 +490,13 @@ internal sealed class FixedNVarIdentityReadOnly
     public int CountItemsInKeyRange(ReadOnlySpan<byte> lowerKey, ReadOnlySpan<byte> upperKey)
     {
         int count = 0;
-        int start = LowerBoundKey(lowerKey);
-        uint upperPrefix = FixedNVarIdentityLayout.CreateKeyPrefix(upperKey);
+        int start = LowerBoundKey(profile.Descending ? upperKey : lowerKey);
+        ReadOnlySpan<byte> endKey = profile.Descending ? lowerKey : upperKey;
+        uint endPrefix = FixedNVarIdentityLayout.CreateKeyPrefix(endKey);
         for (int i = start; i < ItemCount; i++)
         {
-            int comparison = CompareSlotKey(i, upperPrefix, upperKey);
-            if (comparison > 0)
+            int comparison = CompareSlotKey(i, endPrefix, endKey);
+            if (profile.Descending ? comparison < 0 : comparison > 0)
             {
                 break;
             }
@@ -512,7 +515,8 @@ internal sealed class FixedNVarIdentityReadOnly
             FixedNVarIdentityLayout.ReadMagic(bytes) != FixedNVarIdentityLayout.Magic ||
             FixedNVarIdentityLayout.ReadFormatVersion(bytes) != FixedNVarIdentityLayout.FormatVersion ||
             FixedNVarIdentityLayout.ReadHeaderSize(bytes) != FixedNVarIdentityLayout.HeaderSize ||
-            FixedNVarIdentityLayout.ReadShelfExtentSize(bytes) != profile.ShelfExtentSize)
+            FixedNVarIdentityLayout.ReadShelfExtentSize(bytes) != profile.ShelfExtentSize ||
+            (bytes[FixedNVarIdentityLayout.FlagsOffset] != 0) != profile.Descending)
         {
             return false;
         }

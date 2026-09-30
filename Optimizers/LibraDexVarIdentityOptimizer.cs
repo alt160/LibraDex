@@ -16,7 +16,8 @@ internal sealed partial class LibraDexFileSession
     internal LibraDexMaintenanceWalkResult OptimizeScalar16VarIdentityTopology(
         long rootRouterOffset,
         int maxIdentityLength,
-        int? maxWorkItems)
+        int? maxWorkItems,
+        bool descending = false)
     {
         if (maxWorkItems is <= 0)
             throw new ArgumentOutOfRangeException(nameof(maxWorkItems), maxWorkItems, "The optimizer work limit must be positive when supplied.");
@@ -28,7 +29,8 @@ internal sealed partial class LibraDexFileSession
             ulong.MinValue,
             ulong.MinValue,
             ulong.MaxValue,
-            ulong.MaxValue);
+            ulong.MaxValue,
+            descending);
         maintenanceRead.Pause();
         List<ulong> keyHighs = new();
         List<ulong> keyLows = new();
@@ -102,7 +104,8 @@ internal sealed partial class LibraDexFileSession
                 rootPrefix,
                 Scalar16VarIdentityProfile.Create(
                     Scalar16VarIdentityProfile.Default8KiB.ShelfExtentSize,
-                    maxIdentityLength));
+                    maxIdentityLength,
+                    descending));
             for (int i = 0; i < prefixKeyHighs.Count; i++)
             {
                 Scalar16VarIdentityRoutedInsertResult inserted = InsertWalkedRoutedScalar16VarIdentity(
@@ -112,7 +115,8 @@ internal sealed partial class LibraDexFileSession
                     prefixKeyLows[i],
                     prefixIdentities[i],
                     allowDuplicateKeys: true,
-                    maxRouterHops: DefaultScalar16VarIdentityMaxRouterHops);
+                    maxRouterHops: DefaultScalar16VarIdentityMaxRouterHops,
+                    descending: descending);
                 if (inserted.InsertResult != Scalar16VarIdentityInsertResult.Inserted)
                 {
                     throw new InvalidDataException(
@@ -146,7 +150,8 @@ internal sealed partial class LibraDexFileSession
     internal LibraDexMaintenanceWalkResult OptimizeScalar8VarIdentityTopology(
         long rootRouterOffset,
         int maxIdentityLength,
-        int? maxWorkItems)
+        int? maxWorkItems,
+        bool descending = false)
     {
         if (maxWorkItems is <= 0)
             throw new ArgumentOutOfRangeException(nameof(maxWorkItems), maxWorkItems, "The optimizer work limit must be positive when supplied.");
@@ -156,7 +161,9 @@ internal sealed partial class LibraDexFileSession
             rootRouterOffset,
             maxIdentityLength,
             ulong.MinValue,
-            ulong.MaxValue);
+            ulong.MaxValue,
+            descending ? QueryDirection.Descending : QueryDirection.Ascending,
+            descending);
         maintenanceRead.Pause();
         List<ulong> keys = new();
         List<byte[]> identities = new();
@@ -221,7 +228,8 @@ internal sealed partial class LibraDexFileSession
                 rootPrefix,
                 Scalar8VarIdentityProfile.Create(
                     Scalar8VarIdentityProfile.Default8KiB.ShelfExtentSize,
-                    maxIdentityLength));
+                    maxIdentityLength,
+                    descending));
             for (int i = 0; i < prefixKeys.Count; i++)
             {
                 Scalar8VarIdentityRoutedInsertResult inserted = InsertWalkedRoutedScalar8VarIdentity(
@@ -266,7 +274,8 @@ internal sealed partial class LibraDexFileSession
         long rootRouterOffset,
         int maxKeyLength,
         int maxIdentityLength,
-        int? maxWorkItems)
+        int? maxWorkItems,
+        bool descending = false)
     {
         if (maxWorkItems is <= 0)
             throw new ArgumentOutOfRangeException(nameof(maxWorkItems), maxWorkItems, "The optimizer work limit must be positive when supplied.");
@@ -282,7 +291,8 @@ internal sealed partial class LibraDexFileSession
             maxIdentityLength,
             lower,
             upper,
-            decodeLogicalKeys: false);
+            decodeLogicalKeys: false,
+            descending: descending);
         maintenanceRead.Pause();
         List<byte[]> keys = new();
         List<byte[]> identities = new();
@@ -351,7 +361,8 @@ internal sealed partial class LibraDexFileSession
                     prefixKeys[i],
                     prefixIdentities[i],
                     allowDuplicateKeys: true,
-                    maxRouterHops: DefaultVarKeyVarIdentityMaxRouterHops);
+                    maxRouterHops: DefaultVarKeyVarIdentityMaxRouterHops,
+                    descending: descending);
                 if (inserted.InsertResult != VarKeyVarIdentityInsertResult.Inserted)
                 {
                     throw new InvalidDataException(

@@ -41,6 +41,8 @@ internal readonly ref struct Scalar8Scalar16ReadOnly
 
     public uint Flags => Scalar8Scalar16Layout.ReadFlags(bytes);
 
+    public bool IsDescending => (Flags & Scalar8Scalar16Layout.DescendingFlag) != 0;
+
     public ushort ItemCount => Scalar8Scalar16Layout.ReadItemCount(bytes);
 
     public ushort PhysicalItemCount => ItemCount;
@@ -126,13 +128,14 @@ internal readonly ref struct Scalar8Scalar16ReadOnly
         int high = ItemCount;
         ReadOnlySpan<byte> localBytes = bytes;
         Scalar8Scalar16Profile localProfile = profile;
+        bool descending = IsDescending;
 
         while (low < high)
         {
             int middle = low + ((high - low) >> 1);
             ushort itemOffset = Scalar8Scalar16Layout.ReadSlot(localBytes, localProfile, middle);
             int comparison = Scalar8Scalar16Layout.CompareItemTuple(localBytes, itemOffset, encodedKey, encodedIdentityHigh, encodedIdentityLow);
-            if (comparison < 0)
+            if (descending ? comparison > 0 : comparison < 0)
             {
                 low = middle + 1;
             }
@@ -157,13 +160,14 @@ internal readonly ref struct Scalar8Scalar16ReadOnly
         int high = ItemCount;
         ReadOnlySpan<byte> localBytes = bytes;
         Scalar8Scalar16Profile localProfile = profile;
+        bool descending = IsDescending;
 
         while (low < high)
         {
             int middle = low + ((high - low) >> 1);
             ushort itemOffset = Scalar8Scalar16Layout.ReadSlot(localBytes, localProfile, middle);
             ulong itemKey = Scalar8Scalar16Layout.ReadItemKey(localBytes, itemOffset);
-            if (itemKey < encodedKey)
+            if (descending ? itemKey > encodedKey : itemKey < encodedKey)
             {
                 low = middle + 1;
             }
@@ -232,7 +236,8 @@ internal readonly ref struct Scalar8Scalar16ReadOnly
         }
 
         int copied = 0;
-        int slotIndex = LowerBoundKey(lowerEncodedKey);
+        bool descending = IsDescending;
+        int slotIndex = LowerBoundKey(descending ? upperEncodedKey : lowerEncodedKey);
         ushort count = ItemCount;
         ReadOnlySpan<byte> localBytes = bytes;
         Scalar8Scalar16Profile localProfile = profile;
@@ -240,7 +245,7 @@ internal readonly ref struct Scalar8Scalar16ReadOnly
         {
             ushort itemOffset = Scalar8Scalar16Layout.ReadSlot(localBytes, localProfile, i);
             ulong itemKey = Scalar8Scalar16Layout.ReadItemKey(localBytes, itemOffset);
-            if (itemKey > upperEncodedKey)
+            if (descending ? itemKey < lowerEncodedKey : itemKey > upperEncodedKey)
             {
                 break;
             }

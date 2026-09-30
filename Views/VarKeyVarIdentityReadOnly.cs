@@ -18,6 +18,8 @@ internal sealed class VarKeyVarIdentityReadOnly
 
     public bool IsValid { get; }
 
+    public bool IsDescending => profile.Descending;
+
     public int ItemCount => IsValid ? recordOffsets.Length : 0;
 
     public int PhysicalItemCount => ItemCount;
@@ -36,7 +38,7 @@ internal sealed class VarKeyVarIdentityReadOnly
         {
             int middle = low + ((high - low) >> 1);
             int comparison = CompareSlotKey(localBytes, middle, prefix, key);
-            if (comparison < 0)
+            if (profile.Descending ? comparison > 0 : comparison < 0)
             {
                 low = middle + 1;
             }
@@ -59,7 +61,7 @@ internal sealed class VarKeyVarIdentityReadOnly
         {
             int middle = low + ((high - low) >> 1);
             int comparison = CompareSlotTuple(localBytes, middle, prefix, key, identity);
-            if (comparison < 0)
+            if (profile.Descending ? comparison > 0 : comparison < 0)
             {
                 low = middle + 1;
             }
@@ -102,8 +104,8 @@ internal sealed class VarKeyVarIdentityReadOnly
             return 0;
         }
 
-        int lowerSlot = LowerBoundKey(lowerKey);
-        int upperSlot = UpperBoundKey(upperKey);
+        int lowerSlot = LowerBoundKey(profile.Descending ? upperKey : lowerKey);
+        int upperSlot = UpperBoundKey(profile.Descending ? lowerKey : upperKey);
         return Math.Max(0, upperSlot - lowerSlot);
     }
 
@@ -123,7 +125,7 @@ internal sealed class VarKeyVarIdentityReadOnly
         {
             int middle = low + ((high - low) >> 1);
             int comparison = CompareSlotKey(localBytes, middle, prefix, key);
-            if (comparison <= 0)
+            if (profile.Descending ? comparison >= 0 : comparison <= 0)
             {
                 low = middle + 1;
             }
@@ -149,7 +151,8 @@ internal sealed class VarKeyVarIdentityReadOnly
             VarKeyVarIdentityLayout.ReadMagic(bytes) != VarKeyVarIdentityLayout.Magic ||
             VarKeyVarIdentityLayout.ReadFormatVersion(bytes) != VarKeyVarIdentityLayout.FormatVersion ||
             VarKeyVarIdentityLayout.ReadHeaderSize(bytes) != VarKeyVarIdentityLayout.HeaderSize ||
-            VarKeyVarIdentityLayout.ReadShelfExtentSize(bytes) != profile.ShelfExtentSize)
+            VarKeyVarIdentityLayout.ReadShelfExtentSize(bytes) != profile.ShelfExtentSize ||
+            ((VarKeyVarIdentityLayout.ReadFlags(bytes) & VarKeyVarIdentityLayout.DescendingFlag) != 0) != profile.Descending)
         {
             return false;
         }

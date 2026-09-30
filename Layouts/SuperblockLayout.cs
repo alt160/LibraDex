@@ -12,7 +12,8 @@ internal static class SuperblockLayout
 {
     public const int Size = 4096;
     public const ulong Magic = 0x5844444C4152424CUL;
-    public const ushort FormatVersion = 1;
+    public const ushort LegacyFormatVersion = 1;
+    public const ushort RecoverableFormatVersion = 2;
     public const int MagicOffset = 0;
     public const int FormatVersionOffset = 8;
     public const int HeaderSizeOffset = 10;

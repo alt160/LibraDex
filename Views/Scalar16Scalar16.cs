@@ -53,7 +53,7 @@ internal ref struct Scalar16Scalar16
         Scalar16Scalar16Layout.WriteMagic(bytes, Scalar16Scalar16Layout.Magic);
         Scalar16Scalar16Layout.WriteFormatVersion(bytes, Scalar16Scalar16Layout.FormatVersion);
         Scalar16Scalar16Layout.WriteHeaderSize(bytes, Scalar16Scalar16Layout.HeaderSize);
-        Scalar16Scalar16Layout.WriteFlags(bytes, 0);
+        Scalar16Scalar16Layout.WriteFlags(bytes, profile.Descending ? Scalar16Scalar16Layout.DescendingFlag : 0);
         Scalar16Scalar16Layout.WriteItemCount(bytes, 0);
     }
 
@@ -101,7 +101,7 @@ internal ref struct Scalar16Scalar16
         ushort count = ItemCount;
         if (count >= profile.MaxItemCount)
         {
-            return Scalar16Scalar16InsertResult.Full;
+            return ClassifyFullInsert(encodedKeyHigh, encodedKeyLow, encodedIdentityHigh, encodedIdentityLow, allowDuplicateKeys);
         }
 
         if (TryAppendInSortedOrder(encodedKeyHigh, encodedKeyLow, encodedIdentityHigh, encodedIdentityLow, allowDuplicateKeys, count, out mutationBounds))
@@ -298,7 +298,7 @@ internal ref struct Scalar16Scalar16
         {
             ushort lastOffset = Scalar16Scalar16Layout.ReadSlot(bytes, profile, count - 1);
             int keyComparison = Scalar16Scalar16Layout.CompareItemKey(bytes, lastOffset, encodedKeyHigh, encodedKeyLow);
-            if (keyComparison > 0)
+            if (profile.Descending ? keyComparison < 0 : keyComparison > 0)
             {
                 return false;
             }
@@ -312,7 +312,10 @@ internal ref struct Scalar16Scalar16
 
                 ulong lastIdentityHigh = Scalar16Scalar16Layout.ReadItemIdentityHigh(bytes, lastOffset);
                 ulong lastIdentityLow = Scalar16Scalar16Layout.ReadItemIdentityLow(bytes, lastOffset);
-                if (lastIdentityHigh > encodedIdentityHigh || (lastIdentityHigh == encodedIdentityHigh && lastIdentityLow >= encodedIdentityLow))
+                int identityComparison = lastIdentityHigh.CompareTo(encodedIdentityHigh);
+                if (identityComparison == 0)
+                    identityComparison = lastIdentityLow.CompareTo(encodedIdentityLow);
+                if (profile.Descending ? identityComparison <= 0 : identityComparison >= 0)
                 {
                     return false;
                 }
@@ -353,5 +356,41 @@ internal ref struct Scalar16Scalar16
     public Scalar16Scalar16ReadOnly AsReadOnly()
     {
         return new Scalar16Scalar16ReadOnly(bytes, profile);
+    }
+
+    /// <summary>Classifies a capacity-bound insertion before the caller attempts any structural growth.<br/>
+    /// Exact tuples remain idempotent and unique-key conflicts remain conflicts even when no payload slot is free.<br/>
+    /// Only the full-shelf branch calls this allocation-free binary-search path; ordinary insert and append code is unchanged.<br/></summary>
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private Scalar16Scalar16InsertResult ClassifyFullInsert(ulong encodedKeyHigh, ulong encodedKeyLow, ulong encodedIdentityHigh, ulong encodedIdentityLow, bool allowDuplicateKeys)
+    {
+        ushort count = ItemCount;
+        Scalar16Scalar16ReadOnly readOnly = AsReadOnly();
+        int insertIndex = readOnly.LowerBound(encodedKeyHigh, encodedKeyLow, encodedIdentityHigh, encodedIdentityLow);
+
+        if (insertIndex < count)
+        {
+            ushort existingOffset = Scalar16Scalar16Layout.ReadSlot(bytes, profile, insertIndex);
+            int comparison = Scalar16Scalar16Layout.CompareItemTuple(bytes, existingOffset, encodedKeyHigh, encodedKeyLow, encodedIdentityHigh, encodedIdentityLow);
+            if (comparison == 0)
+            {
+                return Scalar16Scalar16InsertResult.AlreadyPresent;
+            }
+        }
+
+        if (!allowDuplicateKeys)
+        {
+            int keyIndex = readOnly.LowerBoundKey(encodedKeyHigh, encodedKeyLow);
+            if (keyIndex < count)
+            {
+                ushort keyOffset = Scalar16Scalar16Layout.ReadSlot(bytes, profile, keyIndex);
+                if (Scalar16Scalar16Layout.CompareItemKey(bytes, keyOffset, encodedKeyHigh, encodedKeyLow) == 0)
+                {
+                    return Scalar16Scalar16InsertResult.KeyConflict;
+                }
+            }
+        }
+
+        return Scalar16Scalar16InsertResult.Full;
     }
 }

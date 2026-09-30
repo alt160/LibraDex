@@ -326,7 +326,10 @@ internal sealed partial class LibraDexFileSession
     internal byte[] ReadScalar8Scalar8ShelfBytes(long shelfOffset, Scalar8Scalar8Profile profile)
     {
         byte[] shelfBytes = ArrayPool<byte>.Shared.Rent(profile.ShelfExtentSize);
-        kernel.Read(shelfOffset, shelfBytes.AsSpan(0, profile.ShelfExtentSize));
+        if (durabilityBatchActive)
+            ReadScalar8Scalar8ShelfBytesForBatch(shelfOffset, profile).AsSpan(0, profile.ShelfExtentSize).CopyTo(shelfBytes);
+        else
+            kernel.Read(shelfOffset, shelfBytes.AsSpan(0, profile.ShelfExtentSize));
         Scalar8Scalar8ReadOnly shelf = new(shelfBytes, profile);
         if (!shelf.IsValid)
         {
@@ -590,7 +593,10 @@ internal sealed partial class LibraDexFileSession
     internal byte[] ReadScalar16Scalar8ShelfBytes(long shelfOffset, Scalar16Scalar8Profile profile)
     {
         byte[] shelfBytes = ArrayPool<byte>.Shared.Rent(profile.ShelfExtentSize);
-        kernel.Read(shelfOffset, shelfBytes.AsSpan(0, profile.ShelfExtentSize));
+        if (durabilityBatchActive)
+            ReadScalar16Scalar8ShelfBytesForBatch(shelfOffset, profile).AsSpan(0, profile.ShelfExtentSize).CopyTo(shelfBytes);
+        else
+            kernel.Read(shelfOffset, shelfBytes.AsSpan(0, profile.ShelfExtentSize));
         Scalar16Scalar8ReadOnly shelf = new(shelfBytes, profile);
         if (!shelf.IsValid)
         {
@@ -612,7 +618,10 @@ internal sealed partial class LibraDexFileSession
     internal byte[] ReadScalar8Scalar16ShelfBytes(long shelfOffset, Scalar8Scalar16Profile profile)
     {
         byte[] shelfBytes = ArrayPool<byte>.Shared.Rent(profile.ShelfExtentSize);
-        kernel.Read(shelfOffset, shelfBytes.AsSpan(0, profile.ShelfExtentSize));
+        if (durabilityBatchActive)
+            ReadScalar8Scalar16ShelfBytesForBatch(shelfOffset, profile).AsSpan(0, profile.ShelfExtentSize).CopyTo(shelfBytes);
+        else
+            kernel.Read(shelfOffset, shelfBytes.AsSpan(0, profile.ShelfExtentSize));
         Scalar8Scalar16ReadOnly shelf = new(shelfBytes, profile);
         if (!shelf.IsValid)
         {
@@ -760,7 +769,10 @@ internal sealed partial class LibraDexFileSession
     internal byte[] ReadScalar16Scalar16ShelfBytes(long shelfOffset, Scalar16Scalar16Profile profile)
     {
         byte[] shelfBytes = ArrayPool<byte>.Shared.Rent(profile.ShelfExtentSize);
-        kernel.Read(shelfOffset, shelfBytes.AsSpan(0, profile.ShelfExtentSize));
+        if (durabilityBatchActive)
+            ReadScalar16Scalar16ShelfBytesForBatch(shelfOffset, profile).AsSpan(0, profile.ShelfExtentSize).CopyTo(shelfBytes);
+        else
+            kernel.Read(shelfOffset, shelfBytes.AsSpan(0, profile.ShelfExtentSize));
         Scalar16Scalar16ReadOnly shelf = new(shelfBytes, profile);
         if (!shelf.IsValid)
         {
@@ -1254,6 +1266,9 @@ internal sealed partial class LibraDexFileSession
     /// <exception cref="InvalidDataException">Thrown when the loaded shelf bytes fail validation.</exception>
     internal byte[] ReadFixed32Scalar8ShelfBytes(long indexRootOffset, long shelfOffset, Fixed32Scalar8Profile profile)
     {
+        if (durabilityBatchActive)
+            return ReadFixed32Scalar8ShelfBytesForBatch(shelfOffset, profile).AsSpan(0, profile.ShelfExtentSize).ToArray();
+
         int cacheGeneration = fixed32Scalar8ReadCache.Generation;
         if (fixed32Scalar8ReadCache.TryGet(indexRootOffset, shelfOffset, out byte[]? cachedShelfBytes))
         {
@@ -1281,6 +1296,12 @@ internal sealed partial class LibraDexFileSession
     /// <returns><see langword="true"/> when the shelf is already retained for this index.<br/></returns>
     internal bool TryGetFixed32Scalar8ReadShelf(long indexRootOffset, long shelfOffset, out byte[] shelfBytes)
     {
+        if (durabilityBatchActive)
+        {
+            shelfBytes = null!;
+            return false;
+        }
+
         return fixed32Scalar8ReadCache.TryGet(indexRootOffset, shelfOffset, out shelfBytes);
     }
 
@@ -1767,6 +1788,9 @@ internal sealed partial class LibraDexFileSession
     /// <exception cref="InvalidDataException">Thrown when the loaded shelf bytes fail validation.</exception>
     internal byte[] ReadFixed32Scalar16ShelfBytes(long indexRootOffset, long shelfOffset, Fixed32Scalar16Profile profile)
     {
+        if (durabilityBatchActive)
+            return ReadFixed32Scalar16ShelfBytesForBatch(shelfOffset, profile).AsSpan(0, profile.ShelfExtentSize).ToArray();
+
         int cacheGeneration = fixed32Scalar16ReadCache.Generation;
         if (fixed32Scalar16ReadCache.TryGet(indexRootOffset, shelfOffset, out byte[]? cachedShelfBytes))
         {
@@ -1794,6 +1818,12 @@ internal sealed partial class LibraDexFileSession
     /// <returns><see langword="true"/> when the shelf is already retained for this index.<br/></returns>
     internal bool TryGetFixed32Scalar16ReadShelf(long indexRootOffset, long shelfOffset, out byte[] shelfBytes)
     {
+        if (durabilityBatchActive)
+        {
+            shelfBytes = null!;
+            return false;
+        }
+
         return fixed32Scalar16ReadCache.TryGet(indexRootOffset, shelfOffset, out shelfBytes);
     }
 

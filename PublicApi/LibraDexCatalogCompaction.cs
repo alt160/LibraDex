@@ -1,4 +1,5 @@
 using System.Globalization;
+using LibraDex.Layouts;
 
 namespace LibraDex;
 
@@ -117,6 +118,7 @@ internal static class LibraDexCatalogCompactor
             throw new ArgumentException("The compaction backup path must differ from the source and temporary paths.", nameof(options));
         }
 
+        DataKernel.RejectPublicationSidecarCollision(backupPath);
         long sourceBytes = new FileInfo(sourcePath).Length;
         List<IndexProof> proofs = new();
         long tupleCount = 0;
@@ -128,6 +130,7 @@ internal static class LibraDexCatalogCompactor
             using (Catalog source = Catalog.Open(sourcePath, catalogOptions))
             using (Catalog shadow = Catalog.Create(shadowPath, catalogOptions))
             {
+                bool allowUnorderedSourceRecovery = source.Session.Superblock.FormatVersion == SuperblockLayout.LegacyFormatVersion;
                 CatalogIndexInfo[] infos = source.Indexes.List();
                 HashSet<int> companionSlots = GetCompanionSlots(infos);
                 for (int i = 0; i < infos.Length; i++)
@@ -144,7 +147,7 @@ internal static class LibraDexCatalogCompactor
 
                     IIndex sourceIndex = source.OpenIndex(info);
                     IIndex shadowIndex = CreateShadowIndex(shadow, info, shape);
-                    CompactionCopyResult copy = CopyTuples(sourceIndex, shadowIndex, cancellationToken);
+                    CompactionCopyResult copy = CopyTuples(sourceIndex, shadowIndex, cancellationToken, allowUnorderedSourceRecovery);
                     source.Session.AssertNoRetainedCoherentRead($"Compaction copy for source index '{info.Group}/{info.Name}'");
                     shadow.Session.AssertNoRetainedCoherentRead($"Compaction copy for shadow index '{info.Group}/{info.Name}'");
                     if (copy.RecoveredUnorderedSource)
@@ -154,7 +157,15 @@ internal static class LibraDexCatalogCompactor
                     }
                     else
                     {
-                        CompareTuples(sourceIndex, shadowIndex, info, cancellationToken);
+                        try
+                        {
+                            CompareTuples(sourceIndex, shadowIndex, info, cancellationToken);
+                        }
+                        catch (LibraDexCompactionTupleParityException) when (allowUnorderedSourceRecovery)
+                        {
+                            CompareTupleMembership(sourceIndex, shadowIndex, info, copy.TupleCount, cancellationToken);
+                            recoveredUnorderedIndexCount++;
+                        }
                     }
                     source.Session.AssertNoRetainedCoherentRead($"Compaction validation for source index '{info.Group}/{info.Name}'");
                     shadow.Session.AssertNoRetainedCoherentRead($"Compaction validation for shadow index '{info.Group}/{info.Name}'");
@@ -174,6 +185,8 @@ internal static class LibraDexCatalogCompactor
                 throw new IOException($"The LibraDex compaction rollback path already exists: {backupPath}");
 
             InjectFault(LibraDexCompactionFaultPoint.BeforeReplacement);
+            DataKernel.RejectPublicationSidecarCollision(sourcePath);
+            DataKernel.RejectPublicationSidecarCollision(backupPath);
             File.Replace(shadowPath, sourcePath, backupPath, ignoreMetadataErrors: true);
             replaced = true;
 
@@ -221,7 +234,11 @@ internal static class LibraDexCatalogCompactor
         }
     }
 
-    private static CompactionCopyResult CopyTuples(IIndex source, IIndex destination, CancellationToken cancellationToken)
+    private static CompactionCopyResult CopyTuples(
+        IIndex source,
+        IIndex destination,
+        CancellationToken cancellationToken,
+        bool allowUnorderedSourceRecovery)
     {
         if (source is not IIdentityPrimitiveTupleStreamer streamer)
             throw new NotSupportedException($"Index '{source.Group}/{source.Name}' does not expose the authoritative tuple stream required for compaction.");
@@ -235,6 +252,7 @@ internal static class LibraDexCatalogCompactor
                     return new CompactionCopyResult(nativeCount, RecoveredUnorderedSource: false);
             }
             catch (ArgumentException exception) when (
+                allowUnorderedSourceRecovery &&
                 string.Equals(exception.ParamName, "tuples", StringComparison.Ordinal) &&
                 exception.Message.Contains("inverted", StringComparison.OrdinalIgnoreCase))
             {
@@ -555,13 +573,16 @@ internal static class LibraDexCatalogCompactor
             bool hasLeft = left.MoveNext();
             bool hasRight = right.MoveNext();
             if (hasLeft != hasRight)
-                throw new InvalidDataException($"Compaction tuple count diverged for index '{info.Group}/{info.Name}' at ordinal {ordinal:n0}.");
+                throw new LibraDexCompactionTupleParityException($"Compaction tuple count diverged for index '{info.Group}/{info.Name}' at ordinal {ordinal:n0}.");
             if (!hasLeft)
                 return;
             if (!LibraDexObjectTuple.ValueEquals(left.Current.Key, right.Current.Key) ||
                 !LibraDexObjectTuple.ValueEquals(left.Current.Identity, right.Current.Identity))
             {
-                throw new InvalidDataException($"Compaction tuple parity failed for index '{info.Group}/{info.Name}' at ordinal {ordinal:n0}.");
+                throw new LibraDexCompactionTupleParityException(
+                    $"Compaction tuple parity failed for index '{info.Group}/{info.Name}' at ordinal {ordinal:n0}. " +
+                    $"SourceKey='{left.Current.Key ?? "<null>"}', SourceIdentity='{left.Current.Identity ?? "<null>"}', " +
+                    $"ShadowKey='{right.Current.Key ?? "<null>"}', ShadowIdentity='{right.Current.Identity ?? "<null>"}'.");
             }
 
             ordinal++;
@@ -641,5 +662,21 @@ internal static class LibraDexCatalogCompactor
     {
         if (slotIndex >= 0)
             slots.Add(slotIndex);
+    }
+
+    /// <summary>
+    /// Identifies an ordered tuple-stream mismatch that a legacy v1 source may repair through exact membership and count validation.<br/>
+    /// Current-format sources never consume this exception as recovery evidence, so a v2 ordering divergence remains a hard compaction failure.<br/>
+    /// </summary>
+    private sealed class LibraDexCompactionTupleParityException : IOException
+    {
+        /// <summary>
+        /// Creates one tuple-parity failure with the exact index and ordinal diagnostics produced by the ordered comparison.<br/>
+        /// </summary>
+        /// <param name="message">The exact tuple-stream divergence description.<br/></param>
+        internal LibraDexCompactionTupleParityException(string message)
+            : base(message)
+        {
+        }
     }
 }

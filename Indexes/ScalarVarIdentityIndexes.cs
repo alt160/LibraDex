@@ -12,6 +12,7 @@ internal sealed class Scalar8VarIdentityIndex : IDisposable
 {
     private readonly LibraDexFileSession session;
     private readonly bool ownsSession;
+    private readonly bool descending;
     private readonly object singleOperationFallbackSync = new();
     private readonly ReaderWriterLockSlim singleOperationTopologySync = new(LockRecursionPolicy.SupportsRecursion);
     private bool disposed;
@@ -23,10 +24,12 @@ internal sealed class Scalar8VarIdentityIndex : IDisposable
         long rootRouterOffset,
         int maxIdentityLength,
         bool ownsSession,
-        long readCacheMaxBytes = 0)
+        long readCacheMaxBytes = 0,
+        bool descending = false)
     {
         this.session = session;
         this.ownsSession = ownsSession;
+        this.descending = descending;
         SlotIndex = slotIndex;
         Name = name;
         RootRouterOffset = rootRouterOffset;
@@ -70,6 +73,8 @@ internal sealed class Scalar8VarIdentityIndex : IDisposable
     /// </summary>
     public long ReadCacheMaxBytes { get; }
 
+    internal bool Descending => descending;
+
     /// <summary>
     /// Gets the DataKernel backing kind used by the owning session.<br/>
     /// File-backed indexes can be reopened after disposal, while memory-backed indexes are temporary and process-local.<br/>
@@ -85,10 +90,10 @@ internal sealed class Scalar8VarIdentityIndex : IDisposable
     {
         if (BackingKind != DataKernelBackingKind.Memory)
         {
-            return Scalar8VarIdentityProfile.DefaultInitial;
+            return Scalar8VarIdentityProfile.DefaultInitial with { Descending = descending };
         }
 
-        return ParseMemoryShelfKiB("LIBRADEX_MEMORY_SV8_SHELF_KB", 4) switch
+        Scalar8VarIdentityProfile profile = ParseMemoryShelfKiB("LIBRADEX_MEMORY_SV8_SHELF_KB", 4) switch
         {
             4 => Scalar8VarIdentityProfile.Default4KiB,
             8 => Scalar8VarIdentityProfile.Default8KiB,
@@ -98,6 +103,7 @@ internal sealed class Scalar8VarIdentityIndex : IDisposable
             128 => Scalar8VarIdentityProfile.Default128KiB,
             _ => Scalar8VarIdentityProfile.Default4KiB
         };
+        return profile with { Descending = descending };
     }
 
     internal LibraDexFileSession Session => session;
@@ -355,10 +361,10 @@ internal sealed class Scalar8VarIdentityIndex : IDisposable
     /// <param name="lowerEncodedKey">The inclusive lower encoded scalar key.</param>
     /// <param name="upperEncodedKey">The inclusive upper encoded scalar key.</param>
     /// <returns>A forward-only reader over matching raw identities.</returns>
-    public Scalar8VarIdentityRangeReader OpenRangeReader(ulong lowerEncodedKey, ulong upperEncodedKey)
+    public Scalar8VarIdentityRangeReader OpenRangeReader(ulong lowerEncodedKey, ulong upperEncodedKey, QueryDirection direction = QueryDirection.Ascending)
     {
         ThrowIfDisposed();
-        return session.OpenScalar8VarIdentityRangeReader(RootRouterOffset, MaxIdentityLength, lowerEncodedKey, upperEncodedKey);
+        return session.OpenScalar8VarIdentityRangeReader(RootRouterOffset, MaxIdentityLength, lowerEncodedKey, upperEncodedKey, direction, descending);
     }
 
     /// <summary>
@@ -483,6 +489,7 @@ internal sealed class Scalar8VarIdentityIndex : IDisposable
 /// </summary>
 internal sealed class Scalar16VarIdentityIndex : IDisposable
 {
+    internal const byte DescendingSlotFlag = 0x01;
     internal const int DefaultMaxRouterHops = LibraDexFileSession.DefaultScalar16VarIdentityMaxRouterHops;
 
     private readonly LibraDexFileSession session;
@@ -498,7 +505,8 @@ internal sealed class Scalar16VarIdentityIndex : IDisposable
         long rootRouterOffset,
         int maxIdentityLength,
         bool ownsSession,
-        long readCacheMaxBytes = 0)
+        long readCacheMaxBytes = 0,
+        bool descending = false)
     {
         if (readCacheMaxBytes < 0)
         {
@@ -512,6 +520,7 @@ internal sealed class Scalar16VarIdentityIndex : IDisposable
         RootRouterOffset = rootRouterOffset;
         MaxIdentityLength = maxIdentityLength;
         ReadCacheMaxBytes = readCacheMaxBytes;
+        Descending = descending;
         session.ConfigureScalar16VarIdentityReadCache(rootRouterOffset, readCacheMaxBytes);
     }
 
@@ -546,6 +555,12 @@ internal sealed class Scalar16VarIdentityIndex : IDisposable
     public long ReadCacheMaxBytes { get; }
 
     /// <summary>
+    /// Gets the persisted physical tuple direction of this `SV16` index.<br/>
+    /// Descending shelves and linked equal-key chains store their highest tuple first, so limited descending reads can stop without reversing the full result.<br/>
+    /// </summary>
+    public bool Descending { get; }
+
+    /// <summary>
     /// Gets the DataKernel backing kind used by the owning session.<br/>
     /// File-backed indexes can be reopened after disposal, while memory-backed indexes are temporary and process-local.<br/>
     /// </summary>
@@ -560,10 +575,10 @@ internal sealed class Scalar16VarIdentityIndex : IDisposable
     {
         if (BackingKind != DataKernelBackingKind.Memory)
         {
-            return Scalar16VarIdentityProfile.DefaultInitial;
+            return Scalar16VarIdentityProfile.DefaultInitial with { Descending = Descending };
         }
 
-        return ParseMemoryShelfKiB("LIBRADEX_MEMORY_SV16_SHELF_KB", 8) switch
+        return (ParseMemoryShelfKiB("LIBRADEX_MEMORY_SV16_SHELF_KB", 8) switch
         {
             4 => Scalar16VarIdentityProfile.Default4KiB,
             8 => Scalar16VarIdentityProfile.Default8KiB,
@@ -572,7 +587,7 @@ internal sealed class Scalar16VarIdentityIndex : IDisposable
             64 => Scalar16VarIdentityProfile.Default64KiB,
             128 => Scalar16VarIdentityProfile.Default128KiB,
             _ => Scalar16VarIdentityProfile.Default8KiB
-        };
+        }) with { Descending = Descending };
     }
 
     internal LibraDexFileSession Session => session;
@@ -819,7 +834,8 @@ internal sealed class Scalar16VarIdentityIndex : IDisposable
             lowerEncodedKeyHigh,
             lowerEncodedKeyLow,
             upperEncodedKeyHigh,
-            upperEncodedKeyLow);
+            upperEncodedKeyLow,
+            Descending);
     }
 
     /// <summary>
@@ -844,7 +860,8 @@ internal sealed class Scalar16VarIdentityIndex : IDisposable
             lowerEncodedKeyHigh,
             lowerEncodedKeyLow,
             upperEncodedKeyHigh,
-            upperEncodedKeyLow);
+            upperEncodedKeyLow,
+            Descending);
     }
 
     /// <summary>
@@ -1056,6 +1073,8 @@ internal sealed class Scalar8VarIdentityBatch : IDisposable
         {
             sortedItems = items.ToArray();
             Array.Sort(sortedItems, Scalar8VarIdentityBatchInsertComparer.Instance);
+            if (index.Descending)
+                Array.Reverse(sortedItems);
             insertItems = sortedItems;
         }
         long attempted = 0;
@@ -1334,7 +1353,8 @@ internal sealed class Scalar16VarIdentityBatch : IDisposable
             encodedKeyLow,
             identity,
             allowDuplicateKeys,
-            maxRouterHops: Scalar16VarIdentityIndex.DefaultMaxRouterHops);
+            maxRouterHops: Scalar16VarIdentityIndex.DefaultMaxRouterHops,
+            descending: index.Descending);
 
         Scalar16VarIdentityInsertOutcome publicResult = Scalar16VarIdentityInsertOutcome.FromStorage(result, createdInitialShelfRoute);
         Count(publicResult);

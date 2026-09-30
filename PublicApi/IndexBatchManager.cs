@@ -50,6 +50,17 @@ public sealed class IndexBatchManager<TKey, TIdentity>
 
         activeWriteIntent = writeIntent;
         activeBatch = index.BeginBatch(writeIntent);
+        try
+        {
+            index.Catalog.RegisterActiveIndexBatch(index.SlotIndex, index.ExactReversedProjectionSlotIndex, activeBatch);
+        }
+        catch
+        {
+            activeBatch.Dispose();
+            activeBatch = null;
+            activeWriteIntent = default;
+            throw;
+        }
         IsEnabled = true;
     }
 
@@ -63,14 +74,17 @@ public sealed class IndexBatchManager<TKey, TIdentity>
     {
         LibraDexBatch<TKey, TIdentity> batch = RequireActiveBatch();
         LibraDexGenericBatchCommitResult result = batch.Commit();
+        index.Catalog.UnregisterActiveIndexBatch(index.SlotIndex, index.ExactReversedProjectionSlotIndex, batch);
         IsEnabled = false;
         try
         {
             activeBatch = index.BeginBatch(activeWriteIntent);
+            index.Catalog.RegisterActiveIndexBatch(index.SlotIndex, index.ExactReversedProjectionSlotIndex, activeBatch);
             IsEnabled = true;
         }
         catch
         {
+            activeBatch?.Dispose();
             activeBatch = null;
             activeWriteIntent = default;
             throw;
@@ -101,6 +115,7 @@ public sealed class IndexBatchManager<TKey, TIdentity>
     {
         LibraDexBatch<TKey, TIdentity> batch = RequireActiveBatch();
         LibraDexGenericBatchCommitResult result = batch.Commit();
+        index.Catalog.UnregisterActiveIndexBatch(index.SlotIndex, index.ExactReversedProjectionSlotIndex, batch);
         activeBatch = null;
         IsEnabled = false;
         activeWriteIntent = default;

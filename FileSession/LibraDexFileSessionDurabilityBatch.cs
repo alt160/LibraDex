@@ -67,4 +67,22 @@ internal sealed class LibraDexFileSessionDurabilityBatch : IDisposable
             throw new InvalidOperationException("The LibraDex durability batch has already completed.");
         }
     }
+
+    /// <summary>Durably prepares a bounded redo image before publishing this structural batch.<br/>
+    /// Reopen finishes any prepared publication before exposing catalog bytes; this is not transaction isolation for pending writer reads.<br/>
+    /// Failure closes the owning session because the outcome may be committed during recovery; all its handles must be reopened.<br/>
+    /// Journal I/O is additional to the returned main-file commit telemetry and is paid only by this explicit structural path.<br/></summary>
+    internal (DataKernelCommitTelemetry Commit, long DeferredCommitRequests, LibraDexBatchStorageDiagnostics StorageDiagnostics) CommitRecoverablePublication()
+    {
+        ThrowIfCompleted();
+        try
+        {
+            var result = session.CommitDurabilityBatch(writeContext, recoverablePublication: true);
+            completed = true; return result;
+        }
+        catch
+        {
+            completed = true; session.Dispose(); throw;
+        }
+    }
 }

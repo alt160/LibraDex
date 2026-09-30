@@ -184,6 +184,261 @@ public sealed class LibraDexCompositeIndexWhere<TPart1, TPart2, TPart3, TIdentit
 }
 
 /// <summary>
+/// Provides a strongly typed, page-native reader over a persisted two-part composite index.<br/>
+/// The reader converts scalar parts and identities directly from durable bytes, while raw and UTF-8 accessors expose borrowed page slices for callers that do not need CLR materialization.<br/>
+/// </summary>
+/// <typeparam name="TPart1">The first persisted composite key-part type.<br/></typeparam>
+/// <typeparam name="TPart2">The second persisted composite key-part type.<br/></typeparam>
+/// <typeparam name="TIdentity">The persisted composite identity type.<br/></typeparam>
+public sealed class LibraDexCompositeReader<TPart1, TPart2, TIdentity> : IDisposable
+{
+    private readonly LibraDexRoutedCompositeIndex.NativeEntryCursor inner;
+
+    internal LibraDexCompositeReader(LibraDexRoutedCompositeIndex index)
+    {
+        ArgumentNullException.ThrowIfNull(index);
+        inner = index.OpenNativeEntryCursor();
+    }
+
+    /// <summary>
+    /// Gets the current first key part after a successful <see cref="Read"/>.<br/>
+    /// Reading a <see cref="string"/> or <see cref="byte[]"/> intentionally materializes that requested CLR value; use <see cref="GetUtf8Span(int)"/> or <see cref="GetRawSpan(int)"/> when a borrowed byte view is sufficient.<br/>
+    /// </summary>
+    public TPart1 Part1 => inner.ReadPart<TPart1>(0);
+
+    /// <summary>
+    /// Gets the current second key part after a successful <see cref="Read"/>.<br/>
+    /// </summary>
+    public TPart2 Part2 => inner.ReadPart<TPart2>(1);
+
+    /// <summary>
+    /// Gets the current identity after a successful <see cref="Read"/>.<br/>
+    /// </summary>
+    public TIdentity Identity => inner.ReadIdentity<TIdentity>();
+
+    /// <summary>
+    /// Advances to the next composite key and identity tuple in natural index order.<br/>
+    /// </summary>
+    /// <returns><see langword="true"/> when current members are available; otherwise <see langword="false"/>.<br/></returns>
+    public bool Read() => inner.Read();
+
+    /// <summary>
+    /// Tests whether one current key part is a persisted logical null route.<br/>
+    /// </summary>
+    /// <param name="partIndex">The zero-based composite part ordinal.<br/></param>
+    /// <returns><see langword="true"/> when the current part is null; otherwise <see langword="false"/>.<br/></returns>
+    public bool IsNull(int partIndex) => inner.IsNull(partIndex);
+
+    /// <summary>
+    /// Gets exact encoded bytes for one current composite component, including its null marker and type-specific framing.<br/>
+    /// The span is borrowed from the reader and must not be retained after the next <see cref="Read"/> or disposal.<br/>
+    /// </summary>
+    /// <param name="partIndex">The zero-based composite part ordinal.<br/></param>
+    /// <returns>The borrowed encoded component span.<br/></returns>
+    public ReadOnlySpan<byte> GetRawSpan(int partIndex) => inner.GetRawSpan(partIndex);
+
+    /// <summary>
+    /// Gets exact encoded bytes for one current composite component as borrowed memory, including its null marker and type-specific framing.<br/>
+    /// The memory must not be retained after the next <see cref="Read"/> or disposal.<br/>
+    /// </summary>
+    /// <param name="partIndex">The zero-based composite part ordinal.<br/></param>
+    /// <returns>The borrowed encoded component memory.<br/></returns>
+    public ReadOnlyMemory<byte> GetRawMem(int partIndex) => inner.GetRawMem(partIndex);
+
+    /// <summary>
+    /// Gets the logical UTF-8 payload for one current string component without allocating a UTF-16 <see cref="string"/>.<br/>
+    /// The span is borrowed from the reader; null string routes return an empty span and can be distinguished through <see cref="IsNull(int)"/>.<br/>
+    /// </summary>
+    /// <param name="partIndex">The zero-based composite part ordinal, which must store <see cref="string"/>.<br/></param>
+    /// <returns>The borrowed logical UTF-8 payload.<br/></returns>
+    public ReadOnlySpan<byte> GetUtf8Span(int partIndex) => inner.GetUtf8Span(partIndex);
+
+    /// <summary>
+    /// Gets the logical UTF-8 payload for one current string component as borrowed memory without allocating a UTF-16 <see cref="string"/>.<br/>
+    /// The memory is borrowed from the reader; null string routes return empty memory and can be distinguished through <see cref="IsNull(int)"/>.<br/>
+    /// </summary>
+    /// <param name="partIndex">The zero-based composite part ordinal, which must store <see cref="string"/>.<br/></param>
+    /// <returns>The borrowed logical UTF-8 payload memory.<br/></returns>
+    public ReadOnlyMemory<byte> GetUtf8Mem(int partIndex) => inner.GetUtf8Mem(partIndex);
+
+    /// <summary>
+    /// Gets exact encoded bytes for the current identity.<br/>
+    /// The span is borrowed from the reader and must not be retained after the next <see cref="Read"/> or disposal.<br/>
+    /// </summary>
+    /// <returns>The borrowed encoded identity span.<br/></returns>
+    public ReadOnlySpan<byte> GetIdentityRawSpan() => inner.GetIdentityRawSpan();
+
+    /// <summary>
+    /// Gets exact encoded bytes for the current identity as borrowed memory.<br/>
+    /// The memory must not be retained after the next <see cref="Read"/> or disposal.<br/>
+    /// </summary>
+    /// <returns>The borrowed encoded identity memory.<br/></returns>
+    public ReadOnlyMemory<byte> GetIdentityRawMem() => inner.GetIdentityRawMem();
+
+    /// <summary>
+    /// Returns rented page buffers and invalidates every current borrowed value.<br/>
+    /// </summary>
+    public void Dispose() => inner.Dispose();
+}
+
+/// <summary>
+/// Provides a strongly typed, page-native reader over a persisted three-part composite index.<br/>
+/// The reader converts scalar parts and identities directly from durable bytes, while raw and UTF-8 accessors expose borrowed page slices for callers that do not need CLR materialization.<br/>
+/// </summary>
+/// <typeparam name="TPart1">The first persisted composite key-part type.<br/></typeparam>
+/// <typeparam name="TPart2">The second persisted composite key-part type.<br/></typeparam>
+/// <typeparam name="TPart3">The third persisted composite key-part type.<br/></typeparam>
+/// <typeparam name="TIdentity">The persisted composite identity type.<br/></typeparam>
+public sealed class LibraDexCompositeReader<TPart1, TPart2, TPart3, TIdentity> : IDisposable
+{
+    private readonly LibraDexRoutedCompositeIndex.NativeEntryCursor inner;
+
+    internal LibraDexCompositeReader(LibraDexRoutedCompositeIndex index)
+    {
+        ArgumentNullException.ThrowIfNull(index);
+        inner = index.OpenNativeEntryCursor();
+    }
+
+    /// <summary>Gets the current first key part after a successful <see cref="Read"/>.<br/></summary>
+    public TPart1 Part1 => inner.ReadPart<TPart1>(0);
+
+    /// <summary>Gets the current second key part after a successful <see cref="Read"/>.<br/></summary>
+    public TPart2 Part2 => inner.ReadPart<TPart2>(1);
+
+    /// <summary>Gets the current third key part after a successful <see cref="Read"/>.<br/></summary>
+    public TPart3 Part3 => inner.ReadPart<TPart3>(2);
+
+    /// <summary>Gets the current identity after a successful <see cref="Read"/>.<br/></summary>
+    public TIdentity Identity => inner.ReadIdentity<TIdentity>();
+
+    /// <summary>
+    /// Advances to the next composite key and identity tuple in natural index order.<br/>
+    /// </summary>
+    /// <returns><see langword="true"/> when current members are available; otherwise <see langword="false"/>.<br/></returns>
+    public bool Read() => inner.Read();
+
+    /// <summary>
+    /// Tests whether one current key part is a persisted logical null route.<br/>
+    /// </summary>
+    /// <param name="partIndex">The zero-based composite part ordinal.<br/></param>
+    /// <returns><see langword="true"/> when the current part is null; otherwise <see langword="false"/>.<br/></returns>
+    public bool IsNull(int partIndex) => inner.IsNull(partIndex);
+
+    /// <summary>
+    /// Gets exact encoded bytes for one current composite component, including its null marker and type-specific framing.<br/>
+    /// The span is borrowed from the reader and must not be retained after the next <see cref="Read"/> or disposal.<br/>
+    /// </summary>
+    /// <param name="partIndex">The zero-based composite part ordinal.<br/></param>
+    /// <returns>The borrowed encoded component span.<br/></returns>
+    public ReadOnlySpan<byte> GetRawSpan(int partIndex) => inner.GetRawSpan(partIndex);
+
+    /// <summary>
+    /// Gets exact encoded bytes for one current composite component as borrowed memory, including its null marker and type-specific framing.<br/>
+    /// The memory must not be retained after the next <see cref="Read"/> or disposal.<br/>
+    /// </summary>
+    /// <param name="partIndex">The zero-based composite part ordinal.<br/></param>
+    /// <returns>The borrowed encoded component memory.<br/></returns>
+    public ReadOnlyMemory<byte> GetRawMem(int partIndex) => inner.GetRawMem(partIndex);
+
+    /// <summary>
+    /// Gets the logical UTF-8 payload for one current string component without allocating a UTF-16 <see cref="string"/>.<br/>
+    /// The span is borrowed from the reader; null string routes return an empty span and can be distinguished through <see cref="IsNull(int)"/>.<br/>
+    /// </summary>
+    /// <param name="partIndex">The zero-based composite part ordinal, which must store <see cref="string"/>.<br/></param>
+    /// <returns>The borrowed logical UTF-8 payload.<br/></returns>
+    public ReadOnlySpan<byte> GetUtf8Span(int partIndex) => inner.GetUtf8Span(partIndex);
+
+    /// <summary>
+    /// Gets the logical UTF-8 payload for one current string component as borrowed memory without allocating a UTF-16 <see cref="string"/>.<br/>
+    /// The memory is borrowed from the reader; null string routes return empty memory and can be distinguished through <see cref="IsNull(int)"/>.<br/>
+    /// </summary>
+    /// <param name="partIndex">The zero-based composite part ordinal, which must store <see cref="string"/>.<br/></param>
+    /// <returns>The borrowed logical UTF-8 payload memory.<br/></returns>
+    public ReadOnlyMemory<byte> GetUtf8Mem(int partIndex) => inner.GetUtf8Mem(partIndex);
+
+    /// <summary>Gets exact encoded bytes for the current identity as a borrowed span.<br/></summary>
+    public ReadOnlySpan<byte> GetIdentityRawSpan() => inner.GetIdentityRawSpan();
+
+    /// <summary>Gets exact encoded bytes for the current identity as borrowed memory.<br/></summary>
+    public ReadOnlyMemory<byte> GetIdentityRawMem() => inner.GetIdentityRawMem();
+
+    /// <summary>Returns rented page buffers and invalidates every current borrowed value.<br/></summary>
+    public void Dispose() => inner.Dispose();
+}
+
+/// <summary>
+/// Adds low-friction page-native reader entry points to typed composite index handles and index sets.<br/>
+/// </summary>
+public static class LibraDexCompositeReaderExtensions
+{
+    /// <summary>
+    /// Opens a page-native reader from an already validated typed two-part composite index handle.<br/>
+    /// </summary>
+    /// <typeparam name="TPart1">The first persisted composite key-part type.<br/></typeparam>
+    /// <typeparam name="TPart2">The second persisted composite key-part type.<br/></typeparam>
+    /// <typeparam name="TIdentity">The persisted composite identity type.<br/></typeparam>
+    /// <param name="index">The typed composite index handle.<br/></param>
+    /// <returns>An unpositioned page-native reader owned by the caller.<br/></returns>
+    public static LibraDexCompositeReader<TPart1, TPart2, TIdentity> OpenReader<TPart1, TPart2, TIdentity>(
+        this LibraDexCompositeIndex<TPart1, TPart2, TIdentity> index)
+    {
+        ArgumentNullException.ThrowIfNull(index);
+        return new LibraDexCompositeReader<TPart1, TPart2, TIdentity>(index.Untyped);
+    }
+
+    /// <summary>
+    /// Opens a page-native reader from an already validated typed three-part composite index handle.<br/>
+    /// </summary>
+    /// <typeparam name="TPart1">The first persisted composite key-part type.<br/></typeparam>
+    /// <typeparam name="TPart2">The second persisted composite key-part type.<br/></typeparam>
+    /// <typeparam name="TPart3">The third persisted composite key-part type.<br/></typeparam>
+    /// <typeparam name="TIdentity">The persisted composite identity type.<br/></typeparam>
+    /// <param name="index">The typed composite index handle.<br/></param>
+    /// <returns>An unpositioned page-native reader owned by the caller.<br/></returns>
+    public static LibraDexCompositeReader<TPart1, TPart2, TPart3, TIdentity> OpenReader<TPart1, TPart2, TPart3, TIdentity>(
+        this LibraDexCompositeIndex<TPart1, TPart2, TPart3, TIdentity> index)
+    {
+        ArgumentNullException.ThrowIfNull(index);
+        return new LibraDexCompositeReader<TPart1, TPart2, TPart3, TIdentity>(index.Untyped);
+    }
+
+    /// <summary>
+    /// Opens and validates a typed two-part composite index reader by its catalog index name.<br/>
+    /// </summary>
+    /// <typeparam name="TPart1">The first expected composite key-part type.<br/></typeparam>
+    /// <typeparam name="TPart2">The second expected composite key-part type.<br/></typeparam>
+    /// <typeparam name="TIdentity">The expected composite identity type.<br/></typeparam>
+    /// <param name="indexSet">The catalog index set that owns the composite index.<br/></param>
+    /// <param name="name">The composite index name.<br/></param>
+    /// <returns>An unpositioned page-native reader owned by the caller.<br/></returns>
+    public static LibraDexCompositeReader<TPart1, TPart2, TIdentity> OpenCompositeReader<TPart1, TPart2, TIdentity>(
+        this CatalogIdentityGroupIndexes indexSet,
+        string name)
+    {
+        ArgumentNullException.ThrowIfNull(indexSet);
+        return indexSet.CompositeIndex<TPart1, TPart2, TIdentity>(name).OpenReader();
+    }
+
+    /// <summary>
+    /// Opens and validates a typed three-part composite index reader by its catalog index name.<br/>
+    /// </summary>
+    /// <typeparam name="TPart1">The first expected composite key-part type.<br/></typeparam>
+    /// <typeparam name="TPart2">The second expected composite key-part type.<br/></typeparam>
+    /// <typeparam name="TPart3">The third expected composite key-part type.<br/></typeparam>
+    /// <typeparam name="TIdentity">The expected composite identity type.<br/></typeparam>
+    /// <param name="indexSet">The catalog index set that owns the composite index.<br/></param>
+    /// <param name="name">The composite index name.<br/></param>
+    /// <returns>An unpositioned page-native reader owned by the caller.<br/></returns>
+    public static LibraDexCompositeReader<TPart1, TPart2, TPart3, TIdentity> OpenCompositeReader<TPart1, TPart2, TPart3, TIdentity>(
+        this CatalogIdentityGroupIndexes indexSet,
+        string name)
+    {
+        ArgumentNullException.ThrowIfNull(indexSet);
+        return indexSet.CompositeIndex<TPart1, TPart2, TPart3, TIdentity>(name).OpenReader();
+    }
+}
+
+/// <summary>
 /// Continues typed condition construction for a two-part composite index.<br/>
 /// </summary>
 public sealed class LibraDexCompositeIndexContinuation<TPart1, TPart2, TIdentity> : LibraDexCompositeResultContinuation

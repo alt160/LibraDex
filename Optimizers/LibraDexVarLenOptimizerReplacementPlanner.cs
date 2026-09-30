@@ -72,7 +72,8 @@ internal sealed partial class LibraDexFileSession
     internal VarLenOptimizerReplacementSubtree CreateVarKeyScalar8OptimizerReplacementSubtree(
         ReadOnlySpan<byte[]> keys,
         int maxKeyLength,
-        int requestedRouteCount)
+        int requestedRouteCount,
+        bool descending = false)
     {
         if (keys.Length == 0)
         {
@@ -112,6 +113,7 @@ internal sealed partial class LibraDexFileSession
             keyDepth: 1,
             maxKeyLength,
             requestedRouteCount,
+            descending,
             ref state);
         return new VarLenOptimizerReplacementSubtree(rootPrefix, targetOffset, state.ToResult());
     }
@@ -129,7 +131,8 @@ internal sealed partial class LibraDexFileSession
         ReadOnlySpan<byte[]> keys,
         ReadOnlySpan<ulong> identities,
         int maxKeyLength,
-        int requestedRouteCount)
+        int requestedRouteCount,
+        bool descending = false)
     {
         if (keys.Length == 0 || keys.Length != identities.Length)
             throw new ArgumentException("The VS8 optimizer replacement requires equal non-empty key and identity collections.");
@@ -158,6 +161,7 @@ internal sealed partial class LibraDexFileSession
             keyDepth: 1,
             maxKeyLength,
             requestedRouteCount,
+            descending,
             ref state);
         return new VarLenOptimizerReplacementSubtree(rootPrefix, targetOffset, state.ToResult());
     }
@@ -173,7 +177,8 @@ internal sealed partial class LibraDexFileSession
     internal VarLenOptimizerReplacementSubtree CreateVarKeyScalar8OptimizerReplacementSubtreeFromSorted(
         ReadOnlySpan<VarKeyScalar8SortedTuple> tuples,
         int maxKeyLength,
-        int requestedRouteCount)
+        int requestedRouteCount,
+        bool descending = false)
     {
         VarKeyScalar8SortedTuple[] owned = tuples.ToArray();
         return CreateVarKeyScalar8OptimizerReplacementSubtreeFromSorted(
@@ -181,7 +186,8 @@ internal sealed partial class LibraDexFileSession
             0,
             owned.Length,
             maxKeyLength,
-            requestedRouteCount);
+            requestedRouteCount,
+            descending);
     }
 
     /// <summary>
@@ -199,7 +205,8 @@ internal sealed partial class LibraDexFileSession
         int start,
         int end,
         int maxKeyLength,
-        int requestedRouteCount)
+        int requestedRouteCount,
+        bool descending = false)
     {
         ArgumentNullException.ThrowIfNull(tuples);
         if (start < 0 || end <= start || end > tuples.Count)
@@ -220,6 +227,7 @@ internal sealed partial class LibraDexFileSession
             keyDepth: 1,
             maxKeyLength,
             requestedRouteCount,
+            descending,
             ref state);
         return new VarLenOptimizerReplacementSubtree(rootPrefix, targetOffset, state.ToResult());
     }
@@ -238,7 +246,8 @@ internal sealed partial class LibraDexFileSession
         ReadOnlySpan<VarKeyScalar8SortedTuple> tuples,
         int keyDepth,
         int maxKeyLength,
-        int requestedRouteCount)
+        int requestedRouteCount,
+        bool descending = false)
     {
         if (tuples.Length == 0)
         {
@@ -285,6 +294,7 @@ internal sealed partial class LibraDexFileSession
             keyDepth,
             maxKeyLength,
             requestedRouteCount,
+            descending,
             ref state);
         return (targetOffset, state.ToResult());
     }
@@ -312,6 +322,7 @@ internal sealed partial class LibraDexFileSession
         int requestedRouteCount,
         ReadOnlySpan<byte> incomingKey,
         ulong incomingIdentity,
+        bool descending,
         out DataKernelCommitTelemetry telemetry,
         out long replacementTargetOffset,
         out int tupleCount)
@@ -397,7 +408,8 @@ internal sealed partial class LibraDexFileSession
             VarLenOptimizerReplacementSubtree replacement = CreateVarKeyScalar8OptimizerReplacementSubtreeFromSorted(
                 prefixTuples.ToArray(),
                 maxKeyLength,
-                requestedRouteCount);
+                requestedRouteCount,
+                descending);
             if (replacement.RootPrefix != rootPrefix)
             {
                 throw new InvalidDataException($"The VS8 root-owner-set rebuild produced prefix 0x{replacement.RootPrefix:X2} instead of 0x{rootPrefix:X2}.");
@@ -484,7 +496,8 @@ internal sealed partial class LibraDexFileSession
         long rootRouterOffset,
         int maxKeyLength,
         int requestedRouteCount,
-        int? maxWorkItems)
+        int? maxWorkItems,
+        bool descending = false)
     {
         if (maxWorkItems is <= 0)
             throw new ArgumentOutOfRangeException(nameof(maxWorkItems), maxWorkItems, "The optimizer work limit must be positive when supplied.");
@@ -550,7 +563,8 @@ internal sealed partial class LibraDexFileSession
                 prefixKeys.ToArray(),
                 prefixIdentities.ToArray(),
                 maxKeyLength,
-                requestedRouteCount);
+                requestedRouteCount,
+                descending);
             bool published = TryUpdateRouterRouteTargetIfCurrent(
                 rootRouterOffset,
                 rootPrefix,
@@ -575,7 +589,8 @@ internal sealed partial class LibraDexFileSession
     internal VarLenOptimizerReplacementSubtree CreateVarKeyScalar16OptimizerReplacementSubtree(
         ReadOnlySpan<byte[]> keys,
         int maxKeyLength,
-        int requestedRouteCount)
+        int requestedRouteCount,
+        bool descending = false)
     {
         if (keys.Length == 0)
         {
@@ -623,6 +638,7 @@ internal sealed partial class LibraDexFileSession
             keyDepth: 1,
             maxKeyLength,
             requestedRouteCount,
+            descending,
             ref state);
         return new VarLenOptimizerReplacementSubtree(rootPrefix, targetOffset, state.ToResult());
     }
@@ -642,7 +658,8 @@ internal sealed partial class LibraDexFileSession
         ReadOnlySpan<ulong> identityHighs,
         ReadOnlySpan<ulong> identityLows,
         int maxKeyLength,
-        int requestedRouteCount)
+        int requestedRouteCount,
+        bool descending = false)
     {
         if (keys.Length == 0 ||
             keys.Length != identityHighs.Length ||
@@ -686,6 +703,7 @@ internal sealed partial class LibraDexFileSession
             keyDepth: 1,
             maxKeyLength,
             requestedRouteCount,
+            descending,
             ref state);
         return new VarLenOptimizerReplacementSubtree(rootPrefix, targetOffset, state.ToResult());
     }
@@ -703,7 +721,8 @@ internal sealed partial class LibraDexFileSession
         long rootRouterOffset,
         int maxKeyLength,
         int requestedRouteCount,
-        int? maxWorkItems)
+        int? maxWorkItems,
+        bool descending = false)
     {
         if (maxWorkItems is <= 0)
             throw new ArgumentOutOfRangeException(nameof(maxWorkItems), maxWorkItems, "The optimizer work limit must be positive when supplied.");
@@ -718,7 +737,8 @@ internal sealed partial class LibraDexFileSession
             maxKeyLength,
             lower,
             upper,
-            decodeLogicalKeys: false);
+            decodeLogicalKeys: false,
+            descending: descending);
         maintenanceRead.Pause();
         List<byte[]> keys = new();
         List<ulong> identityHighs = new();
@@ -790,7 +810,8 @@ internal sealed partial class LibraDexFileSession
                 prefixIdentityHighs.ToArray(),
                 prefixIdentityLows.ToArray(),
                 maxKeyLength,
-                requestedRouteCount);
+                requestedRouteCount,
+                descending);
             bool published = TryUpdateRouterRouteTargetIfCurrent(
                 rootRouterOffset,
                 rootPrefix,
@@ -819,7 +840,8 @@ internal sealed partial class LibraDexFileSession
         VarLenRouteOptimizerCandidate candidate,
         ReadOnlySpan<byte[]> keys,
         int maxKeyLength,
-        int requestedRouteCount)
+        int requestedRouteCount,
+        bool descending = false)
     {
         if (candidate.LastObservedAt == 0)
         {
@@ -833,7 +855,7 @@ internal sealed partial class LibraDexFileSession
 
         byte rootPrefix = keys[candidate.LastObservedAt - 1][0];
         using LibraDexFileSessionDurabilityBatch batch = BeginDurabilityBatch();
-        VarLenOptimizerReplacementSubtree subtree = CreateVarKeyScalar8OptimizerReplacementSubtree(keys, maxKeyLength, requestedRouteCount);
+        VarLenOptimizerReplacementSubtree subtree = CreateVarKeyScalar8OptimizerReplacementSubtree(keys, maxKeyLength, requestedRouteCount, descending);
         if (subtree.RootPrefix != rootPrefix)
         {
             throw new InvalidDataException("The VS8 optimizer drain built a subtree for an unexpected root prefix.");
@@ -868,7 +890,8 @@ internal sealed partial class LibraDexFileSession
         int maxKeyLength,
         int requestedRouteCount,
         VarLenOptimizerMaintenancePolicy policy,
-        VarLenOptimizerMaintenanceBoundary boundary)
+        VarLenOptimizerMaintenanceBoundary boundary,
+        bool descending = false)
     {
         bool[] coveredRootPrefixes = new bool[byte.MaxValue + 1];
         return TryDrainVarKeyScalarOptimizerCandidates(
@@ -880,7 +903,8 @@ internal sealed partial class LibraDexFileSession
             policy,
             boundary,
             coveredRootPrefixes,
-            useScalar16Identity: false);
+            useScalar16Identity: false,
+            descending);
     }
 
     /// <summary>
@@ -909,7 +933,8 @@ internal sealed partial class LibraDexFileSession
             handle.MaxKeyLength,
             handle.OptimizerRouteFanout,
             handle.OptimizerPolicy,
-            VarLenOptimizerMaintenanceBoundary.OnDemand);
+            VarLenOptimizerMaintenanceBoundary.OnDemand,
+            handle.Descending);
     }
 
     /// <summary>
@@ -942,7 +967,8 @@ internal sealed partial class LibraDexFileSession
             handle.MaxKeyLength,
             handle.OptimizerRouteFanout,
             handle.OptimizerPolicy,
-            VarLenOptimizerMaintenanceBoundary.BetweenHotActions);
+            VarLenOptimizerMaintenanceBoundary.BetweenHotActions,
+            handle.Descending);
     }
 
     /// <summary>
@@ -961,7 +987,8 @@ internal sealed partial class LibraDexFileSession
         VarLenRouteOptimizerCandidate candidate,
         ReadOnlySpan<byte[]> keys,
         int maxKeyLength,
-        int requestedRouteCount)
+        int requestedRouteCount,
+        bool descending = false)
     {
         if (candidate.LastObservedAt == 0)
         {
@@ -975,7 +1002,7 @@ internal sealed partial class LibraDexFileSession
 
         byte rootPrefix = keys[candidate.LastObservedAt - 1][0];
         using LibraDexFileSessionDurabilityBatch batch = BeginDurabilityBatch();
-        VarLenOptimizerReplacementSubtree subtree = CreateVarKeyScalar16OptimizerReplacementSubtree(keys, maxKeyLength, requestedRouteCount);
+        VarLenOptimizerReplacementSubtree subtree = CreateVarKeyScalar16OptimizerReplacementSubtree(keys, maxKeyLength, requestedRouteCount, descending);
         if (subtree.RootPrefix != rootPrefix)
         {
             throw new InvalidDataException("The VS16 optimizer drain built a subtree for an unexpected root prefix.");
@@ -1010,7 +1037,8 @@ internal sealed partial class LibraDexFileSession
         int maxKeyLength,
         int requestedRouteCount,
         VarLenOptimizerMaintenancePolicy policy,
-        VarLenOptimizerMaintenanceBoundary boundary)
+        VarLenOptimizerMaintenanceBoundary boundary,
+        bool descending = false)
     {
         bool[] coveredRootPrefixes = new bool[byte.MaxValue + 1];
         return TryDrainVarKeyScalarOptimizerCandidates(
@@ -1022,7 +1050,8 @@ internal sealed partial class LibraDexFileSession
             policy,
             boundary,
             coveredRootPrefixes,
-            useScalar16Identity: true);
+            useScalar16Identity: true,
+            descending: descending);
     }
 
     /// <summary>
@@ -1051,7 +1080,8 @@ internal sealed partial class LibraDexFileSession
             handle.MaxKeyLength,
             handle.OptimizerRouteFanout,
             handle.OptimizerPolicy,
-            VarLenOptimizerMaintenanceBoundary.OnDemand);
+            VarLenOptimizerMaintenanceBoundary.OnDemand,
+            handle.Descending);
     }
 
     /// <summary>
@@ -1084,7 +1114,8 @@ internal sealed partial class LibraDexFileSession
             handle.MaxKeyLength,
             handle.OptimizerRouteFanout,
             handle.OptimizerPolicy,
-            VarLenOptimizerMaintenanceBoundary.BetweenHotActions);
+            VarLenOptimizerMaintenanceBoundary.BetweenHotActions,
+            handle.Descending);
     }
 
     /// <summary>
@@ -1101,7 +1132,8 @@ internal sealed partial class LibraDexFileSession
         VarLenOptimizerMaintenancePolicy policy,
         VarLenOptimizerMaintenanceBoundary boundary,
         bool[] coveredRootPrefixes,
-        bool useScalar16Identity)
+        bool useScalar16Identity,
+        bool descending = false)
     {
         int consideredCount = 0;
         int attemptedCount = 0;
@@ -1140,8 +1172,8 @@ internal sealed partial class LibraDexFileSession
             }
 
             VarLenOptimizerMaintenanceResult result = useScalar16Identity
-                ? TryDrainVarKeyScalar16OptimizerCandidate(rootRouterOffset, candidate, keys, maxKeyLength, requestedRouteCount)
-                : TryDrainVarKeyScalar8OptimizerCandidate(rootRouterOffset, candidate, keys, maxKeyLength, requestedRouteCount);
+                ? TryDrainVarKeyScalar16OptimizerCandidate(rootRouterOffset, candidate, keys, maxKeyLength, requestedRouteCount, descending)
+                : TryDrainVarKeyScalar8OptimizerCandidate(rootRouterOffset, candidate, keys, maxKeyLength, requestedRouteCount, descending);
             attemptedCount += result.AttemptedCount;
             publishedCount += result.PublishedCount;
             coveredCandidateCount += result.CoveredCandidateCount;
@@ -1183,9 +1215,10 @@ internal sealed partial class LibraDexFileSession
         int keyDepth,
         int maxKeyLength,
         int requestedRouteCount,
+        bool descending,
         ref VarLenOptimizerReplacementBuildState state)
     {
-        if (TryBuildVarKeyScalar8OptimizerShelf(items, start, end, maxKeyLength, out VarKeyScalar8Profile profile, out byte[] shelfBytes))
+        if (TryBuildVarKeyScalar8OptimizerShelf(items, start, end, maxKeyLength, out VarKeyScalar8Profile profile, out byte[] shelfBytes, descending))
         {
             (long shelfOffset, _) = CreateVarKeyScalar8Shelf(profile, shelfBytes);
             state.ShelfCount++;
@@ -1201,6 +1234,7 @@ internal sealed partial class LibraDexFileSession
                 end,
                 keyDepth,
                 maxKeyLength,
+                descending,
                 ref state);
         }
 
@@ -1255,6 +1289,7 @@ internal sealed partial class LibraDexFileSession
                 checked(fanoutDepth + 1),
                 maxKeyLength,
                 requestedRouteCount,
+                descending,
                 ref state);
             routes[routeIndex] = new RouterMultiByteRouteSnapshot(stem, startByte, endByte, targetOffset);
             itemStart = itemEnd;
@@ -1330,6 +1365,7 @@ internal sealed partial class LibraDexFileSession
         int end,
         int keyDepth,
         int maxKeyLength,
+        bool descending,
         ref VarLenOptimizerReplacementBuildState state)
     {
         const int TerminalShelfExtentSize = 4 * 1024;
@@ -1342,7 +1378,7 @@ internal sealed partial class LibraDexFileSession
         ulong[] identities = GC.AllocateUninitializedArray<ulong>(end - start);
         for (int i = start; i < end; i++)
         {
-            identities[i - start] = items.GetIdentity(i);
+            identities[descending ? end - 1 - i : i - start] = items.GetIdentity(i);
         }
 
         int remaining = identities.Length;
@@ -1381,6 +1417,7 @@ internal sealed partial class LibraDexFileSession
             TerminalShelfExtentSize,
             firstShelfOffset);
         TerminalIdentityRootLayout.WriteTailShelfOffset(rootReservation.Span, tailShelfOffset);
+        rootReservation.Span[TerminalIdentityRootLayout.SortDirectionOffset] = descending ? (byte)1 : (byte)0;
         long targetOffset = CreateVarKeyVarIdentityTerminalRouterChain(
             checked((ushort)Math.Min(keyDepth, maxKeyLength)),
             allocationClassId: 0,
@@ -1408,9 +1445,10 @@ internal sealed partial class LibraDexFileSession
         int keyDepth,
         int maxKeyLength,
         int requestedRouteCount,
+        bool descending,
         ref VarLenOptimizerReplacementBuildState state)
     {
-        if (TryBuildVarKeyScalar16OptimizerShelf(items, start, end, maxKeyLength, out VarKeyScalar16Profile profile, out byte[] shelfBytes))
+        if (TryBuildVarKeyScalar16OptimizerShelf(items, start, end, maxKeyLength, out VarKeyScalar16Profile profile, out byte[] shelfBytes, descending))
         {
             (long shelfOffset, _) = CreateVarKeyScalar16Shelf(profile, shelfBytes);
             state.ShelfCount++;
@@ -1426,6 +1464,7 @@ internal sealed partial class LibraDexFileSession
                 end,
                 keyDepth,
                 maxKeyLength,
+                descending,
                 ref state);
         }
 
@@ -1480,6 +1519,7 @@ internal sealed partial class LibraDexFileSession
                 checked(fanoutDepth + 1),
                 maxKeyLength,
                 requestedRouteCount,
+                descending,
                 ref state);
             routes[routeIndex] = new RouterMultiByteRouteSnapshot(stem, startByte, endByte, targetOffset);
             itemStart = itemEnd;
@@ -1555,6 +1595,7 @@ internal sealed partial class LibraDexFileSession
         int end,
         int keyDepth,
         int maxKeyLength,
+        bool descending,
         ref VarLenOptimizerReplacementBuildState state)
     {
         int count = end - start;
@@ -1562,8 +1603,9 @@ internal sealed partial class LibraDexFileSession
             count,
             checked(count * VarKeyScalar16TerminalIdentitySize));
         Span<byte> identity = stackalloc byte[VarKeyScalar16TerminalIdentitySize];
-        for (int i = start; i < end; i++)
+        for (int ordinal = 0; ordinal < count; ordinal++)
         {
+            int i = descending ? end - 1 - ordinal : start + ordinal;
             WriteVarKeyScalar16TerminalIdentity(identity, items[i].IdentityHigh, items[i].IdentityLow);
             identities.Add(identity);
         }
@@ -1576,7 +1618,8 @@ internal sealed partial class LibraDexFileSession
             TerminalIdentityRootLayout.ShapeVarKeyScalar16Identity,
             key,
             terminalShelfExtentSize,
-            identities);
+            identities,
+            descending);
         long targetOffset = CreateVarKeyVarIdentityTerminalRouterChain(
             checked((ushort)Math.Min(keyDepth, maxKeyLength)),
             allocationClassId: 0,
@@ -1863,12 +1906,13 @@ internal sealed partial class LibraDexFileSession
         int end,
         int maxKeyLength,
         out VarKeyScalar8Profile profile,
-        out byte[] shelfBytes)
+        out byte[] shelfBytes,
+        bool descending = false)
     {
-        profile = VarKeyScalar8Profile.DefaultInitial;
+        profile = VarKeyScalar8Profile.DefaultInitial with { Descending = descending };
         if (profile.MaxKeyLength != maxKeyLength)
         {
-            profile = VarKeyScalar8Profile.Create(profile.ShelfExtentSize, maxKeyLength);
+            profile = VarKeyScalar8Profile.Create(profile.ShelfExtentSize, maxKeyLength) with { Descending = descending };
         }
 
         while (!VarKeyScalar8.TryBuildFromSorted(items, start, end, profile, out shelfBytes))
@@ -1882,7 +1926,7 @@ internal sealed partial class LibraDexFileSession
 
             profile = next.MaxKeyLength == maxKeyLength
                 ? next
-                : VarKeyScalar8Profile.Create(next.ShelfExtentSize, maxKeyLength);
+                : VarKeyScalar8Profile.Create(next.ShelfExtentSize, maxKeyLength) with { Descending = descending };
         }
 
         return true;
@@ -1898,22 +1942,24 @@ internal sealed partial class LibraDexFileSession
         int end,
         int maxKeyLength,
         out VarKeyScalar16Profile profile,
-        out byte[] shelfBytes)
+        out byte[] shelfBytes,
+        bool descending = false)
     {
         byte[][] shelfKeys = new byte[end - start][];
         ulong[] identityHighs = new ulong[end - start];
         ulong[] identityLows = new ulong[end - start];
         for (int i = start; i < end; i++)
         {
-            shelfKeys[i - start] = items[i].Key;
-            identityHighs[i - start] = items[i].IdentityHigh;
-            identityLows[i - start] = items[i].IdentityLow;
+            int target = descending ? end - 1 - i : i - start;
+            shelfKeys[target] = items[i].Key;
+            identityHighs[target] = items[i].IdentityHigh;
+            identityLows[target] = items[i].IdentityLow;
         }
 
-        profile = VarKeyScalar16Profile.DefaultInitial;
+        profile = VarKeyScalar16Profile.DefaultInitial with { Descending = descending };
         if (profile.MaxKeyLength != maxKeyLength)
         {
-            profile = VarKeyScalar16Profile.Create(profile.ShelfExtentSize, maxKeyLength);
+            profile = VarKeyScalar16Profile.Create(profile.ShelfExtentSize, maxKeyLength) with { Descending = descending };
         }
 
         while (!VarKeyScalar16.TryBuildFromSorted(shelfKeys, identityHighs, identityLows, profile, out shelfBytes))
@@ -1927,7 +1973,7 @@ internal sealed partial class LibraDexFileSession
 
             profile = next.MaxKeyLength == maxKeyLength
                 ? next
-                : VarKeyScalar16Profile.Create(next.ShelfExtentSize, maxKeyLength);
+                : VarKeyScalar16Profile.Create(next.ShelfExtentSize, maxKeyLength) with { Descending = descending };
         }
 
         return true;

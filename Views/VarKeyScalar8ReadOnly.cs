@@ -31,6 +31,8 @@ internal sealed class VarKeyScalar8ReadOnly
 
     public bool IsDuplicateRun => isDuplicateRun;
 
+    public bool IsDescending => profile.Descending;
+
     public long DuplicateRunNextOffset => IsDuplicateRun ? VarKeyScalar8Layout.ReadDuplicateRunNextOffset(bytes.Span) : 0;
 
     public int ItemCount => IsValid ? itemCount : 0;
@@ -46,7 +48,7 @@ internal sealed class VarKeyScalar8ReadOnly
         if (IsDuplicateRun)
         {
             int comparison = VarKeyScalar8Layout.ReadDuplicateRunKey(bytes.Span).SequenceCompareTo(key);
-            return comparison < 0 ? ItemCount : 0;
+            return (profile.Descending ? comparison > 0 : comparison < 0) ? ItemCount : 0;
         }
 
         uint prefix = VarKeyScalar8Layout.CreateKeyPrefix(key);
@@ -57,7 +59,7 @@ internal sealed class VarKeyScalar8ReadOnly
         {
             int middle = low + ((high - low) >> 1);
             int comparison = CompareSlotKey(localBytes, middle, prefix, key);
-            if (comparison < 0)
+            if (profile.Descending ? comparison > 0 : comparison < 0)
             {
                 low = middle + 1;
             }
@@ -75,12 +77,12 @@ internal sealed class VarKeyScalar8ReadOnly
         if (IsDuplicateRun)
         {
             int keyComparison = VarKeyScalar8Layout.ReadDuplicateRunKey(bytes.Span).SequenceCompareTo(key);
-            if (keyComparison < 0)
+            if (profile.Descending ? keyComparison > 0 : keyComparison < 0)
             {
                 return ItemCount;
             }
 
-            if (keyComparison > 0)
+            if (profile.Descending ? keyComparison < 0 : keyComparison > 0)
             {
                 return 0;
             }
@@ -91,7 +93,7 @@ internal sealed class VarKeyScalar8ReadOnly
             {
                 int middle = runLow + ((runHigh - runLow) >> 1);
                 ulong identity = VarKeyScalar8Layout.ReadDuplicateRunIdentity(bytes.Span, duplicateRunKeyLength, middle);
-                if (identity < encodedIdentity)
+                if (profile.Descending ? identity > encodedIdentity : identity < encodedIdentity)
                 {
                     runLow = middle + 1;
                 }
@@ -112,7 +114,7 @@ internal sealed class VarKeyScalar8ReadOnly
         {
             int middle = low + ((high - low) >> 1);
             int comparison = CompareSlotTuple(localBytes, middle, prefix, key, encodedIdentity);
-            if (comparison < 0)
+            if (profile.Descending ? comparison > 0 : comparison < 0)
             {
                 low = middle + 1;
             }
@@ -158,14 +160,26 @@ internal sealed class VarKeyScalar8ReadOnly
             throw new ArgumentException("The upper VS8 key must be greater than or equal to the lower key.", nameof(upperKey));
         }
 
+        if (IsDuplicateRun)
+        {
+            ReadOnlySpan<byte> runKey = VarKeyScalar8Layout.ReadDuplicateRunKey(bytes.Span);
+            if (runKey.SequenceCompareTo(lowerKey) < 0 || runKey.SequenceCompareTo(upperKey) > 0)
+                return 0;
+            if (encodedIdentities.Length < ItemCount)
+                throw new ArgumentException("The identity output span is too small for the requested VS8 range.", nameof(encodedIdentities));
+            for (int i = 0; i < ItemCount; i++)
+                encodedIdentities[i] = VarKeyScalar8Layout.ReadDuplicateRunIdentity(bytes.Span, duplicateRunKeyLength, i);
+            return ItemCount;
+        }
+
         int copied = 0;
-        int slotIndex = LowerBoundKey(lowerKey);
+        int slotIndex = LowerBoundKey(profile.Descending ? upperKey : lowerKey);
         ReadOnlySpan<byte> localBytes = bytes.Span;
         for (int i = slotIndex; i < ItemCount; i++)
         {
             int recordOffset = checked((int)ReadRecordOffsetAt(i));
             ReadOnlySpan<byte> key = VarKeyScalar8Layout.ReadKey(localBytes, recordOffset);
-            if (key.SequenceCompareTo(upperKey) > 0)
+            if (profile.Descending ? key.SequenceCompareTo(lowerKey) < 0 : key.SequenceCompareTo(upperKey) > 0)
             {
                 break;
             }
@@ -203,8 +217,8 @@ internal sealed class VarKeyScalar8ReadOnly
                 : 0;
         }
 
-        int lowerSlot = LowerBoundKey(lowerKey);
-        int upperSlot = UpperBoundKey(upperKey);
+        int lowerSlot = LowerBoundKey(profile.Descending ? upperKey : lowerKey);
+        int upperSlot = UpperBoundKey(profile.Descending ? lowerKey : upperKey);
         return Math.Max(0, upperSlot - lowerSlot);
     }
 
@@ -219,7 +233,7 @@ internal sealed class VarKeyScalar8ReadOnly
         if (IsDuplicateRun)
         {
             int comparison = VarKeyScalar8Layout.ReadDuplicateRunKey(bytes.Span).SequenceCompareTo(key);
-            return comparison <= 0 ? ItemCount : 0;
+            return (profile.Descending ? comparison >= 0 : comparison <= 0) ? ItemCount : 0;
         }
 
         uint prefix = VarKeyScalar8Layout.CreateKeyPrefix(key);
@@ -230,7 +244,7 @@ internal sealed class VarKeyScalar8ReadOnly
         {
             int middle = low + ((high - low) >> 1);
             int comparison = CompareSlotKey(localBytes, middle, prefix, key);
-            if (comparison <= 0)
+            if (profile.Descending ? comparison >= 0 : comparison <= 0)
             {
                 low = middle + 1;
             }
@@ -265,6 +279,7 @@ internal sealed class VarKeyScalar8ReadOnly
             VarKeyScalar8Layout.ReadFormatVersion(bytes) != VarKeyScalar8Layout.FormatVersion ||
             VarKeyScalar8Layout.ReadHeaderSize(bytes) != VarKeyScalar8Layout.HeaderSize ||
             VarKeyScalar8Layout.ReadShelfExtentSize(bytes) != profile.ShelfExtentSize ||
+            ((VarKeyScalar8Layout.ReadFlags(bytes) & VarKeyScalar8Layout.DescendingFlag) != 0) != profile.Descending ||
             !VarKeyScalar8Layout.HasDuplicateRunFlag(bytes))
         {
             return false;
@@ -293,7 +308,8 @@ internal sealed class VarKeyScalar8ReadOnly
             VarKeyScalar8Layout.ReadMagic(bytes) != VarKeyScalar8Layout.Magic ||
             VarKeyScalar8Layout.ReadFormatVersion(bytes) != VarKeyScalar8Layout.FormatVersion ||
             VarKeyScalar8Layout.ReadHeaderSize(bytes) != VarKeyScalar8Layout.HeaderSize ||
-            VarKeyScalar8Layout.ReadShelfExtentSize(bytes) != profile.ShelfExtentSize)
+            VarKeyScalar8Layout.ReadShelfExtentSize(bytes) != profile.ShelfExtentSize ||
+            ((VarKeyScalar8Layout.ReadFlags(bytes) & VarKeyScalar8Layout.DescendingFlag) != 0) != profile.Descending)
         {
             return false;
         }

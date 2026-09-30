@@ -567,6 +567,12 @@ public interface IIndex
     LibraDexIndexShapeSpec? LogicalShape { get; }
 
     /// <summary>
+    /// Gets the persisted natural key traversal order for this index.<br/>
+    /// Physical storage remains ascending; plan-natural reads translate descending intent into reverse traversal without maintaining a second tree.<br/>
+    /// </summary>
+    LibraDexIndexSortOrder SortOrder => LogicalShape?.SortOrder ?? LibraDexIndexSortOrder.Ascending;
+
+    /// <summary>
     /// Gets the DateTime-like key encoding contract used by this index.<br/>
     /// Non-date index families return <see cref="DateTimeKeyEncoding.CalendarSdt"/> as the neutral default.<br/>
     /// </summary>
@@ -1069,6 +1075,8 @@ public readonly record struct LibraDexIdentityQueryOptions(
 public sealed class LibraDexPreparedObjectSet
 {
     private readonly IReadOnlyList<object>? values;
+    private readonly object valuesGate = new();
+    private IReadOnlyList<object>? preparedValues;
 
     /// <summary>
     /// Creates a non-generic prepared key-membership descriptor.<br/>
@@ -1104,7 +1112,16 @@ public sealed class LibraDexPreparedObjectSet
     /// Gets the prepared runtime key values.<br/>
     /// The first scaffold keeps CLR values; later implementations can attach encoded membership state behind this descriptor.<br/>
     /// </summary>
-    public IReadOnlyList<object> Values => values ?? Source.ToArray();
+    public IReadOnlyList<object> Values
+    {
+        get
+        {
+            if (values is not null)
+                return values;
+            lock (valuesGate)
+                return preparedValues ??= Source.ToArray();
+        }
+    }
 
     /// <summary>
     /// Gets the managed source values supplied or prepared for this set.<br/>
@@ -1982,29 +1999,34 @@ public sealed class CatalogMaintenance
                         physical.RootRouterOffset,
                         maxKeyLength,
                         requestedRouteCount: 16,
-                        remaining),
+                        remaining,
+                        physical.SortOrder == LibraDexIndexSortOrder.Descending),
                 LibraDexMaintenanceTopologyKind.VarKeyScalar16 =>
                     Catalog.Session.OptimizeVarKeyScalar16Topology(
                         physical.RootRouterOffset,
                         maxKeyLength,
                         requestedRouteCount: 16,
-                        remaining),
+                        remaining,
+                        physical.SortOrder == LibraDexIndexSortOrder.Descending),
                 LibraDexMaintenanceTopologyKind.VarKeyVarIdentity =>
                     Catalog.Session.OptimizeVarKeyVarIdentityTopology(
                         physical.RootRouterOffset,
                         maxKeyLength,
                         physical.VarIdentityMaxLength,
-                        remaining),
+                        remaining,
+                        physical.SortOrder == LibraDexIndexSortOrder.Descending),
                 LibraDexMaintenanceTopologyKind.Scalar8VarIdentity =>
                     Catalog.Session.OptimizeScalar8VarIdentityTopology(
                         physical.RootRouterOffset,
                         physical.VarIdentityMaxLength,
-                        remaining),
+                        remaining,
+                        physical.SortOrder == LibraDexIndexSortOrder.Descending),
                 LibraDexMaintenanceTopologyKind.Scalar16VarIdentity =>
                     Catalog.Session.OptimizeScalar16VarIdentityTopology(
                         physical.RootRouterOffset,
                         physical.VarIdentityMaxLength,
-                        remaining),
+                        remaining,
+                        physical.SortOrder == LibraDexIndexSortOrder.Descending),
                 _ => throw new InvalidOperationException("The catalog optimizer plan contains an unsupported topology.")
             };
             considered = checked(considered + result.ConsideredCount);

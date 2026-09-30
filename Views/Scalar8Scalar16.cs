@@ -52,7 +52,7 @@ internal ref struct Scalar8Scalar16
         Scalar8Scalar16Layout.WriteMagic(bytes, Scalar8Scalar16Layout.Magic);
         Scalar8Scalar16Layout.WriteFormatVersion(bytes, Scalar8Scalar16Layout.FormatVersion);
         Scalar8Scalar16Layout.WriteHeaderSize(bytes, Scalar8Scalar16Layout.HeaderSize);
-        Scalar8Scalar16Layout.WriteFlags(bytes, 0);
+        Scalar8Scalar16Layout.WriteFlags(bytes, profile.Descending ? Scalar8Scalar16Layout.DescendingFlag : 0);
         Scalar8Scalar16Layout.WriteItemCount(bytes, 0);
     }
 
@@ -92,7 +92,7 @@ internal ref struct Scalar8Scalar16
         ushort count = ItemCount;
         if (count >= profile.MaxItemCount)
         {
-            return Scalar8Scalar16InsertResult.Full;
+            return ClassifyFullInsert(encodedKey, encodedIdentityHigh, encodedIdentityLow, allowDuplicateKeys);
         }
 
         if (TryAppendInSortedOrder(encodedKey, encodedIdentityHigh, encodedIdentityLow, allowDuplicateKeys, count, out mutationBounds))
@@ -289,7 +289,7 @@ internal ref struct Scalar8Scalar16
         {
             ushort lastOffset = Scalar8Scalar16Layout.ReadSlot(bytes, profile, count - 1);
             ulong lastKey = Scalar8Scalar16Layout.ReadItemKey(bytes, lastOffset);
-            if (lastKey > encodedKey)
+            if (profile.Descending ? lastKey < encodedKey : lastKey > encodedKey)
             {
                 return false;
             }
@@ -303,7 +303,10 @@ internal ref struct Scalar8Scalar16
 
                 ulong lastIdentityHigh = Scalar8Scalar16Layout.ReadItemIdentityHigh(bytes, lastOffset);
                 ulong lastIdentityLow = Scalar8Scalar16Layout.ReadItemIdentityLow(bytes, lastOffset);
-                if (lastIdentityHigh > encodedIdentityHigh || (lastIdentityHigh == encodedIdentityHigh && lastIdentityLow >= encodedIdentityLow))
+                int identityComparison = lastIdentityHigh.CompareTo(encodedIdentityHigh);
+                if (identityComparison == 0)
+                    identityComparison = lastIdentityLow.CompareTo(encodedIdentityLow);
+                if (profile.Descending ? identityComparison <= 0 : identityComparison >= 0)
                 {
                     return false;
                 }
@@ -344,5 +347,41 @@ internal ref struct Scalar8Scalar16
     public Scalar8Scalar16ReadOnly AsReadOnly()
     {
         return new Scalar8Scalar16ReadOnly(bytes, profile);
+    }
+
+    /// <summary>Classifies a capacity-bound insertion before the caller attempts any structural growth.<br/>
+    /// Exact tuples remain idempotent and unique-key conflicts remain conflicts even when no payload slot is free.<br/>
+    /// Only the full-shelf branch calls this allocation-free binary-search path; ordinary insert and append code is unchanged.<br/></summary>
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private Scalar8Scalar16InsertResult ClassifyFullInsert(ulong encodedKey, ulong encodedIdentityHigh, ulong encodedIdentityLow, bool allowDuplicateKeys)
+    {
+        ushort count = ItemCount;
+        Scalar8Scalar16ReadOnly readOnly = AsReadOnly();
+        int insertIndex = readOnly.LowerBound(encodedKey, encodedIdentityHigh, encodedIdentityLow);
+
+        if (insertIndex < count)
+        {
+            ushort existingOffset = Scalar8Scalar16Layout.ReadSlot(bytes, profile, insertIndex);
+            int comparison = Scalar8Scalar16Layout.CompareItemTuple(bytes, existingOffset, encodedKey, encodedIdentityHigh, encodedIdentityLow);
+            if (comparison == 0)
+            {
+                return Scalar8Scalar16InsertResult.AlreadyPresent;
+            }
+        }
+
+        if (!allowDuplicateKeys)
+        {
+            int keyIndex = readOnly.LowerBoundKey(encodedKey);
+            if (keyIndex < count)
+            {
+                ushort keyOffset = Scalar8Scalar16Layout.ReadSlot(bytes, profile, keyIndex);
+                if (Scalar8Scalar16Layout.ReadItemKey(bytes, keyOffset) == encodedKey)
+                {
+                    return Scalar8Scalar16InsertResult.KeyConflict;
+                }
+            }
+        }
+
+        return Scalar8Scalar16InsertResult.Full;
     }
 }

@@ -22,6 +22,9 @@ internal sealed class VarKeyVarIdentityRangeReader : IDisposable
     private int[]? pendingHops;
     private byte[]? pendingFlags;
     private byte[]? routerScratch;
+    private byte[]? terminalContinuationKey;
+    private long terminalContinuationOffset;
+    private int terminalContinuationExtentSize;
     private RouteVisitedOffsetSet? visitedShelves;
     private RouteVisitedContextSet? visitedRouters;
     private LibraDexFileSession? session;
@@ -36,6 +39,7 @@ internal sealed class VarKeyVarIdentityRangeReader : IDisposable
     private int maxKeyLength;
     private int maxIdentityLength;
     private bool decodeLogicalKeys;
+    private bool descendingTraversal;
     private bool traversalComplete = true;
     private bool disposed;
 
@@ -56,13 +60,15 @@ internal sealed class VarKeyVarIdentityRangeReader : IDisposable
         ReadOnlySpan<byte> lowerKey,
         ReadOnlySpan<byte> upperKey,
         int maxRouterHops = 8,
-        bool decodeLogicalKeys = false)
+        bool decodeLogicalKeys = false,
+        bool descending = false)
         : this()
     {
         this.session = session;
         this.maxKeyLength = maxKeyLength;
         this.maxIdentityLength = maxIdentityLength;
         this.decodeLogicalKeys = decodeLogicalKeys;
+        descendingTraversal = descending;
         this.lowerKey = lowerKey.ToArray();
         this.upperKey = upperKey.ToArray();
         pendingOffsets = ArrayPool<long>.Shared.Rent(DefaultShelfCapacity);
@@ -74,7 +80,9 @@ internal sealed class VarKeyVarIdentityRangeReader : IDisposable
 
         byte lowerPrefix = LibraDexFileSession.GetVarKeyScalar8Prefix(lowerKey, 0);
         byte upperPrefix = LibraDexFileSession.GetVarKeyScalar8Prefix(upperKey, 0);
-        for (int prefix = upperPrefix; prefix >= lowerPrefix; prefix--)
+        for (int prefix = descending ? lowerPrefix : upperPrefix;
+            descending ? prefix <= upperPrefix : prefix >= lowerPrefix;
+            prefix += descending ? 1 : -1)
         {
             long targetOffset = session.FindRouterTarget(rootRouterOffset, (byte)prefix);
             if (targetOffset != 0)
@@ -334,9 +342,11 @@ internal sealed class VarKeyVarIdentityRangeReader : IDisposable
             throw new InvalidDataException("The routed VV range target shelf is invalid.");
         }
 
-        int startSlot = shelf.LowerBoundKey(lowerKey);
+        int startSlot = shelf.LowerBoundKey(shelf.IsDescending ? upperKey : lowerKey);
         int endSlot = startSlot;
-        while (endSlot < shelf.ItemCount && shelf.ReadKeyAt(endSlot).SequenceCompareTo(upperKey) <= 0)
+        while (endSlot < shelf.ItemCount && (shelf.IsDescending
+            ? shelf.ReadKeyAt(endSlot).SequenceCompareTo(lowerKey) >= 0
+            : shelf.ReadKeyAt(endSlot).SequenceCompareTo(upperKey) <= 0))
         {
             endSlot++;
         }
@@ -401,6 +411,9 @@ internal sealed class VarKeyVarIdentityRangeReader : IDisposable
         session = null;
         lowerKey = null;
         upperKey = null;
+        terminalContinuationKey = null;
+        terminalContinuationOffset = 0;
+        terminalContinuationExtentSize = 0;
         shelfCount = 0;
         rowCount = 0;
         pendingCount = 0;
@@ -490,8 +503,37 @@ internal sealed class VarKeyVarIdentityRangeReader : IDisposable
         int previousRowCount = rowCount;
         byte[] routerBytes = routerScratch ??= ArrayPool<byte>.Shared.Rent(RouterLayout.Size);
         Span<byte> routerPage = routerBytes.AsSpan(0, RouterLayout.Size);
-        while (pendingCount > 0)
+        while (pendingCount > 0 || terminalContinuationOffset != 0)
         {
+            if (terminalContinuationOffset != 0)
+            {
+                long terminalShelfOffset = terminalContinuationOffset;
+                if (!localVisitedShelves.Add(terminalShelfOffset))
+                {
+                    throw new InvalidDataException("The VV terminal identity chain contains a repeated shelf offset.");
+                }
+
+                byte[] terminalBytes = localSession.ReadTerminalVarIdentityShelfBytes(terminalShelfOffset, terminalContinuationExtentSize);
+                try
+                {
+                    TerminalVarIdentityShelfLayout.Validate(terminalBytes, terminalContinuationExtentSize);
+                    terminalContinuationOffset = TerminalVarIdentityShelfLayout.ReadNextShelfOffset(terminalBytes);
+                    AddTerminalShelfRange(terminalContinuationKey ?? throw new InvalidDataException("The VV terminal continuation has no key."), terminalBytes, 0, TerminalVarIdentityShelfLayout.ReadItemCount(terminalBytes));
+                }
+                catch
+                {
+                    ArrayPool<byte>.Shared.Return(terminalBytes, clearArray: false);
+                    throw;
+                }
+
+                if (rowCount > previousRowCount)
+                {
+                    return true;
+                }
+
+                continue;
+            }
+
             PopTarget(out long targetOffset, out int remainingHops, out bool lowerEdge, out bool upperEdge);
             if (remainingHops <= 0)
             {
@@ -537,27 +579,9 @@ internal sealed class VarKeyVarIdentityRangeReader : IDisposable
                     continue;
                 }
 
-                int shelfExtentSize = TerminalIdentityRootLayout.ReadShelfExtentSize(rootBytes);
-                long terminalShelfOffset = TerminalIdentityRootLayout.ReadFirstShelfOffset(rootBytes);
-                while (terminalShelfOffset != 0)
-                {
-                    if (!localVisitedShelves.Add(terminalShelfOffset))
-                    {
-                        break;
-                    }
-
-                    byte[] terminalBytes = localSession.ReadTerminalVarIdentityShelfBytes(terminalShelfOffset, shelfExtentSize);
-                    TerminalVarIdentityShelfLayout.Validate(terminalBytes, shelfExtentSize);
-                    int itemCount = TerminalVarIdentityShelfLayout.ReadItemCount(terminalBytes);
-                    long nextOffset = TerminalVarIdentityShelfLayout.ReadNextShelfOffset(terminalBytes);
-                    AddTerminalShelfRange(keyBytes, terminalBytes, 0, itemCount);
-                    terminalShelfOffset = nextOffset;
-                }
-
-                if (rowCount > previousRowCount)
-                {
-                    return true;
-                }
+                terminalContinuationKey = keyBytes;
+                terminalContinuationExtentSize = TerminalIdentityRootLayout.ReadShelfExtentSize(rootBytes);
+                terminalContinuationOffset = TerminalIdentityRootLayout.ReadFirstShelfOffset(rootBytes);
 
                 continue;
             }
@@ -604,7 +628,9 @@ internal sealed class VarKeyVarIdentityRangeReader : IDisposable
                     _ = router.FindTarget(localUpperKey, router.KeyDepth, out upperRouteIndex);
                 }
 
-                for (int routeIndex = router.RouteCount - 1; routeIndex >= 0; routeIndex--)
+                for (int routeIndex = descendingTraversal ? 0 : router.RouteCount - 1;
+                    descendingTraversal ? routeIndex < router.RouteCount : routeIndex >= 0;
+                    routeIndex += descendingTraversal ? 1 : -1)
                 {
                     if (router.TrySelectMultiByteRangeRoute(
                         routeIndex,
@@ -628,13 +654,27 @@ internal sealed class VarKeyVarIdentityRangeReader : IDisposable
 
             byte lowerPrefix = lowerEdge ? LibraDexFileSession.GetVarKeyScalar8Prefix(localLowerKey, router.KeyDepth) : byte.MinValue;
             byte upperPrefix = upperEdge ? LibraDexFileSession.GetVarKeyScalar8Prefix(localUpperKey, router.KeyDepth) : byte.MaxValue;
-            for (int prefix = upperPrefix; prefix >= lowerPrefix; prefix--)
+            int prefix = descendingTraversal ? lowerPrefix : upperPrefix;
+            while (descendingTraversal ? prefix <= upperPrefix : prefix >= lowerPrefix)
             {
                 long childTargetOffset = router.FindTarget((byte)prefix);
-                if (childTargetOffset != 0)
+                if (childTargetOffset == 0)
                 {
-                    PushTarget(childTargetOffset, remainingHops - 1, lowerEdge && prefix == lowerPrefix, upperEdge && prefix == upperPrefix);
+                    prefix += descendingTraversal ? 1 : -1;
+                    continue;
                 }
+
+                int runStart = prefix;
+                int runEnd = prefix;
+                while (descendingTraversal && runEnd < upperPrefix && router.FindTarget((byte)(runEnd + 1)) == childTargetOffset)
+                    runEnd++;
+                while (!descendingTraversal && runStart > lowerPrefix && router.FindTarget((byte)(runStart - 1)) == childTargetOffset)
+                    runStart--;
+                bool singlePrefixRun = runStart == runEnd;
+                PushTarget(childTargetOffset, remainingHops - 1,
+                    singlePrefixRun && lowerEdge && runStart == lowerPrefix,
+                    singlePrefixRun && upperEdge && runEnd == upperPrefix);
+                prefix = descendingTraversal ? runEnd + 1 : runStart - 1;
             }
         }
 

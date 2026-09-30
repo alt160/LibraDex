@@ -22,6 +22,7 @@ internal static class Scalar8Scalar16Layout
     public const int FormatVersionOffset = 4;
     public const int HeaderSizeOffset = 6;
     public const int FlagsOffset = 8;
+    public const uint DescendingFlag = 1U;
     public const int ItemCountOffset = 12;
 
     public const int ItemKeyOffset = 0;

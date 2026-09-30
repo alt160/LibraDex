@@ -5,7 +5,7 @@ using LibraDex.Views;
 namespace LibraDex;
 
 /// <summary>
-/// Reads `FS32-8` range results as a forward-only cursor over encoded 32-byte fixed keys and encoded scalar identities.<br/>
+/// Reads `FS32-8` range results in either query direction over encoded 32-byte fixed keys and encoded scalar identities.<br/>
 /// The reader keeps routed traversal state and shelf-local slot ranges so callers can stream keys, identities, or full tuples without per-row materialization.<br/>
 /// Shelf bytes are retained for the reader lifetime because the fixed shelf projection is stack-only; row access recreates that projection over the retained shelf buffer.<br/>
 /// </summary>
@@ -17,6 +17,11 @@ internal sealed class Fixed32Scalar8RangeReader : IDisposable
     private long[] shelfOffsets;
     private int[] startSlots;
     private int[] endSlots;
+    private byte[] terminalShelfFlags;
+    private ulong[] terminalKey0s;
+    private ulong[] terminalKey1s;
+    private ulong[] terminalKey2s;
+    private ulong[] terminalKey3s;
     private long[]? pendingOffsets;
     private int[]? pendingHops;
     private byte[]? pendingFlags;
@@ -37,6 +42,13 @@ internal sealed class Fixed32Scalar8RangeReader : IDisposable
     private int shelfCount;
     private int rowCount;
     private int pendingCount;
+    private long pendingTerminalRootOffset;
+    private long pendingTerminalShelfOffset;
+    private int pendingTerminalShelfExtent;
+    private ulong pendingTerminalKey0;
+    private ulong pendingTerminalKey1;
+    private ulong pendingTerminalKey2;
+    private ulong pendingTerminalKey3;
     private int currentShelfIndex;
     private int currentSlotIndex = -1;
     private int ordinal = -1;
@@ -51,6 +63,11 @@ internal sealed class Fixed32Scalar8RangeReader : IDisposable
         shelfOffsets = ArrayPool<long>.Shared.Rent(DefaultShelfCapacity);
         startSlots = ArrayPool<int>.Shared.Rent(DefaultShelfCapacity);
         endSlots = ArrayPool<int>.Shared.Rent(DefaultShelfCapacity);
+        terminalShelfFlags = ArrayPool<byte>.Shared.Rent(DefaultShelfCapacity);
+        terminalKey0s = ArrayPool<ulong>.Shared.Rent(DefaultShelfCapacity);
+        terminalKey1s = ArrayPool<ulong>.Shared.Rent(DefaultShelfCapacity);
+        terminalKey2s = ArrayPool<ulong>.Shared.Rent(DefaultShelfCapacity);
+        terminalKey3s = ArrayPool<ulong>.Shared.Rent(DefaultShelfCapacity);
     }
 
     internal Fixed32Scalar8RangeReader(
@@ -66,7 +83,7 @@ internal sealed class Fixed32Scalar8RangeReader : IDisposable
         ulong upper2,
         ulong upper3,
         QueryDirection direction = QueryDirection.Ascending,
-        int maxRouterHops = 32)
+        int maxRouterHops = 33)
         : this()
     {
         if (direction != QueryDirection.Ascending && direction != QueryDirection.Descending)
@@ -151,6 +168,15 @@ internal sealed class Fixed32Scalar8RangeReader : IDisposable
     public void ReadCurrentKey(out ulong key0, out ulong key1, out ulong key2, out ulong key3)
     {
         Fixed32Scalar8ReadOnly shelf = CurrentShelf;
+        if (terminalShelfFlags[currentShelfIndex] != 0)
+        {
+            key0 = terminalKey0s[currentShelfIndex];
+            key1 = terminalKey1s[currentShelfIndex];
+            key2 = terminalKey2s[currentShelfIndex];
+            key3 = terminalKey3s[currentShelfIndex];
+            return;
+        }
+
         key0 = shelf.ReadKeyPart0At(currentSlotIndex);
         key1 = shelf.ReadKeyPart1At(currentSlotIndex);
         key2 = shelf.ReadKeyPart2At(currentSlotIndex);
@@ -161,7 +187,16 @@ internal sealed class Fixed32Scalar8RangeReader : IDisposable
     /// Gets the encoded scalar identity for the current row.<br/>
     /// The value is the persisted sortable scalar representation used by the `FS32-8` shelf.<br/>
     /// </summary>
-    public ulong CurrentEncodedIdentity => CurrentShelf.ReadIdentityAt(currentSlotIndex);
+    public ulong CurrentEncodedIdentity
+    {
+        get
+        {
+            Fixed32Scalar8ReadOnly shelf = CurrentShelf;
+            return terminalShelfFlags[currentShelfIndex] != 0
+                ? TerminalIdentity8ShelfLayout.ReadIdentity(shelves[currentShelfIndex], currentSlotIndex)
+                : shelf.ReadIdentityAt(currentSlotIndex);
+        }
+    }
 
     /// <summary>
     /// Advances the reader and returns the next encoded identity without a separate current-row property read.<br/>
@@ -178,8 +213,7 @@ internal sealed class Fixed32Scalar8RangeReader : IDisposable
             return false;
         }
 
-        Fixed32Scalar8ReadOnly shelf = new(shelves[currentShelfIndex], profile);
-        encodedIdentity = shelf.ReadIdentityAt(currentSlotIndex);
+        encodedIdentity = CurrentEncodedIdentity;
         return true;
     }
 
@@ -206,17 +240,21 @@ internal sealed class Fixed32Scalar8RangeReader : IDisposable
         if (ordinal < 0)
         {
             currentShelfIndex = 0;
-            currentSlotIndex = startSlots[0];
+            currentSlotIndex = profile.Descending ? endSlots[0] - 1 : startSlots[0];
         }
         else
         {
-            currentSlotIndex++;
-            while (currentShelfIndex < shelfCount && currentSlotIndex >= endSlots[currentShelfIndex])
+            currentSlotIndex += profile.Descending ? -1 : 1;
+            while (currentShelfIndex < shelfCount && (profile.Descending
+                ? currentSlotIndex < startSlots[currentShelfIndex]
+                : currentSlotIndex >= endSlots[currentShelfIndex]))
             {
                 currentShelfIndex++;
                 if (currentShelfIndex < shelfCount)
                 {
-                    currentSlotIndex = startSlots[currentShelfIndex];
+                    currentSlotIndex = profile.Descending
+                        ? endSlots[currentShelfIndex] - 1
+                        : startSlots[currentShelfIndex];
                 }
             }
         }
@@ -260,17 +298,21 @@ internal sealed class Fixed32Scalar8RangeReader : IDisposable
             if (ordinal < 0)
             {
                 currentShelfIndex = 0;
-                currentSlotIndex = endSlots[0] - 1;
+                currentSlotIndex = profile.Descending ? startSlots[0] : endSlots[0] - 1;
             }
             else
             {
-                currentSlotIndex--;
-                while (currentShelfIndex < shelfCount && currentSlotIndex < startSlots[currentShelfIndex])
+                currentSlotIndex += profile.Descending ? 1 : -1;
+                while (currentShelfIndex < shelfCount && (profile.Descending
+                    ? currentSlotIndex >= endSlots[currentShelfIndex]
+                    : currentSlotIndex < startSlots[currentShelfIndex]))
                 {
                     currentShelfIndex++;
                     if (currentShelfIndex < shelfCount)
                     {
-                        currentSlotIndex = endSlots[currentShelfIndex] - 1;
+                        currentSlotIndex = profile.Descending
+                            ? startSlots[currentShelfIndex]
+                            : endSlots[currentShelfIndex] - 1;
                     }
                 }
             }
@@ -291,19 +333,25 @@ internal sealed class Fixed32Scalar8RangeReader : IDisposable
         if (ordinal < 0 || ordinal >= rowCount)
         {
             currentShelfIndex = shelfCount - 1;
-            currentSlotIndex = endSlots[currentShelfIndex] - 1;
+            currentSlotIndex = profile.Descending
+                ? startSlots[currentShelfIndex]
+                : endSlots[currentShelfIndex] - 1;
             ordinal = rowCount - 1;
             currentRowInvalidated = false;
             return true;
         }
 
-        currentSlotIndex--;
-        while (currentShelfIndex >= 0 && currentSlotIndex < startSlots[currentShelfIndex])
+        currentSlotIndex += profile.Descending ? 1 : -1;
+        while (currentShelfIndex >= 0 && (profile.Descending
+            ? currentSlotIndex >= endSlots[currentShelfIndex]
+            : currentSlotIndex < startSlots[currentShelfIndex]))
         {
             currentShelfIndex--;
             if (currentShelfIndex >= 0)
             {
-                currentSlotIndex = endSlots[currentShelfIndex] - 1;
+                currentSlotIndex = profile.Descending
+                    ? startSlots[currentShelfIndex]
+                    : endSlots[currentShelfIndex] - 1;
             }
         }
 
@@ -342,12 +390,8 @@ internal sealed class Fixed32Scalar8RangeReader : IDisposable
             return false;
         }
 
-        Fixed32Scalar8ReadOnly shelf = new(shelves[currentShelfIndex], profile);
-        key0 = shelf.ReadKeyPart0At(currentSlotIndex);
-        key1 = shelf.ReadKeyPart1At(currentSlotIndex);
-        key2 = shelf.ReadKeyPart2At(currentSlotIndex);
-        key3 = shelf.ReadKeyPart3At(currentSlotIndex);
-        encodedIdentity = shelf.ReadIdentityAt(currentSlotIndex);
+        ReadCurrentKey(out key0, out key1, out key2, out key3);
+        encodedIdentity = CurrentEncodedIdentity;
         return true;
     }
 
@@ -454,6 +498,11 @@ internal sealed class Fixed32Scalar8RangeReader : IDisposable
         ArrayPool<long>.Shared.Return(shelfOffsets, clearArray: false);
         ArrayPool<int>.Shared.Return(startSlots, clearArray: false);
         ArrayPool<int>.Shared.Return(endSlots, clearArray: false);
+        ArrayPool<byte>.Shared.Return(terminalShelfFlags, clearArray: false);
+        ArrayPool<ulong>.Shared.Return(terminalKey0s, clearArray: false);
+        ArrayPool<ulong>.Shared.Return(terminalKey1s, clearArray: false);
+        ArrayPool<ulong>.Shared.Return(terminalKey2s, clearArray: false);
+        ArrayPool<ulong>.Shared.Return(terminalKey3s, clearArray: false);
         if (pendingOffsets is not null)
         {
             ArrayPool<long>.Shared.Return(pendingOffsets, clearArray: false);
@@ -484,6 +533,11 @@ internal sealed class Fixed32Scalar8RangeReader : IDisposable
         visitedRouters = null;
         session = null;
         shelfOffsets = Array.Empty<long>();
+        terminalShelfFlags = Array.Empty<byte>();
+        terminalKey0s = Array.Empty<ulong>();
+        terminalKey1s = Array.Empty<ulong>();
+        terminalKey2s = Array.Empty<ulong>();
+        terminalKey3s = Array.Empty<ulong>();
         shelfCount = 0;
         rowCount = 0;
         pendingCount = 0;
@@ -491,6 +545,7 @@ internal sealed class Fixed32Scalar8RangeReader : IDisposable
         currentShelfIndex = 0;
         currentSlotIndex = -1;
         currentRowInvalidated = false;
+        pendingTerminalShelfOffset = 0;
     }
 
     private void ReturnShelfBuffers()
@@ -500,6 +555,8 @@ internal sealed class Fixed32Scalar8RangeReader : IDisposable
             byte[]? shelfBytes = shelves[i];
             if (shelfBytes is not null)
             {
+                if (terminalShelfFlags[i] != 0)
+                    ArrayPool<byte>.Shared.Return(shelfBytes, clearArray: false);
                 shelves[i] = null!;
             }
         }
@@ -534,6 +591,19 @@ internal sealed class Fixed32Scalar8RangeReader : IDisposable
         }
 
         LibraDexFileSession localSession = session ?? throw new ObjectDisposedException(nameof(Fixed32Scalar8RangeReader));
+        if (terminalShelfFlags[currentShelfIndex] != 0)
+        {
+            Span<byte> keyBytes = stackalloc byte[Fixed32Scalar8Layout.KeySize];
+            LibraDexFileSession.WriteFixed32Scalar8KeyBytes(keyBytes,
+                terminalKey0s[currentShelfIndex], terminalKey1s[currentShelfIndex],
+                terminalKey2s[currentShelfIndex], terminalKey3s[currentShelfIndex]);
+            ulong identity = TerminalIdentity8ShelfLayout.ReadIdentity(shelves[currentShelfIndex], currentSlotIndex);
+            if (localSession.DeleteFixedScalar8TerminalIdentity(shelfOffsets[currentShelfIndex], keyBytes, profile.ShelfExtentSize, identity) != 1)
+                return false;
+            currentRowInvalidated = true;
+            return true;
+        }
+
         byte[] shelfBytes = CloneShelfBytesForMutation(currentShelfIndex);
         Fixed32Scalar8 shelf = new(shelfBytes, profile);
         int removed = shelf.RemoveSlotRange(currentSlotIndex, 1);
@@ -546,7 +616,8 @@ internal sealed class Fixed32Scalar8RangeReader : IDisposable
         endSlots[currentShelfIndex]--;
         rowCount--;
         ordinal--;
-        currentSlotIndex--;
+        if (!profile.Descending)
+            currentSlotIndex--;
         currentRowInvalidated = true;
         return true;
     }
@@ -573,19 +644,35 @@ internal sealed class Fixed32Scalar8RangeReader : IDisposable
         LibraDexFileSession localSession = session ?? throw new ObjectDisposedException(nameof(Fixed32Scalar8RangeReader));
         EnsureAllRangesLoaded();
         long deleted = 0;
+        Span<byte> terminalKeyBytes = stackalloc byte[Fixed32Scalar8Layout.KeySize];
         for (int i = 0; i < shelfCount; i++)
         {
+            if (terminalShelfFlags[i] != 0)
+            {
+                LibraDexFileSession.WriteFixed32Scalar8KeyBytes(terminalKeyBytes,
+                    terminalKey0s[i], terminalKey1s[i], terminalKey2s[i], terminalKey3s[i]);
+                for (int slot = startSlots[i]; slot < endSlots[i]; slot++)
+                    deleted += localSession.DeleteFixedScalar8TerminalIdentity(
+                        shelfOffsets[i], terminalKeyBytes, profile.ShelfExtentSize,
+                        TerminalIdentity8ShelfLayout.ReadIdentity(shelves[i], slot));
+                continue;
+            }
+
             byte[] shelfBytes = localSession.IsDurabilityBatchActive
                 ? localSession.ReadFixed32Scalar8ShelfBytesForBatch(shelfOffsets[i], profile)
                 : CloneShelfBytesForMutation(i);
             Fixed32Scalar8ReadOnly readOnly = new(shelfBytes, profile);
             int startSlot = localSession.IsDurabilityBatchActive
-                ? readOnly.LowerBoundKey(lower0, lower1, lower2, lower3)
+                ? readOnly.LowerBoundKey(profile.Descending ? upper0 : lower0,
+                    profile.Descending ? upper1 : lower1, profile.Descending ? upper2 : lower2,
+                    profile.Descending ? upper3 : lower3)
                 : startSlots[i];
             int endSlot = localSession.IsDurabilityBatchActive ? startSlot : endSlots[i];
             if (localSession.IsDurabilityBatchActive)
             {
-                while (endSlot < readOnly.ItemCount && CompareKey(readOnly.ReadKeyPart0At(endSlot), readOnly.ReadKeyPart1At(endSlot), readOnly.ReadKeyPart2At(endSlot), readOnly.ReadKeyPart3At(endSlot), upper0, upper1, upper2, upper3) <= 0)
+                while (endSlot < readOnly.ItemCount && (profile.Descending
+                    ? CompareKey(readOnly.ReadKeyPart0At(endSlot), readOnly.ReadKeyPart1At(endSlot), readOnly.ReadKeyPart2At(endSlot), readOnly.ReadKeyPart3At(endSlot), lower0, lower1, lower2, lower3) >= 0
+                    : CompareKey(readOnly.ReadKeyPart0At(endSlot), readOnly.ReadKeyPart1At(endSlot), readOnly.ReadKeyPart2At(endSlot), readOnly.ReadKeyPart3At(endSlot), upper0, upper1, upper2, upper3) <= 0))
                 {
                     endSlot++;
                 }
@@ -621,6 +708,21 @@ internal sealed class Fixed32Scalar8RangeReader : IDisposable
         EnsureAllRangesLoaded();
         for (int i = 0; i < shelfCount; i++)
         {
+            if (terminalShelfFlags[i] != 0)
+            {
+                for (int slot = startSlots[i]; slot < endSlots[i]; slot++)
+                {
+                    if (TerminalIdentity8ShelfLayout.ReadIdentity(shelves[i], slot) != encodedIdentity)
+                        continue;
+                    Span<byte> keyBytes = stackalloc byte[Fixed32Scalar8Layout.KeySize];
+                    LibraDexFileSession.WriteFixed32Scalar8KeyBytes(keyBytes,
+                        terminalKey0s[i], terminalKey1s[i], terminalKey2s[i], terminalKey3s[i]);
+                    return localSession.DeleteFixedScalar8TerminalIdentity(shelfOffsets[i], keyBytes, profile.ShelfExtentSize, encodedIdentity) == 1;
+                }
+
+                continue;
+            }
+
             Fixed32Scalar8ReadOnly readOnly = new(shelves[i], profile);
             for (int slot = startSlots[i]; slot < endSlots[i]; slot++)
             {
@@ -655,14 +757,18 @@ internal sealed class Fixed32Scalar8RangeReader : IDisposable
     private void AddShelfRange(long shelfOffset, byte[] shelfBytes)
     {
         Fixed32Scalar8ReadOnly shelf = new(shelfBytes, profile);
-        if (!shelf.IsValid)
+        if (!shelf.IsValid || shelf.IsDescending != profile.Descending)
         {
             throw new InvalidDataException("The routed FS32-8 range target shelf is invalid.");
         }
 
-        int startSlot = shelf.LowerBoundKey(lower0, lower1, lower2, lower3);
+        int startSlot = shelf.LowerBoundKey(profile.Descending ? upper0 : lower0,
+            profile.Descending ? upper1 : lower1, profile.Descending ? upper2 : lower2,
+            profile.Descending ? upper3 : lower3);
         int endSlot = startSlot;
-        while (endSlot < shelf.ItemCount && CompareKey(shelf.ReadKeyPart0At(endSlot), shelf.ReadKeyPart1At(endSlot), shelf.ReadKeyPart2At(endSlot), shelf.ReadKeyPart3At(endSlot), upper0, upper1, upper2, upper3) <= 0)
+        while (endSlot < shelf.ItemCount && (profile.Descending
+            ? CompareKey(shelf.ReadKeyPart0At(endSlot), shelf.ReadKeyPart1At(endSlot), shelf.ReadKeyPart2At(endSlot), shelf.ReadKeyPart3At(endSlot), lower0, lower1, lower2, lower3) >= 0
+            : CompareKey(shelf.ReadKeyPart0At(endSlot), shelf.ReadKeyPart1At(endSlot), shelf.ReadKeyPart2At(endSlot), shelf.ReadKeyPart3At(endSlot), upper0, upper1, upper2, upper3) <= 0))
         {
             endSlot++;
         }
@@ -681,6 +787,7 @@ internal sealed class Fixed32Scalar8RangeReader : IDisposable
         shelfOffsets[shelfCount] = shelfOffset;
         startSlots[shelfCount] = startSlot;
         endSlots[shelfCount] = endSlot;
+        terminalShelfFlags[shelfCount] = 0;
         shelfCount++;
         rowCount = checked(rowCount + endSlot - startSlot);
     }
@@ -696,6 +803,20 @@ internal sealed class Fixed32Scalar8RangeReader : IDisposable
         RouteVisitedOffsetSet localVisitedShelves = visitedShelves ?? throw new ObjectDisposedException(nameof(Fixed32Scalar8RangeReader));
         RouteVisitedOffsetSet localVisitedRouters = visitedRouters ?? throw new ObjectDisposedException(nameof(Fixed32Scalar8RangeReader));
         int previousRowCount = rowCount;
+        while (pendingTerminalShelfOffset != 0)
+        {
+            long shelfOffset = pendingTerminalShelfOffset;
+            pendingTerminalShelfOffset = 0;
+            if (!localVisitedShelves.Add(shelfOffset))
+                break;
+            byte[] terminalBytes = localSession.ReadTerminalIdentity8ShelfBytes(shelfOffset, pendingTerminalShelfExtent);
+            pendingTerminalShelfOffset = TerminalIdentity8ShelfLayout.ReadNextShelfOffset(terminalBytes);
+            AddTerminalIdentityChunk(pendingTerminalRootOffset, pendingTerminalKey0, pendingTerminalKey1,
+                pendingTerminalKey2, pendingTerminalKey3, terminalBytes);
+            if (rowCount > previousRowCount)
+                return true;
+        }
+
         byte[] localRouterBytes = routerBytes ?? throw new ObjectDisposedException(nameof(Fixed32Scalar8RangeReader));
         while (pendingCount > 0)
         {
@@ -853,8 +974,8 @@ internal sealed class Fixed32Scalar8RangeReader : IDisposable
     }
 
     /// <summary>
-    /// Projects one persisted fixed-key scalar-eight terminal route into bounded ordinary `FS32-8` cursor shelves.<br/>
-    /// The fixed key is decoded once, terminal identities remain in persisted order, and descending readers add high identity chunks first so global tuple order remains exact.<br/>
+    /// Opens one persisted fixed-key scalar-eight terminal route without projecting its identities into ordinary `FS32-8` shelves.<br/>
+    /// Matching physical traversal retains one identity-only shelf at a time; opposite traversal reverses the chain before its first row.<br/>
     /// </summary>
     /// <param name="rootOffset">The terminal identity root selected by routed traversal.<br/></param>
     /// <param name="localSession">The owning file session used to read the root and identity-only shelf chain.<br/></param>
@@ -868,6 +989,9 @@ internal sealed class Fixed32Scalar8RangeReader : IDisposable
             throw new InvalidDataException("The routed FS32-8 terminal identity root does not match its owning index shape.");
         }
 
+        if ((rootBytes[TerminalIdentityRootLayout.SortDirectionOffset] != 0) != profile.Descending)
+            throw new InvalidDataException("The routed FS32-8 terminal identity root physical order does not match its index profile.");
+
         ReadOnlySpan<byte> keyBytes = rootBytes.AsSpan(TerminalIdentityRootLayout.KeyBytesOffset, Fixed32Scalar8Layout.KeySize);
         ulong key0 = System.Buffers.Binary.BinaryPrimitives.ReadUInt64BigEndian(keyBytes);
         ulong key1 = System.Buffers.Binary.BinaryPrimitives.ReadUInt64BigEndian(keyBytes.Slice(8));
@@ -879,45 +1003,80 @@ internal sealed class Fixed32Scalar8RangeReader : IDisposable
             return;
         }
 
-        List<ulong> identities = localSession.ReadTerminalIdentity8RouteIdentities(rootOffset, keyBytes, profile.ShelfExtentSize);
-        int capacity = profile.MaxItemCount;
-        if (!descendingTraversal)
+        pendingTerminalRootOffset = rootOffset;
+        pendingTerminalShelfExtent = TerminalIdentityRootLayout.ReadShelfExtentSize(rootBytes);
+        pendingTerminalKey0 = key0;
+        pendingTerminalKey1 = key1;
+        pendingTerminalKey2 = key2;
+        pendingTerminalKey3 = key3;
+        pendingTerminalShelfOffset = TerminalIdentityRootLayout.ReadFirstShelfOffset(rootBytes);
+        RouteVisitedOffsetSet localVisitedShelves = visitedShelves ?? throw new ObjectDisposedException(nameof(Fixed32Scalar8RangeReader));
+        if (profile.Descending != descendingTraversal)
         {
-            for (int start = 0; start < identities.Count; start += capacity)
-                AddTerminalIdentityChunk(rootOffset, key0, key1, key2, key3, identities, start, Math.Min(capacity, identities.Count - start));
+            List<byte[]> chain = [];
+            while (pendingTerminalShelfOffset != 0)
+            {
+                long shelfOffset = pendingTerminalShelfOffset;
+                pendingTerminalShelfOffset = 0;
+                if (!localVisitedShelves.Add(shelfOffset))
+                    break;
+                byte[] shelfBytes = localSession.ReadTerminalIdentity8ShelfBytes(shelfOffset, pendingTerminalShelfExtent);
+                pendingTerminalShelfOffset = TerminalIdentity8ShelfLayout.ReadNextShelfOffset(shelfBytes);
+                chain.Add(shelfBytes);
+            }
+
+            for (int i = chain.Count - 1; i >= 0; i--)
+                AddTerminalIdentityChunk(rootOffset, key0, key1, key2, key3, chain[i]);
             return;
         }
 
-        int finalChunkStart = identities.Count == 0 ? 0 : ((identities.Count - 1) / capacity) * capacity;
-        for (int start = finalChunkStart; start >= 0 && start < identities.Count; start -= capacity)
-            AddTerminalIdentityChunk(rootOffset, key0, key1, key2, key3, identities, start, Math.Min(capacity, identities.Count - start));
+        while (pendingTerminalShelfOffset != 0)
+        {
+            long shelfOffset = pendingTerminalShelfOffset;
+            pendingTerminalShelfOffset = 0;
+            if (!localVisitedShelves.Add(shelfOffset))
+                break;
+            byte[] shelfBytes = localSession.ReadTerminalIdentity8ShelfBytes(shelfOffset, pendingTerminalShelfExtent);
+            pendingTerminalShelfOffset = TerminalIdentity8ShelfLayout.ReadNextShelfOffset(shelfBytes);
+            int previousCount = rowCount;
+            AddTerminalIdentityChunk(rootOffset, key0, key1, key2, key3, shelfBytes);
+            if (rowCount > previousCount)
+                break;
+        }
     }
 
     /// <summary>
-    /// Builds one cursor-owned `FS32-8` projection shelf for a contiguous terminal identity slice.<br/>
-    /// The projection is read-only cursor state and does not duplicate the key in persisted storage.<br/>
+    /// Retains one identity-only terminal shelf as direct cursor state.<br/>
+    /// The fixed key is kept once in parallel reader state, avoiding per-identity key projection and whole-chain materialization.<br/>
     /// </summary>
     /// <param name="rootOffset">The terminal root offset retained as the projection owner.<br/></param>
     /// <param name="key0">The first encoded key lane.<br/></param>
     /// <param name="key1">The second encoded key lane.<br/></param>
     /// <param name="key2">The third encoded key lane.<br/></param>
     /// <param name="key3">The fourth encoded key lane.<br/></param>
-    /// <param name="identities">The complete ordered terminal identity list.<br/></param>
-    /// <param name="start">The first identity index to project.<br/></param>
-    /// <param name="count">The number of identities to project.<br/></param>
-    private void AddTerminalIdentityChunk(long rootOffset, ulong key0, ulong key1, ulong key2, ulong key3, IReadOnlyList<ulong> identities, int start, int count)
+    /// <param name="shelfBytes">The retained pooled terminal identity shelf bytes.<br/></param>
+    private void AddTerminalIdentityChunk(long rootOffset, ulong key0, ulong key1, ulong key2, ulong key3, byte[] shelfBytes)
     {
-        byte[] shelfBytes = new byte[profile.ShelfExtentSize];
-        Fixed32Scalar8 shelf = new(shelfBytes, profile);
-        shelf.Initialize();
-        for (int i = 0; i < count; i++)
+        int itemCount = TerminalIdentity8ShelfLayout.ReadItemCount(shelfBytes);
+        if (itemCount == 0)
         {
-            Fixed32Scalar8InsertResult insert = shelf.Insert(key0, key1, key2, key3, identities[start + i], allowDuplicateKeys: true);
-            if (insert != Fixed32Scalar8InsertResult.Inserted)
-                throw new InvalidDataException($"Expected FS32-8 terminal cursor projection insert, got {insert}.");
+            ArrayPool<byte>.Shared.Return(shelfBytes, clearArray: false);
+            return;
         }
 
-        AddShelfRange(rootOffset, shelfBytes);
+        if (shelfCount == shelves.Length)
+            GrowShelves();
+        shelves[shelfCount] = shelfBytes;
+        shelfOffsets[shelfCount] = rootOffset;
+        startSlots[shelfCount] = 0;
+        endSlots[shelfCount] = itemCount;
+        terminalShelfFlags[shelfCount] = 1;
+        terminalKey0s[shelfCount] = key0;
+        terminalKey1s[shelfCount] = key1;
+        terminalKey2s[shelfCount] = key2;
+        terminalKey3s[shelfCount] = key3;
+        shelfCount++;
+        rowCount = checked(rowCount + itemCount);
     }
 
     /// <summary>
@@ -1049,18 +1208,38 @@ internal sealed class Fixed32Scalar8RangeReader : IDisposable
         long[] newShelfOffsets = ArrayPool<long>.Shared.Rent(newLength);
         int[] newStartSlots = ArrayPool<int>.Shared.Rent(newLength);
         int[] newEndSlots = ArrayPool<int>.Shared.Rent(newLength);
+        byte[] newTerminalShelfFlags = ArrayPool<byte>.Shared.Rent(newLength);
+        ulong[] newTerminalKey0s = ArrayPool<ulong>.Shared.Rent(newLength);
+        ulong[] newTerminalKey1s = ArrayPool<ulong>.Shared.Rent(newLength);
+        ulong[] newTerminalKey2s = ArrayPool<ulong>.Shared.Rent(newLength);
+        ulong[] newTerminalKey3s = ArrayPool<ulong>.Shared.Rent(newLength);
         Array.Copy(shelves, newShelves, shelfCount);
         shelfOffsets.AsSpan(0, shelfCount).CopyTo(newShelfOffsets);
         startSlots.AsSpan(0, shelfCount).CopyTo(newStartSlots);
         endSlots.AsSpan(0, shelfCount).CopyTo(newEndSlots);
+        terminalShelfFlags.AsSpan(0, shelfCount).CopyTo(newTerminalShelfFlags);
+        terminalKey0s.AsSpan(0, shelfCount).CopyTo(newTerminalKey0s);
+        terminalKey1s.AsSpan(0, shelfCount).CopyTo(newTerminalKey1s);
+        terminalKey2s.AsSpan(0, shelfCount).CopyTo(newTerminalKey2s);
+        terminalKey3s.AsSpan(0, shelfCount).CopyTo(newTerminalKey3s);
         ArrayPool<byte[]>.Shared.Return(shelves, clearArray: true);
         ArrayPool<long>.Shared.Return(shelfOffsets, clearArray: false);
         ArrayPool<int>.Shared.Return(startSlots, clearArray: false);
         ArrayPool<int>.Shared.Return(endSlots, clearArray: false);
+        ArrayPool<byte>.Shared.Return(terminalShelfFlags, clearArray: false);
+        ArrayPool<ulong>.Shared.Return(terminalKey0s, clearArray: false);
+        ArrayPool<ulong>.Shared.Return(terminalKey1s, clearArray: false);
+        ArrayPool<ulong>.Shared.Return(terminalKey2s, clearArray: false);
+        ArrayPool<ulong>.Shared.Return(terminalKey3s, clearArray: false);
         shelves = newShelves;
         shelfOffsets = newShelfOffsets;
         startSlots = newStartSlots;
         endSlots = newEndSlots;
+        terminalShelfFlags = newTerminalShelfFlags;
+        terminalKey0s = newTerminalKey0s;
+        terminalKey1s = newTerminalKey1s;
+        terminalKey2s = newTerminalKey2s;
+        terminalKey3s = newTerminalKey3s;
     }
 
     /// <summary>
@@ -1085,7 +1264,9 @@ internal sealed class Fixed32Scalar8RangeReader : IDisposable
             if (remaining < length)
             {
                 currentShelfIndex = i;
-                currentSlotIndex = startSlots[i] + remaining;
+                currentSlotIndex = profile.Descending
+                    ? endSlots[i] - 1 - remaining
+                    : startSlots[i] + remaining;
                 ordinal = targetOrdinal;
                 return;
             }
@@ -1100,7 +1281,7 @@ internal sealed class Fixed32Scalar8RangeReader : IDisposable
 
     /// <summary>
     /// Positions a descending traversal cursor at the supplied descending ordinal.<br/>
-    /// Shelf ranges are already retained in high-to-low route order, so the ordinal maps to each shelf's slot range from `end - 1` back toward `start`.<br/>
+    /// Shelf ranges are already retained in high-to-low route order; slot direction follows the shelf's persisted physical order.<br/>
     /// </summary>
     /// <param name="targetOrdinal">The zero-based ordinal in descending stream order.</param>
     private void PositionAtDescendingOrdinal(int targetOrdinal)
@@ -1112,7 +1293,9 @@ internal sealed class Fixed32Scalar8RangeReader : IDisposable
             if (remaining < length)
             {
                 currentShelfIndex = i;
-                currentSlotIndex = endSlots[i] - 1 - remaining;
+                currentSlotIndex = profile.Descending
+                    ? startSlots[i] + remaining
+                    : endSlots[i] - 1 - remaining;
                 ordinal = targetOrdinal;
                 return;
             }

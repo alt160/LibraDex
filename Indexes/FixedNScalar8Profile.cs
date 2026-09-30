@@ -22,7 +22,8 @@ internal readonly record struct FixedNScalar8Profile(
     int SlotRegionSize,
     int ItemRegionOffset,
     int ItemRegionSize,
-    int UnusedTailBytes)
+    int UnusedTailBytes,
+    bool Descending = false)
 {
     /// <summary>
     /// Creates a `FixedNScalar8` shelf profile from a fixed shelf extent size and fixed key byte width.<br/>
@@ -110,7 +111,8 @@ internal readonly record struct FixedNScalar16Profile(
     int SlotRegionSize,
     int ItemRegionOffset,
     int ItemRegionSize,
-    int UnusedTailBytes)
+    int UnusedTailBytes,
+    bool Descending = false)
 {
     /// <summary>
     /// Creates a `FixedNScalar16` shelf profile from a fixed shelf extent size and fixed key byte width.<br/>

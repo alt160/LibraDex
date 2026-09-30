@@ -6,12 +6,14 @@ internal sealed class Scalar16VarIdentityReadOnly : IVarIdentityReadOnlyShelf
 {
     private readonly ReadOnlyMemory<byte> bytes;
     private readonly byte[]? ownedBytes;
+    private readonly bool descending;
     private readonly uint[] recordOffsets;
     private readonly uint[] keyPrefixes;
 
     public Scalar16VarIdentityReadOnly(ReadOnlyMemory<byte> bytes, Scalar16VarIdentityProfile profile)
     {
         this.bytes = bytes;
+        descending = profile.Descending;
         IsValid = TryDecodeSlots(bytes.Span, profile, validateRecords: true, out recordOffsets, out keyPrefixes);
     }
 
@@ -30,10 +32,13 @@ internal sealed class Scalar16VarIdentityReadOnly : IVarIdentityReadOnlyShelf
     {
         this.bytes = bytes;
         ownedBytes = bytes;
+        descending = profile.Descending;
         IsValid = TryDecodeSlots(bytes, profile, validateRecords, out recordOffsets, out keyPrefixes);
     }
 
     public bool IsValid { get; }
+
+    internal bool IsDescending => descending;
 
     public int ItemCount => IsValid ? recordOffsets.Length : 0;
 
@@ -63,7 +68,7 @@ internal sealed class Scalar16VarIdentityReadOnly : IVarIdentityReadOnlyShelf
         {
             int middle = low + ((high - low) >> 1);
             int comparison = CompareSlotKey(localBytes, middle, prefix, encodedKeyHigh, encodedKeyLow);
-            if (comparison < 0)
+            if (descending ? comparison > 0 : comparison < 0)
             {
                 low = middle + 1;
             }
@@ -86,7 +91,7 @@ internal sealed class Scalar16VarIdentityReadOnly : IVarIdentityReadOnlyShelf
         {
             int middle = low + ((high - low) >> 1);
             int comparison = CompareSlotTuple(localBytes, middle, prefix, encodedKeyHigh, encodedKeyLow, identity);
-            if (comparison < 0)
+            if (descending ? comparison > 0 : comparison < 0)
             {
                 low = middle + 1;
             }
@@ -162,7 +167,8 @@ internal sealed class Scalar16VarIdentityReadOnly : IVarIdentityReadOnlyShelf
             Scalar16VarIdentityLayout.ReadMagic(bytes) != Scalar16VarIdentityLayout.Magic ||
             Scalar16VarIdentityLayout.ReadFormatVersion(bytes) != Scalar16VarIdentityLayout.FormatVersion ||
             Scalar16VarIdentityLayout.ReadHeaderSize(bytes) != Scalar16VarIdentityLayout.HeaderSize ||
-            Scalar16VarIdentityLayout.ReadShelfExtentSize(bytes) != profile.ShelfExtentSize)
+            Scalar16VarIdentityLayout.ReadShelfExtentSize(bytes) != profile.ShelfExtentSize ||
+            ((Scalar16VarIdentityLayout.ReadFlags(bytes) & Scalar16VarIdentityLayout.DescendingFlag) != 0) != profile.Descending)
         {
             return false;
         }

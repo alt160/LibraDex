@@ -12,6 +12,7 @@ public sealed class Catalog : IDisposable
 {
     private readonly LibraDexFileSession session;
     private readonly Dictionary<string, CatalogIdentityGroupBatchManager> groupBatchManagers = new(StringComparer.Ordinal);
+    private readonly Dictionary<int, ISharedLibraDexBatch> activeIndexBatches = [];
     private readonly Dictionary<string, CatalogIndexSetInverse> inverseIndexSets = new(StringComparer.Ordinal);
     private readonly Dictionary<string, IdentityLookupMode> identityLookupModes = new(StringComparer.Ordinal);
     private readonly Dictionary<string, object> singleKeyIdentityMaps = new(StringComparer.Ordinal);
@@ -180,7 +181,7 @@ public sealed class Catalog : IDisposable
     /// Creation fails if the target file already exists, preserving the explicit create/open split and avoiding accidental reuse of an unexpected file.<br/>
     /// </summary>
     /// <param name="path">The `.lbdx` catalog file path to create.</param>
-    /// <param name="options">Optional catalog options; currently reserved and empty by design.</param>
+    /// <param name="options">Optional catalog policy, including explicit version-two recoverable-format creation.<br/></param>
     /// <returns>A disposable catalog over the newly initialized file.</returns>
     public static Catalog Create(string path, CatalogOptions? options = null)
     {
@@ -201,7 +202,10 @@ public sealed class Catalog : IDisposable
             requiredPath,
             CreateDefaultDataKernelOptions(),
             CreateCatalogDeveloperMetadata(),
-            DataKernelTelemetryOptions.FromLevel(effectiveOptions.DiagnosticsLevel));
+            DataKernelTelemetryOptions.FromLevel(effectiveOptions.DiagnosticsLevel),
+            effectiveOptions.UseRecoverableFileFormat
+                ? SuperblockLayout.RecoverableFormatVersion
+                : SuperblockLayout.LegacyFormatVersion);
         return new Catalog(session, requiredPath, DataKernelBackingKind.File, effectiveOptions);
     }
 
@@ -210,7 +214,7 @@ public sealed class Catalog : IDisposable
     /// The catalog remains responsible for closing the underlying file session through `Close`, `Dispose`, or a `using` scope.<br/>
     /// </summary>
     /// <param name="path">The existing `.lbdx` catalog file path.</param>
-    /// <param name="options">Optional catalog options; currently reserved and empty by design.</param>
+    /// <param name="options">Optional catalog policy; recoverable-format creation policy never upgrades an existing file during open.<br/></param>
     /// <returns>A disposable catalog over the existing file.</returns>
     public static Catalog Open(string path, CatalogOptions? options = null)
     {
@@ -235,7 +239,7 @@ public sealed class Catalog : IDisposable
     /// This preserves explicit file-backed catalog lifetime while giving setup code a low-friction idempotent entry point.<br/>
     /// </summary>
     /// <param name="path">The `.lbdx` catalog file path to open or create.</param>
-    /// <param name="options">Optional catalog options; currently reserved and empty by design.</param>
+    /// <param name="options">Optional catalog policy applied to creation when the file is absent and to runtime behavior after open.<br/></param>
     /// <returns>A disposable catalog over the opened or newly initialized file.</returns>
     public static Catalog CreateOrOpen(string path, CatalogOptions? options = null)
     {
@@ -248,7 +252,7 @@ public sealed class Catalog : IDisposable
     /// Creates a new memory-backed catalog.<br/>
     /// Memory catalogs use the same catalog and index API shape as file-backed catalogs but do not have a durable reopen boundary.<br/>
     /// </summary>
-    /// <param name="options">Optional catalog options; currently reserved and empty by design.</param>
+    /// <param name="options">Optional catalog policy; file-format creation policy has no effect on volatile memory backing.<br/></param>
     /// <returns>A disposable process-local memory catalog.</returns>
     public static Catalog CreateMemory(CatalogOptions? options = null)
     {
@@ -627,6 +631,55 @@ public sealed class Catalog : IDisposable
     }
 
     /// <summary>
+    /// Registers the one index-owned durability batch that may mutate the supplied physical slots through another handle.<br/>
+    /// A maintained reversed projection shares the same publication boundary and is registered beside its primary slot.<br/>
+    /// </summary>
+    /// <param name="slotIndex">The primary physical index slot.<br/></param>
+    /// <param name="projectionSlotIndex">The optional maintained reversed-projection slot.<br/></param>
+    /// <param name="batch">The active batch that owns both slots.<br/></param>
+    internal void RegisterActiveIndexBatch(int slotIndex, int? projectionSlotIndex, ISharedLibraDexBatch batch)
+    {
+        ArgumentNullException.ThrowIfNull(batch);
+        if (activeIndexBatches.ContainsKey(slotIndex) ||
+            (projectionSlotIndex.HasValue && activeIndexBatches.ContainsKey(projectionSlotIndex.Value)))
+            throw new InvalidOperationException("An index durability batch is already registered for the target slot.");
+
+        activeIndexBatches.Add(slotIndex, batch);
+        if (projectionSlotIndex.HasValue)
+            activeIndexBatches.Add(projectionSlotIndex.Value, batch);
+    }
+
+    /// <summary>
+    /// Releases only the slot registrations still owned by the completing index batch.<br/>
+    /// </summary>
+    /// <param name="slotIndex">The primary physical index slot.<br/></param>
+    /// <param name="projectionSlotIndex">The optional maintained reversed-projection slot.<br/></param>
+    /// <param name="batch">The batch whose registrations are being released.<br/></param>
+    internal void UnregisterActiveIndexBatch(int slotIndex, int? projectionSlotIndex, ISharedLibraDexBatch batch)
+    {
+        if (activeIndexBatches.TryGetValue(slotIndex, out ISharedLibraDexBatch? current) && ReferenceEquals(current, batch))
+            activeIndexBatches.Remove(slotIndex);
+        if (projectionSlotIndex.HasValue &&
+            activeIndexBatches.TryGetValue(projectionSlotIndex.Value, out current) && ReferenceEquals(current, batch))
+            activeIndexBatches.Remove(projectionSlotIndex.Value);
+    }
+
+    /// <summary>
+    /// Makes the registered owner batch's cached writes visible to an exact mutation on another handle without publishing the session.<br/>
+    /// An unrelated slot returns false so its immediate-mutation guard remains in force.<br/>
+    /// </summary>
+    /// <param name="slotIndex">The physical slot being mutated.<br/></param>
+    /// <returns>True when the slot is owned by an active index batch and its cached writes have been staged.<br/></returns>
+    internal bool TryPrepareActiveIndexBatchMutation(int slotIndex)
+    {
+        if (!activeIndexBatches.TryGetValue(slotIndex, out ISharedLibraDexBatch? batch))
+            return false;
+
+        batch.PrepareForExternalMutation();
+        return true;
+    }
+
+    /// <summary>
     /// Atomically deactivates one logical catalog index and its owned physical projection companions.<br/>
     /// Runtime inverse, identity-lookup, and single-key caches are invalidated only after the durable directory commit succeeds.<br/>
     /// </summary>
@@ -819,9 +872,10 @@ public sealed class Catalog : IDisposable
             group,
             keyFamily,
             identityFamily,
-            logicalShape,
+            CreateLogicalShape(metadata),
             exactReversedProjection,
             options.DateTimeKeyEncoding,
+            metadata.SortOrder,
             options.ReadCacheMaxBytes,
             identityLookupMode);
     }
@@ -889,6 +943,7 @@ public sealed class Catalog : IDisposable
             logicalShape,
             exactReversedProjection,
             persistedMetadata?.DateTimeKeyEncoding ?? options.DateTimeKeyEncoding,
+            persistedMetadata?.SortOrder ?? options.SortOrder,
             options.ReadCacheMaxBytes,
             identityLookupMode);
     }
@@ -1102,13 +1157,14 @@ public sealed class Catalog : IDisposable
         }
 
         CatalogIndexMetadata metadata = CreateCompositeMetadata(shape, options ?? shape.ToIndexOptions());
+        LibraDexIndexShapeSpec createdShape = CreateLogicalShape(metadata) ?? shape;
         byte[] rootNode = LibraDexCompositeNodePageCodec.Encode(
-            shape,
+            createdShape,
             tier: 0,
             Array.Empty<object>(),
             Array.Empty<LibraDexCompositeNodeChildPage>());
         (long rootOffset, _) = session.CreateCompositeNodePageIndex(CreateGenericSlot(slotIndex, shape.Name), metadata, rootNode);
-        LibraDexRoutedCompositeIndex created = new(this, shape, session, slotIndex, rootOffset);
+        LibraDexRoutedCompositeIndex created = new(this, createdShape, session, slotIndex, rootOffset, metadata.SortOrder);
         lock (compositeIndexesSync)
             compositeIndexes.Add(slotIndex, created);
         return created;
@@ -1138,20 +1194,20 @@ public sealed class Catalog : IDisposable
             LibraDexRoutedCompositeIndex opened;
             if (!TryFindSlot(session, info.SlotIndex, out IndexDirectorySlotSnapshot slot))
             {
-                opened = new LibraDexRoutedCompositeIndex(this, shape, session, info.SlotIndex);
+                opened = new LibraDexRoutedCompositeIndex(this, shape, session, info.SlotIndex, sortOrder: info.SortOrder);
             }
             else if (session.TryReadCompositeNodePage(slot.RootRouterOffset, out _))
             {
-                opened = LibraDexRoutedCompositeIndex.OpenFromNodePages(this, shape, session, info.SlotIndex, slot.RootRouterOffset, info.ItemCount);
+                opened = LibraDexRoutedCompositeIndex.OpenFromNodePages(this, shape, session, info.SlotIndex, slot.RootRouterOffset, info.ItemCount, info.SortOrder);
             }
             else if (session.TryReadCompositeSnapshot(slot, out byte[] snapshot))
             {
                 IReadOnlyList<LibraDexCompositeEntry> entries = LibraDexCompositeSnapshotCodec.Decode(shape, snapshot);
-                opened = new LibraDexRoutedCompositeIndex(this, shape, session, info.SlotIndex, entries);
+                opened = new LibraDexRoutedCompositeIndex(this, shape, session, info.SlotIndex, entries, info.SortOrder);
             }
             else
             {
-                opened = new LibraDexRoutedCompositeIndex(this, shape, session, info.SlotIndex);
+                opened = new LibraDexRoutedCompositeIndex(this, shape, session, info.SlotIndex, sortOrder: info.SortOrder);
             }
 
             compositeIndexes.Add(info.SlotIndex, opened);
@@ -1159,12 +1215,12 @@ public sealed class Catalog : IDisposable
         }
     }
 
-    internal VarKeyScalar8Index CreateVarKeyScalar8Index(string name, int slotIndex, int maxKeyLength)
+    internal VarKeyScalar8Index CreateVarKeyScalar8Index(string name, int slotIndex, int maxKeyLength, LibraDexIndexSortOrder sortOrder = LibraDexIndexSortOrder.Ascending)
     {
-        return CreateVarKeyScalar8Index(name, slotIndex, maxKeyLength, metadata: null);
+        return CreateVarKeyScalar8Index(name, slotIndex, maxKeyLength, metadata: null, sortOrder);
     }
 
-    internal VarKeyScalar8Index CreateVarKeyScalar8Index(string name, int slotIndex, int maxKeyLength, CatalogIndexMetadata? metadata)
+    internal VarKeyScalar8Index CreateVarKeyScalar8Index(string name, int slotIndex, int maxKeyLength, CatalogIndexMetadata? metadata, LibraDexIndexSortOrder sortOrder = LibraDexIndexSortOrder.Ascending)
     {
         ThrowIfDisposed();
         if (TryFindSlot(session, slotIndex, out _))
@@ -1188,10 +1244,12 @@ public sealed class Catalog : IDisposable
                 maxKeyLength,
                 optimizerRouteFanout: 16,
                 policy);
-        return new VarKeyScalar8Index(session, handle, slotIndex, name, ownsSession: false);
+        return new VarKeyScalar8Index(session,
+            handle with { Descending = (metadata?.SortOrder ?? sortOrder) == LibraDexIndexSortOrder.Descending },
+            slotIndex, name, ownsSession: false);
     }
 
-    internal VarKeyScalar8Index OpenVarKeyScalar8Index(int slotIndex, int maxKeyLength)
+    internal VarKeyScalar8Index OpenVarKeyScalar8Index(int slotIndex, int maxKeyLength, LibraDexIndexSortOrder sortOrder = LibraDexIndexSortOrder.Ascending)
     {
         ThrowIfDisposed();
         if (!TryFindSlot(session, slotIndex, out IndexDirectorySlotSnapshot slot))
@@ -1206,7 +1264,8 @@ public sealed class Catalog : IDisposable
             VarLenOptimizerMaintenancePolicy.Automatic(
                 depthThreshold: 3,
                 shelfItemThreshold: 32,
-                hitThreshold: 12));
+                hitThreshold: 12),
+            Descending: sortOrder == LibraDexIndexSortOrder.Descending);
         handle.Validate();
         return new VarKeyScalar8Index(session, handle, slotIndex, slot.Name, ownsSession: false);
     }
@@ -1244,7 +1303,7 @@ public sealed class Catalog : IDisposable
             physicalMaxKeyLength,
             options);
         VarKeyScalar8Index inner = CreateVarKeyScalar8Index(name, slotIndex, physicalMaxKeyLength, metadata);
-        return new LibraDexVariableBlobScalar8Index<TIdentity>(this, group, name, inner, options.Keys);
+        return new LibraDexVariableBlobScalar8Index<TIdentity>(this, group, name, inner, options.Keys, options.SortOrder);
     }
 
     /// <summary>
@@ -1276,8 +1335,8 @@ public sealed class Catalog : IDisposable
         if (persistedMaxKeyBytes != maxKeyBytes)
             throw new InvalidDataException($"The persisted variable-blob payload cap is {persistedMaxKeyBytes} bytes, not {maxKeyBytes} bytes.");
 
-        VarKeyScalar8Index inner = OpenVarKeyScalar8Index(info.SlotIndex, info.VarKeyMaxKeyLength);
-        return new LibraDexVariableBlobScalar8Index<TIdentity>(this, info.Group, info.Name, inner, info.KeyContract);
+        VarKeyScalar8Index inner = OpenVarKeyScalar8Index(info.SlotIndex, info.VarKeyMaxKeyLength, info.SortOrder);
+        return new LibraDexVariableBlobScalar8Index<TIdentity>(this, info.Group, info.Name, inner, info.KeyContract, info.SortOrder);
     }
 
     internal LibraDexBigIntScalar8Index<TIdentity> CreateBigIntScalar8Index<TIdentity>(
@@ -1300,24 +1359,24 @@ public sealed class Catalog : IDisposable
             LibraDexScalarWidth identityWidth = LibraDexGenericScalarCodec<TIdentity>.ResolveWidth(null);
             if (identityWidth == LibraDexScalarWidth.Bytes8)
             {
-                FixedNScalar8Profile profile = FixedNScalar8Profile.Default64KiB(maxKeyLength);
+                FixedNScalar8Profile profile = FixedNScalar8Profile.Default64KiB(maxKeyLength) with { Descending = options.SortOrder == LibraDexIndexSortOrder.Descending };
                 (FixedNScalar8IndexHandle handle, _) = session.CreateFixedNScalar8RootRouterIndex(
                     CreateGenericSlot(slotIndex, name),
                     metadata,
                     profile);
                 FixedNScalar8Index inner = new(session, handle, slotIndex);
-                return new LibraDexBigIntScalar8Index<TIdentity>(this, group, name, inner, maxBytes, storage, options.Keys);
+                return new LibraDexBigIntScalar8Index<TIdentity>(this, group, name, inner, maxBytes, storage, options.Keys, options.SortOrder);
             }
 
             if (identityWidth == LibraDexScalarWidth.Bytes16)
             {
-                FixedNScalar16Profile profile = FixedNScalar16Profile.Default64KiB(maxKeyLength);
+                FixedNScalar16Profile profile = FixedNScalar16Profile.Default64KiB(maxKeyLength) with { Descending = options.SortOrder == LibraDexIndexSortOrder.Descending };
                 (FixedNScalar16IndexHandle handle, _) = session.CreateFixedNScalar16RootRouterIndex(
                     CreateGenericSlot(slotIndex, name),
                     metadata,
                     profile);
                 FixedNScalar16Index inner = new(session, handle, slotIndex);
-                return new LibraDexBigIntScalar8Index<TIdentity>(this, group, name, inner, maxBytes, storage, options.Keys);
+                return new LibraDexBigIntScalar8Index<TIdentity>(this, group, name, inner, maxBytes, storage, options.Keys, options.SortOrder);
             }
 
             throw new NotSupportedException("Fixed BigInt indexes require scalar-8 or scalar-16 identity types.");
@@ -1325,7 +1384,7 @@ public sealed class Catalog : IDisposable
         else
         {
             VarKeyScalar8Index inner = CreateVarKeyScalar8Index(name, slotIndex, maxKeyLength, metadata);
-            return new LibraDexBigIntScalar8Index<TIdentity>(this, group, name, inner, maxBytes, storage, options.Keys);
+            return new LibraDexBigIntScalar8Index<TIdentity>(this, group, name, inner, maxBytes, storage, options.Keys, options.SortOrder);
         }
     }
 
@@ -1363,26 +1422,26 @@ public sealed class Catalog : IDisposable
             LibraDexScalarWidth identityWidth = LibraDexGenericScalarCodec<TIdentity>.ResolveWidth(null);
             if (identityWidth == LibraDexScalarWidth.Bytes8)
             {
-                FixedNScalar8Profile profile = FixedNScalar8Profile.Default64KiB(info.VarKeyMaxKeyLength);
+                FixedNScalar8Profile profile = FixedNScalar8Profile.Default64KiB(info.VarKeyMaxKeyLength) with { Descending = info.SortOrder == LibraDexIndexSortOrder.Descending };
                 FixedNScalar8IndexHandle handle = session.OpenFixedNScalar8ShelfIndex(info.SlotIndex, profile);
                 FixedNScalar8Index inner = new(session, handle, info.SlotIndex);
-                return new LibraDexBigIntScalar8Index<TIdentity>(this, info.Group, info.Name, inner, maxBytes, expectedStorage, info.KeyContract);
+                return new LibraDexBigIntScalar8Index<TIdentity>(this, info.Group, info.Name, inner, maxBytes, expectedStorage, info.KeyContract, info.SortOrder);
             }
 
             if (identityWidth == LibraDexScalarWidth.Bytes16)
             {
-                FixedNScalar16Profile profile = FixedNScalar16Profile.Default64KiB(info.VarKeyMaxKeyLength);
+                FixedNScalar16Profile profile = FixedNScalar16Profile.Default64KiB(info.VarKeyMaxKeyLength) with { Descending = info.SortOrder == LibraDexIndexSortOrder.Descending };
                 FixedNScalar16IndexHandle handle = session.OpenFixedNScalar16ShelfIndex(info.SlotIndex, profile);
                 FixedNScalar16Index inner = new(session, handle, info.SlotIndex);
-                return new LibraDexBigIntScalar8Index<TIdentity>(this, info.Group, info.Name, inner, maxBytes, expectedStorage, info.KeyContract);
+                return new LibraDexBigIntScalar8Index<TIdentity>(this, info.Group, info.Name, inner, maxBytes, expectedStorage, info.KeyContract, info.SortOrder);
             }
 
             throw new NotSupportedException("Fixed BigInt indexes require scalar-8 or scalar-16 identity types.");
         }
         else
         {
-            VarKeyScalar8Index inner = OpenVarKeyScalar8Index(info.SlotIndex, info.VarKeyMaxKeyLength);
-            return new LibraDexBigIntScalar8Index<TIdentity>(this, info.Group, info.Name, inner, maxBytes, expectedStorage, info.KeyContract);
+            VarKeyScalar8Index inner = OpenVarKeyScalar8Index(info.SlotIndex, info.VarKeyMaxKeyLength, info.SortOrder);
+            return new LibraDexBigIntScalar8Index<TIdentity>(this, info.Group, info.Name, inner, maxBytes, expectedStorage, info.KeyContract, info.SortOrder);
         }
     }
 
@@ -1399,14 +1458,14 @@ public sealed class Catalog : IDisposable
         ValidateIdentityType(typeof(byte[]), CatalogIndexIdentityFamily.Blob, nameof(CreateBigIntVarIdentityIndex));
         LibraDexBigIntCodec.ValidateMaxBytes(maxBytes, nameof(maxBytes));
         int maxKeyLength = checked(maxBytes + 3);
-        FixedNVarIdentityProfile profile = FixedNVarIdentityProfile.Default64KiB(maxKeyLength, maxIdentityBytes);
+        FixedNVarIdentityProfile profile = FixedNVarIdentityProfile.Default64KiB(maxKeyLength, maxIdentityBytes) with { Descending = options.SortOrder == LibraDexIndexSortOrder.Descending };
         CatalogIndexMetadata metadata = CreateBigIntVarIdentityMetadata(group, name, maxKeyLength, maxIdentityBytes, options);
         (FixedNVarIdentityIndexHandle handle, _) = session.CreateFixedNVarIdentityRootRouterIndex(
             CreateGenericSlot(slotIndex, name),
             metadata,
             profile);
         FixedNVarIdentityIndex inner = new(session, handle, slotIndex);
-        return new LibraDexBigIntVarIdentityIndex(this, group, name, inner, maxBytes, maxIdentityBytes, options.Keys);
+        return new LibraDexBigIntVarIdentityIndex(this, group, name, inner, maxBytes, maxIdentityBytes, options.Keys, options.SortOrder);
     }
 
     internal LibraDexBigIntVarIdentityIndex OpenBigIntVarIdentityIndex(CatalogIndexInfo info)
@@ -1425,10 +1484,10 @@ public sealed class Catalog : IDisposable
 
         int maxBytes = info.VarKeyMaxKeyLength - 3;
         LibraDexBigIntCodec.ValidateMaxBytes(maxBytes, nameof(info.VarKeyMaxKeyLength));
-        FixedNVarIdentityProfile profile = FixedNVarIdentityProfile.Default64KiB(info.VarKeyMaxKeyLength, info.VarIdentityMaxLength);
+        FixedNVarIdentityProfile profile = FixedNVarIdentityProfile.Default64KiB(info.VarKeyMaxKeyLength, info.VarIdentityMaxLength) with { Descending = info.SortOrder == LibraDexIndexSortOrder.Descending };
         FixedNVarIdentityIndexHandle handle = new(info.RootRouterOffset, profile, IsRouted: true);
         FixedNVarIdentityIndex inner = new(session, handle, info.SlotIndex);
-        return new LibraDexBigIntVarIdentityIndex(this, info.Group, info.Name, inner, maxBytes, info.VarIdentityMaxLength, info.KeyContract);
+        return new LibraDexBigIntVarIdentityIndex(this, info.Group, info.Name, inner, maxBytes, info.VarIdentityMaxLength, info.KeyContract, info.SortOrder);
     }
 
     /// <summary>
@@ -1459,8 +1518,8 @@ public sealed class Catalog : IDisposable
         Scalar8VarIdentityProfile.Create(Scalar8VarIdentityProfile.Default8KiB.ShelfExtentSize, maxIdentityBytes);
         CatalogIndexMetadata metadata = CreateUInt64VarIdentityMetadata(group, name, maxIdentityBytes, options);
         (RouterSnapshot root, _) = session.CreateRootRouterIndex(CreateGenericSlot(slotIndex, name), metadata);
-        Scalar8VarIdentityIndex inner = new(session, slotIndex, name, root.Offset, maxIdentityBytes, ownsSession: false);
-        return new LibraDexUInt64VarIdentityIndex(this, group, name, inner, options.Keys);
+        Scalar8VarIdentityIndex inner = new(session, slotIndex, name, root.Offset, maxIdentityBytes, ownsSession: false, descending: options.SortOrder == LibraDexIndexSortOrder.Descending);
+        return new LibraDexUInt64VarIdentityIndex(this, group, name, inner, options.Keys, options.SortOrder);
     }
 
     /// <summary>
@@ -1482,8 +1541,8 @@ public sealed class Catalog : IDisposable
             throw new InvalidDataException("The persisted catalog entry is not a reopenable UInt64 variable-identity index.");
         }
 
-        Scalar8VarIdentityIndex inner = new(session, info.SlotIndex, info.Name, info.RootRouterOffset, info.VarIdentityMaxLength, ownsSession: false);
-        return new LibraDexUInt64VarIdentityIndex(this, info.Group, info.Name, inner, info.KeyContract);
+        Scalar8VarIdentityIndex inner = new(session, info.SlotIndex, info.Name, info.RootRouterOffset, info.VarIdentityMaxLength, ownsSession: false, descending: info.SortOrder == LibraDexIndexSortOrder.Descending);
+        return new LibraDexUInt64VarIdentityIndex(this, info.Group, info.Name, inner, info.KeyContract, info.SortOrder);
     }
 
     /// <summary>
@@ -1515,8 +1574,9 @@ public sealed class Catalog : IDisposable
 
         VarKeyVarIdentityProfile.Create(VarKeyVarIdentityProfile.Default8KiB.ShelfExtentSize, maxKeyBytes, maxIdentityBytes);
         CatalogIndexMetadata metadata = CreateVarKeyVarIdentityMetadata(group, name, maxKeyBytes, maxIdentityBytes, options);
-        (RouterSnapshot root, _) = session.CreateRootRouterIndex(CreateGenericSlot(slotIndex, name), metadata);
-        return new VarKeyVarIdentityIndex(session, slotIndex, name, root.Offset, maxKeyBytes, maxIdentityBytes, ownsSession: false);
+        bool descending = options.SortOrder == LibraDexIndexSortOrder.Descending;
+        (RouterSnapshot root, _) = session.CreateRootRouterIndex(CreateGenericSlot(slotIndex, name) with { Flags = descending ? VarKeyVarIdentityIndex.DescendingSlotFlag : (byte)0 }, metadata);
+        return new VarKeyVarIdentityIndex(session, slotIndex, name, root.Offset, maxKeyBytes, maxIdentityBytes, ownsSession: false, descending);
     }
 
     /// <summary>
@@ -1539,7 +1599,18 @@ public sealed class Catalog : IDisposable
             throw new InvalidDataException("The persisted catalog entry is not a reopenable raw VV index.");
         }
 
-        return new VarKeyVarIdentityIndex(session, info.SlotIndex, info.Name, info.RootRouterOffset, info.VarKeyMaxKeyLength, info.VarIdentityMaxLength, ownsSession: false);
+        if (!TryFindSlot(session, info.SlotIndex, out IndexDirectorySlotSnapshot slot))
+        {
+            throw new InvalidDataException("The persisted VV index directory slot is missing.");
+        }
+
+        bool descending = (slot.Flags & VarKeyVarIdentityIndex.DescendingSlotFlag) != 0;
+        if (descending != (info.SortOrder == LibraDexIndexSortOrder.Descending))
+        {
+            throw new InvalidDataException("The VV index directory sort direction disagrees with catalog metadata.");
+        }
+
+        return new VarKeyVarIdentityIndex(session, info.SlotIndex, info.Name, info.RootRouterOffset, info.VarKeyMaxKeyLength, info.VarIdentityMaxLength, ownsSession: false, descending);
     }
 
     /// <summary>
@@ -1754,8 +1825,10 @@ public sealed class Catalog : IDisposable
         int exactReversedProjectionSlotIndex = -1)
     {
         LibraDexProjectionDirectionSet directions = logicalShape?.Directions ?? LibraDexProjectionDirectionSet.Forward;
-        LibraDexIndexSortOrder sortOrder = logicalShape?.SortOrder ?? options.SortOrder;
+        LibraDexIndexSortOrder sortOrder = options.SortOrder;
         IReadOnlyList<LibraDexIndexProjectionSpec> projections = logicalShape?.Projections ?? Array.Empty<LibraDexIndexProjectionSpec>();
+        if (logicalShape is not null && logicalShape.SortOrder != sortOrder)
+            projections = projections.Select(projection => projection with { SortOrder = sortOrder }).ToArray();
         IReadOnlyList<LibraDexCompositeKeyPartSpec> compositeParts = logicalShape?.CompositeParts ?? Array.Empty<LibraDexCompositeKeyPartSpec>();
         int fixedKeyBytes = typeof(TKey) == typeof(byte[]) && keyWidth.HasValue
             ? checked((int)keyWidth.Value)
@@ -1828,8 +1901,10 @@ public sealed class Catalog : IDisposable
             options.DateKeys,
             options.DateTimeKeyEncoding,
             shape.Directions,
-            shape.SortOrder,
-            shape.Projections,
+            options.SortOrder,
+            shape.SortOrder == options.SortOrder
+                ? shape.Projections
+                : shape.Projections.Select(projection => projection with { SortOrder = options.SortOrder }).ToArray(),
             shape.CompositeParts,
             0,
             0,
@@ -1870,8 +1945,8 @@ public sealed class Catalog : IDisposable
             options.DateKeys,
             options.DateTimeKeyEncoding,
             LibraDexProjectionDirectionSet.Forward,
-            LibraDexIndexSortOrder.Ascending,
-            new[] { new LibraDexIndexProjectionSpec(projectionKind, LibraDexIndexByteDirection.Forward, LibraDexIndexSortOrder.Ascending) },
+            options.SortOrder,
+            new[] { new LibraDexIndexProjectionSpec(projectionKind, LibraDexIndexByteDirection.Forward, options.SortOrder) },
             Array.Empty<LibraDexCompositeKeyPartSpec>(),
             maxKeyLength,
             0,
@@ -1940,8 +2015,8 @@ public sealed class Catalog : IDisposable
             options.DateKeys,
             options.DateTimeKeyEncoding,
             LibraDexProjectionDirectionSet.Forward,
-            LibraDexIndexSortOrder.Ascending,
-            new[] { new LibraDexIndexProjectionSpec(LibraDexIndexProjectionKind.BigIntFixedVarIdentity, LibraDexIndexByteDirection.Forward, LibraDexIndexSortOrder.Ascending) },
+            options.SortOrder,
+            new[] { new LibraDexIndexProjectionSpec(LibraDexIndexProjectionKind.BigIntFixedVarIdentity, LibraDexIndexByteDirection.Forward, options.SortOrder) },
             Array.Empty<LibraDexCompositeKeyPartSpec>(),
             maxKeyLength,
             maxIdentityBytes,
@@ -1987,8 +2062,8 @@ public sealed class Catalog : IDisposable
             options.DateKeys,
             options.DateTimeKeyEncoding,
             LibraDexProjectionDirectionSet.Forward,
-            LibraDexIndexSortOrder.Ascending,
-            new[] { new LibraDexIndexProjectionSpec(LibraDexIndexProjectionKind.Exact, LibraDexIndexByteDirection.Forward, LibraDexIndexSortOrder.Ascending) },
+            options.SortOrder,
+            new[] { new LibraDexIndexProjectionSpec(LibraDexIndexProjectionKind.Exact, LibraDexIndexByteDirection.Forward, options.SortOrder) },
             Array.Empty<LibraDexCompositeKeyPartSpec>(),
             0,
             maxIdentityBytes,
@@ -2036,8 +2111,8 @@ public sealed class Catalog : IDisposable
             options.DateKeys,
             options.DateTimeKeyEncoding,
             LibraDexProjectionDirectionSet.Forward,
-            LibraDexIndexSortOrder.Ascending,
-            new[] { new LibraDexIndexProjectionSpec(LibraDexIndexProjectionKind.Exact, LibraDexIndexByteDirection.Forward, LibraDexIndexSortOrder.Ascending) },
+            options.SortOrder,
+            new[] { new LibraDexIndexProjectionSpec(LibraDexIndexProjectionKind.Exact, LibraDexIndexByteDirection.Forward, options.SortOrder) },
             Array.Empty<LibraDexCompositeKeyPartSpec>(),
             maxKeyBytes,
             maxIdentityBytes,
@@ -2084,8 +2159,8 @@ public sealed class Catalog : IDisposable
             options.DateKeys,
             options.DateTimeKeyEncoding,
             LibraDexProjectionDirectionSet.Forward,
-            LibraDexIndexSortOrder.Ascending,
-            new[] { new LibraDexIndexProjectionSpec(LibraDexIndexProjectionKind.VariableBlobExact, LibraDexIndexByteDirection.Forward, LibraDexIndexSortOrder.Ascending) },
+            options.SortOrder,
+            new[] { new LibraDexIndexProjectionSpec(LibraDexIndexProjectionKind.VariableBlobExact, LibraDexIndexByteDirection.Forward, options.SortOrder) },
             Array.Empty<LibraDexCompositeKeyPartSpec>(),
             physicalMaxKeyLength,
             0,

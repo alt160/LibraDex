@@ -205,6 +205,7 @@ internal static class Scalar8VarIdentity
         int newCount = checked(readOnly.ItemCount + 1);
         rewrittenBytes = new byte[targetProfile.ShelfExtentSize];
         Scalar8VarIdentityLayout.Initialize(rewrittenBytes, targetProfile);
+        Scalar8VarIdentityLayout.WriteFlags(rewrittenBytes, Scalar8VarIdentityLayout.ReadFlags(existingBytes) & 1U);
         int slotLength = checked(newCount * Scalar8VarIdentityLayout.SlotSize);
         int slotCapacityBytes = Scalar8VarIdentityLayout.ReadSlotCapacityBytes(rewrittenBytes);
         if (slotLength > slotCapacityBytes)

@@ -33,4 +33,13 @@ public sealed class CatalogOptions
     /// `Detailed` may enable fail-fast diagnostics for unsupported same-session write overlap; it does not queue writers or provide a published-reader view.<br/>
     /// </summary>
     public LibraDexDiagnosticsLevel DiagnosticsLevel { get; init; } = LibraDexDiagnosticsLevel.Off;
+
+    /// <summary>
+    /// Gets or initializes whether newly created file-backed catalogs use the version-two recoverable file format.<br/>
+    /// Version two stores structural-publication recovery state and its bounded redo image inside the catalog file so a closed-file copy or rename remains self-recovering.<br/>
+    /// The default is false to preserve version-one creation compatibility; this option never upgrades a catalog merely because it is opened.<br/>
+    /// Passing the option to explicit closed-file compaction creates the replacement in version two and therefore provides the deliberate version-one-to-version-two migration path.<br/>
+    /// Memory-backed catalogs retain the version-one byte shape because they have no file-lifecycle or power-loss boundary.<br/>
+    /// </summary>
+    public bool UseRecoverableFileFormat { get; init; }
 }

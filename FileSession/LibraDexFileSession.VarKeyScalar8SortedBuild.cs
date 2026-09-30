@@ -26,7 +26,8 @@ internal sealed partial class LibraDexFileSession
         ReadOnlySpan<VarKeyScalar8SortedTuple> tuples,
         bool allowDuplicateKeys,
         bool singleKeyPerIdentity,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool descending = false)
     {
         if (rootRouterOffset <= 0)
         {
@@ -67,7 +68,8 @@ internal sealed partial class LibraDexFileSession
             maxKeyLength,
             requestedRouteCount,
             new VarKeyScalar8SortedArraySource(sorted),
-            cancellationToken);
+            cancellationToken,
+            descending);
     }
 
     /// <summary>
@@ -92,7 +94,8 @@ internal sealed partial class LibraDexFileSession
         bool allowDuplicateKeys,
         bool singleKeyPerIdentity,
         bool identityMultiplicityAlreadyValidated,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool descending = false)
     {
         ArgumentNullException.ThrowIfNull(tuples);
         if (rootRouterOffset <= 0)
@@ -115,7 +118,8 @@ internal sealed partial class LibraDexFileSession
             maxKeyLength,
             requestedRouteCount,
             tuples,
-            cancellationToken);
+            cancellationToken,
+            descending);
     }
 
     /// <summary>
@@ -132,7 +136,8 @@ internal sealed partial class LibraDexFileSession
         int maxKeyLength,
         int requestedRouteCount,
         IVarKeyScalar8SortedTupleSource tuples,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool descending)
     {
         lock (writePublicationSync)
         {
@@ -190,7 +195,8 @@ internal sealed partial class LibraDexFileSession
                         start,
                         end,
                         maxKeyLength,
-                        requestedRouteCount);
+                        requestedRouteCount,
+                        descending);
                     if (replacement.RootPrefix != rootPrefix || rootTargets[rootPrefix] != 0)
                     {
                         throw new InvalidDataException("The VS8 sorted builder produced an invalid or duplicate root-prefix replacement.");

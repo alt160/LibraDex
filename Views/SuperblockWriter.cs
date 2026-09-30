@@ -22,7 +22,8 @@ internal ref struct SuperblockWriter
             indexDirectoryOffset,
             Guid.NewGuid(),
             DateTimeOffset.UtcNow.UtcTicks,
-            default);
+            default,
+            formatVersion: SuperblockLayout.LegacyFormatVersion);
     }
 
     public void Initialize(
@@ -31,11 +32,21 @@ internal ref struct SuperblockWriter
         Guid fileGuid,
         long createdUtcTicks,
         SuperblockDeveloperMetadata developerMetadata,
-        long allocationDirectoryOffset = 0)
+        long allocationDirectoryOffset = 0,
+        ushort formatVersion = SuperblockLayout.LegacyFormatVersion)
     {
+        if (formatVersion != SuperblockLayout.LegacyFormatVersion &&
+            formatVersion != SuperblockLayout.RecoverableFormatVersion)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(formatVersion),
+                formatVersion,
+                "The LibraDex superblock format version is not supported.");
+        }
+
         bytes.Clear();
         SuperblockLayout.WriteMagic(bytes, SuperblockLayout.Magic);
-        SuperblockLayout.WriteFormatVersion(bytes, SuperblockLayout.FormatVersion);
+        SuperblockLayout.WriteFormatVersion(bytes, formatVersion);
         SuperblockLayout.WriteHeaderSize(bytes, SuperblockLayout.Size);
         SuperblockLayout.WriteFlags(bytes, 0);
         SuperblockLayout.WriteReservedPrefixBytes(bytes, reservedPrefixBytes);

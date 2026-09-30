@@ -22,6 +22,7 @@ internal static class TerminalIdentityRootLayout
     public const int FormatVersionOffset = 4;
     public const int HeaderSizeOffset = 6;
     public const int ShapeOffset = 8;
+    public const int SortDirectionOffset = 9;
     public const int KeyLengthOffset = 12;
     public const int FirstShelfOffsetOffset = 16;
     public const int ShelfExtentSizeOffset = 24;

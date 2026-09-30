@@ -171,7 +171,7 @@ internal static partial class RawHarness
 
     /// <summary>
     /// Proves exact whole-catalog accounting for a Wherzit-shaped fixed/text catalog, including an empty-string key-state route.<br/>
-    /// Adding one unsupported wide-scalar shape must then retain the exact supported subtotal while suppressing catalog-wide unreachable bytes and amplification.<br/>
+    /// A supported wide-scalar shape must preserve complete accounting; adding one unsupported variable-blob shape must then retain the exact supported subtotal while suppressing catalog-wide unreachable bytes and amplification.<br/>
     /// </summary>
     /// <param name="path">Temporary file-backed catalog path.<br/></param>
     private static void ProveMixedStorageAssessmentBoundary(string path)
@@ -208,14 +208,22 @@ internal static partial class RawHarness
                     $"Mixed fixed/text storage assessment mismatch: complete={storage.IsComplete}, unsupported={storage.UnsupportedIndexCount}, fixed={storage.FixedTopologyComponents.Count}, text={storage.VariableTextTopologyComponents.Count}, physical={storage.PhysicalBytes}, reachable={storage.KnownReachableBytes}, unreachable={storage.UnreachableBytes}, amplification={storage.AmplificationRatio}.");
             }
 
-            using LibraDexIndex<Guid, ulong> unsupported = catalog.Indexes["mixed"]["wide"].GuidKeys<ulong>().Create();
-            ValidateGenericInsert(unsupported.Insert(Guid.NewGuid(), 99), "mixed storage assessment unsupported insert");
+            using LibraDexIndex<Guid, ulong> supportedWide = catalog.Indexes["mixed"]["wide"].GuidKeys<ulong>().Create();
+            ValidateGenericInsert(supportedWide.Insert(Guid.NewGuid(), 99), "mixed storage assessment supported wide insert");
+            LibraDexCatalogStorageAssessment completeWide = catalog.Maintenance.Assess().Storage;
+            if (!completeWide.IsComplete || completeWide.UnsupportedIndexCount != 0 ||
+                completeWide.FixedTopologyComponents.Count != 2 || completeWide.VariableTextTopologyComponents.Count != 1 ||
+                completeWide.UnreachableBytes is not >= 0 || completeWide.AmplificationRatio is not >= 1)
+                throw new InvalidDataException("Mixed fixed/text/wide storage assessment did not remain complete.");
+
+            using LibraDexVariableBlobScalar8Index<ulong> unsupported = catalog.Indexes["mixed"]["variableBlob"].Blob.Variable<ulong>(maxKeyBytes: 16).Create();
+            ValidateGenericInsert(unsupported.Insert(new byte[] { 1 }, 100), "mixed storage assessment unsupported variable-blob insert");
             LibraDexCatalogStorageAssessment partial = catalog.Maintenance.Assess().Storage;
             if (partial.IsComplete ||
                 partial.UnreachableBytes.HasValue ||
                 partial.AmplificationRatio.HasValue ||
                 partial.UnsupportedIndexCount != 1 ||
-                partial.FixedTopologyComponents.Count != 1 ||
+                partial.FixedTopologyComponents.Count != 2 ||
                 partial.VariableTextTopologyComponents.Count != 1 ||
                 partial.KnownReachableBytes <= partial.CatalogOverheadReachableBytes)
             {

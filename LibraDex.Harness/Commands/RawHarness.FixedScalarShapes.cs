@@ -4036,14 +4036,18 @@ internal static partial class RawHarness
 
     /// <summary>
     /// Validates the write shape for the first combined root-route to `SS16-8` shelf link commit.<br/>
-    /// The expected shape is one appended widened-key shelf extent plus one fixed root-router rewrite, with no `SetLength` syscall.<br/>
+    /// The expected shape includes the appended widened-key shelf, root-router rewrite, and allocator metadata pages staged by a controlled file extent.<br/>
     /// </summary>
     /// <param name="telemetry">The commit telemetry to validate.</param>
     /// <param name="profile">The `SS16-8` shelf profile used by the linked shelf.</param>
     /// <exception cref="InvalidDataException">Thrown when the commit shape drifts from the expected first integration shape.</exception>
     private static void ValidateScalar16Scalar8RouteLinkCommit(DataKernelCommitTelemetry telemetry, Scalar16Scalar8Profile profile)
     {
-        long expectedBytes = profile.ShelfExtentSize + RouterLayout.Size;
+        int allocatorMetadataPages = profile.ShelfExtentSize == RouterLayout.Size ? 1 :
+            profile.ShelfExtentSize > RouterLayout.Size &&
+            (profile.ShelfExtentSize & (profile.ShelfExtentSize - 1)) == 0 ? 2 : 0;
+        long expectedBytes = profile.ShelfExtentSize + RouterLayout.Size +
+            (long)allocatorMetadataPages * FileAllocationSegmentLayout.HeaderSize;
         if (telemetry.SetLengthCallCount != 0)
         {
             throw new InvalidDataException("SS16-8 routed shelf link used SetLength.");
@@ -4054,23 +4058,28 @@ internal static partial class RawHarness
             throw new InvalidDataException($"SS16-8 routed shelf link wrote {telemetry.BytesWritten} bytes instead of {expectedBytes}.");
         }
 
-        if (telemetry.WriteCallCount is < 1 or > 2)
+        if (telemetry.WriteCallCount < 1 + allocatorMetadataPages ||
+            telemetry.WriteCallCount > 2 + allocatorMetadataPages)
         {
-            throw new InvalidDataException($"SS16-8 routed shelf link expected one or two file write calls after gap coalescing, got {telemetry.WriteCallCount}.");
+            throw new InvalidDataException($"SS16-8 routed shelf link expected {1 + allocatorMetadataPages} to {2 + allocatorMetadataPages} file write calls after gap coalescing, got {telemetry.WriteCallCount}.");
         }
     }
 
 
     /// <summary>
     /// Validates the write shape for the first combined root-route to `FS32-8` shelf link commit.<br/>
-    /// The expected shape is one appended fixed-key shelf extent plus one fixed root-router rewrite, with no `SetLength` syscall.<br/>
+    /// The expected shape includes the appended fixed-key shelf, root-router rewrite, and allocator metadata pages staged by a controlled file extent.<br/>
     /// </summary>
     /// <param name="telemetry">The commit telemetry to validate.</param>
     /// <param name="profile">The `FS32-8` shelf profile used by the linked shelf.</param>
     /// <exception cref="InvalidDataException">Thrown when the commit shape drifts from the expected first integration shape.</exception>
     private static void ValidateFixed32Scalar8RouteLinkCommit(DataKernelCommitTelemetry telemetry, Fixed32Scalar8Profile profile)
     {
-        long expectedBytes = profile.ShelfExtentSize + RouterLayout.Size;
+        int allocatorMetadataPages = profile.ShelfExtentSize == RouterLayout.Size ? 1 :
+            profile.ShelfExtentSize > RouterLayout.Size &&
+            (profile.ShelfExtentSize & (profile.ShelfExtentSize - 1)) == 0 ? 2 : 0;
+        long expectedBytes = profile.ShelfExtentSize + RouterLayout.Size +
+            (long)allocatorMetadataPages * FileAllocationSegmentLayout.HeaderSize;
         if (telemetry.SetLengthCallCount != 0)
         {
             throw new InvalidDataException("FS32-8 routed shelf link used SetLength.");
@@ -4081,23 +4090,28 @@ internal static partial class RawHarness
             throw new InvalidDataException($"FS32-8 routed shelf link wrote {telemetry.BytesWritten} bytes instead of {expectedBytes}.");
         }
 
-        if (telemetry.WriteCallCount is < 1 or > 2)
+        if (telemetry.WriteCallCount < 1 + allocatorMetadataPages ||
+            telemetry.WriteCallCount > 2 + allocatorMetadataPages)
         {
-            throw new InvalidDataException($"FS32-8 routed shelf link expected one or two file write calls after gap coalescing, got {telemetry.WriteCallCount}.");
+            throw new InvalidDataException($"FS32-8 routed shelf link expected {1 + allocatorMetadataPages} to {2 + allocatorMetadataPages} file write calls after gap coalescing, got {telemetry.WriteCallCount}.");
         }
     }
 
 
     /// <summary>
     /// Validates the write shape for the first combined root-route to `SS8-16` shelf link commit.<br/>
-    /// The expected shape is one appended widened-identity shelf extent plus one fixed root-router rewrite, with no `SetLength` syscall.<br/>
+    /// The expected shape includes the appended widened-identity shelf, root-router rewrite, and allocator metadata pages staged by a controlled file extent.<br/>
     /// </summary>
     /// <param name="telemetry">The commit telemetry to validate.</param>
     /// <param name="profile">The `SS8-16` shelf profile used by the linked shelf.</param>
     /// <exception cref="InvalidDataException">Thrown when the commit shape drifts from the expected first integration shape.</exception>
     private static void ValidateScalar8Scalar16RouteLinkCommit(DataKernelCommitTelemetry telemetry, Scalar8Scalar16Profile profile)
     {
-        long expectedBytes = profile.ShelfExtentSize + RouterLayout.Size;
+        int allocatorMetadataPages = profile.ShelfExtentSize == RouterLayout.Size ? 1 :
+            profile.ShelfExtentSize > RouterLayout.Size &&
+            (profile.ShelfExtentSize & (profile.ShelfExtentSize - 1)) == 0 ? 2 : 0;
+        long expectedBytes = profile.ShelfExtentSize + RouterLayout.Size +
+            (long)allocatorMetadataPages * FileAllocationSegmentLayout.HeaderSize;
         if (telemetry.SetLengthCallCount != 0)
         {
             throw new InvalidDataException("SS8-16 routed shelf link used SetLength.");
@@ -4108,23 +4122,28 @@ internal static partial class RawHarness
             throw new InvalidDataException($"SS8-16 routed shelf link wrote {telemetry.BytesWritten} bytes instead of {expectedBytes}.");
         }
 
-        if (telemetry.WriteCallCount is < 1 or > 2)
+        if (telemetry.WriteCallCount < 1 + allocatorMetadataPages ||
+            telemetry.WriteCallCount > 2 + allocatorMetadataPages)
         {
-            throw new InvalidDataException($"SS8-16 routed shelf link expected one or two file write calls after gap coalescing, got {telemetry.WriteCallCount}.");
+            throw new InvalidDataException($"SS8-16 routed shelf link expected {1 + allocatorMetadataPages} to {2 + allocatorMetadataPages} file write calls after gap coalescing, got {telemetry.WriteCallCount}.");
         }
     }
 
 
     /// <summary>
     /// Validates the write shape for the first combined root-route to `SS16-16` shelf link commit.<br/>
-    /// The expected shape is one appended widened-key and widened-identity shelf extent plus one fixed root-router rewrite, with no `SetLength` syscall.<br/>
+    /// The expected shape includes the appended widened-key/identity shelf, root-router rewrite, and allocator metadata pages staged by a controlled file extent.<br/>
     /// </summary>
     /// <param name="telemetry">The commit telemetry to validate.</param>
     /// <param name="profile">The `SS16-16` shelf profile used by the linked shelf.</param>
     /// <exception cref="InvalidDataException">Thrown when the commit shape drifts from the expected first integration shape.</exception>
     private static void ValidateScalar16Scalar16RouteLinkCommit(DataKernelCommitTelemetry telemetry, Scalar16Scalar16Profile profile)
     {
-        long expectedBytes = profile.ShelfExtentSize + RouterLayout.Size;
+        int allocatorMetadataPages = profile.ShelfExtentSize == RouterLayout.Size ? 1 :
+            profile.ShelfExtentSize > RouterLayout.Size &&
+            (profile.ShelfExtentSize & (profile.ShelfExtentSize - 1)) == 0 ? 2 : 0;
+        long expectedBytes = profile.ShelfExtentSize + RouterLayout.Size +
+            (long)allocatorMetadataPages * FileAllocationSegmentLayout.HeaderSize;
         if (telemetry.SetLengthCallCount != 0)
         {
             throw new InvalidDataException("SS16-16 routed shelf link used SetLength.");
@@ -4135,9 +4154,10 @@ internal static partial class RawHarness
             throw new InvalidDataException($"SS16-16 routed shelf link wrote {telemetry.BytesWritten} bytes instead of {expectedBytes}.");
         }
 
-        if (telemetry.WriteCallCount is < 1 or > 2)
+        if (telemetry.WriteCallCount < 1 + allocatorMetadataPages ||
+            telemetry.WriteCallCount > 2 + allocatorMetadataPages)
         {
-            throw new InvalidDataException($"SS16-16 routed shelf link expected one or two file write calls after gap coalescing, got {telemetry.WriteCallCount}.");
+            throw new InvalidDataException($"SS16-16 routed shelf link expected {1 + allocatorMetadataPages} to {2 + allocatorMetadataPages} file write calls after gap coalescing, got {telemetry.WriteCallCount}.");
         }
     }
 
@@ -4148,10 +4168,12 @@ internal static partial class RawHarness
     /// </summary>
     /// <param name="telemetry">The commit telemetry to validate.</param>
     /// <param name="profile">The `SS8-8` shelf profile used by the linked shelf.</param>
+    /// <param name="allocatorMetadataPages">The exact count of allocator directory or segment-header pages rewritten by this fixture.</param>
     /// <exception cref="InvalidDataException">Thrown when the commit shape drifts from the expected first integration shape.</exception>
-    private static void ValidateScalar8Scalar8RouteLinkCommit(DataKernelCommitTelemetry telemetry, Scalar8Scalar8Profile profile)
+    private static void ValidateScalar8Scalar8RouteLinkCommit(DataKernelCommitTelemetry telemetry, Scalar8Scalar8Profile profile, int allocatorMetadataPages = 0)
     {
-        long expectedBytes = profile.ShelfExtentSize + RouterLayout.Size;
+        long expectedBytes = profile.ShelfExtentSize + RouterLayout.Size +
+            (long)allocatorMetadataPages * FileAllocationSegmentLayout.HeaderSize;
         if (telemetry.SetLengthCallCount != 0)
         {
             throw new InvalidDataException("SS8-8 routed shelf link used SetLength.");
@@ -4162,9 +4184,10 @@ internal static partial class RawHarness
             throw new InvalidDataException($"SS8-8 routed shelf link wrote {telemetry.BytesWritten} bytes instead of {expectedBytes}.");
         }
 
-        if (telemetry.WriteCallCount is < 1 or > 2)
+        if (telemetry.WriteCallCount < 1 + allocatorMetadataPages ||
+            telemetry.WriteCallCount > 2 + allocatorMetadataPages)
         {
-            throw new InvalidDataException($"SS8-8 routed shelf link expected one or two file write calls after gap coalescing, got {telemetry.WriteCallCount}.");
+            throw new InvalidDataException($"SS8-8 routed shelf link expected {1 + allocatorMetadataPages} to {2 + allocatorMetadataPages} file write calls after gap coalescing, got {telemetry.WriteCallCount}.");
         }
     }
 
@@ -4249,14 +4272,17 @@ internal static partial class RawHarness
 
     /// <summary>
     /// Validates the write shape for a rooted `FS32-8` split where one existing shelf is rewritten, one new shelf is appended, and one root-router extent is rewritten.<br/>
-    /// The current physical shape may write-combine the adjacent root-router, left-shelf, and right-shelf extents, so the backing syscall count is allowed to be one or two for three logical extents.<br/>
+    /// The expected bytes include one allocator segment-header rewrite when the appended shelf uses a controlled extent class.<br/>
     /// </summary>
     /// <param name="telemetry">The commit telemetry to validate.</param>
     /// <param name="profile">The `FS32-8` shelf profile used by the rewritten and appended shelves.</param>
     /// <exception cref="InvalidDataException">Thrown when the commit shape drifts from the expected rooted split mutation shape.</exception>
     private static void ValidateFixed32Scalar8RouteSplitCommit(DataKernelCommitTelemetry telemetry, Fixed32Scalar8Profile profile)
     {
-        long expectedBytes = (profile.ShelfExtentSize * 2L) + RouterLayout.Size;
+        int allocatorMetadataPages = profile.ShelfExtentSize >= RouterLayout.Size &&
+            (profile.ShelfExtentSize & (profile.ShelfExtentSize - 1)) == 0 ? 1 : 0;
+        long expectedBytes = (profile.ShelfExtentSize * 2L) + RouterLayout.Size +
+            (long)allocatorMetadataPages * FileAllocationSegmentLayout.HeaderSize;
         if (telemetry.SetLengthCallCount != 0)
         {
             throw new InvalidDataException("FS32-8 routed split used SetLength.");
@@ -4267,9 +4293,9 @@ internal static partial class RawHarness
             throw new InvalidDataException($"FS32-8 routed split wrote {telemetry.BytesWritten} bytes instead of {expectedBytes}.");
         }
 
-        if (telemetry.WriteCallCount is < 1 or > 2)
+        if (allocatorMetadataPages == 0 ? telemetry.WriteCallCount is < 1 or > 3 : telemetry.WriteCallCount != 4)
         {
-            throw new InvalidDataException($"FS32-8 routed split expected one or two write-combined file write calls, got {telemetry.WriteCallCount}.");
+            throw new InvalidDataException($"FS32-8 routed split expected {(allocatorMetadataPages == 0 ? "one to three" : "four")} file write calls, got {telemetry.WriteCallCount}.");
         }
     }
 
@@ -4328,14 +4354,17 @@ internal static partial class RawHarness
 
     /// <summary>
     /// Validates the write shape for a rooted `SS8-8` split where one existing shelf is rewritten, one new shelf is appended, and one root-router extent is rewritten.<br/>
-    /// The current physical shape may write-combine the adjacent root-router, left-shelf, and right-shelf extents, so the backing syscall count is allowed to be one or two for three logical extents.<br/>
+    /// The expected bytes include the allocator metadata page writes supplied by the fixture.<br/>
     /// </summary>
     /// <param name="telemetry">The commit telemetry to validate.</param>
     /// <param name="profile">The `SS8-8` shelf profile used by the rewritten and appended shelves.</param>
+    /// <param name="allocatorMetadataPages">The exact count of allocator metadata page writes in the commit.<br/></param>
+    /// <param name="expectedWriteCalls">An exact file-write count for a fixture with allocator phase writes, or zero for the legacy coalesced range.<br/></param>
     /// <exception cref="InvalidDataException">Thrown when the commit shape drifts from the expected rooted split mutation shape.</exception>
-    private static void ValidateScalar8Scalar8RouteSplitCommit(DataKernelCommitTelemetry telemetry, Scalar8Scalar8Profile profile)
+    private static void ValidateScalar8Scalar8RouteSplitCommit(DataKernelCommitTelemetry telemetry, Scalar8Scalar8Profile profile, int allocatorMetadataPages = 0, int expectedWriteCalls = 0)
     {
-        long expectedBytes = (profile.ShelfExtentSize * 2L) + RouterLayout.Size;
+        long expectedBytes = (profile.ShelfExtentSize * 2L) + RouterLayout.Size +
+            (long)allocatorMetadataPages * FileAllocationSegmentLayout.HeaderSize;
         if (telemetry.SetLengthCallCount != 0)
         {
             throw new InvalidDataException("SS8-8 routed split used SetLength.");
@@ -4346,23 +4375,26 @@ internal static partial class RawHarness
             throw new InvalidDataException($"SS8-8 routed split wrote {telemetry.BytesWritten} bytes instead of {expectedBytes}.");
         }
 
-        if (telemetry.WriteCallCount is < 1 or > 2)
+        if (expectedWriteCalls == 0 ? telemetry.WriteCallCount is < 1 or > 2 : telemetry.WriteCallCount != expectedWriteCalls)
         {
-            throw new InvalidDataException($"SS8-8 routed split expected one or two write-combined file write calls, got {telemetry.WriteCallCount}.");
+            throw new InvalidDataException($"SS8-8 routed split expected {(expectedWriteCalls == 0 ? "one or two" : expectedWriteCalls.ToString())} file write calls, got {telemetry.WriteCallCount}.");
         }
     }
 
 
     /// <summary>
     /// Validates the write shape for a rooted `SS16-8` split where one existing shelf is rewritten, one new shelf is appended, and one root-router extent is rewritten.<br/>
-    /// The current physical shape may write-combine the adjacent root-router, left-shelf, and right-shelf extents, so the backing syscall count is allowed to be one or two for three logical extents.<br/>
+    /// The expected bytes include one allocator segment-header rewrite when the appended shelf uses a controlled extent class.<br/>
     /// </summary>
     /// <param name="telemetry">The commit telemetry to validate.</param>
     /// <param name="profile">The `SS16-8` shelf profile used by the rewritten and appended shelves.</param>
     /// <exception cref="InvalidDataException">Thrown when the commit shape drifts from the expected rooted split mutation shape.</exception>
     private static void ValidateScalar16Scalar8RouteSplitCommit(DataKernelCommitTelemetry telemetry, Scalar16Scalar8Profile profile)
     {
-        long expectedBytes = (profile.ShelfExtentSize * 2L) + RouterLayout.Size;
+        int allocatorMetadataPages = profile.ShelfExtentSize >= RouterLayout.Size &&
+            (profile.ShelfExtentSize & (profile.ShelfExtentSize - 1)) == 0 ? 1 : 0;
+        long expectedBytes = (profile.ShelfExtentSize * 2L) + RouterLayout.Size +
+            (long)allocatorMetadataPages * FileAllocationSegmentLayout.HeaderSize;
         if (telemetry.SetLengthCallCount != 0)
         {
             throw new InvalidDataException("SS16-8 routed split used SetLength.");
@@ -4373,23 +4405,26 @@ internal static partial class RawHarness
             throw new InvalidDataException($"SS16-8 routed split wrote {telemetry.BytesWritten} bytes instead of {expectedBytes}.");
         }
 
-        if (telemetry.WriteCallCount is < 1 or > 2)
+        if (allocatorMetadataPages == 0 ? telemetry.WriteCallCount is < 1 or > 2 : telemetry.WriteCallCount != 4)
         {
-            throw new InvalidDataException($"SS16-8 routed split expected one or two write-combined file write calls, got {telemetry.WriteCallCount}.");
+            throw new InvalidDataException($"SS16-8 routed split expected {(allocatorMetadataPages == 0 ? "one or two" : "four")} file write calls, got {telemetry.WriteCallCount}.");
         }
     }
 
 
     /// <summary>
     /// Validates the write shape for a rooted `SS8-16` split where one existing shelf is rewritten, one new shelf is appended, and one root-router extent is rewritten.<br/>
-    /// The current physical shape may write-combine the adjacent root-router, left-shelf, and right-shelf extents, so the backing syscall count is allowed to be one or two for three logical extents.<br/>
+    /// The expected bytes include one allocator segment-header rewrite when the appended shelf uses a controlled extent class.<br/>
     /// </summary>
     /// <param name="telemetry">The commit telemetry to validate.</param>
     /// <param name="profile">The `SS8-16` shelf profile used by the rewritten and appended shelves.</param>
     /// <exception cref="InvalidDataException">Thrown when the commit shape drifts from the expected rooted split mutation shape.</exception>
     private static void ValidateScalar8Scalar16RouteSplitCommit(DataKernelCommitTelemetry telemetry, Scalar8Scalar16Profile profile)
     {
-        long expectedBytes = (profile.ShelfExtentSize * 2L) + RouterLayout.Size;
+        int allocatorMetadataPages = profile.ShelfExtentSize >= RouterLayout.Size &&
+            (profile.ShelfExtentSize & (profile.ShelfExtentSize - 1)) == 0 ? 1 : 0;
+        long expectedBytes = (profile.ShelfExtentSize * 2L) + RouterLayout.Size +
+            (long)allocatorMetadataPages * FileAllocationSegmentLayout.HeaderSize;
         if (telemetry.SetLengthCallCount != 0)
         {
             throw new InvalidDataException("SS8-16 routed split used SetLength.");
@@ -4400,23 +4435,26 @@ internal static partial class RawHarness
             throw new InvalidDataException($"SS8-16 routed split wrote {telemetry.BytesWritten} bytes instead of {expectedBytes}.");
         }
 
-        if (telemetry.WriteCallCount is < 1 or > 2)
+        if (allocatorMetadataPages == 0 ? telemetry.WriteCallCount is < 1 or > 2 : telemetry.WriteCallCount != 4)
         {
-            throw new InvalidDataException($"SS8-16 routed split expected one or two write-combined file write calls, got {telemetry.WriteCallCount}.");
+            throw new InvalidDataException($"SS8-16 routed split expected {(allocatorMetadataPages == 0 ? "one or two" : "four")} file write calls, got {telemetry.WriteCallCount}.");
         }
     }
 
 
     /// <summary>
     /// Validates the write shape for a rooted `SS16-16` split where one existing shelf is rewritten, one new shelf is appended, and one root-router extent is rewritten.<br/>
-    /// The current physical shape may write-combine the adjacent root-router, left-shelf, and right-shelf extents, so the backing syscall count is allowed to be one or two for three logical extents.<br/>
+    /// The expected bytes include one allocator segment-header rewrite when the appended shelf uses a controlled extent class.<br/>
     /// </summary>
     /// <param name="telemetry">The commit telemetry to validate.</param>
     /// <param name="profile">The `SS16-16` shelf profile used by the rewritten and appended shelves.</param>
     /// <exception cref="InvalidDataException">Thrown when the commit shape drifts from the expected rooted split mutation shape.</exception>
     private static void ValidateScalar16Scalar16RouteSplitCommit(DataKernelCommitTelemetry telemetry, Scalar16Scalar16Profile profile)
     {
-        long expectedBytes = (profile.ShelfExtentSize * 2L) + RouterLayout.Size;
+        int allocatorMetadataPages = profile.ShelfExtentSize >= RouterLayout.Size &&
+            (profile.ShelfExtentSize & (profile.ShelfExtentSize - 1)) == 0 ? 1 : 0;
+        long expectedBytes = (profile.ShelfExtentSize * 2L) + RouterLayout.Size +
+            (long)allocatorMetadataPages * FileAllocationSegmentLayout.HeaderSize;
         if (telemetry.SetLengthCallCount != 0)
         {
             throw new InvalidDataException("SS16-16 routed split used SetLength.");
@@ -4427,9 +4465,9 @@ internal static partial class RawHarness
             throw new InvalidDataException($"SS16-16 routed split wrote {telemetry.BytesWritten} bytes instead of {expectedBytes}.");
         }
 
-        if (telemetry.WriteCallCount is < 1 or > 2)
+        if (allocatorMetadataPages == 0 ? telemetry.WriteCallCount is < 1 or > 2 : telemetry.WriteCallCount != 4)
         {
-            throw new InvalidDataException($"SS16-16 routed split expected one or two write-combined file write calls, got {telemetry.WriteCallCount}.");
+            throw new InvalidDataException($"SS16-16 routed split expected {(allocatorMetadataPages == 0 ? "one or two" : "four")} file write calls, got {telemetry.WriteCallCount}.");
         }
     }
 
@@ -4441,10 +4479,12 @@ internal static partial class RawHarness
     /// <param name="telemetry">The commit telemetry to validate.</param>
     /// <param name="profile">The `SS8-8` shelf profile used by the appended replacement shelves.</param>
     /// <param name="additionalRouterPages">The exact number of appended intermediate router pages beyond the rewritten source router.<br/></param>
+    /// <param name="allocatorMetadataPages">The exact count of allocator metadata page writes in the commit.<br/></param>
     /// <exception cref="InvalidDataException">Thrown when the commit shape drifts from the expected transform split mutation shape.</exception>
-    private static void ValidateScalar8Scalar8TransformCommit(DataKernelCommitTelemetry telemetry, Scalar8Scalar8Profile profile, int additionalRouterPages = 0)
+    private static void ValidateScalar8Scalar8TransformCommit(DataKernelCommitTelemetry telemetry, Scalar8Scalar8Profile profile, int additionalRouterPages = 0, int allocatorMetadataPages = 0)
     {
-        long expectedBytes = (profile.ShelfExtentSize * 2L) + (RouterLayout.Size * (1L + additionalRouterPages));
+        long expectedBytes = (profile.ShelfExtentSize * 2L) + (RouterLayout.Size * (1L + additionalRouterPages)) +
+            (long)allocatorMetadataPages * FileAllocationSegmentLayout.HeaderSize;
         if (telemetry.SetLengthCallCount != 0)
         {
             throw new InvalidDataException("SS8-8 transform split used SetLength.");
@@ -4455,16 +4495,16 @@ internal static partial class RawHarness
             throw new InvalidDataException($"SS8-8 transform split wrote {telemetry.BytesWritten} bytes instead of {expectedBytes}.");
         }
 
-        if (telemetry.WriteCallCount != 2)
+        if (telemetry.WriteCallCount != 2 + allocatorMetadataPages)
         {
-            throw new InvalidDataException($"SS8-8 transform split expected two file write calls, got {telemetry.WriteCallCount}.");
+            throw new InvalidDataException($"SS8-8 transform split expected {2 + allocatorMetadataPages} file write calls, got {telemetry.WriteCallCount}.");
         }
     }
 
 
     /// <summary>
     /// Validates the write shape for a same-root-prefix `SS16-8` split where the old shelf offset is rewritten as a child router and two replacement shelves are appended.<br/>
-    /// The parent root router must not be rewritten; the two appended widened-key shelves are contiguous and should be write-combined by `DataKernel`.<br/>
+    /// The parent root router must not be rewritten; allocator segment-header rewrites are counted for controlled replacement shelves and any appended router class.<br/>
     /// </summary>
     /// <param name="telemetry">The commit telemetry to validate.</param>
     /// <param name="profile">The `SS16-8` shelf profile used by the appended replacement shelves.</param>
@@ -4472,7 +4512,11 @@ internal static partial class RawHarness
     /// <exception cref="InvalidDataException">Thrown when the commit shape drifts from the expected transform split mutation shape.</exception>
     private static void ValidateScalar16Scalar8TransformCommit(DataKernelCommitTelemetry telemetry, Scalar16Scalar8Profile profile, int additionalRouterPages = 0)
     {
-        long expectedBytes = (profile.ShelfExtentSize * 2L) + (RouterLayout.Size * (1L + additionalRouterPages));
+        int allocatorMetadataPages = (profile.ShelfExtentSize >= RouterLayout.Size &&
+            (profile.ShelfExtentSize & (profile.ShelfExtentSize - 1)) == 0 ? 1 : 0) +
+            (additionalRouterPages > 0 && profile.ShelfExtentSize != RouterLayout.Size ? 1 : 0);
+        long expectedBytes = (profile.ShelfExtentSize * 2L) + (RouterLayout.Size * (1L + additionalRouterPages)) +
+            (long)allocatorMetadataPages * FileAllocationSegmentLayout.HeaderSize;
         if (telemetry.SetLengthCallCount != 0)
         {
             throw new InvalidDataException("SS16-8 transform split used SetLength.");
@@ -4483,16 +4527,16 @@ internal static partial class RawHarness
             throw new InvalidDataException($"SS16-8 transform split wrote {telemetry.BytesWritten} bytes instead of {expectedBytes}.");
         }
 
-        if (telemetry.WriteCallCount is < 1 or > 2)
+        if (telemetry.WriteCallCount != 2 + allocatorMetadataPages)
         {
-            throw new InvalidDataException($"SS16-8 transform split expected one or two file write calls, got {telemetry.WriteCallCount}.");
+            throw new InvalidDataException($"SS16-8 transform split expected {2 + allocatorMetadataPages} file write calls, got {telemetry.WriteCallCount}.");
         }
     }
 
 
     /// <summary>
     /// Validates the write shape for a same-root-prefix `FS32-8` split where the old shelf offset is rewritten as a child router and two replacement shelves are appended.<br/>
-    /// The parent root router must not be rewritten; the two appended fixed-32-byte-key shelves are contiguous and should be write-combined by `DataKernel`.<br/>
+    /// The parent root router must not be rewritten; allocator segment-header rewrites are counted for controlled replacement shelves and any appended router class.<br/>
     /// </summary>
     /// <param name="telemetry">The commit telemetry to validate.</param>
     /// <param name="profile">The `FS32-8` shelf profile used by the appended replacement shelves.</param>
@@ -4500,7 +4544,11 @@ internal static partial class RawHarness
     /// <exception cref="InvalidDataException">Thrown when the commit shape drifts from the expected transform split mutation shape.</exception>
     private static void ValidateFixed32Scalar8TransformCommit(DataKernelCommitTelemetry telemetry, Fixed32Scalar8Profile profile, int additionalRouterPages = 0)
     {
-        long expectedBytes = (profile.ShelfExtentSize * 2L) + (RouterLayout.Size * (1L + additionalRouterPages));
+        int allocatorMetadataPages = (profile.ShelfExtentSize >= RouterLayout.Size &&
+            (profile.ShelfExtentSize & (profile.ShelfExtentSize - 1)) == 0 ? 1 : 0) +
+            (additionalRouterPages > 0 && profile.ShelfExtentSize != RouterLayout.Size ? 1 : 0);
+        long expectedBytes = (profile.ShelfExtentSize * 2L) + (RouterLayout.Size * (1L + additionalRouterPages)) +
+            (long)allocatorMetadataPages * FileAllocationSegmentLayout.HeaderSize;
         if (telemetry.SetLengthCallCount != 0)
         {
             throw new InvalidDataException("FS32-8 transform split used SetLength.");
@@ -4511,16 +4559,16 @@ internal static partial class RawHarness
             throw new InvalidDataException($"FS32-8 transform split wrote {telemetry.BytesWritten} bytes instead of {expectedBytes}.");
         }
 
-        if (telemetry.WriteCallCount is < 1 or > 2)
+        if (telemetry.WriteCallCount != 2 + allocatorMetadataPages)
         {
-            throw new InvalidDataException($"FS32-8 transform split expected one or two file write calls, got {telemetry.WriteCallCount}.");
+            throw new InvalidDataException($"FS32-8 transform split expected {2 + allocatorMetadataPages} file write calls, got {telemetry.WriteCallCount}.");
         }
     }
 
 
     /// <summary>
     /// Validates the write shape for a same-root-prefix `SS8-16` split where the old shelf offset is rewritten as a child router and two replacement shelves are appended.<br/>
-    /// The parent root router must not be rewritten; the two appended widened-identity shelves are contiguous and should be write-combined by `DataKernel`.<br/>
+    /// The parent root router must not be rewritten; allocator segment-header rewrites are counted for controlled replacement shelves and any appended router class.<br/>
     /// </summary>
     /// <param name="telemetry">The commit telemetry to validate.</param>
     /// <param name="profile">The `SS8-16` shelf profile used by the appended replacement shelves.</param>
@@ -4528,7 +4576,11 @@ internal static partial class RawHarness
     /// <exception cref="InvalidDataException">Thrown when the commit shape drifts from the expected transform split mutation shape.</exception>
     private static void ValidateScalar8Scalar16TransformCommit(DataKernelCommitTelemetry telemetry, Scalar8Scalar16Profile profile, int additionalRouterPages = 0)
     {
-        long expectedBytes = (profile.ShelfExtentSize * 2L) + (RouterLayout.Size * (1L + additionalRouterPages));
+        int allocatorMetadataPages = (profile.ShelfExtentSize >= RouterLayout.Size &&
+            (profile.ShelfExtentSize & (profile.ShelfExtentSize - 1)) == 0 ? 1 : 0) +
+            (additionalRouterPages > 0 && profile.ShelfExtentSize != RouterLayout.Size ? 1 : 0);
+        long expectedBytes = (profile.ShelfExtentSize * 2L) + (RouterLayout.Size * (1L + additionalRouterPages)) +
+            (long)allocatorMetadataPages * FileAllocationSegmentLayout.HeaderSize;
         if (telemetry.SetLengthCallCount != 0)
         {
             throw new InvalidDataException("SS8-16 transform split used SetLength.");
@@ -4539,16 +4591,16 @@ internal static partial class RawHarness
             throw new InvalidDataException($"SS8-16 transform split wrote {telemetry.BytesWritten} bytes instead of {expectedBytes}.");
         }
 
-        if (telemetry.WriteCallCount is < 1 or > 2)
+        if (telemetry.WriteCallCount != 2 + allocatorMetadataPages)
         {
-            throw new InvalidDataException($"SS8-16 transform split expected one or two file write calls, got {telemetry.WriteCallCount}.");
+            throw new InvalidDataException($"SS8-16 transform split expected {2 + allocatorMetadataPages} file write calls, got {telemetry.WriteCallCount}.");
         }
     }
 
 
     /// <summary>
     /// Validates the write shape for a same-root-prefix `SS16-16` split where the old shelf offset is rewritten as a child router and two replacement shelves are appended.<br/>
-    /// The parent root router must not be rewritten; the two appended widened-key and widened-identity shelves are contiguous and should be write-combined by `DataKernel`.<br/>
+    /// The parent root router must not be rewritten; allocator segment-header rewrites are counted for controlled replacement shelves and any appended router class.<br/>
     /// </summary>
     /// <param name="telemetry">The commit telemetry to validate.</param>
     /// <param name="profile">The `SS16-16` shelf profile used by the appended replacement shelves.</param>
@@ -4556,7 +4608,11 @@ internal static partial class RawHarness
     /// <exception cref="InvalidDataException">Thrown when the commit shape drifts from the expected transform split mutation shape.</exception>
     private static void ValidateScalar16Scalar16TransformCommit(DataKernelCommitTelemetry telemetry, Scalar16Scalar16Profile profile, int additionalRouterPages = 0)
     {
-        long expectedBytes = (profile.ShelfExtentSize * 2L) + (RouterLayout.Size * (1L + additionalRouterPages));
+        int allocatorMetadataPages = (profile.ShelfExtentSize >= RouterLayout.Size &&
+            (profile.ShelfExtentSize & (profile.ShelfExtentSize - 1)) == 0 ? 1 : 0) +
+            (additionalRouterPages > 0 && profile.ShelfExtentSize != RouterLayout.Size ? 1 : 0);
+        long expectedBytes = (profile.ShelfExtentSize * 2L) + (RouterLayout.Size * (1L + additionalRouterPages)) +
+            (long)allocatorMetadataPages * FileAllocationSegmentLayout.HeaderSize;
         if (telemetry.SetLengthCallCount != 0)
         {
             throw new InvalidDataException("SS16-16 transform split used SetLength.");
@@ -4567,9 +4623,9 @@ internal static partial class RawHarness
             throw new InvalidDataException($"SS16-16 transform split wrote {telemetry.BytesWritten} bytes instead of {expectedBytes}.");
         }
 
-        if (telemetry.WriteCallCount is < 1 or > 2)
+        if (telemetry.WriteCallCount != 2 + allocatorMetadataPages)
         {
-            throw new InvalidDataException($"SS16-16 transform split expected one or two file write calls, got {telemetry.WriteCallCount}.");
+            throw new InvalidDataException($"SS16-16 transform split expected {2 + allocatorMetadataPages} file write calls, got {telemetry.WriteCallCount}.");
         }
     }
 

@@ -112,7 +112,8 @@ internal sealed class VarKeyScalar16MutableShelf
             VarKeyScalar16Layout.ReadMagic(bytes) != VarKeyScalar16Layout.Magic ||
             VarKeyScalar16Layout.ReadFormatVersion(bytes) != VarKeyScalar16Layout.FormatVersion ||
             VarKeyScalar16Layout.ReadHeaderSize(bytes) != VarKeyScalar16Layout.HeaderSize ||
-            VarKeyScalar16Layout.ReadShelfExtentSize(bytes) != profile.ShelfExtentSize)
+            VarKeyScalar16Layout.ReadShelfExtentSize(bytes) != profile.ShelfExtentSize ||
+            ((VarKeyScalar16Layout.ReadFlags(bytes) & VarKeyScalar16Layout.DescendingFlag) != 0) != profile.Descending)
         {
             if (ownsBytes)
             {
@@ -378,9 +379,10 @@ internal sealed class VarKeyScalar16MutableShelf
             return 0;
         }
 
-        int startSlot = LowerBoundKey(lowerKey);
+        int startSlot = LowerBoundKey(Profile.Descending ? upperKey : lowerKey);
         int endSlot = startSlot;
-        while (endSlot < itemCount && ReadKeyAt(endSlot).SequenceCompareTo(upperKey) <= 0)
+        while (endSlot < itemCount &&
+            (Profile.Descending ? ReadKeyAt(endSlot).SequenceCompareTo(lowerKey) >= 0 : ReadKeyAt(endSlot).SequenceCompareTo(upperKey) <= 0))
         {
             endSlot++;
         }
@@ -403,10 +405,10 @@ internal sealed class VarKeyScalar16MutableShelf
         }
 
         int count = 0;
-        int slotIndex = LowerBoundKey(lowerKey);
+        int slotIndex = LowerBoundKey(Profile.Descending ? upperKey : lowerKey);
         for (int i = slotIndex; i < itemCount; i++)
         {
-            if (ReadKeyAt(i).SequenceCompareTo(upperKey) > 0)
+            if (Profile.Descending ? ReadKeyAt(i).SequenceCompareTo(lowerKey) < 0 : ReadKeyAt(i).SequenceCompareTo(upperKey) > 0)
             {
                 break;
             }
@@ -568,7 +570,7 @@ internal sealed class VarKeyScalar16MutableShelf
         {
             int middle = low + ((high - low) >> 1);
             int comparison = CompareSlotKey(middle, prefix, key);
-            if (comparison < 0)
+            if (Profile.Descending ? comparison > 0 : comparison < 0)
             {
                 low = middle + 1;
             }
@@ -590,7 +592,7 @@ internal sealed class VarKeyScalar16MutableShelf
         {
             int middle = low + ((high - low) >> 1);
             int comparison = CompareSlotTuple(middle, prefix, key, encodedIdentityHigh, encodedIdentityLow);
-            if (comparison < 0)
+            if (Profile.Descending ? comparison > 0 : comparison < 0)
             {
                 low = middle + 1;
             }

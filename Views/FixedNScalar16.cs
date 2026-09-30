@@ -37,7 +37,7 @@ internal ref struct FixedNScalar16
         FixedNScalar16Layout.WriteMagic(bytes, FixedNScalar16Layout.Magic);
         FixedNScalar16Layout.WriteFormatVersion(bytes, FixedNScalar16Layout.FormatVersion);
         FixedNScalar16Layout.WriteHeaderSize(bytes, FixedNScalar16Layout.HeaderSize);
-        FixedNScalar16Layout.WriteFlags(bytes, 0);
+        FixedNScalar16Layout.WriteFlags(bytes, profile.Descending ? 1U : 0U);
         FixedNScalar16Layout.WriteItemCount(bytes, 0);
         FixedNScalar16Layout.WriteKeySize(bytes, checked((ushort)profile.KeySize));
     }
@@ -61,7 +61,7 @@ internal ref struct FixedNScalar16
         ushort count = ItemCount;
         if (count >= profile.MaxItemCount)
         {
-            return FixedNScalarInsertResult.Full;
+            return ClassifyFullInsert(key, encodedIdentity, allowDuplicateKeys);
         }
 
         FixedNScalar16ReadOnly readOnly = AsReadOnly();
@@ -186,6 +186,41 @@ internal ref struct FixedNScalar16
             throw new ArgumentException("FSN-16 encoded key length must match the profile key size.", nameof(key));
         }
     }
+
+    /// <summary>Classifies a capacity-bound insertion before the caller attempts any structural growth.<br/>
+    /// Exact tuples remain idempotent and unique-key conflicts remain conflicts even when no payload slot is free.<br/>
+    /// Only the full-shelf branch calls this allocation-free binary-search path; ordinary insert and append code is unchanged.<br/></summary>
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private FixedNScalarInsertResult ClassifyFullInsert(ReadOnlySpan<byte> key, ReadOnlySpan<byte> encodedIdentity, bool allowDuplicateKeys)
+    {
+        ushort count = ItemCount;
+        FixedNScalar16ReadOnly readOnly = AsReadOnly();
+        int insertIndex = readOnly.LowerBound(key, encodedIdentity);
+        if (insertIndex < count)
+        {
+            ushort existingOffset = FixedNScalar16Layout.ReadSlot(bytes, profile, insertIndex);
+            int comparison = FixedNScalar16Layout.CompareItemTuple(bytes, existingOffset, profile, key, encodedIdentity);
+            if (comparison == 0)
+            {
+                return FixedNScalarInsertResult.AlreadyPresent;
+            }
+        }
+
+        if (!allowDuplicateKeys)
+        {
+            int keyIndex = readOnly.LowerBoundKey(key);
+            if (keyIndex < count)
+            {
+                ushort keyOffset = FixedNScalar16Layout.ReadSlot(bytes, profile, keyIndex);
+                if (FixedNScalar16Layout.CompareItemKey(bytes, keyOffset, profile, key) == 0)
+                {
+                    return FixedNScalarInsertResult.KeyConflict;
+                }
+            }
+        }
+
+        return FixedNScalarInsertResult.Full;
+    }
 }
 
 /// <summary>
@@ -219,11 +254,14 @@ internal readonly ref struct FixedNScalar16ReadOnly
 
     public ushort KeySize => FixedNScalar16Layout.ReadKeySize(bytes);
 
+    public bool IsDescending => (FixedNScalar16Layout.ReadFlags(bytes) & 1U) != 0;
+
     public bool IsValid =>
         bytes.Length >= profile.ShelfExtentSize &&
         Magic == FixedNScalar16Layout.Magic &&
         FormatVersion == FixedNScalar16Layout.FormatVersion &&
         HeaderSize == FixedNScalar16Layout.HeaderSize &&
+        FixedNScalar16Layout.ReadFlags(bytes) == (profile.Descending ? 1U : 0U) &&
         KeySize == profile.KeySize &&
         ItemCount <= profile.MaxItemCount;
 
@@ -243,7 +281,7 @@ internal readonly ref struct FixedNScalar16ReadOnly
             int middle = low + ((high - low) >> 1);
             ushort itemOffset = FixedNScalar16Layout.ReadSlot(bytes, profile, middle);
             int comparison = FixedNScalar16Layout.CompareItemTuple(bytes, itemOffset, profile, key, encodedIdentity);
-            if (comparison < 0)
+            if (profile.Descending ? comparison > 0 : comparison < 0)
             {
                 low = middle + 1;
             }
@@ -271,7 +309,7 @@ internal readonly ref struct FixedNScalar16ReadOnly
             int middle = low + ((high - low) >> 1);
             ushort itemOffset = FixedNScalar16Layout.ReadSlot(bytes, profile, middle);
             int comparison = FixedNScalar16Layout.CompareItemKey(bytes, itemOffset, profile, key);
-            if (comparison < 0)
+            if (profile.Descending ? comparison > 0 : comparison < 0)
             {
                 low = middle + 1;
             }
@@ -294,13 +332,14 @@ internal readonly ref struct FixedNScalar16ReadOnly
     /// <returns>The number of identities copied.</returns>
     public int CopyIdentitiesInKeyRange(ReadOnlySpan<byte> lowerKey, ReadOnlySpan<byte> upperKey, Span<byte> destination)
     {
-        int slotIndex = LowerBoundKey(lowerKey);
+        int slotIndex = LowerBoundKey(profile.Descending ? upperKey : lowerKey);
         int copied = 0;
         ushort count = ItemCount;
         while (slotIndex < count && destination.Length - (copied * FixedNScalar16Layout.IdentitySize) >= FixedNScalar16Layout.IdentitySize)
         {
             ushort itemOffset = FixedNScalar16Layout.ReadSlot(bytes, profile, slotIndex);
-            if (FixedNScalar16Layout.CompareItemKey(bytes, itemOffset, profile, upperKey) > 0)
+            int comparison = FixedNScalar16Layout.CompareItemKey(bytes, itemOffset, profile, profile.Descending ? lowerKey : upperKey);
+            if (profile.Descending ? comparison < 0 : comparison > 0)
             {
                 break;
             }
@@ -323,13 +362,14 @@ internal readonly ref struct FixedNScalar16ReadOnly
     /// <returns>The number of shelf tuples whose keys fall inside the requested range.<br/></returns>
     public int CountItemsInKeyRange(ReadOnlySpan<byte> lowerKey, ReadOnlySpan<byte> upperKey)
     {
-        int slotIndex = LowerBoundKey(lowerKey);
+        int slotIndex = LowerBoundKey(profile.Descending ? upperKey : lowerKey);
         int counted = 0;
         ushort count = ItemCount;
         while (slotIndex < count)
         {
             ushort itemOffset = FixedNScalar16Layout.ReadSlot(bytes, profile, slotIndex);
-            if (FixedNScalar16Layout.CompareItemKey(bytes, itemOffset, profile, upperKey) > 0)
+            int comparison = FixedNScalar16Layout.CompareItemKey(bytes, itemOffset, profile, profile.Descending ? lowerKey : upperKey);
+            if (profile.Descending ? comparison < 0 : comparison > 0)
             {
                 break;
             }
@@ -374,4 +414,5 @@ internal readonly ref struct FixedNScalar16ReadOnly
         ushort itemOffset = FixedNScalar16Layout.ReadSlot(bytes, profile, slotIndex);
         FixedNScalar16Layout.ReadItemIdentity(bytes, itemOffset, profile).CopyTo(destination);
     }
+
 }

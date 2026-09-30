@@ -680,7 +680,7 @@ internal static partial class RawHarness
 
             (shelfOffset, DataKernelCommitTelemetry linkCommit) = session.CreateScalar8Scalar8ShelfAndLinkRootRoute(rootOffset, 0x00, profile, itemCount);
             PrintCommit("ss8-8 route shelf link", linkCommit);
-            ValidateScalar8Scalar8RouteLinkCommit(linkCommit, profile);
+            ValidateScalar8Scalar8RouteLinkCommit(linkCommit, profile, allocatorMetadataPages: 2);
             PrintRead("ss8-8 route link read", session.GetAndResetReadTelemetry());
 
             ValidateRoutedScalar8Scalar8Shelf(session, rootOffset, shelfOffset, profile, itemCount);
@@ -1035,7 +1035,7 @@ internal static partial class RawHarness
 
             (shelfOffset, DataKernelCommitTelemetry linkCommit) = session.CreateScalar8Scalar8ShelfAndLinkRootRoute(rootOffset, 0x00, profile, itemCount);
             PrintCommit("ss8-8 insert shelf link", linkCommit);
-            ValidateScalar8Scalar8RouteLinkCommit(linkCommit, profile);
+            ValidateScalar8Scalar8RouteLinkCommit(linkCommit, profile, allocatorMetadataPages: 2);
             _ = session.GetAndResetReadTelemetry();
 
             (long routedOffset, Scalar8Scalar8InsertResult insertResult, DataKernelCommitTelemetry insertCommit) = session.InsertRoutedScalar8Scalar8NoSplit(
@@ -1465,7 +1465,7 @@ internal static partial class RawHarness
                 encodedIdentities,
                 [0x00, 0x80]);
             PrintCommit("ss8-8 split shared shelf link", linkCommit);
-            ValidateScalar8Scalar8RouteLinkCommit(linkCommit, profile);
+            ValidateScalar8Scalar8RouteLinkCommit(linkCommit, profile, allocatorMetadataPages: 2);
             _ = session.GetAndResetReadTelemetry();
 
             (
@@ -1500,7 +1500,7 @@ internal static partial class RawHarness
 
             PrintRead("ss8-8 split route read", session.GetAndResetReadTelemetry());
             PrintCommit("ss8-8 split commit", splitCommit);
-            ValidateScalar8Scalar8RouteSplitCommit(splitCommit, profile);
+            ValidateScalar8Scalar8RouteSplitCommit(splitCommit, profile, allocatorMetadataPages: 1, expectedWriteCalls: 4);
             ValidateRoutedScalar8Scalar8ShelfShape(session, rootOffset, 0x00, leftShelfOffset, profile, leftCount, Scalar8Scalar8Layout.EncodeUnsignedScalar8(128), Scalar8Scalar8Layout.EncodeUnsignedScalar8(128));
             ValidateRoutedScalar8Scalar8ShelfShape(session, rootOffset, 0x80, rightShelfOffset, profile, rightCount + 1, insertedKey, insertedIdentity);
         }
@@ -2287,7 +2287,7 @@ internal static partial class RawHarness
                 encodedIdentities,
                 [0x00]);
             PrintCommit("ss8-8 transform source shelf link", linkCommit);
-            ValidateScalar8Scalar8RouteLinkCommit(linkCommit, profile);
+            ValidateScalar8Scalar8RouteLinkCommit(linkCommit, profile, allocatorMetadataPages: 2);
             _ = session.GetAndResetReadTelemetry();
 
             (
@@ -2325,7 +2325,7 @@ internal static partial class RawHarness
 
             PrintRead("ss8-8 transform route read", session.GetAndResetReadTelemetry());
             PrintCommit("ss8-8 transform commit", transformCommit);
-            ValidateScalar8Scalar8TransformCommit(transformCommit, profile);
+            ValidateScalar8Scalar8TransformCommit(transformCommit, profile, allocatorMetadataPages: 1);
 
             long rootTargetAfterTransform = session.FindRouterTarget(rootOffset, 0x00);
             if (rootTargetAfterTransform != childRouterOffset)
@@ -3013,7 +3013,7 @@ internal static partial class RawHarness
 
             (long sourceShelfOffset, DataKernelCommitTelemetry linkCommit) = session.CreateScalar8Scalar8ShelfAndLinkRootRoutes(rootOffset, profile, encodedKeys, encodedIdentities, [0x00]);
             PrintCommit("ss8-8 two-level source shelf link", linkCommit);
-            ValidateScalar8Scalar8RouteLinkCommit(linkCommit, profile);
+            ValidateScalar8Scalar8RouteLinkCommit(linkCommit, profile, allocatorMetadataPages: 2);
             _ = session.GetAndResetReadTelemetry();
 
             (
@@ -3037,7 +3037,7 @@ internal static partial class RawHarness
 
             PrintRead("ss8-8 two-level transform read", session.GetAndResetReadTelemetry());
             PrintCommit("ss8-8 two-level transform commit", transformCommit);
-            ValidateScalar8Scalar8TransformCommit(transformCommit, profile);
+            ValidateScalar8Scalar8TransformCommit(transformCommit, profile, allocatorMetadataPages: 1);
             _ = session.GetAndResetReadTelemetry();
 
             Scalar8Scalar8RoutedInsertResult result = session.InsertTwoLevelRoutedScalar8Scalar8NoSplit(
@@ -3945,7 +3945,7 @@ internal static partial class RawHarness
             throw new InvalidDataException("Walked transform split should read root router, child classifier, child router, shelf classifier, and one full shelf.");
         }
 
-        ValidateScalar8Scalar8TransformCommit(result.Commit, profile, additionalRouterPages: 1);
+        ValidateScalar8Scalar8TransformCommit(result.Commit, profile, additionalRouterPages: 1, allocatorMetadataPages: 2);
         long rootTargetAfter = session.FindRouterTarget(root.Offset, 0x00);
         long childTargetAfter = session.FindRouterTarget(childRouterOffset, 0x00);
         if (rootTargetAfter != childRouterOffset || childTargetAfter != sourceShelfOffset)
@@ -4056,7 +4056,7 @@ internal static partial class RawHarness
             throw new InvalidDataException("Walked SS16-8 transform split should read root router, child classifier, child router, shelf classifier, and one full shelf.");
         }
 
-        ValidateScalar16Scalar8TransformCommit(result.Commit, profile, additionalRouterPages: 1);
+        ValidateAllocatedWalkedTransformCommit(result.Commit, profile.ShelfExtentSize, allocationHeaderPages: 2);
         long rootTargetAfter = session.FindRouterTarget(root.Offset, 0x00);
         long childTargetAfter = session.FindRouterTarget(childRouterOffset, 0x00);
         if (rootTargetAfter != childRouterOffset || childTargetAfter != sourceShelfOffset)
@@ -4179,7 +4179,7 @@ internal static partial class RawHarness
             throw new InvalidDataException("Walked FS32-8 transform split should read root router, child classifier, child router, shelf classifier, and one full shelf.");
         }
 
-        ValidateFixed32Scalar8TransformCommit(commit, profile, additionalRouterPages: 1);
+        ValidateAllocatedWalkedTransformCommit(commit, profile.ShelfExtentSize, allocationHeaderPages: 1);
         long rootTargetAfter = session.FindRouterTarget(root.Offset, 0x00);
         long childTargetAfter = session.FindRouterTarget(childRouterOffset, 0x00);
         if (rootTargetAfter != childRouterOffset || childTargetAfter != sourceShelfOffset)
@@ -4299,7 +4299,7 @@ internal static partial class RawHarness
             throw new InvalidDataException("Walked SS8-16 transform split should read root router, child classifier, child router, shelf classifier, and one full shelf.");
         }
 
-        ValidateScalar8Scalar16TransformCommit(commit, profile, additionalRouterPages: 1);
+        ValidateAllocatedWalkedTransformCommit(commit, profile.ShelfExtentSize, allocationHeaderPages: 2);
         long rootTargetAfter = session.FindRouterTarget(root.Offset, 0x00);
         long childTargetAfter = session.FindRouterTarget(childRouterOffset, 0x00);
         if (rootTargetAfter != childRouterOffset || childTargetAfter != sourceShelfOffset)
@@ -4420,7 +4420,7 @@ internal static partial class RawHarness
             throw new InvalidDataException("Walked SS16-16 transform split should read root router, child classifier, child router, shelf classifier, and one full shelf.");
         }
 
-        ValidateScalar16Scalar16TransformCommit(commit, profile, additionalRouterPages: 1);
+        ValidateAllocatedWalkedTransformCommit(commit, profile.ShelfExtentSize, allocationHeaderPages: 2);
         long rootTargetAfter = session.FindRouterTarget(root.Offset, 0x00);
         long childTargetAfter = session.FindRouterTarget(childRouterOffset, 0x00);
         if (rootTargetAfter != childRouterOffset || childTargetAfter != sourceShelfOffset)
@@ -8024,6 +8024,18 @@ internal static partial class RawHarness
             ValidateGenericInsert(scalarBatchDelete.Insert(14, 1414L), "scalar batch delete age 14 insert");
             ValidateGenericInsert(scalarBatchDelete.Insert(16, 1616L), "scalar batch delete age 16 insert");
             scalarBatchDelete.Batch.Enable();
+            ValidateGenericInsert(scalarBatchDelete.Insert(13, 1313L), "scalar batch delete pending age 13 insert");
+            bool unrelatedDeleteRejected = false;
+            try
+            {
+                _ = scalarDeleteCompactionCatalog["people"]["deleteCompaction"].Delete(scalarDeleteCompactionCondition);
+            }
+            catch (InvalidOperationException)
+            {
+                unrelatedDeleteRejected = true;
+            }
+            if (!unrelatedDeleteRejected)
+                throw new InvalidDataException("An unrelated index condition delete joined another index's durability batch.");
             LibraDexConditionEndCondition firstBatchDeleteCondition = LibraDexCondition
                 .ForGroup("people")
                 .Index("batchDelete").AsInt32.Between(11, 13)
@@ -8043,7 +8055,7 @@ internal static partial class RawHarness
                     ? scalarBatchDelete
                     : throw new KeyNotFoundException(indexName),
                     deduplication: IdentityDeduplication.Preserve);
-            if (firstBatchDeleteResult.ChangedCount != 1 ||
+            if (firstBatchDeleteResult.ChangedCount != 2 ||
                 secondBatchDeleteResult.ChangedCount != 1 ||
                 batchDeleteCommit.DeferredCommitRequests == 0 ||
                 scalarBatchDeleteIds.Count != 2 ||
@@ -8054,18 +8066,22 @@ internal static partial class RawHarness
             }
 
             Guid guidBatchDeleteA = Guid.Parse("11111111-1111-1111-1111-111111111111");
+            Guid guidBatchDeletePending = Guid.Parse("18181818-1818-1818-1818-181818181818");
             Guid guidBatchDeleteB = Guid.Parse("22222222-2222-2222-2222-222222222222");
             Guid guidBatchDeleteC = Guid.Parse("33333333-3333-3333-3333-333333333333");
+            Guid guidBatchDeleteD = Guid.Parse("44444444-4444-4444-4444-444444444444");
             LibraDexIndex<Guid, long> guidBatchDelete = scalarDeleteCompactionCatalog.Indexes["people"]["guidBatchDelete"].Create<Guid, long>();
             ValidateGenericInsert(guidBatchDelete.Insert(guidBatchDeleteA, 2101L), "scalar batch delete Guid A insert");
             ValidateGenericInsert(guidBatchDelete.Insert(guidBatchDeleteB, 2202L), "scalar batch delete Guid B insert");
             ValidateGenericInsert(guidBatchDelete.Insert(guidBatchDeleteC, 2303L), "scalar batch delete Guid C insert");
             guidBatchDelete.Batch.Enable();
+            ValidateGenericInsert(guidBatchDelete.Insert(guidBatchDeletePending, 2151L), "scalar batch delete pending Guid insert");
             LibraDexConditionEndCondition guidBatchDeleteCondition = LibraDexCondition
                 .ForGroup("people")
                 .Index("guidBatchDelete").AsGuid.Between(guidBatchDeleteA, guidBatchDeleteB)
                 .EndCondition;
-            LibraDexIdentityMutationResult guidBatchDeleteResult = scalarDeleteCatalog["people"]["guidBatchDelete"].Delete(guidBatchDeleteCondition);
+            LibraDexIdentityMutationResult guidBatchDeleteResult = scalarDeleteCompactionCatalog["people"]["guidBatchDelete"].Delete(guidBatchDeleteCondition);
+            ValidateGenericInsert(guidBatchDelete.Insert(guidBatchDeleteD, 2404L), "scalar batch delete post-delete Guid insert");
             _ = guidBatchDelete.Batch.CommitAndDisable();
             IReadOnlyList<long> guidBatchDeleteIds = LibraDexCondition
                 .ForGroup("people")
@@ -8075,11 +8091,52 @@ internal static partial class RawHarness
                     ? guidBatchDelete
                     : throw new KeyNotFoundException(indexName),
                     deduplication: IdentityDeduplication.Preserve);
-            if (guidBatchDeleteResult.ChangedCount != 2 ||
-                guidBatchDeleteIds.Count != 1 ||
-                guidBatchDeleteIds[0] != 2303L)
+            if (guidBatchDeleteResult.ChangedCount != 3 ||
+                guidBatchDeleteIds.Count != 2 ||
+                guidBatchDeleteIds[0] != 2303L ||
+                guidBatchDeleteIds[1] != 2404L)
             {
                 throw new InvalidDataException("Scalar SS16-8 batch-local tombstone delete did not preserve survivor visibility after commit.");
+            }
+
+            string durableBatchDeletePath = Path.GetFullPath(Path.Combine("artifacts", $"catalog-batch-delete-{Guid.NewGuid():N}.lbdx"));
+            try
+            {
+                using (Catalog durableBatchCatalog = Catalog.Create(durableBatchDeletePath))
+                {
+                    LibraDexIndex<int, long> durableBatchIndex = durableBatchCatalog.Indexes["people"]["durableBatchDelete"].Create<int, long>();
+                    ValidateGenericInsert(durableBatchIndex.Insert(10, 5101L), "durable batch delete first insert");
+                    ValidateGenericInsert(durableBatchIndex.Insert(16, 5161L), "durable batch delete survivor insert");
+                    durableBatchIndex.Batch.Enable();
+                    ValidateGenericInsert(durableBatchIndex.Insert(12, 5121L), "durable batch delete pending insert");
+                    LibraDexConditionEndCondition durableBatchCondition = LibraDexCondition
+                        .ForGroup("people")
+                        .Index("durableBatchDelete").AsInt32.Between(10, 12)
+                        .EndCondition;
+                    LibraDexIdentityMutationResult durableBatchResult = durableBatchCatalog["people"]["durableBatchDelete"].Delete(durableBatchCondition);
+                    ValidateGenericInsert(durableBatchIndex.Insert(14, 5141L), "durable batch delete post-delete insert");
+                    LibraDexGenericBatchCommitResult durableBatchCommit = durableBatchIndex.Batch.CommitAndDisable();
+                    if (durableBatchResult.ChangedCount != 2 || durableBatchCommit.DeferredCommitRequests == 0)
+                        throw new InvalidDataException("File-backed index batch did not defer and publish the selected exact tuple deletions.");
+                }
+
+                using (Catalog reopenedBatchCatalog = Catalog.Open(durableBatchDeletePath))
+                {
+                    LibraDexIndex<int, long> reopenedBatchIndex = reopenedBatchCatalog.Indexes["people"]["durableBatchDelete"].Open<int, long>();
+                    List<long> reopenedBatchIds = new();
+                    using (LibraDexRangeReader<int, long> reopenedBatchReader = reopenedBatchIndex.OpenReader())
+                    {
+                        while (reopenedBatchReader.TryReadNext(out _, out long identity))
+                            reopenedBatchIds.Add(identity);
+                    }
+                    if (!reopenedBatchIds.SequenceEqual(new long[] { 5141L, 5161L }))
+                        throw new InvalidDataException("File-backed batch delete did not preserve only post-delete inserts and surviving tuples after reopen.");
+                }
+            }
+            finally
+            {
+                if (File.Exists(durableBatchDeletePath))
+                    File.Delete(durableBatchDeletePath);
             }
 
             LibraDexIndex<int, long> cursorDeleteAge = scalarDeleteCompactionCatalog.Indexes["people"]["cursorDeleteAge"].Create<int, long>();
@@ -8234,6 +8291,7 @@ internal static partial class RawHarness
                 using LibraDexRangeReader<int, long> expectedReader = cursorDeleteAge.OpenRangeReader(10, 14);
                 _ = expectedReader.TryReadNext(out _, out _);
                 _ = expectedReader.TryReadNext(out int expectedNextKey, out long expectedNextIdentity);
+                expectedReader.Dispose();
                 if (!cursorSetKeyAgeReader.TryReadNext(out _, out _) ||
                     !cursorSetKeyAgeReader.SetKey(16).Inserted ||
                     !cursorSetKeyAgeReader.TryReadNext(out int nextKey, out long nextIdentity) ||
@@ -8250,6 +8308,7 @@ internal static partial class RawHarness
                 using LibraDexRangeReader<Guid, long> expectedReader = cursorDeleteGuid.OpenRangeReader(cursorDeleteGuidA, cursorDeleteGuidC);
                 _ = expectedReader.TryReadNext(out _, out _);
                 _ = expectedReader.TryReadNext(out Guid expectedNextKey, out long expectedNextIdentity);
+                expectedReader.Dispose();
                 bool movedFirst = cursorSetKeyGuidReader.TryReadNext(out Guid firstKey, out long firstIdentity);
                 LibraDexGenericInsertResult setKeyResult = movedFirst ? cursorSetKeyGuidReader.SetKey(cursorDeleteGuidD) : default;
                 bool movedNext = cursorSetKeyGuidReader.TryReadNext(out Guid nextKey, out long nextIdentity);
@@ -8268,6 +8327,7 @@ internal static partial class RawHarness
                 using LibraDexRangeReader<int, Guid> expectedReader = cursorDeleteAgeGuid.OpenRangeReader(10, 14);
                 _ = expectedReader.TryReadNext(out _, out _);
                 _ = expectedReader.TryReadNext(out int expectedNextKey, out Guid expectedNextIdentity);
+                expectedReader.Dispose();
                 if (!cursorSetKeyAgeGuidReader.TryReadNext(out _, out _) ||
                     !cursorSetKeyAgeGuidReader.SetKey(16).Inserted ||
                     !cursorSetKeyAgeGuidReader.TryReadNext(out int nextKey, out Guid nextIdentity) ||
@@ -8283,6 +8343,7 @@ internal static partial class RawHarness
                 using LibraDexRangeReader<Guid, Guid> expectedReader = cursorDeleteGuidGuid.OpenRangeReader(cursorDeleteGuidA, cursorDeleteGuidC);
                 _ = expectedReader.TryReadNext(out _, out _);
                 _ = expectedReader.TryReadNext(out Guid expectedNextKey, out Guid expectedNextIdentity);
+                expectedReader.Dispose();
                 if (!cursorSetKeyGuidGuidReader.TryReadNext(out _, out _) ||
                     !cursorSetKeyGuidGuidReader.SetKey(cursorDeleteGuidD).Inserted ||
                     !cursorSetKeyGuidGuidReader.TryReadNext(out Guid nextKey, out Guid nextIdentity) ||
@@ -8299,6 +8360,7 @@ internal static partial class RawHarness
                 using LibraDexRangeReader<byte[], long> expectedReader = cursorDeleteFingerprint.OpenRangeReader(cursorDeleteFingerprintA, cursorDeleteFingerprintC);
                 _ = expectedReader.TryReadNext(out _, out _);
                 _ = expectedReader.TryReadNext(out byte[] expectedNextKey, out long expectedNextIdentity);
+                expectedReader.Dispose();
                 if (!cursorSetKeyFingerprintReader.TryReadNext(out _, out _) ||
                     !cursorSetKeyFingerprintReader.SetKey(cursorDeleteFingerprintD).Inserted ||
                     !cursorSetKeyFingerprintReader.TryReadNext(out byte[] nextKey, out long nextIdentity) ||
@@ -8314,6 +8376,7 @@ internal static partial class RawHarness
                 using LibraDexRangeReader<byte[], Guid> expectedReader = cursorDeleteFingerprintGuid.OpenRangeReader(cursorDeleteFingerprintA, cursorDeleteFingerprintC);
                 _ = expectedReader.TryReadNext(out _, out _);
                 _ = expectedReader.TryReadNext(out byte[] expectedNextKey, out Guid expectedNextIdentity);
+                expectedReader.Dispose();
                 if (!cursorSetKeyFingerprintGuidReader.TryReadNext(out _, out _) ||
                     !cursorSetKeyFingerprintGuidReader.SetKey(cursorDeleteFingerprintD).Inserted ||
                     !cursorSetKeyFingerprintGuidReader.TryReadNext(out byte[] nextKey, out Guid nextIdentity) ||
@@ -10820,6 +10883,62 @@ internal static partial class RawHarness
             .KeyPart("created").AsDateTime.GreaterThan(new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc))
             .EndCondition
             .ToList<long>(routedCompositeDateResolver, deduplication: IdentityDeduplication.Preserve);
+        IReadOnlyList<long> routedCompositeDateMonthInIds = LibraDexCondition
+            .ForGroup("people")
+            .Index("tenantCreated").Where(
+                LibraDexCompositePart.Guid("tenantId").EqualTo(tenantA),
+                LibraDexCompositePart.Date("created").MonthIn(1, 5))
+            .EndCondition
+            .ToList<long>(routedCompositeDateResolver, deduplication: IdentityDeduplication.Preserve);
+        IReadOnlyList<long> routedCompositeDateYearMonthInIds = LibraDexCondition
+            .ForGroup("people")
+            .Index("tenantCreated").Where(
+                LibraDexCompositePart.Guid("tenantId").EqualTo(tenantA),
+                LibraDexCompositePart.Date("created").YearMonthIn(new[] { (2026, 5) }))
+            .EndCondition
+            .ToList<long>(routedCompositeDateResolver, deduplication: IdentityDeduplication.Preserve);
+        IReadOnlyList<long> routedCompositeDateYearInMonthsIds = LibraDexCondition
+            .ForGroup("people")
+            .Index("tenantCreated").Where(
+                LibraDexCompositePart.Guid("tenantId").EqualTo(tenantA),
+                LibraDexCompositePart.Date("created").YearInMonths(2026, 1))
+            .EndCondition
+            .ToList<long>(routedCompositeDateResolver, deduplication: IdentityDeduplication.Preserve);
+        IReadOnlyList<long> routedCompositeDateYearQuarterIds = LibraDexCondition
+            .ForGroup("people")
+            .Index("tenantCreated").Where(
+                LibraDexCompositePart.Guid("tenantId").EqualTo(tenantA),
+                LibraDexCompositePart.Date("created").YearQuarter(2026, 2))
+            .EndCondition
+            .ToList<long>(routedCompositeDateResolver, deduplication: IdentityDeduplication.Preserve);
+        IReadOnlyList<long> routedCompositeDateLastOfMonthIds = LibraDexCondition
+            .ForGroup("people")
+            .Index("tenantCreated").Where(
+                LibraDexCompositePart.Guid("tenantId").EqualTo(tenantA),
+                LibraDexCompositePart.Date("created").IsLastOfMonth())
+            .EndCondition
+            .ToList<long>(routedCompositeDateResolver, deduplication: IdentityDeduplication.Preserve);
+        IReadOnlyList<long> routedCompositeDateAfternoonIds = LibraDexCondition
+            .ForGroup("people")
+            .Index("tenantCreated").Where(
+                LibraDexCompositePart.Guid("tenantId").EqualTo(tenantA),
+                LibraDexCompositePart.Date("created").IsAfternoon())
+            .EndCondition
+            .ToList<long>(routedCompositeDateResolver, deduplication: IdentityDeduplication.Preserve);
+        IReadOnlyList<long> routedCompositeDateDayNotInIds = LibraDexCondition
+            .ForGroup("people")
+            .Index("tenantCreated").Where(
+                LibraDexCompositePart.Guid("tenantId").EqualTo(tenantA),
+                LibraDexCompositePart.Date("created").DayNotIn(20))
+            .EndCondition
+            .ToList<long>(routedCompositeDateResolver, deduplication: IdentityDeduplication.Preserve);
+        IReadOnlyList<long> routedCompositeDateHourRangeIds = LibraDexCondition
+            .ForGroup("people")
+            .Index("tenantCreated").Where(
+                LibraDexCompositePart.Guid("tenantId").EqualTo(tenantA),
+                LibraDexCompositePart.Date("created").HourRange(12, 12))
+            .EndCondition
+            .ToList<long>(routedCompositeDateResolver, deduplication: IdentityDeduplication.Preserve);
         IIndex routedCompositeBinaryIndex = catalog.Indexes["people"]["tenantPayload"].Composite<long>(
             C.Guid("tenantId"),
             C.Binary("marker"))
@@ -10838,6 +10957,30 @@ internal static partial class RawHarness
             .KeyPart("marker").AsBinary.StartsWith(new byte[] { 0xCA, 0xFE })
             .EndCondition
             .ToList<long>(routedCompositeBinaryResolver, deduplication: IdentityDeduplication.Preserve);
+        IIndex routedCompositePartComparisonIndex = catalog.Indexes["people"]["labelOrder"].Composite<long>(
+            C.Text("leftLabel"),
+            C.Text("rightLabel"))
+            .Create(C.NonUnique);
+        ValidateGenericInsert(routedCompositePartComparisonIndex.Insert(Key.Of("Ada", "Byron"), 7701L), "routed composite labels Ada/Byron insert");
+        ValidateGenericInsert(routedCompositePartComparisonIndex.Insert(Key.Of("Byron", "Ada"), 7702L), "routed composite labels Byron/Ada insert");
+        ValidateGenericInsert(routedCompositePartComparisonIndex.Insert(Key.Of("Same", "Same"), 7703L), "routed composite labels Same/Same insert");
+        ValidateGenericInsert(routedCompositePartComparisonIndex.Insert(Key.Of("charlie", "Delta"), 7704L), "routed composite labels charlie/Delta insert");
+        Func<string, IIndex> routedCompositePartComparisonResolver = indexName => string.Equals(indexName, "labelOrder", StringComparison.Ordinal)
+            ? routedCompositePartComparisonIndex
+            : throw new KeyNotFoundException(indexName);
+        IReadOnlyList<long> routedCompositePartComparisonIds = LibraDexCondition
+            .ForGroup("people")
+            .Index("labelOrder").Where(
+                LibraDexCompositePart.Compare("leftLabel", "rightLabel").LessThan(ignoreCase: true))
+            .EndCondition
+            .ToList<long>(routedCompositePartComparisonResolver, deduplication: IdentityDeduplication.Preserve);
+        IReadOnlyList<long> routedCompositePartComparisonPrefixIds = LibraDexCondition
+            .ForGroup("people")
+            .Index("labelOrder").Where(
+                LibraDexCompositePart.String("leftLabel").StartsWith("A"),
+                LibraDexCompositePart.Compare("leftLabel", "rightLabel").LessThan(ignoreCase: true))
+            .EndCondition
+            .ToList<long>(routedCompositePartComparisonResolver, deduplication: IdentityDeduplication.Preserve);
         if (peopleAgeSet.KeyType != typeof(long) ||
             !ReferenceEquals(peopleAgeSet.Source, peopleAgeHashSet) ||
             peopleAgeSet.Values.Count != 2)
@@ -11072,12 +11215,12 @@ internal static partial class RawHarness
             adoptedGuidBridgePlan.Rows[0].Action != LibraDexConditionBridgeAction.ExecuteCurrentPrimitive ||
             adoptedGuidCriterion.CriteriaKind != LibraDexCriteriaKind.GuidPattern ||
             adoptedGuidIds.Count != 2 ||
-            adoptedGuidIds[0] != 112233L ||
-            adoptedGuidIds[1] != 119999L ||
+            adoptedGuidIds[0] != 119999L ||
+            adoptedGuidIds[1] != 112233L ||
             adoptedGuidBytePrefixCriterion.CriteriaKind != LibraDexCriteriaKind.GuidPattern ||
             adoptedGuidBytePrefixIds.Count != 2 ||
-            adoptedGuidBytePrefixIds[0] != 112233L ||
-            adoptedGuidBytePrefixIds[1] != 119999L ||
+            adoptedGuidBytePrefixIds[0] != 119999L ||
+            adoptedGuidBytePrefixIds[1] != 112233L ||
             adoptedGuidEqualCriterion.CriteriaKind != LibraDexCriteriaKind.Find ||
             adoptedGuidEqualIds.Count != 1 ||
             adoptedGuidEqualIds[0] != 112233L ||
@@ -11085,29 +11228,29 @@ internal static partial class RawHarness
             adoptedGuidEqualTextIds[0] != 112233L ||
             adoptedGuidNotEqualCriterion.NodeKind != LibraDexIdentityCriterionNodeKind.Or ||
             adoptedGuidNotEqualIds.Count != 2 ||
-            adoptedGuidNotEqualIds[0] != 119999L ||
-            adoptedGuidNotEqualIds[1] != 998877L ||
+            adoptedGuidNotEqualIds[0] != 998877L ||
+            adoptedGuidNotEqualIds[1] != 119999L ||
             adoptedGuidEndsCriterion.CriteriaKind != LibraDexCriteriaKind.GuidPattern ||
             adoptedGuidEndsIds.Count != 2 ||
-            adoptedGuidEndsIds[0] != 112233L ||
-            adoptedGuidEndsIds[1] != 998877L ||
+            adoptedGuidEndsIds[0] != 998877L ||
+            adoptedGuidEndsIds[1] != 112233L ||
             adoptedGuidByteEndsCriterion.CriteriaKind != LibraDexCriteriaKind.GuidPattern ||
             adoptedGuidByteEndsIds.Count != 2 ||
-            adoptedGuidByteEndsIds[0] != 112233L ||
-            adoptedGuidByteEndsIds[1] != 998877L ||
+            adoptedGuidByteEndsIds[0] != 998877L ||
+            adoptedGuidByteEndsIds[1] != 112233L ||
             adoptedGuidContainsCriterion.CriteriaKind != LibraDexCriteriaKind.GuidPattern ||
             adoptedGuidContainsIds.Count != 2 ||
-            adoptedGuidContainsIds[0] != 112233L ||
-            adoptedGuidContainsIds[1] != 998877L ||
+            adoptedGuidContainsIds[0] != 998877L ||
+            adoptedGuidContainsIds[1] != 112233L ||
             adoptedGuidByteContainsCriterion.CriteriaKind != LibraDexCriteriaKind.GuidPattern ||
             adoptedGuidByteContainsIds.Count != 2 ||
-            adoptedGuidByteContainsIds[0] != 112233L ||
-            adoptedGuidByteContainsIds[1] != 998877L ||
+            adoptedGuidByteContainsIds[0] != 998877L ||
+            adoptedGuidByteContainsIds[1] != 112233L ||
             adoptedGuidByteContainsAlignmentIds.Count != 0 ||
             adoptedGuidPatternCriterion.CriteriaKind != LibraDexCriteriaKind.GuidPattern ||
             adoptedGuidPatternIds.Count != 2 ||
-            adoptedGuidPatternIds[0] != 112233L ||
-            adoptedGuidPatternIds[1] != 119999L ||
+            adoptedGuidPatternIds[0] != 119999L ||
+            adoptedGuidPatternIds[1] != 112233L ||
             adoptedGuidBytePatternCriterion.CriteriaKind != LibraDexCriteriaKind.GuidPattern ||
             adoptedGuidBytePatternIds.Count != 1 ||
             adoptedGuidBytePatternIds[0] != 112233L ||
@@ -11134,11 +11277,11 @@ internal static partial class RawHarness
             groupGuidTextExactIds.Count != 1 ||
             groupGuidTextExactIds[0] != 112233L ||
             groupGuidWildcardIds.Count != 2 ||
-            groupGuidWildcardIds[0] != 112233L ||
-            groupGuidWildcardIds[1] != 119999L ||
+            groupGuidWildcardIds[0] != 119999L ||
+            groupGuidWildcardIds[1] != 112233L ||
             groupGuidBytePrefixIds.Count != 2 ||
-            groupGuidBytePrefixIds[0] != 112233L ||
-            groupGuidBytePrefixIds[1] != 119999L ||
+            groupGuidBytePrefixIds[0] != 119999L ||
+            groupGuidBytePrefixIds[1] != 112233L ||
             guidPatternDeleteFromResult.MatchedCount != 2 ||
             guidPatternDeleteFromResult.ChangedCount != 2 ||
             guidPatternDeletedIds.Count != 0 ||
@@ -11303,9 +11446,32 @@ internal static partial class RawHarness
             routedCompositeOpenedDateGreaterThanIds.Count != 2 ||
             routedCompositeOpenedDateGreaterThanIds[0] != 7502L ||
             routedCompositeOpenedDateGreaterThanIds[1] != 7503L ||
+            routedCompositeDateMonthInIds.Count != 2 ||
+            routedCompositeDateMonthInIds[0] != 7502L ||
+            routedCompositeDateMonthInIds[1] != 7503L ||
+            routedCompositeDateYearMonthInIds.Count != 1 ||
+            routedCompositeDateYearMonthInIds[0] != 7503L ||
+            routedCompositeDateYearInMonthsIds.Count != 1 ||
+            routedCompositeDateYearInMonthsIds[0] != 7502L ||
+            routedCompositeDateYearQuarterIds.Count != 1 ||
+            routedCompositeDateYearQuarterIds[0] != 7503L ||
+            routedCompositeDateLastOfMonthIds.Count != 1 ||
+            routedCompositeDateLastOfMonthIds[0] != 7501L ||
+            routedCompositeDateAfternoonIds.Count != 1 ||
+            routedCompositeDateAfternoonIds[0] != 7503L ||
+            routedCompositeDateDayNotInIds.Count != 2 ||
+            routedCompositeDateDayNotInIds[0] != 7501L ||
+            routedCompositeDateDayNotInIds[1] != 7502L ||
+            routedCompositeDateHourRangeIds.Count != 1 ||
+            routedCompositeDateHourRangeIds[0] != 7503L ||
             routedCompositeOpenedBinaryPrefixIds.Count != 2 ||
             routedCompositeOpenedBinaryPrefixIds[0] != 7601L ||
-            routedCompositeOpenedBinaryPrefixIds[1] != 7602L)
+            routedCompositeOpenedBinaryPrefixIds[1] != 7602L ||
+            routedCompositePartComparisonIds.Count != 2 ||
+            !routedCompositePartComparisonIds.Contains(7701L) ||
+            !routedCompositePartComparisonIds.Contains(7704L) ||
+            routedCompositePartComparisonPrefixIds.Count != 1 ||
+            routedCompositePartComparisonPrefixIds[0] != 7701L)
         {
             throw new InvalidDataException(
                 "Adopted condition builder did not preserve grouping or bridge planning metadata. " +
@@ -11323,7 +11489,17 @@ internal static partial class RawHarness
                 $"date-year=[{string.Join(',', routedCompositeDateYearIds)}], " +
                 $"date-ymd=[{string.Join(',', routedCompositeDateYearMonthDayIds)}], " +
                 $"date-gt=[{string.Join(',', routedCompositeOpenedDateGreaterThanIds)}], " +
+                $"date-month-in=[{string.Join(',', routedCompositeDateMonthInIds)}], " +
+                $"date-ym-in=[{string.Join(',', routedCompositeDateYearMonthInIds)}], " +
+                $"date-year-months=[{string.Join(',', routedCompositeDateYearInMonthsIds)}], " +
+                $"date-year-quarter=[{string.Join(',', routedCompositeDateYearQuarterIds)}], " +
+                $"date-last-month=[{string.Join(',', routedCompositeDateLastOfMonthIds)}], " +
+                $"date-afternoon=[{string.Join(',', routedCompositeDateAfternoonIds)}], " +
+                $"date-day-not-in=[{string.Join(',', routedCompositeDateDayNotInIds)}], " +
+                $"date-hour-range=[{string.Join(',', routedCompositeDateHourRangeIds)}], " +
                 $"binary-prefix=[{string.Join(',', routedCompositeOpenedBinaryPrefixIds)}], " +
+                $"part-compare=[{string.Join(',', routedCompositePartComparisonIds)}], " +
+                $"part-compare-prefix=[{string.Join(',', routedCompositePartComparisonPrefixIds)}], " +
                 $"int32-slice=[{string.Join(',', adoptedBinaryInt32SliceIds)}], " +
                 $"guid-slice=[{string.Join(',', adoptedBinaryGuidSliceIds)}], " +
                 $"date-slice=[{string.Join(',', adoptedBinaryDateSliceIds)}], " +
@@ -17474,7 +17650,7 @@ internal static partial class RawHarness
     /// <returns>Zero when the shelf primitive validates.</returns>
     private static int RunVarKeyVarIdentityShelfSanity(string[] args)
     {
-        int itemCount = GetIntOption(args, "--items", 1500);
+        int itemCount = GetIntOption(args, "--items", 1000);
         int keyLength = GetIntOption(args, "--key-length", 48);
         int identityLength = GetIntOption(args, "--identity-length", 48);
         int prefixCount = GetIntOption(args, "--prefix-count", 8);
@@ -25964,7 +26140,7 @@ internal static partial class RawHarness
         PrintCommit("ss8-8 walked one root create", rootCommit);
         (long shelfOffset, DataKernelCommitTelemetry linkCommit) = session.CreateScalar8Scalar8ShelfAndLinkRootRoute(root.Offset, 0x00, profile, itemCount);
         PrintCommit("ss8-8 walked one shelf link", linkCommit);
-        ValidateScalar8Scalar8RouteLinkCommit(linkCommit, profile);
+        ValidateScalar8Scalar8RouteLinkCommit(linkCommit, profile, allocatorMetadataPages: 2);
         _ = session.GetAndResetReadTelemetry();
 
         Scalar8Scalar8RoutedInsertResult result = session.InsertWalkedRoutedScalar8Scalar8NoSplit(
@@ -26044,7 +26220,7 @@ internal static partial class RawHarness
         PrintCommit("ss8-8 walked two root create", rootCommit);
         (long sourceShelfOffset, DataKernelCommitTelemetry linkCommit) = session.CreateScalar8Scalar8ShelfAndLinkRootRoutes(root.Offset, profile, encodedKeys, encodedIdentities, [0x00]);
         PrintCommit("ss8-8 walked two shelf link", linkCommit);
-        ValidateScalar8Scalar8RouteLinkCommit(linkCommit, profile);
+        ValidateScalar8Scalar8RouteLinkCommit(linkCommit, profile, allocatorMetadataPages: 2);
         _ = session.GetAndResetReadTelemetry();
 
         (
@@ -26068,7 +26244,7 @@ internal static partial class RawHarness
 
         PrintRead("ss8-8 walked two transform read", session.GetAndResetReadTelemetry());
         PrintCommit("ss8-8 walked two transform commit", transformCommit);
-        ValidateScalar8Scalar8TransformCommit(transformCommit, profile);
+        ValidateScalar8Scalar8TransformCommit(transformCommit, profile, allocatorMetadataPages: 1);
         _ = session.GetAndResetReadTelemetry();
 
         Scalar8Scalar8RoutedInsertResult result = session.InsertWalkedRoutedScalar8Scalar8NoSplit(
@@ -26776,7 +26952,7 @@ internal static partial class RawHarness
         PrintCommit("ss8-8 parent split root create", rootCommit);
         (long sourceShelfOffset, DataKernelCommitTelemetry linkCommit) = session.CreateScalar8Scalar8ShelfAndLinkRootRoutes(root.Offset, profile, encodedKeys, encodedIdentities, [0x00]);
         PrintCommit("ss8-8 parent split shelf link", linkCommit);
-        ValidateScalar8Scalar8RouteLinkCommit(linkCommit, profile);
+        ValidateScalar8Scalar8RouteLinkCommit(linkCommit, profile, allocatorMetadataPages: 2);
 
         (
             long childRouterOffset,
@@ -26798,7 +26974,7 @@ internal static partial class RawHarness
         }
 
         PrintCommit("ss8-8 parent split transform", transformCommit);
-        ValidateScalar8Scalar8TransformCommit(transformCommit, profile);
+        ValidateScalar8Scalar8TransformCommit(transformCommit, profile, allocatorMetadataPages: 1);
 
         int fillCount = profile.MaxItemCount - transformedRightCount;
         for (int i = 0; i < fillCount; i++)
@@ -26831,7 +27007,7 @@ internal static partial class RawHarness
         }
 
         PrintCommit("ss8-8 parent split commit", split.Commit);
-        ValidateScalar8Scalar8RouteSplitCommit(split.Commit, profile);
+        ValidateScalar8Scalar8RouteSplitCommit(split.Commit, profile, allocatorMetadataPages: 1, expectedWriteCalls: 4);
         _ = session.GetAndResetReadTelemetry();
         ValidateTwoLevelRoutedScalar8Scalar8ShelfShape(session, root.Offset, 0x00, 0x80, childRouterOffset, rightShelfOffset, profile, transformedRightCount, transformInsertedKey, transformInsertedKey);
         _ = session.GetAndResetReadTelemetry();
@@ -27711,8 +27887,9 @@ internal static partial class RawHarness
         const int classifierBytes = sizeof(uint) * 2;
         bool plainRouterRead = readTelemetry.ReadCallCount == 4 && readTelemetry.BytesRead == (RouterLayout.Size * 2) + classifierBytes;
         bool rootWarmArenaDiscoveryRead = readTelemetry.ReadCallCount == 4 && readTelemetry.BytesRead == RouterLayout.Size + routerArenaReadSize + classifierBytes;
+        bool twoRouterArenaSingleClassifierRead = readTelemetry.ReadCallCount == 4 && readTelemetry.BytesRead == (RouterLayout.Size * 2) + routerArenaReadSize + sizeof(uint);
         bool coldArenaDiscoveryRead = readTelemetry.ReadCallCount == 5 && readTelemetry.BytesRead == (RouterLayout.Size * 2) + routerArenaReadSize + classifierBytes;
-        if (!plainRouterRead && !rootWarmArenaDiscoveryRead && !coldArenaDiscoveryRead)
+        if (!plainRouterRead && !rootWarmArenaDiscoveryRead && !twoRouterArenaSingleClassifierRead && !coldArenaDiscoveryRead)
         {
             throw new InvalidDataException($"Two-level {shapeName} route walker should read two router pages plus classifier magics, or a transformed child-router arena plus classifier magics.");
         }
@@ -27722,6 +27899,7 @@ internal static partial class RawHarness
     /// <summary>
     /// Validates read telemetry for a walked two-level no-split insert.<br/>
     /// Legal shapes include two plain router pages plus classifier magics plus shelf read, and transformed child-router arena first-touch variants plus shelf read.<br/>
+    /// A previously classified target can omit one 4-byte classifier read while retaining the same router and shelf reads.<br/>
     /// </summary>
     /// <param name="shapeName">The compact shape label used in failure messages.</param>
     /// <param name="readTelemetry">The captured read telemetry for the walked insert.</param>
@@ -27736,8 +27914,9 @@ internal static partial class RawHarness
         const int classifierBytes = sizeof(uint) * 2;
         bool plainRouterRead = readTelemetry.ReadCallCount == 5 && readTelemetry.BytesRead == (RouterLayout.Size * 2) + classifierBytes + shelfExtentSize;
         bool rootWarmArenaDiscoveryRead = readTelemetry.ReadCallCount == 5 && readTelemetry.BytesRead == RouterLayout.Size + routerArenaReadSize + classifierBytes + shelfExtentSize;
+        bool coldArenaSingleClassifierRead = readTelemetry.ReadCallCount == 5 && readTelemetry.BytesRead == (RouterLayout.Size * 2) + routerArenaReadSize + sizeof(uint) + shelfExtentSize;
         bool coldArenaDiscoveryRead = readTelemetry.ReadCallCount == 6 && readTelemetry.BytesRead == (RouterLayout.Size * 2) + routerArenaReadSize + classifierBytes + shelfExtentSize;
-        if (!plainRouterRead && !rootWarmArenaDiscoveryRead && !coldArenaDiscoveryRead)
+        if (!plainRouterRead && !rootWarmArenaDiscoveryRead && !coldArenaSingleClassifierRead && !coldArenaDiscoveryRead)
         {
             throw new InvalidDataException($"Walked two-level {shapeName} insert should read route pages or a transformed child-router arena, two classifier magics, and one shelf extent.");
         }
@@ -27773,7 +27952,7 @@ internal static partial class RawHarness
         PrintCommit("ss8-8 walker one root create", rootCommit);
         (long shelfOffset, DataKernelCommitTelemetry linkCommit) = session.CreateScalar8Scalar8ShelfAndLinkRootRoute(root.Offset, 0x00, profile, itemCount);
         PrintCommit("ss8-8 walker one shelf link", linkCommit);
-        ValidateScalar8Scalar8RouteLinkCommit(linkCommit, profile);
+        ValidateScalar8Scalar8RouteLinkCommit(linkCommit, profile, allocatorMetadataPages: 2);
         _ = session.GetAndResetReadTelemetry();
 
         Scalar8Scalar8RouteTarget target = session.WalkScalar8Scalar8RouteTarget(root.Offset, Scalar8Scalar8Layout.EncodeUnsignedScalar8(128), maxRouterHops: 8);
@@ -27842,7 +28021,7 @@ internal static partial class RawHarness
         PrintCommit("ss8-8 walker two root create", rootCommit);
         (long sourceShelfOffset, DataKernelCommitTelemetry linkCommit) = session.CreateScalar8Scalar8ShelfAndLinkRootRoutes(root.Offset, profile, encodedKeys, encodedIdentities, [0x00]);
         PrintCommit("ss8-8 walker two shelf link", linkCommit);
-        ValidateScalar8Scalar8RouteLinkCommit(linkCommit, profile);
+        ValidateScalar8Scalar8RouteLinkCommit(linkCommit, profile, allocatorMetadataPages: 2);
         _ = session.GetAndResetReadTelemetry();
 
         (
@@ -27866,7 +28045,7 @@ internal static partial class RawHarness
 
         PrintRead("ss8-8 walker two transform read", session.GetAndResetReadTelemetry());
         PrintCommit("ss8-8 walker two transform commit", transformCommit);
-        ValidateScalar8Scalar8TransformCommit(transformCommit, profile);
+        ValidateScalar8Scalar8TransformCommit(transformCommit, profile, allocatorMetadataPages: 1);
         _ = session.GetAndResetReadTelemetry();
 
         Scalar8Scalar8RouteTarget target = session.WalkScalar8Scalar8RouteTarget(root.Offset, insertedKey, maxRouterHops: 8);
@@ -28426,7 +28605,7 @@ internal static partial class RawHarness
         rootOffset = root.Offset;
         (shelfOffset, DataKernelCommitTelemetry linkCommit) = session.CreateScalar8Scalar8ShelfAndLinkRootRoute(rootOffset, 0x00, profile, itemCount);
         PrintCommit("ss8-8 decision no-split shelf link", linkCommit);
-        ValidateScalar8Scalar8RouteLinkCommit(linkCommit, profile);
+        ValidateScalar8Scalar8RouteLinkCommit(linkCommit, profile, allocatorMetadataPages: 2);
         _ = session.GetAndResetReadTelemetry();
 
         Scalar8Scalar8RoutedInsertResult result = session.InsertRoutedScalar8Scalar8(rootOffset, profile, insertedKey, insertedIdentity, allowDuplicateKeys: true);
@@ -28495,7 +28674,7 @@ internal static partial class RawHarness
         long rootOffset = root.Offset;
         (long sourceShelfOffset, DataKernelCommitTelemetry linkCommit) = session.CreateScalar8Scalar8ShelfAndLinkRootRoutes(rootOffset, profile, encodedKeys, encodedIdentities, [0x00, 0x80]);
         PrintCommit("ss8-8 decision root-split shelf link", linkCommit);
-        ValidateScalar8Scalar8RouteLinkCommit(linkCommit, profile);
+        ValidateScalar8Scalar8RouteLinkCommit(linkCommit, profile, allocatorMetadataPages: 2);
         _ = session.GetAndResetReadTelemetry();
 
         Scalar8Scalar8RoutedInsertResult result = session.InsertRoutedScalar8Scalar8(rootOffset, profile, insertedKey, insertedIdentity, allowDuplicateKeys: true);
@@ -28506,7 +28685,7 @@ internal static partial class RawHarness
 
         PrintRead("ss8-8 decision root-split read", session.GetAndResetReadTelemetry());
         PrintCommit("ss8-8 decision root-split commit", result.Commit);
-        ValidateScalar8Scalar8RouteSplitCommit(result.Commit, profile);
+        ValidateScalar8Scalar8RouteSplitCommit(result.Commit, profile, allocatorMetadataPages: 1, expectedWriteCalls: 4);
         ValidateRoutedScalar8Scalar8ShelfShape(session, rootOffset, 0x00, sourceShelfOffset, profile, leftCount, Scalar8Scalar8Layout.EncodeUnsignedScalar8(128), Scalar8Scalar8Layout.EncodeUnsignedScalar8(128));
         ValidateRoutedScalar8Scalar8ShelfShape(session, rootOffset, 0x80, result.RightShelfOffset, profile, rightCount + 1, insertedKey, insertedIdentity);
     }
@@ -28565,7 +28744,7 @@ internal static partial class RawHarness
         long rootOffset = root.Offset;
         (long sourceShelfOffset, DataKernelCommitTelemetry linkCommit) = session.CreateScalar8Scalar8ShelfAndLinkRootRoutes(rootOffset, profile, encodedKeys, encodedIdentities, [0x00]);
         PrintCommit("ss8-8 decision transform shelf link", linkCommit);
-        ValidateScalar8Scalar8RouteLinkCommit(linkCommit, profile);
+        ValidateScalar8Scalar8RouteLinkCommit(linkCommit, profile, allocatorMetadataPages: 2);
         _ = session.GetAndResetReadTelemetry();
 
         Scalar8Scalar8RoutedInsertResult result = session.InsertRoutedScalar8Scalar8(rootOffset, profile, insertedKey, insertedIdentity, allowDuplicateKeys: true);
@@ -28576,7 +28755,7 @@ internal static partial class RawHarness
 
         PrintRead("ss8-8 decision transform read", session.GetAndResetReadTelemetry());
         PrintCommit("ss8-8 decision transform commit", result.Commit);
-        ValidateScalar8Scalar8TransformCommit(result.Commit, profile);
+        ValidateScalar8Scalar8TransformCommit(result.Commit, profile, allocatorMetadataPages: 1);
         ValidateTwoLevelRoutedScalar8Scalar8ShelfShape(session, rootOffset, 0x00, 0x00, sourceShelfOffset, result.LeftShelfOffset, profile, leftCount, Scalar8Scalar8Layout.EncodeUnsignedScalar8(128), Scalar8Scalar8Layout.EncodeUnsignedScalar8(128));
         ValidateTwoLevelRoutedScalar8Scalar8ShelfShape(session, rootOffset, 0x00, 0x80, sourceShelfOffset, result.RightShelfOffset, profile, rightCount + 1, insertedKey, insertedIdentity);
     }
@@ -31885,25 +32064,30 @@ internal static partial class RawHarness
 
     /// <summary>
     /// Validates `DataKernel.Commit` superseded-write elimination and adjacent write combining.<br/>
-    /// The scenario proves full-covered staged writes publish only their final image, partial overlaps remain ordered, append/overwrite ordering is preserved, and contiguous final segments combine for file-backed commits.<br/>
+    /// Reservation reuse and direct memory writes are checked separately from genuine borrowed-segment overlap and phase ordering.<br/>
     /// </summary>
     /// <param name="args">The harness command-line arguments.</param>
     /// <returns>Zero when file-backed and memory-backed commit coalescing behavior match expectations.</returns>
     private static int RunCommitCoalescingSanity(string[] args)
     {
-        string path = GetOption(args, "--path", Path.Combine(@"T:\LibraDex", "commit-coalescing-sanity.lbdx"));
+        string path = Path.GetFullPath(GetOption(args, "--path", Path.Combine("artifacts", "commit-coalescing-" + Guid.NewGuid().ToString("N"), "mixed.lbdx")));
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        CommitCoalescingSanityResult file = RunCommitCoalescingSanityCase(DataKernelBackingKind.File, path);
-        CommitCoalescingSanityResult memory = RunCommitCoalescingSanityCase(DataKernelBackingKind.Memory, path);
-
-        if (file.Checksum != memory.Checksum)
+        var failures = new List<Exception>();
+        var results = new List<CommitCoalescingSanityResult>();
+        foreach (var backing in new[] { DataKernelBackingKind.File, DataKernelBackingKind.Memory })
         {
-            throw new InvalidDataException("Commit coalescing file and memory backing did not produce matching logical results.");
+            try
+            {
+                var result = RunCommitCoalescingSanityCase(backing, path); results.Add(result);
+                Console.WriteLine($"PASS mixed {backing} writes={result.WriteCallCount} backingWrites={result.BackingWriteCallCount} bytes={result.BytesWritten} checksum={result.Checksum}");
+                if (backing == DataKernelBackingKind.File) File.Delete(path);
+            }
+            catch (Exception ex) { failures.Add(ex); Console.WriteLine($"FAIL mixed {backing}: {ex}"); }
         }
-
-        Console.WriteLine("commit coalescing sanity");
-        Console.WriteLine($"file writes={file.WriteCallCount} backingWrites={file.BackingWriteCallCount} bytes={file.BytesWritten} checksum={file.Checksum}");
-        Console.WriteLine($"memory writes={memory.WriteCallCount} backingWrites={memory.BackingWriteCallCount} bytes={memory.BytesWritten} checksum={memory.Checksum}");
+        if (results.Count == 2 && results[0].Checksum != results[1].Checksum)
+            failures.Add(new InvalidDataException("File and memory logical results differ."));
+        RunCommitCoalescingMatrix(Path.GetDirectoryName(path)!, failures);
+        if (failures.Count != 0) throw new AggregateException("Commit coalescing validation failed.", failures);
         Console.WriteLine($"commit-coalescing-sanity ok path={path}");
         return 0;
     }
@@ -31918,17 +32102,12 @@ internal static partial class RawHarness
     /// <returns>The commit shape and checksum for the validated backing kind.</returns>
     private static CommitCoalescingSanityResult RunCommitCoalescingSanityCase(DataKernelBackingKind backing, string path)
     {
-        if (backing == DataKernelBackingKind.File)
-        {
-            File.Delete(path);
-        }
-
         DataKernelOptions options = new(
             AppendBufferSize: 64,
             ReservedPrefixBytes: 0,
             FlushToDiskOnCommit: false,
             MaxCommitGapCoalesceBytes: 512);
-        using DataKernel kernel = OpenKernel(backing, path, FileMode.Create, options, DataKernelTelemetryOptions.EnabledOptions);
+        using DataKernel kernel = OpenKernel(backing, path, FileMode.CreateNew, options, DataKernelTelemetryOptions.EnabledOptions);
 
         RawDataReservation fullyCoveredOld = kernel.ReserveAt(4096, 16);
         FillPattern(fullyCoveredOld.Span, 11);
@@ -31958,20 +32137,6 @@ internal static partial class RawHarness
         FillPattern(nearGapRight.Span, 52);
 
         DataKernelCommitTelemetry commit = kernel.Commit();
-        long expectedBytesWritten = backing == DataKernelBackingKind.File ? 120 : 160;
-        long expectedBackingWrites = backing == DataKernelBackingKind.File ? 5 : 10;
-        if (commit.BackingWriteCallCount != expectedBackingWrites ||
-            commit.BytesWritten != expectedBytesWritten ||
-            commit.SetLengthCallCount != 0)
-        {
-            throw new InvalidDataException($"Unexpected commit coalescing telemetry for {backing}: backingWrites={commit.BackingWriteCallCount}, bytes={commit.BytesWritten}, setLength={commit.SetLengthCallCount}.");
-        }
-
-        if (backing == DataKernelBackingKind.File && commit.WriteCallCount != expectedBackingWrites)
-        {
-            throw new InvalidDataException($"Unexpected file commit coalescing write count {commit.WriteCallCount}; expected {expectedBackingWrites}.");
-        }
-
         long checksum = 0;
         checksum += ValidateKernelRange(kernel, 4096, CreatePattern(16, 12), "fully covered overwrite");
 
@@ -31991,7 +32156,14 @@ internal static partial class RawHarness
         byte[] nearGapExpected = CreatePattern(24, 50);
         CreatePattern(8, 51).CopyTo(nearGapExpected.AsSpan(0));
         CreatePattern(8, 52).CopyTo(nearGapExpected.AsSpan(16));
-        checksum += ValidateKernelRange(kernel, 16384, nearGapExpected, "near-gap coalesced write");
+        checksum += ValidateKernelRange(kernel, 16384, nearGapExpected, "contained reservation reuse");
+
+        // File: 32 Payload bytes plus 104 Publication bytes in five groups. Memory: all eleven direct reservations.
+        long expectedBytesWritten = backing == DataKernelBackingKind.File ? 136 : 176;
+        long expectedBackingWrites = backing == DataKernelBackingKind.File ? 6 : 11;
+        if (commit.BackingWriteCallCount != expectedBackingWrites || commit.BytesWritten != expectedBytesWritten ||
+            commit.SetLengthCallCount != 0 || commit.WriteCallCount != (backing == DataKernelBackingKind.File ? expectedBackingWrites : 0))
+            throw new InvalidDataException($"Unexpected mixed-reservation telemetry for {backing}: writes={commit.WriteCallCount}, backingWrites={commit.BackingWriteCallCount}, bytes={commit.BytesWritten}, setLength={commit.SetLengthCallCount}.");
 
         return new CommitCoalescingSanityResult(commit.WriteCallCount, commit.BackingWriteCallCount, commit.BytesWritten, checksum);
     }
@@ -35321,6 +35493,26 @@ internal static partial class RawHarness
                 }
             }
 
+            using (Catalog memory = Catalog.CreateMemory())
+            {
+                CatalogNamedStringKeyBuilder builder = memory.Indexes["people"]["name"].String;
+                using (LibraDexStringScalar8Index exact = builder.Create(stringKeys: StringKeys.Exact))
+                    ValidateGenericInsert(exact.Insert("Alice", 101), "memory pre-profile Alice insert");
+                using (LibraDexStringScalar8Index names = builder.AddSortKeyProfile(profiles[0]))
+                {
+                    LibraDexConditionEndCondition equality = LibraDexCondition
+                        .ForGroup("people")
+                        .Index("name").AsString.EqualTo("ALICE", ignoreCase: true, culture: "en-US")
+                        .EndCondition;
+                    IReadOnlyList<ulong> ids = equality
+                        .MaterializeWithProjectionBridge(names.ResolveIndex, names.ResolveProjection)
+                        .IDs
+                        .ToList<ulong>();
+                    if (ids.Count != 1 || ids[0] != 101)
+                        throw new InvalidDataException("Memory-backed sort-key profile backfill did not retain its source tuple.");
+                }
+            }
+
             LibraDexCompactionResult compaction = Catalog.Compact(path);
             if (compaction.LogicalIndexCount != 1 || compaction.TupleCount != 2)
             {
@@ -35351,7 +35543,7 @@ internal static partial class RawHarness
                 }
             }
 
-            Console.WriteLine("string-culture-profiles-sanity: 3 owned profiles; exact semantic routing; persisted sort versions; compaction and reopen pass");
+            Console.WriteLine("string-culture-profiles-sanity: file and memory backfill; 3 owned profiles; exact semantic routing; persisted sort versions; compaction and reopen pass");
             return 0;
         }
         finally
@@ -35363,4 +35555,52 @@ internal static partial class RawHarness
         }
     }
 
+    /// <summary>
+    /// Verifies that one maximum-size `VV` shelf reports capacity exhaustion without corrupting its persisted tuple image.<br/>
+    /// This deliberately fills the 128 KiB profile with the same key and identity widths used by the ordinary shelf check, then confirms that growth is unavailable and the failed insert leaves all accepted tuples readable.<br/>
+    /// Keeping this as a separate validation command lets the default shelf check cover successful growth and range behavior without assuming that 1,500 such records fit in one shelf.<br/>
+    /// </summary>
+    /// <param name="args">Unused validation-command arguments.<br/></param>
+    /// <returns>Zero when the maximum-size shelf rejects the next tuple cleanly after accepting a substantial run.<br/></returns>
+    private static int RunVarKeyVarIdentityShelfCapacitySanity(string[] args)
+    {
+        const int KeyLength = 48;
+        const int IdentityLength = 48;
+        const int PrefixCount = 8;
+        VarKeyVarIdentityProfile profile = VarKeyVarIdentityProfile.Default128KiB;
+        byte[] shelfBytes = VarKeyVarIdentity.CreateEmpty(profile);
+        for (int inserted = 0; inserted < 10_000; inserted++)
+        {
+            byte[] key = CreateVarKeyScalar8Key(inserted, KeyLength, PrefixCount);
+            byte[] identity = CreateScalar8VarIdentity(inserted, IdentityLength);
+            VarKeyVarIdentityInsertResult result = VarKeyVarIdentity.Insert(
+                shelfBytes, profile, key, identity, allowDuplicateKeys: true, out byte[] rewritten);
+            if (result == VarKeyVarIdentityInsertResult.Inserted)
+            {
+                shelfBytes = rewritten;
+                continue;
+            }
+
+            if (result != VarKeyVarIdentityInsertResult.Full || inserted <= 1000)
+                throw new InvalidDataException($"VV maximum shelf reached an unexpected capacity result at tuple {inserted}: {result}.");
+
+            byte[] beforeFailure = shelfBytes.ToArray();
+            bool grew = VarKeyVarIdentity.TryGrowAndInsert(
+                shelfBytes, profile, key, identity, allowDuplicateKeys: true,
+                out VarKeyVarIdentityProfile grownProfile, out _, out VarKeyVarIdentityInsertResult growthResult);
+            VarKeyVarIdentityReadOnly retained = new(shelfBytes, profile);
+            byte[] finalKey = CreateVarKeyScalar8Key(inserted - 1, KeyLength, PrefixCount);
+            byte[] finalIdentity = CreateScalar8VarIdentity(inserted - 1, IdentityLength);
+            if (grew || growthResult != VarKeyVarIdentityInsertResult.Full || grownProfile != profile ||
+                !shelfBytes.AsSpan().SequenceEqual(beforeFailure) ||
+                !retained.IsValid || retained.ItemCount != inserted ||
+                !retained.Contains(finalKey, finalIdentity) || retained.Contains(key, identity))
+                throw new InvalidDataException("VV maximum shelf exhaustion changed accepted tuples or reported a nonexistent growth class.");
+
+            Console.WriteLine($"vv-shelf-capacity-sanity ok accepted={inserted} rejected=Full shelfSize={profile.ShelfExtentSize}");
+            return 0;
+        }
+
+        throw new InvalidDataException("VV maximum shelf accepted 10,000 fixture tuples without reaching capacity.");
+    }
 }

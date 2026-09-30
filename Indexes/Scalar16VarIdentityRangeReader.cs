@@ -32,6 +32,7 @@ internal sealed class Scalar16VarIdentityRangeReader : IDisposable
     private ulong lowerEncodedKeyLow;
     private ulong upperEncodedKeyHigh;
     private ulong upperEncodedKeyLow;
+    private readonly bool descending;
     private bool traversalComplete = true;
     private bool disposed;
 
@@ -49,7 +50,8 @@ internal sealed class Scalar16VarIdentityRangeReader : IDisposable
         ulong lowerEncodedKeyHigh,
         ulong lowerEncodedKeyLow,
         ulong upperEncodedKeyHigh,
-        ulong upperEncodedKeyLow)
+        ulong upperEncodedKeyLow,
+        bool descending = false)
         : this()
     {
         this.session = session;
@@ -59,6 +61,7 @@ internal sealed class Scalar16VarIdentityRangeReader : IDisposable
         this.lowerEncodedKeyLow = lowerEncodedKeyLow;
         this.upperEncodedKeyHigh = upperEncodedKeyHigh;
         this.upperEncodedKeyLow = upperEncodedKeyLow;
+        this.descending = descending;
         pendingTargets = ArrayPool<PendingTarget>.Shared.Rent(DefaultShelfCapacity);
         visitedShelves = RouteVisitedOffsetSet.Rent();
         visitedRouters = RouteVisitedOffsetSet.Rent();
@@ -87,7 +90,9 @@ internal sealed class Scalar16VarIdentityRangeReader : IDisposable
 
         byte lowerPrefix = LibraDexFileSession.GetScalar16VarIdentityPrefix(lowerEncodedKeyHigh, lowerEncodedKeyLow, 0);
         byte upperPrefix = LibraDexFileSession.GetScalar16VarIdentityPrefix(upperEncodedKeyHigh, upperEncodedKeyLow, 0);
-        for (int prefix = upperPrefix; prefix >= lowerPrefix; prefix--)
+        for (int prefix = descending ? lowerPrefix : upperPrefix;
+            descending ? prefix <= upperPrefix : prefix >= lowerPrefix;
+            prefix += descending ? 1 : -1)
         {
             long targetOffset = session.FindRouterTarget(rootRouterOffset, (byte)prefix);
             if (targetOffset != 0)
@@ -264,9 +269,15 @@ internal sealed class Scalar16VarIdentityRangeReader : IDisposable
         ulong upperEncodedKeyHigh,
         ulong upperEncodedKeyLow)
     {
-        int startSlot = shelf.LowerBoundKey(lowerEncodedKeyHigh, lowerEncodedKeyLow);
+        if (shelf.IsDescending != descending)
+            throw new InvalidDataException("The SV16 shelf sort order does not match its range reader.");
+        int startSlot = shelf.LowerBoundKey(descending ? upperEncodedKeyHigh : lowerEncodedKeyHigh,
+            descending ? upperEncodedKeyLow : lowerEncodedKeyLow);
         int endSlot = startSlot;
-        while (endSlot < shelf.ItemCount && CompareKeys(shelf.ReadKeyHighAt(endSlot), shelf.ReadKeyLowAt(endSlot), upperEncodedKeyHigh, upperEncodedKeyLow) <= 0)
+        while (endSlot < shelf.ItemCount &&
+            (descending
+                ? CompareKeys(shelf.ReadKeyHighAt(endSlot), shelf.ReadKeyLowAt(endSlot), lowerEncodedKeyHigh, lowerEncodedKeyLow) >= 0
+                : CompareKeys(shelf.ReadKeyHighAt(endSlot), shelf.ReadKeyLowAt(endSlot), upperEncodedKeyHigh, upperEncodedKeyLow) <= 0))
         {
             endSlot++;
         }
@@ -428,19 +439,23 @@ internal sealed class Scalar16VarIdentityRangeReader : IDisposable
             byte upperPrefix = sharedStem
                 ? LibraDexFileSession.GetScalar16VarIdentityPrefix(targetUpperHigh, targetUpperLow, router.KeyDepth)
                 : byte.MaxValue;
-            int prefix = upperPrefix;
-            while (prefix >= lowerPrefix)
+            int prefix = descending ? lowerPrefix : upperPrefix;
+            while (descending ? prefix <= upperPrefix : prefix >= lowerPrefix)
             {
                 long routeTarget = router.FindTarget((byte)prefix);
                 if (routeTarget == 0)
                 {
-                    prefix--;
+                    prefix += descending ? 1 : -1;
                     continue;
                 }
 
                 int runEnd = prefix;
                 int runStart = prefix;
-                while (runStart > lowerPrefix && router.FindTarget((byte)(runStart - 1)) == routeTarget)
+                while (descending && runEnd < upperPrefix && router.FindTarget((byte)(runEnd + 1)) == routeTarget)
+                {
+                    runEnd++;
+                }
+                while (!descending && runStart > lowerPrefix && router.FindTarget((byte)(runStart - 1)) == routeTarget)
                 {
                     runStart--;
                 }
@@ -464,7 +479,7 @@ internal sealed class Scalar16VarIdentityRangeReader : IDisposable
                     childLowerLow,
                     childUpperHigh,
                     childUpperLow);
-                prefix = runStart - 1;
+                prefix = descending ? runEnd + 1 : runStart - 1;
             }
         }
 

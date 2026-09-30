@@ -1102,7 +1102,8 @@ internal sealed partial class LibraDexFileSession
         ReadOnlySpan<byte> key,
         ReadOnlySpan<byte> identity,
         bool allowDuplicateKeys,
-        int maxRouterHops)
+        int maxRouterHops,
+        bool descending = false)
     {
         if (key.Length <= 0 || key.Length > maxKeyLength || identity.Length <= 0 || identity.Length > maxIdentityLength)
         {
@@ -1121,7 +1122,7 @@ internal sealed partial class LibraDexFileSession
         bool createdInitialShelfRoute = false;
         if (initialTargetOffset == 0)
         {
-            VarKeyVarIdentityProfile initialProfile = SelectInitialVarKeyVarIdentityProfile(maxKeyLength, maxIdentityLength);
+            VarKeyVarIdentityProfile initialProfile = SelectInitialVarKeyVarIdentityProfile(maxKeyLength, maxIdentityLength, descending);
             _ = CreateVarKeyVarIdentityShelfAndLinkRootRoute(rootRouterOffset, rootPrefix, initialProfile);
             createdInitialShelfRoute = true;
         }
@@ -1130,7 +1131,7 @@ internal sealed partial class LibraDexFileSession
         VarKeyVarIdentityRouteTarget target = pathTarget.Target;
         if (target.Kind == VarKeyVarIdentityRouteTargetKind.None)
         {
-            VarKeyVarIdentityProfile coldProfile = SelectInitialVarKeyVarIdentityProfile(maxKeyLength, maxIdentityLength);
+            VarKeyVarIdentityProfile coldProfile = SelectInitialVarKeyVarIdentityProfile(maxKeyLength, maxIdentityLength, descending);
             if (TryInsertVarKeyVarIdentityDirectColdRoute(
                 rootRouterOffset,
                 pathTarget.ParentRouterOffset,
@@ -1151,7 +1152,8 @@ internal sealed partial class LibraDexFileSession
                 key,
                 identity,
                 allowDuplicateKeys,
-                maxRouterHops);
+                maxRouterHops,
+                descending);
         }
 
         if (target.Kind == VarKeyVarIdentityRouteTargetKind.TerminalVarIdentityRoot)
@@ -1253,7 +1255,8 @@ internal sealed partial class LibraDexFileSession
                     key,
                     identity,
                     allowDuplicateKeys,
-                    maxRouterHops);
+                    maxRouterHops,
+                    descending);
             }
 
             existingShelf.Release(clearShelfBytes: true);
@@ -1310,7 +1313,8 @@ internal sealed partial class LibraDexFileSession
                     key,
                     identity,
                     allowDuplicateKeys,
-                    maxRouterHops);
+                    maxRouterHops,
+                    descending);
             }
 
             ushort childRouterKeyDepth = parentRangeStart < parentRangeEnd
@@ -1474,7 +1478,7 @@ internal sealed partial class LibraDexFileSession
         }
 
         using PooledTerminalVarIdentitySet identities = ReadScalar8VarIdentityTerminalIdentitiesPooled(rootOffset, key, shelfExtentSize);
-        int insertIndex = LowerBoundTerminalVarIdentity(identities, identity);
+        int insertIndex = LowerBoundTerminalVarIdentity(identities, identity, rootBytes[TerminalIdentityRootLayout.SortDirectionOffset] != 0);
         if (insertIndex < identities.Count && VarKeyVarIdentityLayout.IdentityBytesEqual(identities.ReadAt(insertIndex), identity))
         {
             return new VarKeyVarIdentityRoutedInsertResult(
@@ -1560,7 +1564,7 @@ internal sealed partial class LibraDexFileSession
 
         if (!incomingAdded)
         {
-            int insertIndex = LowerBoundTerminalVarIdentity(identities, identity);
+            int insertIndex = LowerBoundTerminalVarIdentity(identities, identity, profile.Descending);
             identities.InsertAt(insertIndex, identity);
         }
 
@@ -1569,7 +1573,8 @@ internal sealed partial class LibraDexFileSession
             TerminalIdentityRootLayout.ShapeVarKey,
             key,
             terminalShelfExtentSize,
-            identities);
+            identities,
+            profile.Descending);
         varKeyVarIdentityMutableBatchShelves.Remove(pathTarget.Target.Offset);
         long replacementOffset = CreateVarKeyVarIdentityTerminalRouterChain(
             firstDepth: 0,
@@ -1672,7 +1677,7 @@ internal sealed partial class LibraDexFileSession
                 }
 
                 int order = VarKeyVarIdentityLayout.CompareIdentityBytes(identity, currentIdentity);
-                if (!incomingAdded && order < 0)
+                if (!incomingAdded && (profile.Descending ? order > 0 : order < 0))
                 {
                     terminalIdentities.Add(identity);
                     incomingAdded = true;
@@ -1724,7 +1729,8 @@ internal sealed partial class LibraDexFileSession
                 TerminalIdentityRootLayout.ShapeVarKey,
                 key,
                 terminalShelfExtentSize,
-                terminalIdentities);
+                terminalIdentities,
+                profile.Descending);
             varKeyVarIdentityMutableBatchShelves.Remove(pathTarget.Target.Offset);
             RawDataReservation sourceRewrite = kernel.ReserveAt(pathTarget.Target.Offset, profile.ShelfExtentSize);
             remainderShelfBytes.CopyTo(sourceRewrite.Span);
@@ -1851,7 +1857,7 @@ internal sealed partial class LibraDexFileSession
 
             ReadOnlySpan<byte> currentIdentity = existingShelf.ReadIdentityAt(i);
             int order = VarKeyVarIdentityLayout.CompareIdentityBytes(identity, currentIdentity);
-            if (!incomingAdded && order < 0)
+            if (!incomingAdded && (existingShelf.Profile.Descending ? order > 0 : order < 0))
             {
                 identities.Add(identity);
                 incomingAdded = true;
@@ -2005,7 +2011,7 @@ internal sealed partial class LibraDexFileSession
 
         int terminalKeyLength = TerminalIdentityRootLayout.ReadKeyLength(rootBytes);
         byte[] terminalKey = rootBytes.AsSpan(TerminalIdentityRootLayout.KeyBytesOffset, terminalKeyLength).ToArray();
-        VarKeyVarIdentityProfile profile = VarKeyVarIdentityProfile.Create(4 * 1024, maxKeyLength, maxIdentityLength);
+        VarKeyVarIdentityProfile profile = VarKeyVarIdentityProfile.Create(4 * 1024, maxKeyLength, maxIdentityLength) with { Descending = rootBytes[TerminalIdentityRootLayout.SortDirectionOffset] != 0 };
         byte[] incomingShelf = VarKeyVarIdentity.CreateEmpty(profile);
         VarKeyVarIdentityInsertResult insertResult = VarKeyVarIdentity.InsertWithMutationHintInPlace(
             incomingShelf,
@@ -2138,10 +2144,10 @@ internal sealed partial class LibraDexFileSession
         int terminalShelfExtentSize = TerminalIdentityRootLayout.ReadShelfExtentSize(rootBytes);
         long oldFirstShelfOffset = TerminalIdentityRootLayout.ReadFirstShelfOffset(rootBytes);
         using PooledTerminalVarIdentitySet terminalIdentities = ReadScalar8VarIdentityTerminalIdentitiesPooled(pathTarget.Target.Offset, terminalKey, terminalShelfExtentSize);
-        VarKeyVarIdentityProfile profile = VarKeyVarIdentityProfile.Create(32 * 1024, maxKeyLength, maxIdentityLength);
+        VarKeyVarIdentityProfile profile = VarKeyVarIdentityProfile.Create(32 * 1024, maxKeyLength, maxIdentityLength) with { Descending = rootBytes[TerminalIdentityRootLayout.SortDirectionOffset] != 0 };
         if (!TryBuildDeterminalizedVarKeyVarIdentityShelf(profile, terminalKey, terminalIdentities, incomingKey, incomingIdentity, allowDuplicateKeys, out byte[] shelfBytes, out VarKeyVarIdentityInsertResult insertResult))
         {
-            profile = VarKeyVarIdentityProfile.Create(128 * 1024, maxKeyLength, maxIdentityLength);
+            profile = VarKeyVarIdentityProfile.Create(128 * 1024, maxKeyLength, maxIdentityLength) with { Descending = rootBytes[TerminalIdentityRootLayout.SortDirectionOffset] != 0 };
             if (!TryBuildDeterminalizedVarKeyVarIdentityShelf(profile, terminalKey, terminalIdentities, incomingKey, incomingIdentity, allowDuplicateKeys, out shelfBytes, out insertResult))
             {
                 throw new InvalidDataException($"The VV terminal route could not be de-terminalized into an ordinary shelf. TerminalKey={Convert.ToHexString(terminalKey)}; IncomingKey={Convert.ToHexString(incomingKey)}; TerminalIdentities={terminalIdentities.Count.ToString(CultureInfo.InvariantCulture)}; RouteDepth={pathTarget.Target.RouterDepth.ToString(CultureInfo.InvariantCulture)}.");
@@ -2385,14 +2391,14 @@ internal sealed partial class LibraDexFileSession
     /// <param name="maxKeyLength">The maximum raw key length in bytes.</param>
     /// <param name="maxIdentityLength">The maximum raw identity length in bytes.</param>
     /// <returns>The initial `VV` shelf profile for the current backing kind and write intent.</returns>
-    private VarKeyVarIdentityProfile SelectInitialVarKeyVarIdentityProfile(int maxKeyLength, int maxIdentityLength)
+    private VarKeyVarIdentityProfile SelectInitialVarKeyVarIdentityProfile(int maxKeyLength, int maxIdentityLength, bool descending = false)
     {
         if (BackingKind != DataKernelBackingKind.Memory)
         {
-            return VarKeyVarIdentityProfile.SelectInitial(currentWriteIntent, maxKeyLength, maxIdentityLength);
+            return VarKeyVarIdentityProfile.SelectInitial(currentWriteIntent, maxKeyLength, maxIdentityLength) with { Descending = descending };
         }
 
-        return ParseMemoryVarKeyVarIdentityShelfKiB() switch
+        return (ParseMemoryVarKeyVarIdentityShelfKiB() switch
         {
             4 => VarKeyVarIdentityProfile.Create(VarKeyVarIdentityProfile.Default4KiB.ShelfExtentSize, maxKeyLength, maxIdentityLength),
             8 => VarKeyVarIdentityProfile.Create(VarKeyVarIdentityProfile.Default8KiB.ShelfExtentSize, maxKeyLength, maxIdentityLength),
@@ -2401,7 +2407,7 @@ internal sealed partial class LibraDexFileSession
             64 => VarKeyVarIdentityProfile.Create(VarKeyVarIdentityProfile.Default64KiB.ShelfExtentSize, maxKeyLength, maxIdentityLength),
             128 => VarKeyVarIdentityProfile.Create(VarKeyVarIdentityProfile.Default128KiB.ShelfExtentSize, maxKeyLength, maxIdentityLength),
             _ => VarKeyVarIdentityProfile.Create(VarKeyVarIdentityProfile.Default8KiB.ShelfExtentSize, maxKeyLength, maxIdentityLength)
-        };
+        }) with { Descending = descending };
     }
 
     /// <summary>
@@ -2424,7 +2430,8 @@ internal sealed partial class LibraDexFileSession
         ReadOnlySpan<byte> lowerKey,
         ReadOnlySpan<byte> upperKey,
         int maxRouterHops = DefaultVarKeyVarIdentityMaxRouterHops,
-        bool decodeLogicalKeys = false)
+        bool decodeLogicalKeys = false,
+        bool descending = false)
     {
         if (lowerKey.SequenceCompareTo(upperKey) > 0)
         {
@@ -2444,7 +2451,8 @@ internal sealed partial class LibraDexFileSession
             lowerKey,
             upperKey,
             maxRouterHops,
-            decodeLogicalKeys);
+            decodeLogicalKeys,
+            descending);
     }
 
     /// <summary>
@@ -3253,7 +3261,9 @@ internal sealed partial class LibraDexFileSession
             {
                 ReadOnlySpan<byte> currentKey = existingShelf.ReadKeyAt(sourceIndex);
                 ReadOnlySpan<byte> currentIdentity = existingShelf.ReadIdentityAt(sourceIndex);
-                if (!inserted && CompareVarKeyVarIdentityTuple(currentKey, currentIdentity, key, identity) > 0)
+                if (!inserted && (profile.Descending
+                    ? CompareVarKeyVarIdentityTuple(currentKey, currentIdentity, key, identity) < 0
+                    : CompareVarKeyVarIdentityTuple(currentKey, currentIdentity, key, identity) > 0))
                 {
                     keyOffsets[targetIndex] = -1;
                     keyLengths[targetIndex] = key.Length;
@@ -3638,24 +3648,25 @@ internal sealed partial class LibraDexFileSession
         for (int i = 1; i < keyOffsets.Length; i++)
         {
             byte currentPrefix = GetVarKeyVarIdentitySplitSourcePrefix(existingShelfBytes, keyOffsets[i], keyLengths[i], incomingKey, keyDepth);
-            if (currentPrefix < priorPrefix)
+            if (profile.Descending ? currentPrefix > priorPrefix : currentPrefix < priorPrefix)
             {
                 rightPrefixByte = 0;
                 return false;
             }
-            if (currentPrefix > priorPrefix)
+            if (profile.Descending ? currentPrefix < priorPrefix : currentPrefix > priorPrefix)
             {
-                int leftCount = i;
-                int rightCount = keyOffsets.Length - i;
-                long rightRecordBytes = totalRecordBytes - leftRecordBytes;
+                int leftCount = profile.Descending ? keyOffsets.Length - i : i;
+                int rightCount = profile.Descending ? i : keyOffsets.Length - i;
+                long rightRecordBytes = profile.Descending ? leftRecordBytes : totalRecordBytes - leftRecordBytes;
+                long candidateLeftRecordBytes = profile.Descending ? totalRecordBytes - leftRecordBytes : leftRecordBytes;
                 bool fits = leftCount * VarKeyVarIdentityLayout.SlotSize <= slotCapacityBytes &&
                     rightCount * VarKeyVarIdentityLayout.SlotSize <= slotCapacityBytes &&
-                    leftRecordBytes <= recordCapacityBytes &&
+                    candidateLeftRecordBytes <= recordCapacityBytes &&
                     rightRecordBytes <= recordCapacityBytes;
                 int balanceDistance = Math.Abs(i - (keyOffsets.Length - i));
                 int hintDistance = Math.Abs(currentPrefix - hintRightPrefixByte);
                 long maximumUtilization = Math.Max(
-                    Math.Max(leftRecordBytes * slotCapacityBytes, (long)leftCount * VarKeyVarIdentityLayout.SlotSize * recordCapacityBytes),
+                    Math.Max(candidateLeftRecordBytes * slotCapacityBytes, (long)leftCount * VarKeyVarIdentityLayout.SlotSize * recordCapacityBytes),
                     Math.Max(rightRecordBytes * slotCapacityBytes, (long)rightCount * VarKeyVarIdentityLayout.SlotSize * recordCapacityBytes));
                 if (fits &&
                     (maximumUtilization < bestMaximumUtilization ||
@@ -3663,7 +3674,7 @@ internal sealed partial class LibraDexFileSession
                      (maximumUtilization == bestMaximumUtilization && balanceDistance == bestBalanceDistance && hintDistance < bestHintDistance)))
                 {
                     bestRightStart = i;
-                    bestBoundary = currentPrefix;
+                    bestBoundary = profile.Descending ? priorPrefix : currentPrefix;
                     bestMaximumUtilization = maximumUtilization;
                     bestBalanceDistance = balanceDistance;
                     bestHintDistance = hintDistance;
@@ -3813,7 +3824,7 @@ internal sealed partial class LibraDexFileSession
         }
 
         int shelfExtentSize = VarKeyVarIdentityLayout.ReadShelfExtentSize(header);
-        VarKeyVarIdentityProfile profile = VarKeyVarIdentityProfile.Create(shelfExtentSize, maxKeyLength, maxIdentityLength);
+        VarKeyVarIdentityProfile profile = VarKeyVarIdentityProfile.Create(shelfExtentSize, maxKeyLength, maxIdentityLength) with { Descending = (VarKeyVarIdentityLayout.ReadFlags(header) & VarKeyVarIdentityLayout.DescendingFlag) != 0 };
         byte[] shelfBytes = new byte[shelfExtentSize];
         header.CopyTo(shelfBytes.AsSpan(0, header.Length));
         kernel.Read(shelfOffset, shelfBytes);
@@ -3948,7 +3959,7 @@ internal sealed partial class LibraDexFileSession
             varKeyVarIdentityReadShelfCache.TryGetValue(shelfOffset, out byte[]? cachedShelfBytes))
         {
             int cachedShelfExtentSize = VarKeyVarIdentityLayout.ReadShelfExtentSize(cachedShelfBytes);
-            profile = VarKeyVarIdentityProfile.Create(cachedShelfExtentSize, maxKeyLength, maxIdentityLength);
+            profile = VarKeyVarIdentityProfile.Create(cachedShelfExtentSize, maxKeyLength, maxIdentityLength) with { Descending = (VarKeyVarIdentityLayout.ReadFlags(cachedShelfBytes) & VarKeyVarIdentityLayout.DescendingFlag) != 0 };
             return cachedShelfBytes;
         }
 
@@ -3962,7 +3973,7 @@ internal sealed partial class LibraDexFileSession
         }
 
         int shelfExtentSize = VarKeyVarIdentityLayout.ReadShelfExtentSize(header);
-        profile = VarKeyVarIdentityProfile.Create(shelfExtentSize, maxKeyLength, maxIdentityLength);
+        profile = VarKeyVarIdentityProfile.Create(shelfExtentSize, maxKeyLength, maxIdentityLength) with { Descending = (VarKeyVarIdentityLayout.ReadFlags(header) & VarKeyVarIdentityLayout.DescendingFlag) != 0 };
         byte[] shelfBytes = new byte[shelfExtentSize];
         header.CopyTo(shelfBytes.AsSpan(0, header.Length));
         kernel.Read(shelfOffset, shelfBytes);
@@ -4031,7 +4042,7 @@ internal sealed partial class LibraDexFileSession
             }
 
             int shelfExtentSize = VarKeyVarIdentityLayout.ReadShelfExtentSize(header);
-            profile = VarKeyVarIdentityProfile.Create(shelfExtentSize, maxKeyLength, maxIdentityLength);
+            profile = VarKeyVarIdentityProfile.Create(shelfExtentSize, maxKeyLength, maxIdentityLength) with { Descending = (VarKeyVarIdentityLayout.ReadFlags(header) & VarKeyVarIdentityLayout.DescendingFlag) != 0 };
             shelfBytes = ArrayPool<byte>.Shared.Rent(shelfExtentSize);
             ownsBytes = true;
             kernel.Read(shelfOffset, shelfBytes.AsSpan(0, shelfExtentSize));

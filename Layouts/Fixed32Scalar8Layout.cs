@@ -14,6 +14,7 @@ internal static class Fixed32Scalar8Layout
     public const ushort HeaderSize = 32;
     public const int SlotSize = sizeof(ushort);
     public const ushort DeletedSlotOffset = 0;
+    public const uint DescendingFlag = 1U;
     public const int KeySize = sizeof(ulong) * 4;
     public const int IdentitySize = sizeof(ulong);
     public const int ItemSize = KeySize + IdentitySize;
@@ -116,7 +117,7 @@ internal static class Fixed32Scalar8Layout
 
     /// <summary>
     /// Writes shelf-local flags to the persisted header.<br/>
-    /// The first implementation writes zero and reserves the field for later local shelf state.<br/>
+    /// The descending flag records the physical tuple direction; other bits remain reserved for shelf-local state.<br/>
     /// </summary>
     /// <param name="target">The writable shelf bytes.</param>
     /// <param name="value">The flags to persist.</param>

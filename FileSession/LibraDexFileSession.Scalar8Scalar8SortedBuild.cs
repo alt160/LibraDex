@@ -439,7 +439,7 @@ internal sealed partial class LibraDexFileSession
         shelf.Initialize();
         for (int i = 0; i < count; i++)
         {
-            Scalar8Scalar8SortedTuple tuple = tuples.GetTuple(start + i);
+            Scalar8Scalar8SortedTuple tuple = tuples.GetTuple(state.Profile.Descending ? end - 1 - i : start + i);
             int itemOffset = Scalar8Scalar8Layout.GetItemOffset(state.Profile, i);
             Scalar8Scalar8Layout.WriteItemKey(reservation.Span, itemOffset, tuple.Key);
             Scalar8Scalar8Layout.WriteItemIdentity(reservation.Span, itemOffset, tuple.Identity);
@@ -464,10 +464,11 @@ internal sealed partial class LibraDexFileSession
         int capacity = TerminalIdentity8ShelfLayout.GetCapacity(state.Profile.ShelfExtentSize);
         long nextOffset = 0;
         long tailOffset = 0;
-        for (int chunkEnd = end; chunkEnd > start;)
+        int boundary = state.Profile.Descending ? start : end;
+        while (state.Profile.Descending ? boundary < end : boundary > start)
         {
-            int chunkStart = Math.Max(start, chunkEnd - capacity);
-            int count = chunkEnd - chunkStart;
+            int chunkStart = state.Profile.Descending ? boundary : Math.Max(start, boundary - capacity);
+            int count = state.Profile.Descending ? Math.Min(capacity, end - boundary) : boundary - chunkStart;
             RawDataReservation shelf = kernel.Reserve(state.Profile.ShelfExtentSize);
             shelf.Span.Clear();
             TerminalIdentity8ShelfLayout.WriteMagic(shelf.Span, TerminalIdentity8ShelfLayout.Magic);
@@ -476,12 +477,13 @@ internal sealed partial class LibraDexFileSession
             TerminalIdentity8ShelfLayout.WriteItemCount(shelf.Span, count);
             TerminalIdentity8ShelfLayout.WriteNextShelfOffset(shelf.Span, nextOffset);
             for (int i = 0; i < count; i++)
-                TerminalIdentity8ShelfLayout.WriteIdentity(shelf.Span, i, tuples.GetTuple(chunkStart + i).Identity);
+                TerminalIdentity8ShelfLayout.WriteIdentity(shelf.Span, i,
+                    tuples.GetTuple(state.Profile.Descending ? chunkStart + count - 1 - i : chunkStart + i).Identity);
             if (tailOffset == 0)
                 tailOffset = shelf.Extent.Offset;
             nextOffset = shelf.Extent.Offset;
             state.TerminalShelfCount++;
-            chunkEnd = chunkStart;
+            boundary = state.Profile.Descending ? chunkStart + count : chunkStart;
         }
 
         Span<byte> keyBytes = stackalloc byte[Scalar8Scalar8Layout.KeySize];
@@ -493,6 +495,7 @@ internal sealed partial class LibraDexFileSession
             keyBytes,
             state.Profile.ShelfExtentSize,
             nextOffset);
+        root.Span[TerminalIdentityRootLayout.SortDirectionOffset] = state.Profile.Descending ? (byte)1 : (byte)0;
         TerminalIdentityRootLayout.WriteTailShelfOffset(root.Span, tailOffset);
         state.TerminalRootCount++;
         return root.Extent.Offset;

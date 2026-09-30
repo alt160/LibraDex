@@ -24,6 +24,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
     private readonly bool ownsCatalog;
     private readonly LibraDexIndex<TKey, TIdentity>? exactReversedProjection;
     private readonly DateTimeKeyEncoding dateTimeKeyEncoding;
+    private readonly LibraDexIndexSortOrder sortOrder;
     private readonly object internalScalar8Scalar8IndexSync = new();
     private readonly object internalQueuedWriterSync = new();
     private Scalar8Scalar8Index? internalScalar8Scalar8Index;
@@ -52,6 +53,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
         LibraDexIndexShapeSpec? logicalShape = null,
         LibraDexIndex<TKey, TIdentity>? exactReversedProjection = null,
         DateTimeKeyEncoding dateTimeKeyEncoding = DateTimeKeyEncoding.CalendarSdt,
+        LibraDexIndexSortOrder sortOrder = LibraDexIndexSortOrder.Ascending,
         long readCacheMaxBytes = 0,
         IdentityLookupMode identityLookupMode = IdentityLookupMode.Explicit,
         bool ownsCatalog = false)
@@ -74,6 +76,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
         LogicalShape = logicalShape;
         this.exactReversedProjection = exactReversedProjection;
         this.dateTimeKeyEncoding = logicalShape?.DateTimeKeyEncoding ?? dateTimeKeyEncoding;
+        this.sortOrder = sortOrder;
         LibraDexIdentityLookup.ValidateMode(identityLookupMode);
         SlotIndex = slotIndex;
         Name = name;
@@ -139,6 +142,11 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
     /// Shape descriptors are the planner-facing counterpart to Abraxas selector/index metadata; catalog metadata version 2 can rehydrate them after reopen.<br/>
     /// </summary>
     public LibraDexIndexShapeSpec? LogicalShape { get; }
+
+    /// <summary>
+    /// Gets the persisted natural key traversal order for this index.<br/>
+    /// </summary>
+    public LibraDexIndexSortOrder SortOrder => sortOrder;
 
     /// <summary>
     /// Gets the DateTime-like key encoding contract used by this index.<br/>
@@ -231,9 +239,10 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
     /// <returns>The runtime `SS8-8` shelf profile for reads, writes, and delete range plans.</returns>
     internal Scalar8Scalar8Profile GetScalar8Scalar8Profile()
     {
-        return BackingKind == DataKernelBackingKind.Memory
+        Scalar8Scalar8Profile profile = BackingKind == DataKernelBackingKind.Memory
             ? MemoryScalar8Scalar8Profile
             : Scalar8Scalar8Profile.Default32KiB;
+        return profile with { Descending = sortOrder == LibraDexIndexSortOrder.Descending };
     }
 
     /// <summary>
@@ -269,9 +278,10 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
     /// <returns>The runtime `SS16-8` shelf profile for reads, writes, and range plans.</returns>
     internal Scalar16Scalar8Profile GetScalar16Scalar8Profile()
     {
-        return BackingKind == DataKernelBackingKind.Memory
+        Scalar16Scalar8Profile profile = BackingKind == DataKernelBackingKind.Memory
             ? MemoryScalar16Scalar8Profile
             : Scalar16Scalar8Profile.Default32KiB;
+        return profile with { Descending = sortOrder == LibraDexIndexSortOrder.Descending };
     }
 
     /// <summary>
@@ -281,9 +291,10 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
     /// <returns>The runtime `SS8-16` shelf profile for reads, writes, and range plans.</returns>
     internal Scalar8Scalar16Profile GetScalar8Scalar16Profile()
     {
-        return BackingKind == DataKernelBackingKind.Memory
+        Scalar8Scalar16Profile profile = BackingKind == DataKernelBackingKind.Memory
             ? MemoryScalar8Scalar16Profile
             : Scalar8Scalar16Profile.Default32KiB;
+        return profile with { Descending = sortOrder == LibraDexIndexSortOrder.Descending };
     }
 
     /// <summary>
@@ -293,9 +304,10 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
     /// <returns>The runtime `SS16-16` shelf profile for reads, writes, and range plans.</returns>
     internal Scalar16Scalar16Profile GetScalar16Scalar16Profile()
     {
-        return BackingKind == DataKernelBackingKind.Memory
+        Scalar16Scalar16Profile profile = BackingKind == DataKernelBackingKind.Memory
             ? MemoryScalar16Scalar16Profile
             : Scalar16Scalar16Profile.Default24KiB;
+        return profile with { Descending = sortOrder == LibraDexIndexSortOrder.Descending };
     }
 
     /// <summary>
@@ -305,9 +317,10 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
     /// <returns>The runtime `FS32-8` shelf profile for reads, writes, and range plans.</returns>
     internal Fixed32Scalar8Profile GetFixed32Scalar8Profile()
     {
-        return BackingKind == DataKernelBackingKind.Memory
+        Fixed32Scalar8Profile profile = BackingKind == DataKernelBackingKind.Memory
             ? MemoryFixed32Scalar8Profile
             : Fixed32Scalar8Profile.Default40KiB;
+        return profile with { Descending = sortOrder == LibraDexIndexSortOrder.Descending };
     }
 
     /// <summary>
@@ -317,9 +330,10 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
     /// <returns>The runtime `FS32-16` shelf profile for reads, writes, and range plans.</returns>
     internal Fixed32Scalar16Profile GetFixed32Scalar16Profile()
     {
-        return BackingKind == DataKernelBackingKind.Memory
+        Fixed32Scalar16Profile profile = BackingKind == DataKernelBackingKind.Memory
             ? MemoryFixed32Scalar16Profile
             : Fixed32Scalar16Profile.Default40KiB;
+        return profile with { Descending = sortOrder == LibraDexIndexSortOrder.Descending };
     }
 
     /// <summary>
@@ -500,6 +514,12 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
     /// Gets the open catalog that owns this index handle.<br/>
     /// </summary>
     public Catalog Catalog => catalog;
+
+    /// <summary>
+    /// Gets the physical slot of the maintained exact reversed projection, when one belongs to this index.<br/>
+    /// An index-owned durability batch registers both slots so catalog-opened mutation handles can join its pending writer state safely.<br/>
+    /// </summary>
+    internal int? ExactReversedProjectionSlotIndex => exactReversedProjection?.SlotIndex;
 
     /// <summary>
     /// Inserts the reversed-key companion tuple into the maintained exact reversed projection when this index owns one.<br/>
@@ -1314,7 +1334,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
         {
             changed++;
         }
-        else if (SupportsStoredNullKeyRoutes())
+        else if (SupportsNullKeyRoute() && SupportsStoredNullKeyRoutes())
         {
             if (ContainsNullKeyIdentity(NullKey.Null, typedIdentity) &&
                 Rekey(typedIdentity, NullKey.Null, typedNewKey))
@@ -1513,7 +1533,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
         switch (request.CriteriaKind)
         {
             case LibraDexCriteriaKind.All:
-                foreach (TIdentity identity in IterateAllIdentityObjects(request.TakeLimit))
+                foreach (TIdentity identity in IterateAllIdentityObjects(request.TakeLimit, request.Direction))
                 {
                     yield return identity;
                 }
@@ -1522,7 +1542,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
             case LibraDexCriteriaKind.Find:
                 foreach (TIdentity identity in IterateIdentityObjects(OpenRangeReader(
                     RequireObjectKey(RequireCriterionValue(request.Values, 0), nameof(request.Values)),
-                    RequireObjectKey(RequireCriterionValue(request.Values, 0), nameof(request.Values))), request.TakeLimit))
+                    RequireObjectKey(RequireCriterionValue(request.Values, 0), nameof(request.Values)), request.Direction), request.TakeLimit))
                 {
                     yield return identity;
                 }
@@ -1531,35 +1551,35 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
             case LibraDexCriteriaKind.Between:
                 foreach (TIdentity identity in IterateIdentityObjects(OpenRangeReader(
                     RequireObjectKey(RequireCriterionValue(request.Values, 0), nameof(request.Values)),
-                    RequireObjectKey(RequireCriterionValue(request.Values, 1), nameof(request.Values))), request.TakeLimit))
+                    RequireObjectKey(RequireCriterionValue(request.Values, 1), nameof(request.Values)), request.Direction), request.TakeLimit))
                 {
                     yield return identity;
                 }
 
                 yield break;
             case LibraDexCriteriaKind.Before:
-                foreach (TIdentity identity in IterateIdentityObjects(OpenBeforeRangeReader(RequireObjectKey(RequireCriterionValue(request.Values, 0), nameof(request.Values))), request.TakeLimit))
+                foreach (TIdentity identity in IterateIdentityObjects(OpenBeforeRangeReader(RequireObjectKey(RequireCriterionValue(request.Values, 0), nameof(request.Values)), request.Direction), request.TakeLimit))
                 {
                     yield return identity;
                 }
 
                 yield break;
             case LibraDexCriteriaKind.AtOrBefore:
-                foreach (TIdentity identity in IterateIdentityObjects(OpenAtOrBeforeRangeReader(RequireObjectKey(RequireCriterionValue(request.Values, 0), nameof(request.Values))), request.TakeLimit))
+                foreach (TIdentity identity in IterateIdentityObjects(OpenAtOrBeforeRangeReader(RequireObjectKey(RequireCriterionValue(request.Values, 0), nameof(request.Values)), request.Direction), request.TakeLimit))
                 {
                     yield return identity;
                 }
 
                 yield break;
             case LibraDexCriteriaKind.After:
-                foreach (TIdentity identity in IterateIdentityObjects(OpenAfterRangeReader(RequireObjectKey(RequireCriterionValue(request.Values, 0), nameof(request.Values))), request.TakeLimit))
+                foreach (TIdentity identity in IterateIdentityObjects(OpenAfterRangeReader(RequireObjectKey(RequireCriterionValue(request.Values, 0), nameof(request.Values)), request.Direction), request.TakeLimit))
                 {
                     yield return identity;
                 }
 
                 yield break;
             case LibraDexCriteriaKind.AtOrAfter:
-                foreach (TIdentity identity in IterateIdentityObjects(OpenAtOrAfterRangeReader(RequireObjectKey(RequireCriterionValue(request.Values, 0), nameof(request.Values))), request.TakeLimit))
+                foreach (TIdentity identity in IterateIdentityObjects(OpenAtOrAfterRangeReader(RequireObjectKey(RequireCriterionValue(request.Values, 0), nameof(request.Values)), request.Direction), request.TakeLimit))
                 {
                     yield return identity;
                 }
@@ -1567,70 +1587,70 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
                 yield break;
             case LibraDexCriteriaKind.In:
             case LibraDexCriteriaKind.InSet:
-                foreach (TIdentity identity in IterateMembershipIdentityObjects(request.Values, request.TakeLimit))
+                foreach (TIdentity identity in IterateMembershipIdentityObjects(request.Values, request.TakeLimit, request.Direction))
                 {
                     yield return identity;
                 }
 
                 yield break;
             case LibraDexCriteriaKind.MultiRange:
-                foreach (TIdentity identity in IterateMultiRangeIdentityObjects(request.Values, request.TakeLimit))
+                foreach (TIdentity identity in IterateMultiRangeIdentityObjects(request.Values, request.TakeLimit, request.Direction))
                 {
                     yield return identity;
                 }
 
                 yield break;
             case LibraDexCriteriaKind.StructuredComponent:
-                foreach (TIdentity identity in IterateStructuredComponentIdentityObjects(request.Values, request.TakeLimit))
+                foreach (TIdentity identity in IterateStructuredComponentIdentityObjects(request.Values, request.TakeLimit, request.Direction))
                 {
                     yield return identity;
                 }
 
                 yield break;
             case LibraDexCriteriaKind.GuidPattern:
-                foreach (TIdentity identity in IterateGuidPatternIdentityObjects(request.Values, request.TakeLimit))
+                foreach (TIdentity identity in IterateGuidPatternIdentityObjects(request.Values, request.TakeLimit, request.Direction))
                 {
                     yield return identity;
                 }
 
                 yield break;
             case LibraDexCriteriaKind.BinaryPattern:
-                foreach (TIdentity identity in IterateBinaryPatternIdentityObjects(request.Values, request.TakeLimit))
+                foreach (TIdentity identity in IterateBinaryPatternIdentityObjects(request.Values, request.TakeLimit, request.Direction))
                 {
                     yield return identity;
                 }
 
                 yield break;
             case LibraDexCriteriaKind.BinaryTypedSlice:
-                foreach (TIdentity identity in IterateBinaryTypedSliceIdentityObjects(request.Values, request.TakeLimit))
+                foreach (TIdentity identity in IterateBinaryTypedSliceIdentityObjects(request.Values, request.TakeLimit, request.Direction))
                 {
                     yield return identity;
                 }
 
                 yield break;
             case LibraDexCriteriaKind.Bitmask:
-                foreach (TIdentity identity in IterateBitmaskIdentityObjects(request.Values, request.TakeLimit))
+                foreach (TIdentity identity in IterateBitmaskIdentityObjects(request.Values, request.TakeLimit, request.Direction))
                 {
                     yield return identity;
                 }
 
                 yield break;
             case LibraDexCriteriaKind.NumericTransform:
-                foreach (TIdentity identity in IterateNumericTransformIdentityObjects(request.Values, request.TakeLimit))
+                foreach (TIdentity identity in IterateNumericTransformIdentityObjects(request.Values, request.TakeLimit, request.Direction))
                 {
                     yield return identity;
                 }
 
                 yield break;
             case LibraDexCriteriaKind.ScalarNull:
-                foreach (TIdentity identity in IterateScalarNullIdentityObjects(request.Values, request.TakeLimit))
+                foreach (TIdentity identity in IterateScalarNullIdentityObjects(request.Values, request.TakeLimit, request.Direction))
                 {
                     yield return identity;
                 }
 
                 yield break;
             case LibraDexCriteriaKind.KeyState:
-                foreach (TIdentity identity in IterateNullKeyIdentityObjects(request.Values, request.TakeLimit))
+                foreach (TIdentity identity in IterateNullKeyIdentityObjects(request.Values, request.TakeLimit, request.Direction))
                 {
                     yield return identity;
                 }
@@ -1961,7 +1981,9 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
     private LibraDexIdentityMutationResult DeleteIdentityPrimitive(LibraDexIdentityPrimitiveRequest request)
     {
         ThrowIfDisposed();
-        ThrowIfSessionDurabilityBatchActiveForImmediateMutation();
+        if (session.IsDurabilityBatchActive &&
+            !catalog.TryPrepareActiveIndexBatchMutation(SlotIndex))
+            ThrowIfSessionDurabilityBatchActiveForImmediateMutation();
 
         if (CanUseInternalExactTupleDeleteForPrimaryMutation() &&
             CanDeleteIdentityPrimitiveUsingQueuedExactTuples(request))
@@ -2071,8 +2093,12 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
             LibraDexCriteriaKind.AtOrBefore => IterateTupleObjects(OpenAtOrBeforeRangeReader(RequireObjectKey(RequireCriterionValue(request.Values, 0), nameof(request.Values)), request.Direction), request.TakeLimit),
             LibraDexCriteriaKind.After => IterateTupleObjects(OpenAfterRangeReader(RequireObjectKey(RequireCriterionValue(request.Values, 0), nameof(request.Values)), request.Direction), request.TakeLimit),
             LibraDexCriteriaKind.AtOrAfter => IterateTupleObjects(OpenAtOrAfterRangeReader(RequireObjectKey(RequireCriterionValue(request.Values, 0), nameof(request.Values)), request.Direction), request.TakeLimit),
-            LibraDexCriteriaKind.In or LibraDexCriteriaKind.InSet => IterateMembershipTupleObjects(request.Values, request.TakeLimit),
-            LibraDexCriteriaKind.MultiRange => IterateMultiRangeTupleObjects(request.Values, request.TakeLimit),
+            LibraDexCriteriaKind.In or LibraDexCriteriaKind.InSet => IterateMembershipTupleObjects(request.Values, request.TakeLimit, request.Direction),
+            LibraDexCriteriaKind.MultiRange => IterateMultiRangeTupleObjects(request.Values, request.TakeLimit, request.Direction),
+            LibraDexCriteriaKind.ScalarNull => IterateScalarNullTupleObjects(request),
+            LibraDexCriteriaKind.KeyState => IterateNullKeyTupleObjects(request),
+            LibraDexCriteriaKind.Bitmask => IterateBitmaskTupleObjects(request),
+            LibraDexCriteriaKind.NumericTransform => IterateNumericTransformTupleObjects(request),
             _ => ExecuteTuplePrimitive(request)
         };
     }
@@ -2249,12 +2275,14 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
                 : plan.Shelves[i];
             Scalar8Scalar8ReadOnly readOnly = new(shelfBytes, plan.Profile);
             int startSlot = session.IsDurabilityBatchActive
-                ? readOnly.LowerBoundKey(lowerEncodedKey)
+                ? readOnly.LowerBoundKey(readOnly.IsDescending ? upperEncodedKey : lowerEncodedKey)
                 : plan.StartSlots[i];
             int endSlot = session.IsDurabilityBatchActive ? startSlot : plan.EndSlots[i];
             if (session.IsDurabilityBatchActive)
             {
-                while (endSlot < readOnly.ItemCount && readOnly.ReadKeyAt(endSlot) <= upperEncodedKey)
+                while (endSlot < readOnly.ItemCount && (readOnly.IsDescending
+                    ? readOnly.ReadKeyAt(endSlot) >= lowerEncodedKey
+                    : readOnly.ReadKeyAt(endSlot) <= upperEncodedKey))
                 {
                     endSlot++;
                 }
@@ -2765,7 +2793,9 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
     /// <returns><see langword="true"/> when one tuple was removed.</returns>
     private bool DeleteExactTuple(TKey key, TIdentity identity)
     {
-        ThrowIfSessionDurabilityBatchActiveForImmediateMutation();
+        if (session.IsDurabilityBatchActive &&
+            !catalog.TryPrepareActiveIndexBatchMutation(SlotIndex))
+            ThrowIfSessionDurabilityBatchActiveForImmediateMutation();
 
         bool deleted = shape switch
         {
@@ -3101,7 +3131,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
                     keyLow,
                     encodedIdentity,
                     allowDuplicateKeys,
-                    maxRouterHops: 8);
+                    maxRouterHops: Scalar16Scalar8Layout.KeySize + 1);
 
                 if (result.InsertResult != Scalar16Scalar8InsertResult.Inserted)
                 {
@@ -3138,7 +3168,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
                     keyHigh,
                     keyLow,
                     encodedIdentity,
-                    maxRouterHops: 8,
+                    maxRouterHops: Scalar16Scalar8Layout.KeySize + 1,
                     out Scalar16Scalar8RoutedInsertResult parentRouteSplitResult))
                 {
                     bool inserted = parentRouteSplitResult.InsertResult == Scalar16Scalar8InsertResult.Inserted;
@@ -3166,7 +3196,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
                     keyHigh,
                     keyLow,
                     encodedIdentity,
-                    maxRouterHops: 8,
+                    maxRouterHops: Scalar16Scalar8Layout.KeySize + 1,
                     out Scalar16Scalar8RoutedInsertResult shelfTransformResult))
                 {
                     bool inserted = shelfTransformResult.InsertResult == Scalar16Scalar8InsertResult.Inserted;
@@ -3222,7 +3252,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
             keyLow,
             encodedIdentity,
             allowDuplicateKeys,
-            maxRouterHops: 8);
+            maxRouterHops: Scalar16Scalar8Layout.KeySize + 1);
         bool inserted = routedResult.InsertResult == Scalar16Scalar8InsertResult.Inserted;
         LibraDexGenericInsertResult genericResult = new(
             inserted,
@@ -3504,7 +3534,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
                     identityHigh,
                     identityLow,
                     allowDuplicateKeys,
-                    maxRouterHops: 8);
+                    maxRouterHops: Scalar16Scalar16Layout.KeySize + 1);
 
                 if (result.InsertResult != Scalar16Scalar16InsertResult.Inserted)
                 {
@@ -3542,7 +3572,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
                     keyLow,
                     identityHigh,
                     identityLow,
-                    maxRouterHops: 8,
+                    maxRouterHops: Scalar16Scalar16Layout.KeySize + 1,
                     out Scalar16Scalar16RoutedInsertResult parentRouteSplitResult))
                 {
                     bool inserted = parentRouteSplitResult.InsertResult == Scalar16Scalar16InsertResult.Inserted;
@@ -3571,7 +3601,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
                     keyLow,
                     identityHigh,
                     identityLow,
-                    maxRouterHops: 8,
+                    maxRouterHops: Scalar16Scalar16Layout.KeySize + 1,
                     out Scalar16Scalar16RoutedInsertResult shelfTransformResult))
                 {
                     bool inserted = shelfTransformResult.InsertResult == Scalar16Scalar16InsertResult.Inserted;
@@ -3631,7 +3661,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
             identityHigh,
             identityLow,
             allowDuplicateKeys,
-            maxRouterHops: 8);
+            maxRouterHops: Scalar16Scalar16Layout.KeySize + 1);
         bool inserted = routedResult.InsertResult == Scalar16Scalar16InsertResult.Inserted;
         LibraDexGenericInsertResult genericResult = new(
             inserted,
@@ -4408,7 +4438,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
                     keyHigh,
                     keyLow,
                     encodedIdentity,
-                    maxRouterHops: 8);
+                    maxRouterHops: Scalar16Scalar8Layout.KeySize + 1);
                 if (!deleted)
                 {
                     session.AbortScalar16Scalar8WriteContext(writeContext);
@@ -4579,7 +4609,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
                     keyLow,
                     identityHigh,
                     identityLow,
-                    maxRouterHops: 8);
+                    maxRouterHops: Scalar16Scalar16Layout.KeySize + 1);
                 if (!deleted)
                 {
                     session.AbortScalar16Scalar16WriteContext(writeContext);
@@ -5282,7 +5312,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
         {
             _ = Rekey(identity, ScalarNull.Null, newKey);
         }
-        else if (SupportsStoredNullKeyRoutes())
+        else if (SupportsNullKeyRoute() && SupportsStoredNullKeyRoutes())
         {
             if (ContainsNullKeyIdentity(NullKey.Null, identity))
             {
@@ -5305,10 +5335,10 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
     public void Delete(TKey key, TIdentity identity)
     {
         ThrowIfDisposed();
-        ThrowIfSessionDurabilityBatchActiveForImmediateMutation();
 
         if (TryClassifyNullKeyRouteKey(key, out NullKey keyState))
         {
+            ThrowIfSessionDurabilityBatchActiveForImmediateMutation();
             _ = DeleteNullKeyIdentity(keyState, identity);
             return;
         }
@@ -5931,7 +5961,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
     /// </summary>
     /// <param name="takeLimit">The optional maximum number of identities to yield.</param>
     /// <returns>A forward-only sequence of decoded identities.</returns>
-    private IEnumerable<TIdentity> IterateAllIdentityObjects(int? takeLimit = null)
+    private IEnumerable<TIdentity> IterateAllIdentityObjects(int? takeLimit = null, QueryDirection direction = QueryDirection.Ascending)
     {
         if (takeLimit is < 0)
         {
@@ -5944,6 +5974,43 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
         }
 
         int returned = 0;
+        if (direction == QueryDirection.Descending)
+        {
+            foreach (TIdentity identity in IterateIdentityObjects(OpenAllRangeReader(direction), takeLimit))
+            {
+                yield return identity;
+                returned++;
+                if (takeLimit is int limit && returned >= limit)
+                    yield break;
+            }
+
+            if (SupportsStoredNullKeyRoutes())
+            {
+                foreach (NullKey state in new[] { NullKey.Empty, NullKey.Null })
+                {
+                    foreach (TIdentity identity in IterateDescendingKeyStateIdentities(ToKeyStateRoute(state)))
+                    {
+                        yield return identity;
+                        returned++;
+                        if (takeLimit is int limit && returned >= limit)
+                            yield break;
+                    }
+                }
+            }
+            else if (SupportsScalarNullKeyRoute())
+            {
+                foreach (TIdentity identity in IterateDescendingKeyStateIdentities(KeyStateRoute.Null))
+                {
+                    yield return identity;
+                    returned++;
+                    if (takeLimit is int limit && returned >= limit)
+                        yield break;
+                }
+            }
+            yield break;
+        }
+        if (direction != QueryDirection.Ascending)
+            throw new ArgumentOutOfRangeException(nameof(direction));
         if (SupportsScalarNullKeyRoute())
         {
             foreach (TIdentity identity in IterateScalarNullRouteIdentityObjects(takeLimit))
@@ -6099,7 +6166,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
     /// <param name="values">The condition primitive operands; operand zero must be <see cref="ScalarNull"/>.</param>
     /// <param name="takeLimit">The optional maximum number of identities to yield.</param>
     /// <returns>A forward-only sequence of decoded identities.</returns>
-    private IEnumerable<TIdentity> IterateScalarNullIdentityObjects(IReadOnlyList<object?> values, int? takeLimit = null)
+    private IEnumerable<TIdentity> IterateScalarNullIdentityObjects(IReadOnlyList<object?> values, int? takeLimit = null, QueryDirection direction = QueryDirection.Ascending)
     {
         if (takeLimit is < 0)
         {
@@ -6109,7 +6176,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
         ScalarNull state = RequireScalarNullState(values);
         if (state == ScalarNull.NonNull)
         {
-            foreach (TIdentity identity in IterateIdentityObjects(OpenAllRangeReader(), takeLimit))
+            foreach (TIdentity identity in IterateIdentityObjects(OpenAllRangeReader(direction), takeLimit))
             {
                 yield return identity;
             }
@@ -6117,9 +6184,16 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
             yield break;
         }
 
-        foreach (TIdentity identity in IterateScalarNullRouteIdentityObjects(takeLimit))
+        IEnumerable<TIdentity> nullIdentities = direction == QueryDirection.Descending
+            ? IterateDescendingKeyStateIdentities(KeyStateRoute.Null)
+            : IterateScalarNullRouteIdentityObjects(takeLimit);
+        int returned = 0;
+        foreach (TIdentity identity in nullIdentities)
         {
+            if (takeLimit is int limit && returned >= limit)
+                yield break;
             yield return identity;
+            returned++;
         }
     }
 
@@ -6521,21 +6595,30 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
     /// <param name="values">The condition primitive operands; operand zero must be <see cref="NullKey"/>.</param>
     /// <param name="takeLimit">The optional maximum number of identities to yield.</param>
     /// <returns>A forward-only sequence of decoded identities.</returns>
-    private IEnumerable<TIdentity> IterateNullKeyIdentityObjects(IReadOnlyList<object?> values, int? takeLimit = null)
+    private IEnumerable<TIdentity> IterateNullKeyIdentityObjects(IReadOnlyList<object?> values, int? takeLimit = null, QueryDirection direction = QueryDirection.Ascending)
     {
         NullKey keyState = RequireNullKeyState(values);
         if (keyState != NullKey.NullOrEmpty)
         {
-            foreach (TIdentity identity in IterateNullKeyRouteIdentityObjects(keyState, takeLimit))
+            IEnumerable<TIdentity> source = direction == QueryDirection.Descending
+                ? IterateDescendingKeyStateIdentities(ToKeyStateRoute(keyState))
+                : IterateNullKeyRouteIdentityObjects(keyState, takeLimit);
+            int yielded = 0;
+            foreach (TIdentity identity in source)
             {
+                if (takeLimit is int limit && yielded >= limit)
+                    yield break;
                 yield return identity;
+                yielded++;
             }
 
             yield break;
         }
 
         int returned = 0;
-        foreach (TIdentity identity in IterateNullKeyRouteIdentityObjects(NullKey.Null, takeLimit))
+        NullKey first = direction == QueryDirection.Descending ? NullKey.Empty : NullKey.Null;
+        NullKey second = direction == QueryDirection.Descending ? NullKey.Null : NullKey.Empty;
+        foreach (TIdentity identity in IterateNullKeyIdentityObjects(new object?[] { first }, takeLimit, direction))
         {
             yield return identity;
             returned++;
@@ -6546,7 +6629,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
         }
 
         int? remaining = takeLimit is null ? null : takeLimit.Value - returned;
-        foreach (TIdentity identity in IterateNullKeyRouteIdentityObjects(NullKey.Empty, remaining))
+        foreach (TIdentity identity in IterateNullKeyIdentityObjects(new object?[] { second }, remaining, direction))
         {
             yield return identity;
         }
@@ -6957,7 +7040,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
     /// <param name="keys">The membership keys to read.</param>
     /// <param name="takeLimit">The optional maximum number of tuples to yield across all keys.</param>
     /// <returns>A forward-only tuple sequence.</returns>
-    private IEnumerable<LibraDexObjectTuple> IterateMembershipTupleObjects(IEnumerable<object?> keys, int? takeLimit = null)
+    private IEnumerable<LibraDexObjectTuple> IterateMembershipTupleObjects(IEnumerable<object?> keys, int? takeLimit = null, QueryDirection direction = QueryDirection.Ascending)
     {
         if (takeLimit is < 0)
         {
@@ -6970,11 +7053,14 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
         }
 
         int returned = 0;
-        foreach (object? keyValue in keys)
+        foreach (object? keyValue in OrderMembershipKeys(keys, direction))
         {
             if (TryClassifyNullKeyRouteKey(keyValue, out NullKey keyState))
             {
-                foreach (LibraDexObjectTuple tuple in MaterializeNullKeyTupleObjects(new object?[] { keyState }))
+                IEnumerable<LibraDexObjectTuple> nullTuples = MaterializeNullKeyTupleObjects(new object?[] { keyState });
+                if (direction == QueryDirection.Descending)
+                    nullTuples = nullTuples.Reverse();
+                foreach (LibraDexObjectTuple tuple in nullTuples)
                 {
                     yield return tuple;
                     returned++;
@@ -6989,7 +7075,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
 
             using LibraDexRangeReader<TKey, TIdentity> reader = OpenRangeReader(
                 RequireObjectKey(keyValue!, nameof(keys)),
-                RequireObjectKey(keyValue!, nameof(keys)));
+                RequireObjectKey(keyValue!, nameof(keys)), direction);
             while (reader.TryReadNext(out TKey key, out TIdentity identity))
             {
                 yield return new LibraDexObjectTuple(key!, identity!);
@@ -7010,11 +7096,11 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
     /// <param name="values">The condition operand values, either inline keys, an enumerable of keys, or a prepared set.</param>
     /// <param name="takeLimit">The optional maximum number of identities to yield across all keys.</param>
     /// <returns>A forward-only identity sequence.</returns>
-    private IEnumerable<TIdentity> IterateMembershipIdentityObjects(IReadOnlyList<object?> values, int? takeLimit = null)
+    private IEnumerable<TIdentity> IterateMembershipIdentityObjects(IReadOnlyList<object?> values, int? takeLimit = null, QueryDirection direction = QueryDirection.Ascending)
     {
         if (values.Count > 1)
         {
-            return IterateMembershipIdentityObjects(values, takeLimit);
+            return IterateMembershipIdentityObjects(values, takeLimit, direction);
         }
 
         object value = RequireCriterionValue(values, 0);
@@ -7026,7 +7112,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
             _ => throw new InvalidOperationException("Membership identity iteration requires an enumerable key value or prepared set.")
         };
 
-        return IterateMembershipIdentityObjects(keys, takeLimit);
+        return IterateMembershipIdentityObjects(keys, takeLimit, direction);
     }
 
     /// <summary>
@@ -7037,7 +7123,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
     /// <param name="keys">The membership keys to read.</param>
     /// <param name="takeLimit">The optional maximum number of identities to yield across all keys.</param>
     /// <returns>A forward-only identity sequence.</returns>
-    private IEnumerable<TIdentity> IterateMembershipIdentityObjects(IEnumerable<object?> keys, int? takeLimit = null)
+    private IEnumerable<TIdentity> IterateMembershipIdentityObjects(IEnumerable<object?> keys, int? takeLimit = null, QueryDirection direction = QueryDirection.Ascending)
     {
         if (takeLimit is < 0)
         {
@@ -7050,11 +7136,14 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
         }
 
         int returned = 0;
-        foreach (object? keyValue in keys)
+        foreach (object? keyValue in OrderMembershipKeys(keys, direction))
         {
             if (TryClassifyNullKeyRouteKey(keyValue, out NullKey keyState))
             {
-                foreach (TIdentity identity in IterateNullKeyIdentityObjects(new object?[] { keyState }, takeLimit.HasValue ? takeLimit.Value - returned : null))
+                IEnumerable<TIdentity> nullIdentities = direction == QueryDirection.Descending
+                    ? IterateDescendingKeyStateIdentities(ToKeyStateRoute(keyState))
+                    : IterateNullKeyIdentityObjects(new object?[] { keyState }, takeLimit.HasValue ? takeLimit.Value - returned : null);
+                foreach (TIdentity identity in nullIdentities)
                 {
                     yield return identity;
                     returned++;
@@ -7069,7 +7158,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
 
             using LibraDexRangeReader<TKey, TIdentity> reader = OpenRangeReader(
                 RequireObjectKey(keyValue!, nameof(keys)),
-                RequireObjectKey(keyValue!, nameof(keys)));
+                RequireObjectKey(keyValue!, nameof(keys)), direction);
             while (reader.TryReadNextIdentity(out TIdentity identity))
             {
                 yield return identity!;
@@ -7226,7 +7315,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
     /// <param name="values">The primitive operand list containing one range array.</param>
     /// <param name="takeLimit">The optional maximum number of tuples to yield across all ranges.</param>
     /// <returns>A forward-only tuple sequence.</returns>
-    private IEnumerable<LibraDexObjectTuple> IterateMultiRangeTupleObjects(IReadOnlyList<object?> values, int? takeLimit = null)
+    private IEnumerable<LibraDexObjectTuple> IterateMultiRangeTupleObjects(IReadOnlyList<object?> values, int? takeLimit = null, QueryDirection direction = QueryDirection.Ascending)
     {
         if (takeLimit is < 0)
         {
@@ -7238,13 +7327,13 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
             yield break;
         }
 
-        LibraDexIdentityKeyRange[] ranges = RequireIdentityKeyRanges(values);
+        LibraDexIdentityKeyRange[] ranges = OrderMultiRanges(RequireIdentityKeyRanges(values), direction);
         int returned = 0;
         for (int i = 0; i < ranges.Length; i++)
         {
             using LibraDexRangeReader<TKey, TIdentity> reader = OpenRangeReader(
                 RequireObjectKey(ranges[i].LowerKey, nameof(values)),
-                RequireObjectKey(ranges[i].UpperKey, nameof(values)));
+                RequireObjectKey(ranges[i].UpperKey, nameof(values)), direction);
             while (reader.TryReadNext(out TKey key, out TIdentity identity))
             {
                 yield return new LibraDexObjectTuple(key!, identity!);
@@ -7265,7 +7354,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
     /// <param name="values">The primitive operand list containing one range array.</param>
     /// <param name="takeLimit">The optional maximum number of identities to yield across all ranges.</param>
     /// <returns>A forward-only identity sequence.</returns>
-    private IEnumerable<TIdentity> IterateMultiRangeIdentityObjects(IReadOnlyList<object?> values, int? takeLimit = null)
+    private IEnumerable<TIdentity> IterateMultiRangeIdentityObjects(IReadOnlyList<object?> values, int? takeLimit = null, QueryDirection direction = QueryDirection.Ascending)
     {
         if (takeLimit is < 0)
         {
@@ -7277,13 +7366,13 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
             yield break;
         }
 
-        LibraDexIdentityKeyRange[] ranges = RequireIdentityKeyRanges(values);
+        LibraDexIdentityKeyRange[] ranges = OrderMultiRanges(RequireIdentityKeyRanges(values), direction);
         int returned = 0;
         for (int i = 0; i < ranges.Length; i++)
         {
             using LibraDexRangeReader<TKey, TIdentity> reader = OpenRangeReader(
                 RequireObjectKey(ranges[i].LowerKey, nameof(values)),
-                RequireObjectKey(ranges[i].UpperKey, nameof(values)));
+                RequireObjectKey(ranges[i].UpperKey, nameof(values)), direction);
             while (reader.TryReadNextIdentity(out TIdentity identity))
             {
                 yield return identity!;
@@ -7440,7 +7529,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
     /// <param name="values">The primitive operand list containing one compiled structured component predicate.</param>
     /// <param name="takeLimit">The optional maximum number of identities to yield.</param>
     /// <returns>A forward-only identity sequence.</returns>
-    private IEnumerable<TIdentity> IterateStructuredComponentIdentityObjects(IReadOnlyList<object?> values, int? takeLimit = null)
+    private IEnumerable<TIdentity> IterateStructuredComponentIdentityObjects(IReadOnlyList<object?> values, int? takeLimit = null, QueryDirection direction = QueryDirection.Ascending)
     {
         if (takeLimit is < 0)
         {
@@ -7454,7 +7543,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
 
         LibraDexStructuredComponentPredicate predicate = RequireStructuredComponentPredicate(values);
         int returned = 0;
-        using LibraDexRangeReader<TKey, TIdentity> reader = OpenStructuredComponentRangeReader();
+        using LibraDexRangeReader<TKey, TIdentity> reader = OpenStructuredComponentRangeReader(direction);
         while (reader.TryReadNextEncodedScalar8KeyIdentity(out ulong encodedKey, out TIdentity identity))
         {
             if (!predicate.Matches(encodedKey))
@@ -7515,7 +7604,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
     /// <param name="values">The primitive operand list containing one compiled GUID predicate.</param>
     /// <param name="takeLimit">The optional maximum number of identities to yield.</param>
     /// <returns>A forward-only identity sequence.</returns>
-    private IEnumerable<TIdentity> IterateGuidPatternIdentityObjects(IReadOnlyList<object?> values, int? takeLimit = null)
+    private IEnumerable<TIdentity> IterateGuidPatternIdentityObjects(IReadOnlyList<object?> values, int? takeLimit = null, QueryDirection direction = QueryDirection.Ascending)
     {
         if (takeLimit is < 0)
         {
@@ -7529,7 +7618,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
 
         LibraDexGuidPatternPredicate predicate = RequireGuidPatternPredicate(values);
         int returned = 0;
-        using LibraDexRangeReader<TKey, TIdentity> reader = OpenAllRangeReader();
+        using LibraDexRangeReader<TKey, TIdentity> reader = OpenAllRangeReader(direction);
         while (reader.TryReadNextEncodedScalar16KeyIdentity(out ulong encodedHigh, out ulong encodedLow, out TIdentity identity))
         {
             if (!predicate.Matches(encodedHigh, encodedLow))
@@ -7582,7 +7671,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
     /// <param name="values">The primitive operand list containing one compiled binary predicate.</param>
     /// <param name="takeLimit">The optional maximum number of identities to yield.</param>
     /// <returns>A forward-only identity sequence.</returns>
-    private IEnumerable<TIdentity> IterateBinaryPatternIdentityObjects(IReadOnlyList<object?> values, int? takeLimit = null)
+    private IEnumerable<TIdentity> IterateBinaryPatternIdentityObjects(IReadOnlyList<object?> values, int? takeLimit = null, QueryDirection direction = QueryDirection.Ascending)
     {
         if (takeLimit is < 0)
         {
@@ -7597,7 +7686,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
         LibraDexBinaryPatternPredicate predicate = RequireBinaryPatternPredicate(values);
         int returned = 0;
         byte[] keyBuffer = new byte[32];
-        using LibraDexRangeReader<TKey, TIdentity> reader = OpenAllRangeReader();
+        using LibraDexRangeReader<TKey, TIdentity> reader = OpenAllRangeReader(direction);
         while (reader.TryReadNextEncodedKeyBytes(keyBuffer.AsSpan(), out int keyByteCount, out TIdentity identity))
         {
             if (!predicate.Matches(keyBuffer.AsSpan(0, keyByteCount)))
@@ -7651,7 +7740,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
     /// <param name="values">The primitive operand list containing one compiled typed binary-slice predicate.</param>
     /// <param name="takeLimit">The optional maximum number of identities to yield.</param>
     /// <returns>A forward-only identity sequence.</returns>
-    private IEnumerable<TIdentity> IterateBinaryTypedSliceIdentityObjects(IReadOnlyList<object?> values, int? takeLimit = null)
+    private IEnumerable<TIdentity> IterateBinaryTypedSliceIdentityObjects(IReadOnlyList<object?> values, int? takeLimit = null, QueryDirection direction = QueryDirection.Ascending)
     {
         if (takeLimit is < 0)
         {
@@ -7666,7 +7755,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
         LibraDexBinaryTypedSlicePredicate predicate = RequireBinaryTypedSlicePredicate(values);
         int returned = 0;
         byte[] keyBuffer = new byte[32];
-        using LibraDexRangeReader<TKey, TIdentity> reader = OpenAllRangeReader();
+        using LibraDexRangeReader<TKey, TIdentity> reader = OpenAllRangeReader(direction);
         while (reader.TryReadNextEncodedKeyBytes(keyBuffer.AsSpan(), out int keyByteCount, out TIdentity identity))
         {
             if (!predicate.Matches(keyBuffer.AsSpan(0, keyByteCount)))
@@ -7720,7 +7809,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
     /// <param name="values">The primitive operand list containing one compiled bitmask predicate.</param>
     /// <param name="takeLimit">The optional maximum number of identities to yield.</param>
     /// <returns>A forward-only identity sequence.</returns>
-    private IEnumerable<TIdentity> IterateBitmaskIdentityObjects(IReadOnlyList<object?> values, int? takeLimit = null)
+    private IEnumerable<TIdentity> IterateBitmaskIdentityObjects(IReadOnlyList<object?> values, int? takeLimit = null, QueryDirection direction = QueryDirection.Ascending)
     {
         if (takeLimit is < 0)
         {
@@ -7734,7 +7823,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
 
         LibraDexBitmaskPredicate predicate = RequireBitmaskPredicate(values);
         int returned = 0;
-        using LibraDexRangeReader<TKey, TIdentity> reader = OpenAllRangeReader();
+        using LibraDexRangeReader<TKey, TIdentity> reader = OpenAllRangeReader(direction);
         while (reader.TryReadNext(out TKey key, out TIdentity identity))
         {
             if (!predicate.Matches(key!))
@@ -7809,7 +7898,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
     /// <param name="values">The primitive operand list containing one compiled numeric transform predicate.</param>
     /// <param name="takeLimit">The optional maximum number of identities to yield.</param>
     /// <returns>A forward-only identity sequence.</returns>
-    private IEnumerable<TIdentity> IterateNumericTransformIdentityObjects(IReadOnlyList<object?> values, int? takeLimit = null)
+    private IEnumerable<TIdentity> IterateNumericTransformIdentityObjects(IReadOnlyList<object?> values, int? takeLimit = null, QueryDirection direction = QueryDirection.Ascending)
     {
         if (takeLimit is < 0)
         {
@@ -7823,7 +7912,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
 
         LibraDexNumericTransformPredicate predicate = RequireNumericTransformPredicate(values);
         int returned = 0;
-        using LibraDexRangeReader<TKey, TIdentity> reader = OpenAllRangeReader();
+        using LibraDexRangeReader<TKey, TIdentity> reader = OpenAllRangeReader(direction);
         while (reader.TryReadNext(out TKey key, out TIdentity identity))
         {
             if (!predicate.Matches(key!))
@@ -7900,35 +7989,35 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
     /// The ordinary all-reader uses raw encoded bounds, which are not always decodable as DateTime-like CLR values; this helper keeps component scans inside valid typed min/max keys while still reading encoded keys from the cursor.<br/>
     /// </summary>
     /// <returns>A range reader over the full valid structured date/time key domain.</returns>
-    private LibraDexRangeReader<TKey, TIdentity> OpenStructuredComponentRangeReader()
+    private LibraDexRangeReader<TKey, TIdentity> OpenStructuredComponentRangeReader(QueryDirection direction = QueryDirection.Ascending)
     {
         Type keyType = typeof(TKey);
         if (keyType == typeof(DateTime))
         {
             return OpenRangeReader(
                 RequireObjectKey(DateTime.SpecifyKind(DateTime.MinValue, DateTimeKind.Utc), nameof(keyType)),
-                RequireObjectKey(DateTime.SpecifyKind(DateTime.MaxValue, DateTimeKind.Utc), nameof(keyType)));
+                RequireObjectKey(DateTime.SpecifyKind(DateTime.MaxValue, DateTimeKind.Utc), nameof(keyType)), direction);
         }
 
         if (keyType == typeof(DateTimeOffset))
         {
             return OpenRangeReader(
                 RequireObjectKey(DateTimeOffset.MinValue.ToUniversalTime(), nameof(keyType)),
-                RequireObjectKey(DateTimeOffset.MaxValue.ToUniversalTime(), nameof(keyType)));
+                RequireObjectKey(DateTimeOffset.MaxValue.ToUniversalTime(), nameof(keyType)), direction);
         }
 
         if (keyType == typeof(DateOnly))
         {
             return OpenRangeReader(
                 RequireObjectKey(DateOnly.MinValue, nameof(keyType)),
-                RequireObjectKey(DateOnly.MaxValue, nameof(keyType)));
+                RequireObjectKey(DateOnly.MaxValue, nameof(keyType)), direction);
         }
 
         if (keyType == typeof(TimeOnly))
         {
             return OpenRangeReader(
                 RequireObjectKey(TimeOnly.MinValue, nameof(keyType)),
-                RequireObjectKey(TimeOnly.MaxValue, nameof(keyType)));
+                RequireObjectKey(TimeOnly.MaxValue, nameof(keyType)), direction);
         }
 
         throw new NotSupportedException($"Structured component predicates require a structured date/time key type, not {keyType.FullName}.");
@@ -8011,6 +8100,22 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
         LibraDexGenericScalarCodec<TKey>.Encode16(lowerKey, out ulong lowerHigh, out ulong lowerLow);
         LibraDexGenericScalarCodec<TKey>.Encode16(upperKey, out ulong upperHigh, out ulong upperLow);
         Scalar16Scalar8Profile profile = GetScalar16Scalar8Profile();
+        if (profile.Descending)
+        {
+            using Scalar16Scalar8RangeReader reader = session.OpenScalar16Scalar8RangeReader(
+                RootRouterOffset, profile, lowerHigh, lowerLow, upperHigh, upperLow, QueryDirection.Descending);
+            int copied = 0;
+            while (reader.MovePrevious())
+            {
+                if (copied >= identities.Length)
+                    throw new ArgumentException("The identity output span is too small for the requested SS16-8 range.", nameof(identities));
+                identities[copied++] = LibraDexGenericScalarCodec<TIdentity>.Decode8(reader.CurrentEncodedIdentity);
+            }
+            return new LibraDexGenericRangeReadResult(
+                copied, UsedPooledScratch: true, UsedEncodedIdentityScratch: false,
+                CoalescingEnabled: false, RangeScratchShelfCapacity: 1);
+        }
+
         ulong[] encodedIdentities = ArrayPool<ulong>.Shared.Rent(identities.Length);
         byte[] shelfScratch = ArrayPool<byte>.Shared.Rent(profile.ShelfExtentSize);
         using RouteTargetKindCache targetKindCache = RouteTargetKindCache.Rent();
@@ -8023,7 +8128,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
                 lowerLow,
                 upperHigh,
                 upperLow,
-                maxRouterHops: 8,
+                maxRouterHops: Scalar16Scalar8Layout.KeySize + 1,
                 encodedIdentities.AsSpan(0, identities.Length),
                 shelfScratch.AsSpan(0, profile.ShelfExtentSize),
                 targetKindCache);
@@ -8057,6 +8162,23 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
         ulong lowerEncodedKey = EncodeKey8(lowerKey);
         ulong upperEncodedKey = EncodeKey8(upperKey);
         Scalar8Scalar16Profile profile = GetScalar8Scalar16Profile();
+        if (profile.Descending)
+        {
+            using Scalar8Scalar16RangeReader reader = session.OpenScalar8Scalar16RangeReader(
+                RootRouterOffset, profile, lowerEncodedKey, upperEncodedKey, QueryDirection.Descending);
+            int copied = 0;
+            while (reader.MovePrevious())
+            {
+                if (copied >= identities.Length)
+                    throw new ArgumentException("The identity output span is too small for the requested SS8-16 range.", nameof(identities));
+                identities[copied++] = LibraDexGenericScalarCodec<TIdentity>.Decode16(
+                    reader.CurrentEncodedIdentityHigh, reader.CurrentEncodedIdentityLow);
+            }
+            return new LibraDexGenericRangeReadResult(
+                copied, UsedPooledScratch: true, UsedEncodedIdentityScratch: false,
+                CoalescingEnabled: false, RangeScratchShelfCapacity: 1);
+        }
+
         ulong[] identityHighs = ArrayPool<ulong>.Shared.Rent(identities.Length);
         ulong[] identityLows = ArrayPool<ulong>.Shared.Rent(identities.Length);
         byte[] shelfScratch = ArrayPool<byte>.Shared.Rent(profile.ShelfExtentSize);
@@ -8104,6 +8226,23 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
         LibraDexGenericScalarCodec<TKey>.Encode16(lowerKey, out ulong lowerHigh, out ulong lowerLow);
         LibraDexGenericScalarCodec<TKey>.Encode16(upperKey, out ulong upperHigh, out ulong upperLow);
         Scalar16Scalar16Profile profile = GetScalar16Scalar16Profile();
+        if (profile.Descending)
+        {
+            using Scalar16Scalar16RangeReader reader = session.OpenScalar16Scalar16RangeReader(
+                RootRouterOffset, profile, lowerHigh, lowerLow, upperHigh, upperLow, QueryDirection.Descending);
+            int copied = 0;
+            while (reader.MovePrevious())
+            {
+                if (copied >= identities.Length)
+                    throw new ArgumentException("The identity output span is too small for the requested SS16-16 range.", nameof(identities));
+                identities[copied++] = LibraDexGenericScalarCodec<TIdentity>.Decode16(
+                    reader.CurrentEncodedIdentityHigh, reader.CurrentEncodedIdentityLow);
+            }
+            return new LibraDexGenericRangeReadResult(
+                copied, UsedPooledScratch: true, UsedEncodedIdentityScratch: false,
+                CoalescingEnabled: false, RangeScratchShelfCapacity: 1);
+        }
+
         ulong[] identityHighs = ArrayPool<ulong>.Shared.Rent(identities.Length);
         ulong[] identityLows = ArrayPool<ulong>.Shared.Rent(identities.Length);
         byte[] shelfScratch = ArrayPool<byte>.Shared.Rent(profile.ShelfExtentSize);
@@ -8153,6 +8292,23 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
         LibraDexGenericScalarCodec<TKey>.Encode32(lowerKey, out ulong lower0, out ulong lower1, out ulong lower2, out ulong lower3);
         LibraDexGenericScalarCodec<TKey>.Encode32(upperKey, out ulong upper0, out ulong upper1, out ulong upper2, out ulong upper3);
         Fixed32Scalar8Profile profile = GetFixed32Scalar8Profile();
+        if (profile.Descending)
+        {
+            using Fixed32Scalar8RangeReader reader = session.OpenFixed32Scalar8RangeReader(
+                RootRouterOffset, profile, lower0, lower1, lower2, lower3,
+                upper0, upper1, upper2, upper3, QueryDirection.Descending);
+            int copied = 0;
+            while (reader.MovePrevious())
+            {
+                if (copied >= identities.Length)
+                    throw new ArgumentException("The identity output span is too small for the requested FS32-8 range.", nameof(identities));
+                identities[copied++] = LibraDexGenericScalarCodec<TIdentity>.Decode8(reader.CurrentEncodedIdentity);
+            }
+            return new LibraDexGenericRangeReadResult(
+                copied, UsedPooledScratch: true, UsedEncodedIdentityScratch: false,
+                CoalescingEnabled: false, RangeScratchShelfCapacity: 1);
+        }
+
         ulong[] encodedIdentities = ArrayPool<ulong>.Shared.Rent(identities.Length);
         byte[] shelfScratch = ArrayPool<byte>.Shared.Rent(profile.ShelfExtentSize);
         using RouteTargetKindCache targetKindCache = RouteTargetKindCache.Rent();
@@ -8169,7 +8325,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
                 upper1,
                 upper2,
                 upper3,
-                maxRouterHops: 32,
+                maxRouterHops: Fixed32Scalar8Layout.KeySize + 1,
                 encodedIdentities.AsSpan(0, identities.Length),
                 shelfScratch.AsSpan(0, profile.ShelfExtentSize),
                 targetKindCache);
@@ -8212,6 +8368,16 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
         LibraDexGenericScalarCodec<TKey>.Encode32(lowerKey, out ulong lower0, out ulong lower1, out ulong lower2, out ulong lower3);
         LibraDexGenericScalarCodec<TKey>.Encode32(upperKey, out ulong upper0, out ulong upper1, out ulong upper2, out ulong upper3);
         Fixed32Scalar16Profile profile = GetFixed32Scalar16Profile();
+        if (profile.Descending)
+        {
+            using Fixed32Scalar16RangeReader reader = OpenFixed32Scalar16RangeReader(lowerKey, upperKey, QueryDirection.Descending);
+            int copied = 0;
+            while (copied < identities.Length && reader.TryReadPreviousEncodedTuple(
+                out _, out _, out _, out _, out ulong identityHigh, out ulong identityLow))
+                identities[copied++] = LibraDexGenericScalarCodec<TIdentity>.Decode16(identityHigh, identityLow);
+            return new LibraDexGenericRangeReadResult(copied, UsedPooledScratch: false, UsedEncodedIdentityScratch: false, CoalescingEnabled: false, RangeScratchShelfCapacity: 1);
+        }
+
         ulong[] identityHighs = ArrayPool<ulong>.Shared.Rent(identities.Length);
         ulong[] identityLows = ArrayPool<ulong>.Shared.Rent(identities.Length);
         byte[] shelfScratch = ArrayPool<byte>.Shared.Rent(profile.ShelfExtentSize);
@@ -8229,7 +8395,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
                 upper1,
                 upper2,
                 upper3,
-                maxRouterHops: 32,
+                maxRouterHops: 33,
                 identityHighs.AsSpan(0, identities.Length),
                 identityLows.AsSpan(0, identities.Length),
                 shelfScratch.AsSpan(0, profile.ShelfExtentSize),
@@ -8702,7 +8868,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
                 keyHigh,
                 keyLow,
                 encodedIdentity,
-                maxRouterHops: 8);
+                maxRouterHops: Scalar16Scalar8Layout.KeySize + 1);
             if (!deleted)
             {
                 session.AbortScalar16Scalar8WriteContext(writeContext);
@@ -9137,6 +9303,181 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
     internal void ReleaseAllStagedIdentityReservations(object owner)
     {
         catalog.GetSingleKeyIdentityMap(this).ReleaseAll(owner);
+    }
+
+    /// <summary>
+    /// Streams one metadata key-state run in descending encoded identity order.<br/>
+    /// Key-state shelves currently expose a forward stream, so only that equal-key run is copied; ordinary keys retain native reverse reader traversal.<br/>
+    /// </summary>
+    /// <param name="route">The null or empty key-state route to read.<br/></param>
+    /// <returns>Decoded identities from highest to lowest encoded identity.<br/></returns>
+    private IEnumerable<TIdentity> IterateDescendingKeyStateIdentities(KeyStateRoute route)
+    {
+        if (shape is LibraDexGenericScalarShape.SS88 or LibraDexGenericScalarShape.SS168 or LibraDexGenericScalarShape.FS328)
+        {
+            ulong[] identities = session.ReadScalar8KeyStateIdentities(SlotIndex, route);
+            for (int i = identities.Length - 1; i >= 0; i--)
+                yield return LibraDexGenericScalarCodec<TIdentity>.Decode8(identities[i])!;
+            yield break;
+        }
+
+        (ulong[] highs, ulong[] lows) = session.ReadScalar16KeyStateIdentities(SlotIndex, route);
+        for (int i = highs.Length - 1; i >= 0; i--)
+            yield return LibraDexGenericScalarCodec<TIdentity>.Decode16(highs[i], lows[i])!;
+    }
+
+    /// <summary>
+    /// Orders only membership key descriptors for descending plan-natural reads.<br/>
+    /// The physical equality reader still streams each equal-key identity run in reverse tuple order.<br/>
+    /// </summary>
+    /// <param name="keys">The supplied membership keys.<br/></param>
+    /// <param name="direction">The requested tuple direction.<br/></param>
+    /// <returns>Keys in requested traversal order.<br/></returns>
+    private IEnumerable<object?> OrderMembershipKeys(IEnumerable<object?> keys, QueryDirection direction)
+    {
+        if (direction != QueryDirection.Descending)
+            return keys;
+        List<object?> ordered = keys.ToList();
+        ordered.Sort((left, right) =>
+        {
+            bool leftState = TryClassifyNullKeyRouteKey(left, out NullKey leftKeyState);
+            bool rightState = TryClassifyNullKeyRouteKey(right, out NullKey rightKeyState);
+            if (leftState || rightState)
+            {
+                if (!leftState)
+                    return -1;
+                if (!rightState)
+                    return 1;
+                return rightKeyState.CompareTo(leftKeyState);
+            }
+            return CompareCountKeys(RequireObjectKey(right!, nameof(keys)), RequireObjectKey(left!, nameof(keys)));
+        });
+        return ordered;
+    }
+
+    /// <summary>
+    /// Sorts only multirange descriptors by their upper bound before reverse physical range reading.<br/>
+    /// Source range arrays remain unchanged, and tuple results are never buffered for this ordering step.<br/>
+    /// </summary>
+    /// <param name="ranges">The requested inclusive key extents.<br/></param>
+    /// <param name="direction">The requested tuple direction.<br/></param>
+    /// <returns>Range descriptors in requested traversal order.<br/></returns>
+    private LibraDexIdentityKeyRange[] OrderMultiRanges(LibraDexIdentityKeyRange[] ranges, QueryDirection direction)
+    {
+        if (direction != QueryDirection.Descending)
+            return ranges;
+        LibraDexIdentityKeyRange[] ordered = (LibraDexIdentityKeyRange[])ranges.Clone();
+        Array.Sort(ordered, (left, right) => CompareCountKeys(
+            RequireObjectKey(right.UpperKey, nameof(ranges)),
+            RequireObjectKey(left.UpperKey, nameof(ranges))));
+        return ordered;
+    }
+
+    /// <summary>Streams scalar-null or non-null tuple rows without materializing the complete matching route.<br/>
+    /// A null request reads the identity-keyed null route; a non-null request uses the existing directed ordinary range reader.<br/>
+    /// The optional Take limit is applied before opening or advancing a physical reader, and early disposal releases the reader through the underlying iterator.<br/></summary>
+    /// <param name="request">Normalized scalar-null primitive with its state, direction, and optional Take limit.<br/></param>
+    /// <returns>A deferred sequence of matching key and identity tuples.<br/></returns>
+    private IEnumerable<LibraDexObjectTuple> IterateScalarNullTupleObjects(LibraDexIdentityPrimitiveRequest request)
+    {
+        if (request.TakeLimit is < 0)
+            throw new ArgumentOutOfRangeException(nameof(request), request.TakeLimit, "Take cannot be negative.");
+        if (request.TakeLimit == 0)
+            yield break;
+
+        ScalarNull state = RequireScalarNullState(request.Values);
+        if (state == ScalarNull.NonNull)
+        {
+            foreach (LibraDexObjectTuple tuple in IterateTupleObjects(OpenAllRangeReader(request.Direction), request.TakeLimit))
+                yield return tuple;
+            yield break;
+        }
+
+        foreach (TIdentity identity in IterateScalarNullRouteIdentityObjects(request.TakeLimit))
+            yield return new LibraDexObjectTuple(null, identity!);
+    }
+
+    /// <summary>Streams null and empty binary key-state tuple rows in their established null-before-empty order.<br/>
+    /// The optional Take limit spans both routes, so stopping in the null route never opens the empty route and early disposal retains no full-result list.<br/>
+    /// Null keys remain null and empty keys remain empty byte arrays in the caller-visible tuple representation.<br/></summary>
+    /// <param name="request">Normalized key-state primitive with its selected state and optional Take limit.<br/></param>
+    /// <returns>A deferred sequence of matching key and identity tuples.<br/></returns>
+    private IEnumerable<LibraDexObjectTuple> IterateNullKeyTupleObjects(LibraDexIdentityPrimitiveRequest request)
+    {
+        if (request.TakeLimit is < 0)
+            throw new ArgumentOutOfRangeException(nameof(request), request.TakeLimit, "Take cannot be negative.");
+        if (request.TakeLimit == 0)
+            yield break;
+
+        NullKey state = RequireNullKeyState(request.Values);
+        int remaining = request.TakeLimit ?? int.MaxValue;
+        if (state is NullKey.Null or NullKey.NullOrEmpty)
+        {
+            foreach (TIdentity identity in IterateNullKeyRouteIdentityObjects(NullKey.Null, remaining))
+            {
+                yield return new LibraDexObjectTuple(null, identity!);
+                if (--remaining == 0)
+                    yield break;
+            }
+        }
+
+        if (state is NullKey.Empty or NullKey.NullOrEmpty)
+        {
+            foreach (TIdentity identity in IterateNullKeyRouteIdentityObjects(NullKey.Empty, remaining))
+            {
+                yield return new LibraDexObjectTuple(Array.Empty<byte>(), identity!);
+                if (--remaining == 0)
+                    yield break;
+            }
+        }
+    }
+
+    /// <summary>Streams matching bitmask tuples directly from the directed physical key reader.<br/>
+    /// The compiled predicate is evaluated per key, and Take stops the scan without buffering later matches.<br/></summary>
+    /// <param name="request">Normalized bitmask predicate, direction, and optional Take limit.<br/></param>
+    /// <returns>A deferred sequence of matching key and identity tuples.<br/></returns>
+    private IEnumerable<LibraDexObjectTuple> IterateBitmaskTupleObjects(LibraDexIdentityPrimitiveRequest request)
+    {
+        if (request.TakeLimit is < 0)
+            throw new ArgumentOutOfRangeException(nameof(request), request.TakeLimit, "Take cannot be negative.");
+        if (request.TakeLimit == 0)
+            yield break;
+
+        LibraDexBitmaskPredicate predicate = RequireBitmaskPredicate(request.Values);
+        int returned = 0;
+        using LibraDexRangeReader<TKey, TIdentity> reader = OpenAllRangeReader(request.Direction);
+        while (reader.TryReadNext(out TKey key, out TIdentity identity))
+        {
+            if (!predicate.Matches(key!))
+                continue;
+            yield return new LibraDexObjectTuple(key!, identity!);
+            if (request.TakeLimit is not null && ++returned >= request.TakeLimit.Value)
+                yield break;
+        }
+    }
+
+    /// <summary>Streams matching numeric-transform tuples directly from the directed physical key reader.<br/>
+    /// A transform still scans keys because an inverse key range is not generally available; only result buffering is removed.<br/></summary>
+    /// <param name="request">Normalized numeric transform predicate, direction, and optional Take limit.<br/></param>
+    /// <returns>A deferred sequence of matching key and identity tuples.<br/></returns>
+    private IEnumerable<LibraDexObjectTuple> IterateNumericTransformTupleObjects(LibraDexIdentityPrimitiveRequest request)
+    {
+        if (request.TakeLimit is < 0)
+            throw new ArgumentOutOfRangeException(nameof(request), request.TakeLimit, "Take cannot be negative.");
+        if (request.TakeLimit == 0)
+            yield break;
+
+        LibraDexNumericTransformPredicate predicate = RequireNumericTransformPredicate(request.Values);
+        int returned = 0;
+        using LibraDexRangeReader<TKey, TIdentity> reader = OpenAllRangeReader(request.Direction);
+        while (reader.TryReadNext(out TKey key, out TIdentity identity))
+        {
+            if (!predicate.Matches(key!))
+                continue;
+            yield return new LibraDexObjectTuple(key!, identity!);
+            if (request.TakeLimit is not null && ++returned >= request.TakeLimit.Value)
+                yield break;
+        }
     }
 }
 

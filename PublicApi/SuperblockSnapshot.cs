@@ -7,6 +7,7 @@ namespace LibraDex;
 /// This is an outer model snapshot and is not used as a hot byte view.<br/>
 /// </summary>
 internal readonly record struct SuperblockSnapshot(
+    ushort FormatVersion,
     Guid FileGuid,
     long CreatedUtcTicks,
     long ReservedPrefixBytes,
@@ -27,6 +28,7 @@ internal readonly record struct SuperblockSnapshot(
             reader.DevNumberUInt64);
 
         return new SuperblockSnapshot(
+            reader.FormatVersion,
             reader.FileGuid,
             reader.CreatedUtcTicks,
             reader.ReservedPrefixBytes,

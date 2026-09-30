@@ -17,6 +17,7 @@ internal sealed class Scalar8VarIdentityMutableShelfView
     private readonly bool[] deletedSlots;
     private readonly bool pooledBytes;
     private readonly bool pooledSidecars;
+    private readonly bool descending;
     private bool released;
     private int itemCount;
     private int slotStreamLength;
@@ -52,6 +53,7 @@ internal sealed class Scalar8VarIdentityMutableShelfView
         this.deletedSlots = deletedSlots;
         this.pooledBytes = pooledBytes;
         this.pooledSidecars = pooledSidecars;
+        descending = (Scalar8VarIdentityLayout.ReadFlags(bytes) & 1U) != 0;
         this.itemCount = itemCount;
         this.slotStreamLength = slotStreamLength;
         SlotCapacityBytes = slotCapacityBytes;
@@ -472,8 +474,12 @@ internal sealed class Scalar8VarIdentityMutableShelfView
             return 0;
         }
 
-        int startSlot = LowerBoundKey(lowerEncodedKey, Scalar8VarIdentityLayout.CreateKeyPrefix(lowerEncodedKey));
-        int endSlot = LowerBoundKeyAfter(upperEncodedKey, Scalar8VarIdentityLayout.CreateKeyPrefix(upperEncodedKey));
+        int startSlot = descending
+            ? LowerBoundKey(upperEncodedKey, Scalar8VarIdentityLayout.CreateKeyPrefix(upperEncodedKey))
+            : LowerBoundKey(lowerEncodedKey, Scalar8VarIdentityLayout.CreateKeyPrefix(lowerEncodedKey));
+        int endSlot = descending
+            ? LowerBoundKeyAfter(lowerEncodedKey, Scalar8VarIdentityLayout.CreateKeyPrefix(lowerEncodedKey))
+            : LowerBoundKeyAfter(upperEncodedKey, Scalar8VarIdentityLayout.CreateKeyPrefix(upperEncodedKey));
         return MarkSlotRangeDeleted(startSlot, endSlot - startSlot);
     }
 
@@ -593,6 +599,7 @@ internal sealed class Scalar8VarIdentityMutableShelfView
 
         byte[] compacted = new byte[Profile.ShelfExtentSize];
         Scalar8VarIdentityLayout.Initialize(compacted, Profile);
+        Scalar8VarIdentityLayout.WriteFlags(compacted, Scalar8VarIdentityLayout.ReadFlags(Bytes) & 1U);
         Scalar8VarIdentityLayout.WriteNextShelfOffset(compacted, Scalar8VarIdentityLayout.ReadNextShelfOffset(Bytes));
         int slotCursor = Scalar8VarIdentityLayout.HeaderSize;
         int recordCursor = Scalar8VarIdentityLayout.HeaderSize + Scalar8VarIdentityLayout.ReadSlotCapacityBytes(compacted);
@@ -815,21 +822,21 @@ internal sealed class Scalar8VarIdentityMutableShelfView
         uint slotPrefix = keyPrefixes[physicalIndex];
         if (slotPrefix < prefix)
         {
-            return -1;
+            return descending ? 1 : -1;
         }
 
         if (slotPrefix > prefix)
         {
-            return 1;
+            return descending ? -1 : 1;
         }
 
         ulong slotKey = keys[physicalIndex];
         if (slotKey < encodedKey)
         {
-            return -1;
+            return descending ? 1 : -1;
         }
 
-        return slotKey > encodedKey ? 1 : 0;
+        return slotKey > encodedKey ? (descending ? -1 : 1) : 0;
     }
 
     private int CompareSlotTuple(int slotIndex, uint prefix, ulong encodedKey, ReadOnlySpan<byte> identity)
@@ -838,25 +845,26 @@ internal sealed class Scalar8VarIdentityMutableShelfView
         uint slotPrefix = keyPrefixes[physicalIndex];
         if (slotPrefix < prefix)
         {
-            return -1;
+            return descending ? 1 : -1;
         }
 
         if (slotPrefix > prefix)
         {
-            return 1;
+            return descending ? -1 : 1;
         }
 
         ulong slotKey = keys[physicalIndex];
         if (slotKey < encodedKey)
         {
-            return -1;
+            return descending ? 1 : -1;
         }
 
         if (slotKey > encodedKey)
         {
-            return 1;
+            return descending ? -1 : 1;
         }
 
-        return Scalar8VarIdentityLayout.CompareIdentityBytes(Scalar8VarIdentityLayout.ReadIdentity(Bytes, recordOffsets[physicalIndex]), identity);
+        int comparison = Scalar8VarIdentityLayout.CompareIdentityBytes(Scalar8VarIdentityLayout.ReadIdentity(Bytes, recordOffsets[physicalIndex]), identity);
+        return descending ? -comparison : comparison;
     }
 }

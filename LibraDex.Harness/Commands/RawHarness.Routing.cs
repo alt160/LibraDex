@@ -1303,31 +1303,6 @@ internal static partial class RawHarness
             (RouterSnapshot root, _) = session.CreateRootRouterIndex(CreateHarnessSlot(0, "vs8bytes", 0));
             rootOffset = root.Offset;
             _ = session.CreateVarKeyScalar8ShelfAndLinkRootRoute(rootOffset, 0x43, profile, shelfBytes);
-            bool requestedSerializedReplay = false;
-            using (LibraDexFileSessionDurabilityBatch batch = session.BeginDurabilityBatch())
-            {
-                try
-                {
-                    _ = session.InsertWalkedRoutedVarKeyScalar8(
-                        rootOffset,
-                        maxKeyLength: profile.MaxKeyLength,
-                        incomingKey,
-                        incomingIdentity,
-                        allowDuplicateKeys: true,
-                        maxRouterHops: LibraDexFileSession.DefaultVarKeyScalar8MaxRouterHops,
-                        requestedRouteCount: 16);
-                }
-                catch (LibraDexWriteContextVarKeyScalar8TopologyFallbackException)
-                {
-                    requestedSerializedReplay = true;
-                    _ = batch.Abort();
-                }
-            }
-            if (!requestedSerializedReplay)
-            {
-                throw new InvalidDataException("The VS8 noncontiguous-owner durability batch did not request serialized topology replay.");
-            }
-
             VarKeyScalar8RoutedInsertResult result = session.InsertWalkedRoutedVarKeyScalar8(
                 rootOffset,
                 maxKeyLength: profile.MaxKeyLength,
@@ -1445,11 +1420,12 @@ internal static partial class RawHarness
     /// <returns>Zero when skewed-prefix insertion, recursive publication, persisted traversal, and identity parity validate.<br/></returns>
     private static int RunVarKeyScalar8SkewedPrefixSplitSanity(string[] args)
     {
+        bool descending = args.Contains("--descending", StringComparer.OrdinalIgnoreCase);
         string path = GetOption(args, "--path", Path.Combine(@"T:\LibraDex", "vs8-skewed-prefix-split-sanity.lbdx"));
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         File.Delete(path);
 
-        VarKeyScalar8Profile profile = VarKeyScalar8Profile.Default128KiB;
+        VarKeyScalar8Profile profile = VarKeyScalar8Profile.Default128KiB with { Descending = descending };
         int slotCapacityBytes = VarKeyScalar8Layout.CalculateSlotCapacityBytes(profile.ShelfExtentSize);
         int recordCapacityBytes = profile.ShelfExtentSize - VarKeyScalar8Layout.HeaderSize - slotCapacityBytes;
         const int minorityCount = 90;
@@ -1533,6 +1509,23 @@ internal static partial class RawHarness
             {
                 throw new InvalidDataException($"The VS8 skewed-prefix routed insert returned {result.Kind}/{result.InsertResult}; expected a published recursive transform split.");
             }
+            if (descending)
+            {
+                VarKeyScalar8RoutePathTarget minorityTarget = session.WalkVarKeyScalar8RoutePathTarget(
+                    rootOffset, minorityKey, LibraDexFileSession.DefaultVarKeyScalar8MaxRouterHops);
+                VarKeyScalar8RoutePathTarget denseTarget = session.WalkVarKeyScalar8RoutePathTarget(
+                    rootOffset, incomingKey, LibraDexFileSession.DefaultVarKeyScalar8MaxRouterHops);
+                if (minorityTarget.Target.Kind != VarKeyScalar8RouteTargetKind.Shelf ||
+                    denseTarget.Target.Kind != VarKeyScalar8RouteTargetKind.Shelf ||
+                    minorityTarget.Target.Offset == denseTarget.Target.Offset)
+                    throw new InvalidDataException("Descending VS8 recursive replacement did not produce distinct leaf shelves.");
+                VarKeyScalar8ReadOnly minorityLeaf = session.ReadVarKeyScalar8ReadOnlyShelf(minorityTarget.Target.Offset, profile.MaxKeyLength);
+                VarKeyScalar8ReadOnly denseLeaf = session.ReadVarKeyScalar8ReadOnlyShelf(denseTarget.Target.Offset, profile.MaxKeyLength);
+                if (!minorityLeaf.IsValid || !denseLeaf.IsValid || !minorityLeaf.IsDescending || !denseLeaf.IsDescending ||
+                    minorityLeaf.ReadIdentityAt(0) != minorityCount ||
+                    !denseLeaf.ReadKeyAt(0).SequenceEqual(incomingKey))
+                    throw new InvalidDataException("Descending VS8 recursive replacement leaves were not physically highest-first.");
+            }
         }
 
         tuples.Sort(static (left, right) =>
@@ -1563,7 +1556,7 @@ internal static partial class RawHarness
         }
 
         Console.WriteLine(
-            $"vs8-skewed-prefix-split-sanity ok path={path} items={tuples.Count} " +
+            $"vs8-skewed-prefix-split-sanity ok path={path} items={tuples.Count} descending={descending} " +
             $"capacity={recordCapacityBytes} rejectedDenseBranchBytes={denseLowRecordBytes + denseHighRecordBytes + incomingRecordBytes} " +
             $"recursiveLeaves={denseLowCount}/{denseHighCount + 1}");
         return 0;
@@ -2125,11 +2118,12 @@ internal static partial class RawHarness
     /// <returns>Zero when the noncontiguous owner set is rebuilt once and every distinct tuple remains reachable in exact order across reopen.<br/></returns>
     private static int RunVarKeyScalar8NoncontiguousOwnerSplitSanity(string[] args)
     {
+        bool descending = args.Contains("--descending", StringComparer.OrdinalIgnoreCase);
         string path = GetOption(args, "--path", Path.Combine(@"T:\LibraDex", "vs8-noncontiguous-owner-split-sanity.lbdx"));
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         File.Delete(path);
 
-        VarKeyScalar8Profile profile = VarKeyScalar8Profile.Default128KiB;
+        VarKeyScalar8Profile profile = VarKeyScalar8Profile.Default128KiB with { Descending = descending };
         int slotCapacityBytes = VarKeyScalar8Layout.CalculateSlotCapacityBytes(profile.ShelfExtentSize);
         int recordCapacityBytes = profile.ShelfExtentSize - VarKeyScalar8Layout.HeaderSize - slotCapacityBytes;
         const int aliasCount = 90;
@@ -2206,6 +2200,29 @@ internal static partial class RawHarness
                 throw new InvalidDataException("The VS8 noncontiguous-owner fixture could not publish its disjoint parent aliases.");
             }
 
+            bool requestedSerializedReplay = false;
+            using (LibraDexFileSessionDurabilityBatch batch = session.BeginDurabilityBatch())
+            {
+                try
+                {
+                    _ = session.InsertWalkedRoutedVarKeyScalar8(
+                        rootOffset,
+                        maxKeyLength: profile.MaxKeyLength,
+                        incomingKey,
+                        incomingIdentity,
+                        allowDuplicateKeys: true,
+                        maxRouterHops: LibraDexFileSession.DefaultVarKeyScalar8MaxRouterHops,
+                        requestedRouteCount: 16);
+                }
+                catch (LibraDexWriteContextVarKeyScalar8TopologyFallbackException)
+                {
+                    requestedSerializedReplay = true;
+                    _ = batch.Abort();
+                }
+            }
+            if (!requestedSerializedReplay)
+                throw new InvalidDataException("The VS8 noncontiguous-owner durability batch did not request serialized topology replay.");
+
             VarKeyScalar8RoutedInsertResult result = session.InsertWalkedRoutedVarKeyScalar8(
                 rootOffset,
                 maxKeyLength: profile.MaxKeyLength,
@@ -2218,6 +2235,16 @@ internal static partial class RawHarness
                 result.Kind != VarKeyScalar8RoutedInsertKind.WalkedShelfTransformSplit)
             {
                 throw new InvalidDataException($"The VS8 noncontiguous-owner insert returned {result.Kind}/{result.InsertResult}; expected a published owner-set rebuild.");
+            }
+            if (descending)
+            {
+                VarKeyScalar8RoutePathTarget highTarget = session.WalkVarKeyScalar8RoutePathTarget(
+                    rootOffset, incomingKey, LibraDexFileSession.DefaultVarKeyScalar8MaxRouterHops);
+                if (highTarget.Target.Kind != VarKeyScalar8RouteTargetKind.Shelf)
+                    throw new InvalidDataException("Descending VS8 owner-set rebuild did not publish a leaf shelf for the high key.");
+                VarKeyScalar8ReadOnly highLeaf = session.ReadVarKeyScalar8ReadOnlyShelf(highTarget.Target.Offset, profile.MaxKeyLength);
+                if (!highLeaf.IsValid || !highLeaf.IsDescending || !highLeaf.ReadKeyAt(0).SequenceEqual(incomingKey))
+                    throw new InvalidDataException("Descending VS8 owner-set rebuild leaf was not physically highest-first.");
             }
         }
 
@@ -2249,7 +2276,7 @@ internal static partial class RawHarness
         }
 
         File.Delete(path);
-        Console.WriteLine($"vs8-noncontiguous-owner-split-sanity ok items={tuples.Count:N0} ownerSlots=0x10/0x12 batchFallback=serialized recovery=root-owner-set-rebuild live/reopen parity");
+        Console.WriteLine($"vs8-noncontiguous-owner-split-sanity ok items={tuples.Count:N0} descending={descending} ownerSlots=0x10/0x12 batchFallback=serialized recovery=root-owner-set-rebuild live/reopen parity");
         return 0;
     }
 

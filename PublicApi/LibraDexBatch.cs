@@ -12,6 +12,12 @@ internal interface ISharedLibraDexBatch
     void CompleteSharedDurabilityCommit();
 
     void AbortSharedDurabilityBatch();
+
+    /// <summary>
+    /// Stages and releases retained shelf images before another handle mutates a slot owned by this batch.<br/>
+    /// The session durability boundary remains active and unpublished.<br/>
+    /// </summary>
+    void PrepareForExternalMutation();
 }
 
 
@@ -293,6 +299,35 @@ public sealed class LibraDexBatch<TKey, TIdentity> : IDisposable, ISharedLibraDe
         fixedScalarMonotonicRouteCursor.Clear();
         stagedIdentityKeyGuard?.ReleaseAllReservations();
         completed = true;
+    }
+
+    /// <summary>
+    /// Stages cached index-owned inserts and drops their local shelf images before a catalog-opened handle performs an exact mutation.<br/>
+    /// Subsequent inserts rebuild their caches from the session's pending shelf state; this method never publishes or completes the batch.<br/>
+    /// </summary>
+    public void PrepareForExternalMutation()
+    {
+        if (completed || !ownsDurabilityBatch)
+            throw new InvalidOperationException("Only an active index-owned batch can prepare an external exact mutation.");
+
+        PrepareSharedDurabilityCommit();
+        scalar16Scalar8ShelfCache?.Clear();
+        scalar16Scalar8RouteTargetCache?.Clear();
+        scalar8Scalar16ShelfCache?.Clear();
+        scalar8Scalar16RouteTargetCache?.Clear();
+        scalar16Scalar16ShelfCache?.Clear();
+        scalar16Scalar16RouteTargetCache?.Clear();
+        fixed32Scalar8ShelfCache?.Clear();
+        fixed32Scalar8RouteTargetCache?.Clear();
+        fixed32Scalar8RouteCursor.Clear();
+        fixed32Scalar8ActiveShelf = null;
+        fixed32Scalar8ActiveShelfOffset = 0;
+        fixed32Scalar16ShelfCache?.Clear();
+        fixed32Scalar16RouteTargetCache?.Clear();
+        fixed32Scalar16RouteCursor.Clear();
+        fixed32Scalar16ActiveShelf = null;
+        fixed32Scalar16ActiveShelfOffset = 0;
+        fixedScalarMonotonicRouteCursor.Clear();
     }
 
     void ISharedLibraDexBatch.PrepareSharedDurabilityCommit()

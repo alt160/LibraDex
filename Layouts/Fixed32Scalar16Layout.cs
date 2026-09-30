@@ -17,6 +17,7 @@ internal static class Fixed32Scalar16Layout
     public const int KeySize = sizeof(ulong) * 4;
     public const int IdentitySize = sizeof(ulong) * 2;
     public const int ItemSize = KeySize + IdentitySize;
+    public const uint DescendingFlag = 1U;
 
     public const int MagicOffset = 0;
     public const int FormatVersionOffset = 4;

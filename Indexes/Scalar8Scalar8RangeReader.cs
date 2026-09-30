@@ -225,17 +225,21 @@ internal sealed class Scalar8Scalar8RangeReader : IDisposable
         if (ordinal < 0)
         {
             currentShelfIndex = 0;
-            currentSlotIndex = startSlots[0];
+            currentSlotIndex = profile.Descending ? endSlots[0] - 1 : startSlots[0];
         }
         else
         {
-            currentSlotIndex++;
-            while (currentShelfIndex < shelfCount && currentSlotIndex >= endSlots[currentShelfIndex])
+            currentSlotIndex += profile.Descending ? -1 : 1;
+            while (currentShelfIndex < shelfCount && (profile.Descending
+                ? currentSlotIndex < startSlots[currentShelfIndex]
+                : currentSlotIndex >= endSlots[currentShelfIndex]))
             {
                 currentShelfIndex++;
                 if (currentShelfIndex < shelfCount)
                 {
-                    currentSlotIndex = startSlots[currentShelfIndex];
+                    currentSlotIndex = profile.Descending
+                        ? endSlots[currentShelfIndex] - 1
+                        : startSlots[currentShelfIndex];
                 }
             }
         }
@@ -279,17 +283,21 @@ internal sealed class Scalar8Scalar8RangeReader : IDisposable
             if (ordinal < 0)
             {
                 currentShelfIndex = 0;
-                currentSlotIndex = endSlots[0] - 1;
+                currentSlotIndex = profile.Descending ? startSlots[0] : endSlots[0] - 1;
             }
             else
             {
-                currentSlotIndex--;
-                while (currentShelfIndex < shelfCount && currentSlotIndex < startSlots[currentShelfIndex])
+                currentSlotIndex += profile.Descending ? 1 : -1;
+                while (currentShelfIndex < shelfCount && (profile.Descending
+                    ? currentSlotIndex >= endSlots[currentShelfIndex]
+                    : currentSlotIndex < startSlots[currentShelfIndex]))
                 {
                     currentShelfIndex++;
                     if (currentShelfIndex < shelfCount)
                     {
-                        currentSlotIndex = endSlots[currentShelfIndex] - 1;
+                        currentSlotIndex = profile.Descending
+                            ? startSlots[currentShelfIndex]
+                            : endSlots[currentShelfIndex] - 1;
                     }
                 }
             }
@@ -310,19 +318,25 @@ internal sealed class Scalar8Scalar8RangeReader : IDisposable
         if (ordinal < 0 || ordinal >= rowCount)
         {
             currentShelfIndex = shelfCount - 1;
-            currentSlotIndex = endSlots[currentShelfIndex] - 1;
+            currentSlotIndex = profile.Descending
+                ? startSlots[currentShelfIndex]
+                : endSlots[currentShelfIndex] - 1;
             ordinal = rowCount - 1;
             currentRowInvalidated = false;
             return true;
         }
 
-        currentSlotIndex--;
-        while (currentShelfIndex >= 0 && currentSlotIndex < startSlots[currentShelfIndex])
+        currentSlotIndex += profile.Descending ? 1 : -1;
+        while (currentShelfIndex >= 0 && (profile.Descending
+            ? currentSlotIndex >= endSlots[currentShelfIndex]
+            : currentSlotIndex < startSlots[currentShelfIndex]))
         {
             currentShelfIndex--;
             if (currentShelfIndex >= 0)
             {
-                currentSlotIndex = endSlots[currentShelfIndex] - 1;
+                currentSlotIndex = profile.Descending
+                    ? startSlots[currentShelfIndex]
+                    : endSlots[currentShelfIndex] - 1;
             }
         }
 
@@ -595,7 +609,8 @@ internal sealed class Scalar8Scalar8RangeReader : IDisposable
         endSlots[currentShelfIndex]--;
         rowCount--;
         ordinal--;
-        currentSlotIndex--;
+        if (!profile.Descending)
+            currentSlotIndex--;
         currentRowInvalidated = true;
         return true;
     }
@@ -624,9 +639,11 @@ internal sealed class Scalar8Scalar8RangeReader : IDisposable
             throw new InvalidDataException("The routed SS8-8 range target shelf is invalid.");
         }
 
-        int startSlot = shelf.LowerBoundKey(lowerEncodedKey);
+        int startSlot = shelf.LowerBoundKey(shelf.IsDescending ? upperEncodedKey : lowerEncodedKey);
         int endSlot = startSlot;
-        while (endSlot < shelf.ItemCount && shelf.ReadKeyAt(endSlot) <= upperEncodedKey)
+        while (endSlot < shelf.ItemCount && (shelf.IsDescending
+            ? shelf.ReadKeyAt(endSlot) >= lowerEncodedKey
+            : shelf.ReadKeyAt(endSlot) <= upperEncodedKey))
         {
             endSlot++;
         }
@@ -711,10 +728,31 @@ internal sealed class Scalar8Scalar8RangeReader : IDisposable
 
                 byte[] shelfBytes = localSession.ReadScalar8Scalar8ShelfBytes(targetOffset, profile);
                 Scalar8Scalar8ReadOnly linkedProbe = new(shelfBytes, profile);
-                AddShelfRange(shelfBytes);
-                if (linkedProbe.IsValid && linkedProbe.IsDuplicateRun && linkedProbe.DuplicateRunNextOffset != 0)
+                if (linkedProbe.IsValid && linkedProbe.IsDuplicateRun &&
+                    linkedProbe.IsDescending != descendingTraversal && linkedProbe.DuplicateRunNextOffset != 0)
                 {
-                    PushTarget(linkedProbe.DuplicateRunNextOffset, remainingHops, lowerEdge, upperEdge);
+                    List<byte[]> chain = [shelfBytes];
+                    ulong runKey = linkedProbe.ReadKeyAt(0);
+                    long nextOffset = linkedProbe.DuplicateRunNextOffset;
+                    while (nextOffset != 0 && localVisitedShelves.Add(nextOffset))
+                    {
+                        byte[] nextBytes = localSession.ReadScalar8Scalar8ShelfBytes(nextOffset, profile);
+                        Scalar8Scalar8ReadOnly nextShelf = new(nextBytes, profile);
+                        if (!nextShelf.IsValid || !nextShelf.IsDuplicateRun ||
+                            nextShelf.IsDescending != linkedProbe.IsDescending || nextShelf.ReadKeyAt(0) != runKey)
+                            throw new InvalidDataException("The SS8-8 duplicate-run chain changed shape, key, or physical order.");
+                        chain.Add(nextBytes);
+                        nextOffset = nextShelf.DuplicateRunNextOffset;
+                    }
+
+                    for (int i = chain.Count - 1; i >= 0; i--)
+                        AddShelfRange(chain[i]);
+                }
+                else
+                {
+                    AddShelfRange(shelfBytes);
+                    if (linkedProbe.IsValid && linkedProbe.IsDuplicateRun && linkedProbe.DuplicateRunNextOffset != 0)
+                        PushTarget(linkedProbe.DuplicateRunNextOffset, remainingHops, lowerEdge, upperEdge);
                 }
 
                 if (rowCount > previousRowCount)
@@ -738,6 +776,9 @@ internal sealed class Scalar8Scalar8RangeReader : IDisposable
                 {
                     throw new InvalidDataException("The routed SS8-8 terminal identity root shape is invalid.");
                 }
+
+                if ((rootBytes[TerminalIdentityRootLayout.SortDirectionOffset] != 0) != profile.Descending)
+                    throw new InvalidDataException("The routed SS8-8 terminal identity root physical order does not match its index profile.");
 
                 ulong encodedKey = BinaryPrimitives.ReadUInt64BigEndian(
                     rootBytes.AsSpan(TerminalIdentityRootLayout.KeyBytesOffset, Scalar8Scalar8Layout.KeySize));
@@ -831,6 +872,27 @@ internal sealed class Scalar8Scalar8RangeReader : IDisposable
     /// <returns>Whether a new nonempty range was appended to the reader.<br/></returns>
     private bool LoadPendingTerminalShelf(LibraDexFileSession localSession, RouteVisitedOffsetSet visited)
     {
+        if (pendingTerminalShelfOffset != 0 && profile.Descending != descendingTraversal)
+        {
+            List<byte[]> chain = [];
+            while (pendingTerminalShelfOffset != 0)
+            {
+                long offset = pendingTerminalShelfOffset;
+                pendingTerminalShelfOffset = 0;
+                if (!visited.Add(offset))
+                    break;
+                byte[] bytes = localSession.ReadTerminalIdentity8ShelfBytes(offset, pendingTerminalShelfExtent);
+                pendingTerminalShelfOffset = TerminalIdentity8ShelfLayout.ReadNextShelfOffset(bytes);
+                chain.Add(bytes);
+            }
+
+            pendingTerminalShelfOffset = 0;
+            int previousCount = rowCount;
+            for (int i = chain.Count - 1; i >= 0; i--)
+                AddTerminalIdentityShelfRange(chain[i], pendingTerminalKey);
+            return rowCount > previousCount;
+        }
+
         while (pendingTerminalShelfOffset != 0)
         {
             long offset = pendingTerminalShelfOffset;
@@ -931,7 +993,9 @@ internal sealed class Scalar8Scalar8RangeReader : IDisposable
             if (remaining < length)
             {
                 currentShelfIndex = i;
-                currentSlotIndex = startSlots[i] + remaining;
+                currentSlotIndex = profile.Descending
+                    ? endSlots[i] - 1 - remaining
+                    : startSlots[i] + remaining;
                 ordinal = targetOrdinal;
                 return;
             }
@@ -958,7 +1022,9 @@ internal sealed class Scalar8Scalar8RangeReader : IDisposable
             if (remaining < length)
             {
                 currentShelfIndex = i;
-                currentSlotIndex = endSlots[i] - 1 - remaining;
+                currentSlotIndex = profile.Descending
+                    ? startSlots[i] + remaining
+                    : endSlots[i] - 1 - remaining;
                 ordinal = targetOrdinal;
                 return;
             }

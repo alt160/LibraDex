@@ -29,6 +29,9 @@ internal sealed class Scalar8VarIdentityRangeReader : IDisposable
     private int shelfCount;
     private int rowCount;
     private int pendingCount;
+    private long pendingTerminalShelfOffset;
+    private int pendingTerminalShelfExtentSize;
+    private ulong pendingTerminalKey;
     private int currentShelfIndex;
     private int currentSlotIndex = -1;
     private int ordinal = -1;
@@ -36,6 +39,9 @@ internal sealed class Scalar8VarIdentityRangeReader : IDisposable
     private ulong lowerEncodedKey;
     private ulong upperEncodedKey;
     private bool traversalComplete = true;
+    private bool descendingTraversal;
+    private bool physicalDescending;
+    private bool reversePhysicalSlots;
     private bool disposed;
 
     internal static bool UseExhaustiveRouteTraversal { get; set; }
@@ -57,10 +63,12 @@ internal sealed class Scalar8VarIdentityRangeReader : IDisposable
         long rootRouterOffset,
         int maxIdentityLength,
         ulong lowerEncodedKey,
-        ulong upperEncodedKey)
+        ulong upperEncodedKey,
+        QueryDirection direction = QueryDirection.Ascending,
+        bool physicalDescending = false)
         : this()
     {
-        Reset(session, rootRouterOffset, maxIdentityLength, lowerEncodedKey, upperEncodedKey);
+        Reset(session, rootRouterOffset, maxIdentityLength, lowerEncodedKey, upperEncodedKey, direction, physicalDescending);
     }
 
     /// <summary>
@@ -77,7 +85,9 @@ internal sealed class Scalar8VarIdentityRangeReader : IDisposable
         long rootRouterOffset,
         int maxIdentityLength,
         ulong lowerEncodedKey,
-        ulong upperEncodedKey)
+        ulong upperEncodedKey,
+        QueryDirection direction = QueryDirection.Ascending,
+        bool physicalDescending = false)
     {
         if (disposed)
         {
@@ -88,6 +98,8 @@ internal sealed class Scalar8VarIdentityRangeReader : IDisposable
         {
             throw new ArgumentException("The upper SV8 key must be greater than or equal to the lower key.", nameof(upperEncodedKey));
         }
+        if (direction is not QueryDirection.Ascending and not QueryDirection.Descending)
+            throw new ArgumentOutOfRangeException(nameof(direction));
 
         ClearLoadedRanges();
         this.session = session;
@@ -95,6 +107,9 @@ internal sealed class Scalar8VarIdentityRangeReader : IDisposable
         this.maxIdentityLength = maxIdentityLength;
         this.lowerEncodedKey = lowerEncodedKey;
         this.upperEncodedKey = upperEncodedKey;
+        descendingTraversal = direction == QueryDirection.Descending;
+        this.physicalDescending = physicalDescending;
+        reversePhysicalSlots = descendingTraversal != physicalDescending;
         pendingOffsets ??= ArrayPool<long>.Shared.Rent(DefaultShelfCapacity);
         pendingHops ??= ArrayPool<int>.Shared.Rent(DefaultShelfCapacity);
         pendingFlags ??= ArrayPool<byte>.Shared.Rent(DefaultShelfCapacity);
@@ -103,6 +118,9 @@ internal sealed class Scalar8VarIdentityRangeReader : IDisposable
         visitedShelves.Clear();
         visitedRouters.Clear();
         pendingCount = 0;
+        pendingTerminalShelfOffset = 0;
+        pendingTerminalShelfExtentSize = 0;
+        pendingTerminalKey = 0;
         currentShelfIndex = 0;
         currentSlotIndex = -1;
         ordinal = -1;
@@ -110,7 +128,9 @@ internal sealed class Scalar8VarIdentityRangeReader : IDisposable
 
         byte lowerPrefix = UseExhaustiveRouteTraversal ? byte.MinValue : LibraDexFileSession.GetScalar8VarIdentityPrefix(lowerEncodedKey, 0);
         byte upperPrefix = UseExhaustiveRouteTraversal ? byte.MaxValue : LibraDexFileSession.GetScalar8VarIdentityPrefix(upperEncodedKey, 0);
-        for (int prefix = upperPrefix; prefix >= lowerPrefix; prefix--)
+        for (int prefix = descendingTraversal ? lowerPrefix : upperPrefix;
+             descendingTraversal ? prefix <= upperPrefix : prefix >= lowerPrefix;
+             prefix += descendingTraversal ? 1 : -1)
         {
             long targetOffset = session.FindRouterTarget(rootRouterOffset, (byte)prefix);
             if (targetOffset != 0)
@@ -183,17 +203,18 @@ internal sealed class Scalar8VarIdentityRangeReader : IDisposable
         if (ordinal < 0)
         {
             currentShelfIndex = 0;
-            currentSlotIndex = startSlots[0];
+            currentSlotIndex = reversePhysicalSlots ? endSlots[0] - 1 : startSlots[0];
         }
         else
         {
-            currentSlotIndex++;
-            while (currentShelfIndex < shelfCount && currentSlotIndex >= endSlots[currentShelfIndex])
+            currentSlotIndex += reversePhysicalSlots ? -1 : 1;
+            while (currentShelfIndex < shelfCount &&
+                   (reversePhysicalSlots ? currentSlotIndex < startSlots[currentShelfIndex] : currentSlotIndex >= endSlots[currentShelfIndex]))
             {
                 currentShelfIndex++;
                 if (currentShelfIndex < shelfCount)
                 {
-                    currentSlotIndex = startSlots[currentShelfIndex];
+                    currentSlotIndex = reversePhysicalSlots ? endSlots[currentShelfIndex] - 1 : startSlots[currentShelfIndex];
                 }
             }
         }
@@ -271,9 +292,12 @@ internal sealed class Scalar8VarIdentityRangeReader : IDisposable
 
     private void AddShelfRange(Scalar8VarIdentityReadOnly shelf, ulong lowerEncodedKey, ulong upperEncodedKey)
     {
-        int startSlot = shelf.LowerBoundKey(lowerEncodedKey);
+        int startSlot = shelf.LowerBoundKey(physicalDescending ? upperEncodedKey : lowerEncodedKey);
         int endSlot = startSlot;
-        while (endSlot < shelf.ItemCount && shelf.ReadKeyAt(endSlot) <= upperEncodedKey)
+        while (endSlot < shelf.ItemCount &&
+               (physicalDescending
+                   ? shelf.ReadKeyAt(endSlot) >= lowerEncodedKey
+                   : shelf.ReadKeyAt(endSlot) <= upperEncodedKey))
         {
             endSlot++;
         }
@@ -441,6 +465,22 @@ internal sealed class Scalar8VarIdentityRangeReader : IDisposable
         RouteVisitedContextSet localVisitedRouters = visitedRouters ?? throw new ObjectDisposedException(nameof(Scalar8VarIdentityRangeReader));
         int previousRowCount = rowCount;
         Span<byte> routerBytes = stackalloc byte[RouterLayout.Size];
+        while (pendingTerminalShelfOffset != 0)
+        {
+            long terminalShelfOffset = pendingTerminalShelfOffset;
+            if (!localVisitedShelves.Add(terminalShelfOffset))
+            {
+                pendingTerminalShelfOffset = 0;
+                break;
+            }
+
+            byte[] terminalShelfBytes = localSession.ReadTerminalVarIdentityShelfBytes(terminalShelfOffset, pendingTerminalShelfExtentSize);
+            pendingTerminalShelfOffset = TerminalVarIdentityShelfLayout.ReadNextShelfOffset(terminalShelfBytes);
+            AddTerminalVarIdentityShelfRange(terminalShelfBytes, pendingTerminalKey);
+            if (rowCount > previousRowCount)
+                return true;
+        }
+
         while (pendingCount > 0)
         {
             PopTarget(out long targetOffset, out int remainingHops, out bool lowerEdge, out bool upperEdge);
@@ -462,8 +502,15 @@ internal sealed class Scalar8VarIdentityRangeReader : IDisposable
                 ulong encodedKey = System.Buffers.Binary.BinaryPrimitives.ReadUInt64BigEndian(rootBytes.AsSpan(TerminalIdentityRootLayout.KeyBytesOffset, Scalar8VarIdentityLayout.KeySize));
                 if (encodedKey >= lowerEncodedKey && encodedKey <= upperEncodedKey)
                 {
+                    if (rowCount == 0)
+                    {
+                        physicalDescending = rootBytes[TerminalIdentityRootLayout.SortDirectionOffset] != 0;
+                        reversePhysicalSlots = descendingTraversal != physicalDescending;
+                    }
+
                     int shelfExtentSize = TerminalIdentityRootLayout.ReadShelfExtentSize(rootBytes);
                     long terminalShelfOffset = TerminalIdentityRootLayout.ReadFirstShelfOffset(rootBytes);
+                    List<byte[]>? reverseShelves = reversePhysicalSlots ? new List<byte[]>() : null;
                     while (terminalShelfOffset != 0)
                     {
                         if (!localVisitedShelves.Add(terminalShelfOffset))
@@ -473,8 +520,26 @@ internal sealed class Scalar8VarIdentityRangeReader : IDisposable
 
                         byte[] terminalShelfBytes = localSession.ReadTerminalVarIdentityShelfBytes(terminalShelfOffset, shelfExtentSize);
                         long nextOffset = TerminalVarIdentityShelfLayout.ReadNextShelfOffset(terminalShelfBytes);
-                        AddTerminalVarIdentityShelfRange(terminalShelfBytes, encodedKey);
+                        if (reverseShelves is null)
+                        {
+                            AddTerminalVarIdentityShelfRange(terminalShelfBytes, encodedKey);
+                            if (rowCount > previousRowCount)
+                            {
+                                pendingTerminalShelfOffset = nextOffset;
+                                pendingTerminalShelfExtentSize = shelfExtentSize;
+                                pendingTerminalKey = encodedKey;
+                                return true;
+                            }
+                        }
+                        else
+                            reverseShelves.Add(terminalShelfBytes);
                         terminalShelfOffset = nextOffset;
+                    }
+
+                    if (reverseShelves is not null)
+                    {
+                        for (int i = reverseShelves.Count - 1; i >= 0; i--)
+                            AddTerminalVarIdentityShelfRange(reverseShelves[i], encodedKey);
                     }
 
                     if (rowCount > previousRowCount)
@@ -500,6 +565,28 @@ internal sealed class Scalar8VarIdentityRangeReader : IDisposable
                         indexRootOffset,
                         currentShelfOffset,
                         maxIdentityLength);
+                    if (rowCount == 0)
+                    {
+                        physicalDescending = shelf.IsDescending;
+                        reversePhysicalSlots = descendingTraversal != physicalDescending;
+                    }
+
+                    if (reversePhysicalSlots && shelf.NextShelfOffset != 0)
+                    {
+                        List<Scalar8VarIdentityReadOnly> chain = new() { shelf };
+                        long nextOffset = shelf.NextShelfOffset;
+                        while (nextOffset != 0 && localVisitedShelves.Add(nextOffset))
+                        {
+                            Scalar8VarIdentityReadOnly next = localSession.ReadScalar8VarIdentityReadOnlyShelf(indexRootOffset, nextOffset, maxIdentityLength);
+                            chain.Add(next);
+                            nextOffset = next.NextShelfOffset;
+                        }
+                        for (int i = chain.Count - 1; i >= 0; i--)
+                            AddShelfRange(chain[i], lowerEncodedKey, upperEncodedKey);
+                        if (rowCount > previousRowCount)
+                            return true;
+                        break;
+                    }
                     AddShelfRange(shelf, lowerEncodedKey, upperEncodedKey);
                     currentShelfOffset = shelf.NextShelfOffset;
                     if (rowCount > previousRowCount)
@@ -535,7 +622,9 @@ internal sealed class Scalar8VarIdentityRangeReader : IDisposable
             byte scanLowerPrefix = exhaustiveForRouter ? byte.MinValue : edgeLowerPrefix;
             byte scanUpperPrefix = exhaustiveForRouter ? byte.MaxValue : edgeUpperPrefix;
             long previousRouteTarget = 0;
-            for (int prefix = scanUpperPrefix; prefix >= scanLowerPrefix; prefix--)
+            for (int prefix = descendingTraversal ? scanLowerPrefix : scanUpperPrefix;
+                 descendingTraversal ? prefix <= scanUpperPrefix : prefix >= scanLowerPrefix;
+                 prefix += descendingTraversal ? 1 : -1)
             {
                 long routeTarget = router.FindTarget((byte)prefix);
                 if (routeTarget != 0 && routeTarget != previousRouteTarget)
@@ -640,7 +729,7 @@ internal sealed class Scalar8VarIdentityRangeReader : IDisposable
             if (remaining < length)
             {
                 currentShelfIndex = i;
-                currentSlotIndex = startSlots[i] + remaining;
+                currentSlotIndex = reversePhysicalSlots ? endSlots[i] - 1 - remaining : startSlots[i] + remaining;
                 ordinal = targetOrdinal;
                 return;
             }

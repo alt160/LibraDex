@@ -1248,6 +1248,16 @@ public sealed class LibraDexCompositeKeyPartCondition
 public static class LibraDexCompositePart
 {
     /// <summary>
+    /// Starts a comparison between two named components of the same routed composite key.<br/>
+    /// The comparison is evaluated only after the complete tuple path is available, while ordinary named-part predicates continue to prune routes before terminal traversal.<br/>
+    /// </summary>
+    /// <param name="leftPartName">The declared component supplying the left comparison value.<br/></param>
+    /// <param name="rightPartName">The declared component supplying the right comparison value.<br/></param>
+    /// <returns>A typed terminal comparison builder.<br/></returns>
+    public static LibraDexCompositePartComparisonCondition Compare(string leftPartName, string rightPartName)
+        => new(leftPartName, rightPartName);
+
+    /// <summary>
     /// Starts a predicate over the full composite key using index-order parts and no delimiter.<br/>
     /// This is an explicit full-key request: LibraDex renders the complete routed path at the terminal node and applies the requested predicate as a residual operation.<br/>
     /// </summary>
@@ -1329,7 +1339,8 @@ public sealed class LibraDexCompositePartCriterion : ILibraDexParameterSnapshotV
         string? culture,
         string? fullKeyDelimiter = null,
         IReadOnlyList<string>? fullKeyPartNames = null,
-        IReadOnlyList<string>? fullKeyExcludedPartNames = null)
+        IReadOnlyList<string>? fullKeyExcludedPartNames = null,
+        LibraDexCompositePartComparison? partComparison = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(partName);
         PartName = partName;
@@ -1341,6 +1352,7 @@ public sealed class LibraDexCompositePartCriterion : ILibraDexParameterSnapshotV
         FullKeyDelimiter = fullKeyDelimiter;
         FullKeyPartNames = fullKeyPartNames;
         FullKeyExcludedPartNames = fullKeyExcludedPartNames;
+        PartComparison = partComparison;
     }
 
     /// <summary>
@@ -1426,7 +1438,8 @@ public sealed class LibraDexCompositePartCriterion : ILibraDexParameterSnapshotV
             Culture,
             FullKeyDelimiter,
             FullKeyPartNames,
-            FullKeyExcludedPartNames);
+            FullKeyExcludedPartNames,
+            PartComparison);
     }
 
     /// <summary>
@@ -1446,7 +1459,71 @@ public sealed class LibraDexCompositePartCriterion : ILibraDexParameterSnapshotV
     /// Exclusions are applied after inclusion selection and still preserve composite index order.<br/>
     /// </summary>
     public IReadOnlyList<string>? FullKeyExcludedPartNames { get; }
+
+    internal LibraDexCompositePartComparison? PartComparison { get; }
 }
+
+/// <summary>
+/// Builds an exact comparison between two declared routed-composite components.<br/>
+/// This is terminal-path work by design: it does not invent a flattened key or claim route pruning that an inter-component relation cannot provide.<br/>
+/// </summary>
+public sealed class LibraDexCompositePartComparisonCondition
+{
+    private readonly string leftPartName;
+    private readonly string rightPartName;
+
+    internal LibraDexCompositePartComparisonCondition(string leftPartName, string rightPartName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(leftPartName);
+        ArgumentException.ThrowIfNullOrWhiteSpace(rightPartName);
+        this.leftPartName = leftPartName;
+        this.rightPartName = rightPartName;
+    }
+
+    /// <summary>Captures equality between the two named components.<br/></summary>
+    public LibraDexCompositePartCriterion EqualTo(bool ignoreCase = false, string? culture = null)
+        => Create(LibraDexConditionOperatorKind.EqualTo, ignoreCase, culture);
+
+    /// <summary>Captures inequality between the two named components.<br/></summary>
+    public LibraDexCompositePartCriterion NotEqualTo(bool ignoreCase = false, string? culture = null)
+        => Create(LibraDexConditionOperatorKind.NotEqualTo, ignoreCase, culture);
+
+    /// <summary>Captures an ordered greater-than comparison between the two named components.<br/></summary>
+    public LibraDexCompositePartCriterion GreaterThan(bool ignoreCase = false, string? culture = null)
+        => Create(LibraDexConditionOperatorKind.GreaterThan, ignoreCase, culture);
+
+    /// <summary>Captures an ordered greater-than-or-equal comparison between the two named components.<br/></summary>
+    public LibraDexCompositePartCriterion GreaterOrEqual(bool ignoreCase = false, string? culture = null)
+        => Create(LibraDexConditionOperatorKind.GreaterOrEqual, ignoreCase, culture);
+
+    /// <summary>Captures an ordered less-than comparison between the two named components.<br/></summary>
+    public LibraDexCompositePartCriterion LessThan(bool ignoreCase = false, string? culture = null)
+        => Create(LibraDexConditionOperatorKind.LessThan, ignoreCase, culture);
+
+    /// <summary>Captures an ordered less-than-or-equal comparison between the two named components.<br/></summary>
+    public LibraDexCompositePartCriterion LessOrEqual(bool ignoreCase = false, string? culture = null)
+        => Create(LibraDexConditionOperatorKind.LessOrEqual, ignoreCase, culture);
+
+    private LibraDexCompositePartCriterion Create(LibraDexConditionOperatorKind operation, bool ignoreCase, string? culture)
+    {
+        var comparison = new LibraDexCompositePartComparison(leftPartName, rightPartName, operation, ignoreCase, culture);
+        return new LibraDexCompositePartCriterion(
+            "\u001Fcross\u001F" + leftPartName + "\u001F" + rightPartName + "\u001F" + operation,
+            LibraDexConditionValueKind.Composite,
+            operation,
+            Array.Empty<object?>(),
+            ignoreCase,
+            culture,
+            partComparison: comparison);
+    }
+}
+
+internal sealed record LibraDexCompositePartComparison(
+    string LeftPartName,
+    string RightPartName,
+    LibraDexConditionOperatorKind Operator,
+    bool IgnoreCase,
+    string? Culture);
 
 /// <summary>
 /// Selects a comparison domain for the full composite key.<br/>
@@ -2378,6 +2455,297 @@ public sealed class LibraDexCompositeDatePartCondition
     public LibraDexCompositePartCriterion DayEqualTo(int day)
         => Create(LibraDexConditionOperatorKind.DayEqualTo, day);
 
+    /// <summary>Captures a structured year inequality predicate.<br/></summary>
+    /// <param name="year">The year component to exclude.<br/></param>
+    /// <returns>A composite part predicate.<br/></returns>
+    public LibraDexCompositePartCriterion YearNotEqual(int year)
+        => Create(LibraDexConditionOperatorKind.YearNotEqualTo, year);
+
+    /// <summary>Captures structured year membership.<br/></summary>
+    /// <param name="years">The year components to match.<br/></param>
+    /// <returns>A composite part predicate.<br/></returns>
+    public LibraDexCompositePartCriterion YearIn(params int[] years)
+        => Create(LibraDexConditionOperatorKind.YearIn, RequireValues(years, nameof(years)));
+
+    /// <summary>Captures structured year non-membership.<br/></summary>
+    /// <param name="years">The year components to exclude.<br/></param>
+    /// <returns>A composite part predicate.<br/></returns>
+    public LibraDexCompositePartCriterion YearNotIn(params int[] years)
+        => Create(LibraDexConditionOperatorKind.YearNotIn, RequireValues(years, nameof(years)));
+
+    /// <summary>Captures a structured year exclusion range.<br/></summary>
+    /// <param name="startYear">The inclusive lower excluded year.<br/></param>
+    /// <param name="endYear">The inclusive upper excluded year.<br/></param>
+    /// <returns>A composite part predicate.<br/></returns>
+    public LibraDexCompositePartCriterion YearNotRange(int startYear, int endYear)
+        => Create(LibraDexConditionOperatorKind.YearNotRange, startYear, endYear);
+
+    /// <summary>Captures an inclusive lower structured year boundary.<br/></summary>
+    /// <param name="year">The inclusive lower year.<br/></param>
+    /// <returns>A composite part predicate.<br/></returns>
+    public LibraDexCompositePartCriterion OnOrAfterYear(int year)
+        => Create(LibraDexConditionOperatorKind.YearOnOrAfter, year);
+
+    /// <summary>Captures an inclusive upper structured year boundary.<br/></summary>
+    /// <param name="year">The inclusive upper year.<br/></param>
+    /// <returns>A composite part predicate.<br/></returns>
+    public LibraDexCompositePartCriterion OnOrBeforeYear(int year)
+        => Create(LibraDexConditionOperatorKind.YearOnOrBefore, year);
+
+    /// <summary>Captures the Abraxas-style structured month equality alias.<br/></summary>
+    /// <param name="month">The month component to match.<br/></param>
+    /// <returns>A composite part predicate.<br/></returns>
+    public LibraDexCompositePartCriterion MonthEqual(int month)
+        => MonthEqualTo(month);
+
+    /// <summary>Captures structured month inequality.<br/></summary>
+    /// <param name="month">The month component to exclude.<br/></param>
+    /// <returns>A composite part predicate.<br/></returns>
+    public LibraDexCompositePartCriterion MonthNotEqual(int month)
+        => Create(LibraDexConditionOperatorKind.MonthNotEqualTo, month);
+
+    /// <summary>Captures structured month membership.<br/></summary>
+    /// <param name="months">The month components to match.<br/></param>
+    /// <returns>A composite part predicate.<br/></returns>
+    public LibraDexCompositePartCriterion MonthIn(params int[] months)
+        => Create(LibraDexConditionOperatorKind.MonthIn, RequireValues(months, nameof(months)));
+
+    /// <summary>Captures structured month non-membership.<br/></summary>
+    /// <param name="months">The month components to exclude.<br/></param>
+    /// <returns>A composite part predicate.<br/></returns>
+    public LibraDexCompositePartCriterion MonthNotIn(params int[] months)
+        => Create(LibraDexConditionOperatorKind.MonthNotIn, RequireValues(months, nameof(months)));
+
+    /// <summary>Captures a structured month range.<br/></summary>
+    /// <param name="startMonth">The inclusive lower month.<br/></param>
+    /// <param name="endMonth">The inclusive upper month.<br/></param>
+    /// <returns>A composite part predicate.<br/></returns>
+    public LibraDexCompositePartCriterion MonthRange(int startMonth, int endMonth)
+        => Create(LibraDexConditionOperatorKind.MonthRange, startMonth, endMonth);
+
+    /// <summary>Captures a structured month exclusion range.<br/></summary>
+    /// <param name="startMonth">The inclusive lower excluded month.<br/></param>
+    /// <param name="endMonth">The inclusive upper excluded month.<br/></param>
+    /// <returns>A composite part predicate.<br/></returns>
+    public LibraDexCompositePartCriterion MonthNotInRange(int startMonth, int endMonth)
+        => Create(LibraDexConditionOperatorKind.MonthNotRange, startMonth, endMonth);
+
+    /// <summary>Captures the Abraxas-style structured day equality alias.<br/></summary>
+    /// <param name="day">The day component to match.<br/></param>
+    /// <returns>A composite part predicate.<br/></returns>
+    public LibraDexCompositePartCriterion DayEqual(int day)
+        => DayEqualTo(day);
+
+    /// <summary>Captures structured day inequality.<br/></summary>
+    /// <param name="day">The day component to exclude.<br/></param>
+    /// <returns>A composite part predicate.<br/></returns>
+    public LibraDexCompositePartCriterion DayNotEqual(int day)
+        => Create(LibraDexConditionOperatorKind.DayNotEqualTo, day);
+
+    /// <summary>Captures structured day membership.<br/></summary>
+    /// <param name="days">The day components to match.<br/></param>
+    /// <returns>A composite part predicate.<br/></returns>
+    public LibraDexCompositePartCriterion DayIn(params int[] days)
+        => Create(LibraDexConditionOperatorKind.DayIn, RequireValues(days, nameof(days)));
+
+    /// <summary>Captures structured day non-membership.<br/></summary>
+    /// <param name="days">The day components to exclude.<br/></param>
+    /// <returns>A composite part predicate.<br/></returns>
+    public LibraDexCompositePartCriterion DayNotIn(params int[] days)
+        => Create(LibraDexConditionOperatorKind.DayNotIn, RequireValues(days, nameof(days)));
+
+    /// <summary>Captures a structured day range.<br/></summary>
+    /// <param name="startDay">The inclusive lower day.<br/></param>
+    /// <param name="endDay">The inclusive upper day.<br/></param>
+    /// <returns>A composite part predicate.<br/></returns>
+    public LibraDexCompositePartCriterion DayRange(int startDay, int endDay)
+        => Create(LibraDexConditionOperatorKind.DayRange, startDay, endDay);
+
+    /// <summary>Captures a structured day exclusion range.<br/></summary>
+    /// <param name="startDay">The inclusive lower excluded day.<br/></param>
+    /// <param name="endDay">The inclusive upper excluded day.<br/></param>
+    /// <returns>A composite part predicate.<br/></returns>
+    public LibraDexCompositePartCriterion NotDayRange(int startDay, int endDay)
+        => Create(LibraDexConditionOperatorKind.DayNotRange, startDay, endDay);
+
+    /// <summary>Captures structured hour equality.<br/></summary>
+    /// <param name="hour">The hour component to match, from 0 through 23.<br/></param>
+    /// <returns>A composite part predicate.<br/></returns>
+    public LibraDexCompositePartCriterion HourEqual(int hour)
+        => Create(LibraDexConditionOperatorKind.HourEqualTo, hour);
+
+    /// <summary>Captures structured hour membership.<br/></summary>
+    /// <param name="hours">The hour components to match.<br/></param>
+    /// <returns>A composite part predicate.<br/></returns>
+    public LibraDexCompositePartCriterion HourIn(params int[] hours)
+        => Create(LibraDexConditionOperatorKind.HourIn, RequireValues(hours, nameof(hours)));
+
+    /// <summary>Captures structured hour non-membership.<br/></summary>
+    /// <param name="hours">The hour components to exclude.<br/></param>
+    /// <returns>A composite part predicate.<br/></returns>
+    public LibraDexCompositePartCriterion HourNotIn(params int[] hours)
+        => Create(LibraDexConditionOperatorKind.HourNotIn, RequireValues(hours, nameof(hours)));
+
+    /// <summary>Captures a structured hour range.<br/></summary>
+    /// <param name="startHour">The inclusive lower hour.<br/></param>
+    /// <param name="endHour">The inclusive upper hour.<br/></param>
+    /// <returns>A composite part predicate.<br/></returns>
+    public LibraDexCompositePartCriterion HourRange(int startHour, int endHour)
+        => Create(LibraDexConditionOperatorKind.HourRange, startHour, endHour);
+
+    /// <summary>Captures a structured hour exclusion range.<br/></summary>
+    /// <param name="startHour">The inclusive lower excluded hour.<br/></param>
+    /// <param name="endHour">The inclusive upper excluded hour.<br/></param>
+    /// <returns>A composite part predicate.<br/></returns>
+    public LibraDexCompositePartCriterion HourNotInRange(int startHour, int endHour)
+        => Create(LibraDexConditionOperatorKind.HourNotRange, startHour, endHour);
+
+    /// <summary>Captures a structured quarter equality predicate.<br/></summary>
+    /// <param name="quarter">The quarter component to match, from 1 through 4.<br/></param>
+    /// <returns>A composite part predicate.<br/></returns>
+    public LibraDexCompositePartCriterion QuarterEqualTo(int quarter)
+        => Create(LibraDexConditionOperatorKind.QuarterEqualTo, quarter);
+
+    /// <summary>Captures the Abraxas-style quarter predicate across all years.<br/></summary>
+    /// <param name="quarter">The quarter component to match, from 1 through 4.<br/></param>
+    /// <returns>A composite part predicate.<br/></returns>
+    public LibraDexCompositePartCriterion InQuarter(int quarter)
+        => Create(LibraDexConditionOperatorKind.InQuarter, quarter);
+
+    /// <summary>Captures a structured quarter range across all years.<br/></summary>
+    /// <param name="startQuarter">The inclusive lower quarter.<br/></param>
+    /// <param name="endQuarter">The inclusive upper quarter.<br/></param>
+    /// <returns>A composite part predicate.<br/></returns>
+    public LibraDexCompositePartCriterion InQuarterRange(int startQuarter, int endQuarter)
+        => Create(LibraDexConditionOperatorKind.InQuarterRange, startQuarter, endQuarter);
+
+    /// <summary>Captures membership in several structured year/month pairs.<br/></summary>
+    /// <param name="values">The year/month pairs to match.<br/></param>
+    /// <returns>A composite part predicate.<br/></returns>
+    public LibraDexCompositePartCriterion YearMonthIn(IEnumerable<(int year, int month)> values)
+    {
+        ArgumentNullException.ThrowIfNull(values);
+        return Create(LibraDexConditionOperatorKind.YearMonthIn, values.ToArray());
+    }
+
+    /// <summary>Captures membership in several structured year/month/day tuples.<br/></summary>
+    /// <param name="values">The year/month/day tuples to match.<br/></param>
+    /// <returns>A composite part predicate.<br/></returns>
+    public LibraDexCompositePartCriterion YearMonthDayIn(IEnumerable<(int year, int month, int day)> values)
+    {
+        ArgumentNullException.ThrowIfNull(values);
+        return Create(LibraDexConditionOperatorKind.YearMonthDayIn, values.ToArray());
+    }
+
+    /// <summary>Captures one year with several month components.<br/></summary>
+    /// <param name="year">The year component to match.<br/></param>
+    /// <param name="months">The month components to match in that year.<br/></param>
+    /// <returns>A composite part predicate.<br/></returns>
+    public LibraDexCompositePartCriterion YearInMonths(int year, params int[] months)
+        => Create(LibraDexConditionOperatorKind.YearInMonths, year, RequireValues(months, nameof(months)));
+
+    /// <summary>Captures one month/day pair across all years.<br/></summary>
+    /// <param name="month">The month component.<br/></param>
+    /// <param name="day">The day component.<br/></param>
+    /// <returns>A composite part predicate.<br/></returns>
+    public LibraDexCompositePartCriterion MonthDay(int month, int day)
+        => Create(LibraDexConditionOperatorKind.MonthDay, month, day);
+
+    /// <summary>Captures one year and one quarter.<br/></summary>
+    /// <param name="year">The year component.<br/></param>
+    /// <param name="quarter">The quarter component, from 1 through 4.<br/></param>
+    /// <returns>A composite part predicate.<br/></returns>
+    public LibraDexCompositePartCriterion YearQuarter(int year, int quarter)
+        => Create(LibraDexConditionOperatorKind.YearQuarter, year, quarter);
+
+    /// <summary>Captures calendar quarter starts.<br/></summary>
+    /// <returns>A composite part predicate.<br/></returns>
+    public LibraDexCompositePartCriterion IsQuarterStart()
+        => Create(LibraDexConditionOperatorKind.IsQuarterStart);
+
+    /// <summary>Captures calendar quarter ends.<br/></summary>
+    /// <returns>A composite part predicate.<br/></returns>
+    public LibraDexCompositePartCriterion IsQuarterEnd()
+        => Create(LibraDexConditionOperatorKind.IsQuarterEnd);
+
+    /// <summary>Captures calendar half-year starts.<br/></summary>
+    /// <returns>A composite part predicate.<br/></returns>
+    public LibraDexCompositePartCriterion IsHalfYearStart()
+        => Create(LibraDexConditionOperatorKind.IsHalfYearStart);
+
+    /// <summary>Captures calendar half-year ends.<br/></summary>
+    /// <returns>A composite part predicate.<br/></returns>
+    public LibraDexCompositePartCriterion IsHalfYearEnd()
+        => Create(LibraDexConditionOperatorKind.IsHalfYearEnd);
+
+    /// <summary>Captures the first day of any month.<br/></summary>
+    /// <returns>A composite part predicate.<br/></returns>
+    public LibraDexCompositePartCriterion IsFirstOfMonth()
+        => Create(LibraDexConditionOperatorKind.IsFirstOfMonth);
+
+    /// <summary>Captures the last day of any month.<br/></summary>
+    /// <returns>A composite part predicate.<br/></returns>
+    public LibraDexCompositePartCriterion IsLastOfMonth()
+        => Create(LibraDexConditionOperatorKind.IsLastOfMonth);
+
+    /// <summary>Captures the current UTC date at execution time.<br/></summary>
+    /// <returns>A composite part predicate.<br/></returns>
+    public LibraDexCompositePartCriterion IsToday()
+        => Create(LibraDexConditionOperatorKind.IsToday);
+
+    /// <summary>Captures the previous UTC date at execution time.<br/></summary>
+    /// <returns>A composite part predicate.<br/></returns>
+    public LibraDexCompositePartCriterion IsYesterday()
+        => Create(LibraDexConditionOperatorKind.IsYesterday);
+
+    /// <summary>Captures a UTC-relative trailing day window.<br/></summary>
+    /// <param name="days">The trailing day count.<br/></param>
+    /// <returns>A composite part predicate.<br/></returns>
+    public LibraDexCompositePartCriterion IsInLastDays(int days)
+        => Create(LibraDexConditionOperatorKind.IsInLastDays, days);
+
+    /// <summary>Captures a UTC-relative trailing hour window.<br/></summary>
+    /// <param name="hours">The trailing hour count.<br/></param>
+    /// <returns>A composite part predicate.<br/></returns>
+    public LibraDexCompositePartCriterion IsInLastHours(int hours)
+        => Create(LibraDexConditionOperatorKind.IsInLastHours, hours);
+
+    /// <summary>Captures a UTC-relative trailing minute window.<br/></summary>
+    /// <param name="minutes">The trailing minute count.<br/></param>
+    /// <returns>A composite part predicate.<br/></returns>
+    public LibraDexCompositePartCriterion IsInLastMinutes(int minutes)
+        => Create(LibraDexConditionOperatorKind.IsInLastMinutes, minutes);
+
+    /// <summary>Captures weekend calendar dates.<br/></summary>
+    /// <returns>A composite part predicate.<br/></returns>
+    public LibraDexCompositePartCriterion IsWeekend()
+        => Create(LibraDexConditionOperatorKind.IsWeekend);
+
+    /// <summary>Captures weekday calendar dates.<br/></summary>
+    /// <returns>A composite part predicate.<br/></returns>
+    public LibraDexCompositePartCriterion IsWeekday()
+        => Create(LibraDexConditionOperatorKind.IsWeekday);
+
+    /// <summary>Captures DateTime-like morning values.<br/></summary>
+    /// <returns>A composite part predicate.<br/></returns>
+    public LibraDexCompositePartCriterion IsMorning()
+        => Create(LibraDexConditionOperatorKind.IsMorning);
+
+    /// <summary>Captures DateTime-like afternoon values.<br/></summary>
+    /// <returns>A composite part predicate.<br/></returns>
+    public LibraDexCompositePartCriterion IsAfternoon()
+        => Create(LibraDexConditionOperatorKind.IsAfternoon);
+
+    /// <summary>Captures DateTime-like evening values.<br/></summary>
+    /// <returns>A composite part predicate.<br/></returns>
+    public LibraDexCompositePartCriterion IsEvening()
+        => Create(LibraDexConditionOperatorKind.IsEvening);
+
+    /// <summary>Captures DateTime-like night values.<br/></summary>
+    /// <returns>A composite part predicate.<br/></returns>
+    public LibraDexCompositePartCriterion IsNight()
+        => Create(LibraDexConditionOperatorKind.IsNight);
+
     /// <summary>
     /// Captures equality against a full DateTime component value.<br/>
     /// The executor compares the packed structured-date representation, preserving the composite part's DateTime encoding contract.<br/>
@@ -2462,6 +2830,21 @@ public sealed class LibraDexCompositeDatePartCondition
     /// <returns>A composite part predicate.</returns>
     public LibraDexCompositePartCriterion NotBetween(DateTime lower, DateTime upper)
         => Create(LibraDexConditionOperatorKind.NotBetween, lower, upper);
+
+    /// <summary>
+    /// Captures an immutable component-set snapshot so later caller mutations cannot change an already-built routed condition.<br/>
+    /// </summary>
+    /// <param name="values">The caller-supplied structured component values.<br/></param>
+    /// <param name="parameterName">The source parameter name to report when no values were supplied.<br/></param>
+    /// <returns>A stable value array owned by the criterion.<br/></returns>
+    private static int[] RequireValues(int[] values, string parameterName)
+    {
+        ArgumentNullException.ThrowIfNull(values);
+        if (values.Length == 0)
+            throw new ArgumentException("At least one structured date component is required.", parameterName);
+
+        return (int[])values.Clone();
+    }
 
     private LibraDexCompositePartCriterion Create(LibraDexConditionOperatorKind operatorKind, params object?[] values)
         => new LibraDexCompositePartCriterion(name, LibraDexConditionValueKind.DateTime, operatorKind, Array.AsReadOnly(values), ignoreCase: false, culture: null);

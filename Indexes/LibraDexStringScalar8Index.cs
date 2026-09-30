@@ -30,6 +30,7 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
     private readonly CultureInfo foldedCulture;
     private readonly LibraDexTextNormalization foldedNormalization;
     private readonly LibraDexStringComparisonPolicy? stringComparisonPolicy;
+    private readonly LibraDexIndexSortOrder sortOrder;
     [ThreadStatic]
     private static LibraDexStringScalar8ThreadInsertDiagnostics? threadInsertDiagnostics;
     private bool disposed;
@@ -47,6 +48,7 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         VarKeyScalar8Index? normalizedReversed,
         string? foldedCulture,
         LibraDexTextNormalization foldedNormalization,
+        LibraDexIndexSortOrder sortOrder = LibraDexIndexSortOrder.Ascending,
         LibraDexStringComparisonPolicy? stringComparisonPolicy = null,
         IdentityLookupMode identityLookupMode = IdentityLookupMode.Explicit)
     {
@@ -59,13 +61,14 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         this.exact = exact ?? throw new ArgumentNullException(nameof(exact));
         this.foldedCulture = ResolveCulture(foldedCulture);
         this.foldedNormalization = foldedNormalization;
+        this.sortOrder = sortOrder;
         this.stringComparisonPolicy = stringComparisonPolicy;
-        this.exactReversed = exactReversed is null ? null : new LibraDexStringScalar8ProjectionIndex(catalog, group, $"{name}#exact-rev", exactReversed, static value => value, LibraDexTextNormalization.None);
-        this.folded = folded is null ? null : new LibraDexStringScalar8ProjectionIndex(catalog, group, $"{name}#folded", folded, value => Fold(value, this.foldedCulture, this.foldedNormalization), foldedNormalization);
-        this.sortKeyProfiles = CreateSortKeyProjections(catalog, group, sortKeys);
-        this.foldedReversed = foldedReversed is null ? null : new LibraDexStringScalar8ProjectionIndex(catalog, group, $"{name}#folded-rev", foldedReversed, static value => value, foldedNormalization);
-        this.normalized = normalized is null ? null : new LibraDexStringScalar8ProjectionIndex(catalog, group, $"{name}#normalized", normalized, static value => NormalizeCanonical(value), LibraDexTextNormalization.FormC);
-        this.normalizedReversed = normalizedReversed is null ? null : new LibraDexStringScalar8ProjectionIndex(catalog, group, $"{name}#normalized-rev", normalizedReversed, static value => value, LibraDexTextNormalization.FormC);
+        this.exactReversed = exactReversed is null ? null : new LibraDexStringScalar8ProjectionIndex(catalog, group, $"{name}#exact-rev", exactReversed, static value => value, LibraDexTextNormalization.None, sortOrder);
+        this.folded = folded is null ? null : new LibraDexStringScalar8ProjectionIndex(catalog, group, $"{name}#folded", folded, value => Fold(value, this.foldedCulture, this.foldedNormalization), foldedNormalization, sortOrder);
+        this.sortKeyProfiles = CreateSortKeyProjections(catalog, group, sortKeys, sortOrder);
+        this.foldedReversed = foldedReversed is null ? null : new LibraDexStringScalar8ProjectionIndex(catalog, group, $"{name}#folded-rev", foldedReversed, static value => value, foldedNormalization, sortOrder);
+        this.normalized = normalized is null ? null : new LibraDexStringScalar8ProjectionIndex(catalog, group, $"{name}#normalized", normalized, static value => NormalizeCanonical(value), LibraDexTextNormalization.FormC, sortOrder);
+        this.normalizedReversed = normalizedReversed is null ? null : new LibraDexStringScalar8ProjectionIndex(catalog, group, $"{name}#normalized-rev", normalizedReversed, static value => value, LibraDexTextNormalization.FormC, sortOrder);
         catalog.ConfigureIdentityLookup(this, identityLookupMode);
     }
 
@@ -133,6 +136,11 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
     /// The descriptor declares folded and sort-key projection availability only when this facade owns the corresponding projection indexes.<br/>
     /// </summary>
     public LibraDexIndexShapeSpec LogicalShape => CreateLogicalShape();
+
+    /// <summary>
+    /// Gets the persisted natural key traversal order for this string index.<br/>
+    /// </summary>
+    public LibraDexIndexSortOrder SortOrder => sortOrder;
 
     /// <summary>
     /// Gets the runtime string comparison policy attached to this logical string index.<br/>
@@ -1319,6 +1327,21 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         return ExecuteTuplePrimitive(request);
     }
 
+    /// <summary>
+    /// Streams the exact logical string population while retaining the maintenance-only upgradeable storage lease required by a same-catalog projection backfill.<br/>
+    /// The source cursor stays coherent while its caller inserts only into an unpublished companion, allowing the DataKernel publication gate to upgrade without buffering the complete string index or exposing a partially populated projection.<br/>
+    /// </summary>
+    /// <returns>A forward-only exact string and scalar-identity tuple sequence safe for same-catalog projection backfill.<br/></returns>
+    internal IEnumerable<LibraDexRuntimeTuple> IterateExactTuplesForProjectionBackfill()
+    {
+        foreach (LibraDexObjectTuple tuple in IterateExactTuplePrimitive(
+            new LibraDexIdentityPrimitiveRequest(LibraDexCriteriaKind.All, Array.Empty<object?>()),
+            allowWriteUpgrade: true))
+        {
+            yield return new LibraDexRuntimeTuple(tuple.Key, tuple.Identity);
+        }
+    }
+
     IEnumerable<LibraDexObjectTuple> IIdentityPrimitiveTupleStreamer.IterateTuplePrimitive(LibraDexIdentityPrimitiveRequest request)
     {
         return IterateExactTuplePrimitive(request);
@@ -2003,9 +2026,83 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
     /// </summary>
     /// <param name="request">The normalized primitive request produced by the condition materializer.</param>
     /// <returns>A forward-only stream of exact string key and scalar identity tuples.</returns>
-    private IEnumerable<LibraDexObjectTuple> IterateExactTuplePrimitive(LibraDexIdentityPrimitiveRequest request)
+    private IEnumerable<LibraDexObjectTuple> IterateExactTuplePrimitive(
+        LibraDexIdentityPrimitiveRequest request,
+        bool allowWriteUpgrade = false)
     {
         ThrowIfDisposed();
+        if (request.CriteriaKind == LibraDexCriteriaKind.All)
+        {
+            if (request.TakeLimit is < 0)
+                throw new ArgumentOutOfRangeException(nameof(request.TakeLimit));
+            int yielded = 0;
+            NullKey[] states = request.Direction == QueryDirection.Descending
+                ? new[] { NullKey.Empty, NullKey.Null }
+                : new[] { NullKey.Null, NullKey.Empty };
+            if (request.Direction == QueryDirection.Ascending)
+            {
+                foreach (NullKey state in states)
+                {
+                    foreach (StringScalar8Tuple tuple in MaterializeExactKeyStateTuples(state, null))
+                    {
+                        if (request.TakeLimit is int limit && yielded >= limit)
+                            yield break;
+                        yield return new LibraDexObjectTuple(tuple.Key, tuple.Identity);
+                        yielded++;
+                    }
+                }
+            }
+
+            using (VarKeyScalar8RangeReader reader = exact.OpenEncodedRangeReader(
+                FullLowerBound(), FullUpperBound(exact.Handle.MaxKeyLength), request.Direction, allowWriteUpgrade))
+            {
+                while (request.Direction == QueryDirection.Descending ? reader.MovePrevious() : reader.MoveNext())
+                {
+                    if (request.TakeLimit is int limit && yielded >= limit)
+                        yield break;
+                    yield return new LibraDexObjectTuple(Decode(reader.CurrentKey), reader.CurrentEncodedIdentity);
+                    yielded++;
+                }
+            }
+
+            if (request.Direction == QueryDirection.Descending)
+            {
+                foreach (NullKey state in states)
+                {
+                    List<StringScalar8Tuple> stateTuples = MaterializeExactKeyStateTuples(state, null);
+                    for (int i = stateTuples.Count - 1; i >= 0; i--)
+                    {
+                        if (request.TakeLimit is int limit && yielded >= limit)
+                            yield break;
+                        yield return new LibraDexObjectTuple(stateTuples[i].Key, stateTuples[i].Identity);
+                        yielded++;
+                    }
+                }
+            }
+            yield break;
+        }
+        if (request.CriteriaKind is LibraDexCriteriaKind.Find or LibraDexCriteriaKind.Between or LibraDexCriteriaKind.Prefix &&
+            request.Values.Count != 0 &&
+            request.Values[0] is string first && first.Length != 0 &&
+            (request.CriteriaKind != LibraDexCriteriaKind.Between || request.Values.Count > 1 && request.Values[1] is string))
+        {
+            string upperText = request.CriteriaKind switch
+            {
+                LibraDexCriteriaKind.Between => (string)request.Values[1]!,
+                LibraDexCriteriaKind.Prefix => first + '\uffff',
+                _ => first
+            };
+            int yielded = 0;
+            using VarKeyScalar8RangeReader reader = exact.OpenEncodedRangeReader(Encode(first), Encode(upperText), request.Direction);
+            while (request.Direction == QueryDirection.Descending ? reader.MovePrevious() : reader.MoveNext())
+            {
+                if (request.TakeLimit is int limit && yielded >= limit)
+                    yield break;
+                yield return new LibraDexObjectTuple(Decode(reader.CurrentKey), reader.CurrentEncodedIdentity);
+                yielded++;
+            }
+            yield break;
+        }
         List<StringScalar8Tuple> tuples = MaterializeExactTuples(request);
         for (int i = 0; i < tuples.Count; i++)
         {
@@ -2831,41 +2928,41 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
     {
         List<LibraDexIndexProjectionSpec> projections = new()
         {
-            new LibraDexIndexProjectionSpec(LibraDexIndexProjectionKind.Exact, LibraDexIndexByteDirection.Forward, LibraDexIndexSortOrder.Ascending)
+            new LibraDexIndexProjectionSpec(LibraDexIndexProjectionKind.Exact, LibraDexIndexByteDirection.Forward, sortOrder)
         };
 
         if (folded is not null)
         {
-            projections.Add(new LibraDexIndexProjectionSpec(LibraDexIndexProjectionKind.FoldedText, LibraDexIndexByteDirection.Forward, LibraDexIndexSortOrder.Ascending));
+            projections.Add(new LibraDexIndexProjectionSpec(LibraDexIndexProjectionKind.FoldedText, LibraDexIndexByteDirection.Forward, sortOrder));
         }
 
         if (sortKeyProfiles.Length != 0)
         {
-            projections.Add(new LibraDexIndexProjectionSpec(LibraDexIndexProjectionKind.SortKey, LibraDexIndexByteDirection.Forward, LibraDexIndexSortOrder.Ascending));
+            projections.Add(new LibraDexIndexProjectionSpec(LibraDexIndexProjectionKind.SortKey, LibraDexIndexByteDirection.Forward, sortOrder));
         }
 
         LibraDexProjectionDirectionSet directions = LibraDexProjectionDirectionSet.Forward;
         if (exactReversed is not null)
         {
             directions |= LibraDexProjectionDirectionSet.Reversed;
-            projections.Add(new LibraDexIndexProjectionSpec(LibraDexIndexProjectionKind.Exact, LibraDexIndexByteDirection.Reversed, LibraDexIndexSortOrder.Ascending));
+            projections.Add(new LibraDexIndexProjectionSpec(LibraDexIndexProjectionKind.Exact, LibraDexIndexByteDirection.Reversed, sortOrder));
         }
 
         if (foldedReversed is not null)
         {
             directions |= LibraDexProjectionDirectionSet.Reversed;
-            projections.Add(new LibraDexIndexProjectionSpec(LibraDexIndexProjectionKind.FoldedText, LibraDexIndexByteDirection.Reversed, LibraDexIndexSortOrder.Ascending));
+            projections.Add(new LibraDexIndexProjectionSpec(LibraDexIndexProjectionKind.FoldedText, LibraDexIndexByteDirection.Reversed, sortOrder));
         }
 
         if (normalized is not null)
         {
-            projections.Add(new LibraDexIndexProjectionSpec(LibraDexIndexProjectionKind.NormalizedText, LibraDexIndexByteDirection.Forward, LibraDexIndexSortOrder.Ascending));
+            projections.Add(new LibraDexIndexProjectionSpec(LibraDexIndexProjectionKind.NormalizedText, LibraDexIndexByteDirection.Forward, sortOrder));
         }
 
         if (normalizedReversed is not null)
         {
             directions |= LibraDexProjectionDirectionSet.Reversed;
-            projections.Add(new LibraDexIndexProjectionSpec(LibraDexIndexProjectionKind.NormalizedText, LibraDexIndexByteDirection.Reversed, LibraDexIndexSortOrder.Ascending));
+            projections.Add(new LibraDexIndexProjectionSpec(LibraDexIndexProjectionKind.NormalizedText, LibraDexIndexByteDirection.Reversed, sortOrder));
         }
 
         return new LibraDexIndexShapeSpec(
@@ -2881,7 +2978,7 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
             DateKeys.Exact,
             DateTimeKeyEncoding.CalendarSdt,
             directions,
-            LibraDexIndexSortOrder.Ascending,
+            sortOrder,
             projections.ToArray(),
             Array.Empty<LibraDexCompositeKeyPartSpec>());
     }
@@ -2929,46 +3026,46 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         switch (request.CriteriaKind)
         {
             case LibraDexCriteriaKind.All:
-                return IterateAll(index);
+                return IterateAll(index, request.TakeLimit, request.Direction);
             case LibraDexCriteriaKind.KeyState:
-                return IterateKeyState(index, RequireNullKeyState(request.Values), request.TakeLimit);
+                return IterateKeyState(index, RequireNullKeyState(request.Values), request.TakeLimit, request.Direction);
             case LibraDexCriteriaKind.Find:
                 string? key = transform(RequireString(request.Values, 0));
                 if (TryClassifyStringKeyState(key, out NullKey keyState))
                 {
-                    return IterateKeyState(index, keyState, request.TakeLimit);
+                    return IterateKeyState(index, keyState, request.TakeLimit, request.Direction);
                 }
 
-                return IterateRange(index, key, key, null);
+                return IterateRange(index, key, key, request.TakeLimit, request.Direction);
             case LibraDexCriteriaKind.Between:
-                return IterateRange(index, transform(RequireString(request.Values, 0)), transform(RequireString(request.Values, 1)), request.TakeLimit);
+                return IterateRange(index, transform(RequireString(request.Values, 0)), transform(RequireString(request.Values, 1)), request.TakeLimit, request.Direction);
             case LibraDexCriteriaKind.Prefix:
             {
                 string? prefix = transform(RequireString(request.Values, 0));
                 return prefix is { Length: 0 }
-                    ? IterateOrderedKeyState(index, NullKey.Empty, before: false, inclusive: true, request.TakeLimit)
-                    : IterateRange(index, prefix, prefix + '\uffff', request.TakeLimit);
+                    ? IterateOrderedKeyState(index, NullKey.Empty, before: false, inclusive: true, request.TakeLimit, request.Direction)
+                    : IterateRange(index, prefix, prefix + '\uffff', request.TakeLimit, request.Direction);
             }
             case LibraDexCriteriaKind.Before:
-                return TryCreateOrderedKeyStateIterator(index, transform(RequireString(request.Values, 0)), before: true, inclusive: false, request.TakeLimit, out IEnumerable<ulong>? beforeKeyState)
+                return TryCreateOrderedKeyStateIterator(index, transform(RequireString(request.Values, 0)), before: true, inclusive: false, request.TakeLimit, request.Direction, out IEnumerable<ulong>? beforeKeyState)
                     ? beforeKeyState!
-                    : IterateBefore(index, Encode(transform(RequireString(request.Values, 0))), inclusive: false, request.TakeLimit);
+                    : IterateBefore(index, Encode(transform(RequireString(request.Values, 0))), inclusive: false, request.TakeLimit, request.Direction);
             case LibraDexCriteriaKind.AtOrBefore:
-                return TryCreateOrderedKeyStateIterator(index, transform(RequireString(request.Values, 0)), before: true, inclusive: true, request.TakeLimit, out IEnumerable<ulong>? atOrBeforeKeyState)
+                return TryCreateOrderedKeyStateIterator(index, transform(RequireString(request.Values, 0)), before: true, inclusive: true, request.TakeLimit, request.Direction, out IEnumerable<ulong>? atOrBeforeKeyState)
                     ? atOrBeforeKeyState!
-                    : IterateBefore(index, Encode(transform(RequireString(request.Values, 0))), inclusive: true, request.TakeLimit);
+                    : IterateBefore(index, Encode(transform(RequireString(request.Values, 0))), inclusive: true, request.TakeLimit, request.Direction);
             case LibraDexCriteriaKind.After:
-                return TryCreateOrderedKeyStateIterator(index, transform(RequireString(request.Values, 0)), before: false, inclusive: false, request.TakeLimit, out IEnumerable<ulong>? afterKeyState)
+                return TryCreateOrderedKeyStateIterator(index, transform(RequireString(request.Values, 0)), before: false, inclusive: false, request.TakeLimit, request.Direction, out IEnumerable<ulong>? afterKeyState)
                     ? afterKeyState!
-                    : IterateAfter(index, Encode(transform(RequireString(request.Values, 0))), inclusive: false, request.TakeLimit);
+                    : IterateAfter(index, Encode(transform(RequireString(request.Values, 0))), inclusive: false, request.TakeLimit, request.Direction);
             case LibraDexCriteriaKind.AtOrAfter:
-                return TryCreateOrderedKeyStateIterator(index, transform(RequireString(request.Values, 0)), before: false, inclusive: true, request.TakeLimit, out IEnumerable<ulong>? atOrAfterKeyState)
+                return TryCreateOrderedKeyStateIterator(index, transform(RequireString(request.Values, 0)), before: false, inclusive: true, request.TakeLimit, request.Direction, out IEnumerable<ulong>? atOrAfterKeyState)
                     ? atOrAfterKeyState!
-                    : IterateAfter(index, Encode(transform(RequireString(request.Values, 0))), inclusive: true, request.TakeLimit);
+                    : IterateAfter(index, Encode(transform(RequireString(request.Values, 0))), inclusive: true, request.TakeLimit, request.Direction);
             case LibraDexCriteriaKind.InSet:
-                return IterateMembership(index, request.Values, transform, request.TakeLimit);
+                return IterateMembership(index, request.Values, transform, request.TakeLimit, request.Direction);
             case LibraDexCriteriaKind.StringPattern:
-                return IterateStringPattern(index, RequireStringPatternPredicate(request.Values), request.TakeLimit);
+                return IterateStringPattern(index, RequireStringPatternPredicate(request.Values), request.TakeLimit, request.Direction);
             default:
                 throw new NotSupportedException($"{request.CriteriaKind} is not connected to the string scalar facade yet.");
         }
@@ -3337,6 +3434,7 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         bool before,
         bool inclusive,
         int? takeLimit,
+        QueryDirection direction,
         out IEnumerable<ulong>? identities)
     {
         if (!TryClassifyStringKeyState(boundary, out NullKey keyState))
@@ -3345,7 +3443,7 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
             return false;
         }
 
-        identities = IterateOrderedKeyState(index, keyState, before, inclusive, takeLimit);
+        identities = IterateOrderedKeyState(index, keyState, before, inclusive, takeLimit, direction);
         return true;
     }
 
@@ -3354,8 +3452,28 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         NullKey boundary,
         bool before,
         bool inclusive,
-        int? takeLimit)
+        int? takeLimit,
+        QueryDirection direction = QueryDirection.Ascending)
     {
+        if (direction == QueryDirection.Descending)
+        {
+            IEnumerable<ulong> source = boundary == NullKey.Null
+                ? before
+                    ? inclusive ? IterateKeyState(index, NullKey.Null, null, direction) : Array.Empty<ulong>()
+                    : inclusive ? IterateAll(index, null, direction) : IterateOrderedKeyState(index, NullKey.Empty, before: false, inclusive: true, null, direction)
+                : before
+                    ? inclusive ? IterateKeyState(index, NullKey.NullOrEmpty, null, direction) : IterateKeyState(index, NullKey.Null, null, direction)
+                    : inclusive ? IterateAfterEmptyInclusiveDescending(index) : IterateRange(index, FullLowerBound(), FullUpperBound(index.Handle.MaxKeyLength), null, direction);
+            int yielded = 0;
+            foreach (ulong identity in source)
+            {
+                if (takeLimit is int limit && yielded >= limit)
+                    yield break;
+                yield return identity;
+                yielded++;
+            }
+            yield break;
+        }
         if (boundary == NullKey.Null)
         {
             if (before && inclusive)
@@ -3429,8 +3547,40 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         }
     }
 
-    private static IEnumerable<ulong> IterateAll(VarKeyScalar8Index index, int? takeLimit)
+    /// <summary>
+    /// Streams ordinary keys followed by the empty and null routes when reversing the logical string order.<br/>
+    /// </summary>
+    /// <param name="index">The routed exact-string storage index.<br/></param>
+    /// <returns>Identities at or after the empty string in descending tuple order.<br/></returns>
+    private static IEnumerable<ulong> IterateAfterEmptyInclusiveDescending(VarKeyScalar8Index index)
     {
+        foreach (ulong identity in IterateRange(index, FullLowerBound(), FullUpperBound(index.Handle.MaxKeyLength), null, QueryDirection.Descending))
+            yield return identity;
+        foreach (ulong identity in IterateKeyState(index, NullKey.Empty, null, QueryDirection.Descending))
+            yield return identity;
+    }
+
+    private static IEnumerable<ulong> IterateAll(VarKeyScalar8Index index, int? takeLimit, QueryDirection direction = QueryDirection.Ascending)
+    {
+        if (direction == QueryDirection.Descending)
+        {
+            int yielded = 0;
+            foreach (ulong identity in IterateRange(index, FullLowerBound(), FullUpperBound(index.Handle.MaxKeyLength), null, direction))
+            {
+                if (takeLimit is int limit && yielded >= limit)
+                    yield break;
+                yield return identity;
+                yielded++;
+            }
+            foreach (ulong identity in IterateKeyState(index, NullKey.NullOrEmpty, null, direction))
+            {
+                if (takeLimit is int limit && yielded >= limit)
+                    yield break;
+                yield return identity;
+                yielded++;
+            }
+            yield break;
+        }
         int returned = 0;
         foreach (ulong identity in IterateKeyState(index, NullKey.Null, takeLimit))
         {
@@ -3460,14 +3610,14 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         }
     }
 
-    private static IEnumerable<ulong> IterateRange(VarKeyScalar8Index index, string? lower, string? upper, int? takeLimit)
+    private static IEnumerable<ulong> IterateRange(VarKeyScalar8Index index, string? lower, string? upper, int? takeLimit, QueryDirection direction = QueryDirection.Ascending)
     {
-        return IterateRange(index, Encode(lower), Encode(upper), takeLimit);
+        return IterateRange(index, Encode(lower), Encode(upper), takeLimit, direction);
     }
 
-    private static IEnumerable<ulong> IterateRange(VarKeyScalar8Index index, byte[] lower, byte[] upper, int? takeLimit)
+    private static IEnumerable<ulong> IterateRange(VarKeyScalar8Index index, byte[] lower, byte[] upper, int? takeLimit, QueryDirection direction = QueryDirection.Ascending)
     {
-        return IterateRange(index, lower, upper, takeLimit, keyFilter: null);
+        return IterateRange(index, lower, upper, takeLimit, keyFilter: null, direction);
     }
 
     /// <summary>
@@ -3480,11 +3630,11 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
     /// <param name="takeLimit">Optional identity limit.</param>
     /// <param name="keyFilter">Optional encoded-key filter applied after range navigation.</param>
     /// <returns>The matching scalar identities as runtime objects.</returns>
-    private static IEnumerable<ulong> IterateRange(VarKeyScalar8Index index, byte[] lower, byte[] upper, int? takeLimit, Func<byte[], bool>? keyFilter)
+    private static IEnumerable<ulong> IterateRange(VarKeyScalar8Index index, byte[] lower, byte[] upper, int? takeLimit, Func<byte[], bool>? keyFilter, QueryDirection direction = QueryDirection.Ascending)
     {
-        using VarKeyScalar8RangeReader reader = index.OpenEncodedRangeReader(lower, upper);
+        using VarKeyScalar8RangeReader reader = index.OpenEncodedRangeReader(lower, upper, direction);
         int yielded = 0;
-        while (reader.MoveNext())
+        while (direction == QueryDirection.Descending ? reader.MovePrevious() : reader.MoveNext())
         {
             if (keyFilter is not null && !keyFilter(reader.MaterializeCurrentKey()))
             {
@@ -3509,14 +3659,15 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
     /// <param name="inclusive">True to include keys equal to the boundary.</param>
     /// <param name="takeLimit">Optional identity limit.</param>
     /// <returns>The matching scalar identities as runtime objects.</returns>
-    private static IEnumerable<ulong> IterateBefore(VarKeyScalar8Index index, byte[] boundary, bool inclusive, int? takeLimit)
+    private static IEnumerable<ulong> IterateBefore(VarKeyScalar8Index index, byte[] boundary, bool inclusive, int? takeLimit, QueryDirection direction = QueryDirection.Ascending)
     {
         return IterateRange(
             index,
             FullLowerBound(),
             boundary,
             takeLimit,
-            inclusive ? null : key => key.AsSpan().SequenceCompareTo(boundary) < 0);
+            inclusive ? null : key => key.AsSpan().SequenceCompareTo(boundary) < 0,
+            direction);
     }
 
     /// <summary>
@@ -3528,22 +3679,56 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
     /// <param name="inclusive">True to include keys equal to the boundary.</param>
     /// <param name="takeLimit">Optional identity limit.</param>
     /// <returns>The matching scalar identities as runtime objects.</returns>
-    private static IEnumerable<ulong> IterateAfter(VarKeyScalar8Index index, byte[] boundary, bool inclusive, int? takeLimit)
+    private static IEnumerable<ulong> IterateAfter(VarKeyScalar8Index index, byte[] boundary, bool inclusive, int? takeLimit, QueryDirection direction = QueryDirection.Ascending)
     {
         return IterateRange(
             index,
             boundary,
             FullUpperBound(index.Handle.MaxKeyLength),
             takeLimit,
-            inclusive ? null : key => key.AsSpan().SequenceCompareTo(boundary) > 0);
+            inclusive ? null : key => key.AsSpan().SequenceCompareTo(boundary) > 0,
+            direction);
     }
 
     private static IEnumerable<ulong> IterateMembership(
         VarKeyScalar8Index index,
         IReadOnlyList<object?> values,
         Func<string?, string?> transform,
-        int? takeLimit)
+        int? takeLimit,
+        QueryDirection direction = QueryDirection.Ascending)
     {
+        if (direction == QueryDirection.Descending)
+        {
+            List<(byte[] Encoded, string? Key)> keys = new();
+            foreach (object? value in values)
+            {
+                if (value is not IEnumerable<object> objects)
+                    throw new InvalidOperationException("String membership primitive requires an object enumerable operand.");
+                foreach (object? item in objects)
+                {
+                    if (item is not null && item is not string)
+                        throw new InvalidOperationException("String membership primitive requires string values.");
+                    string? key = transform((string?)item);
+                    keys.Add((Encode(key), key));
+                }
+            }
+            keys.Sort(static (left, right) => right.Encoded.AsSpan().SequenceCompareTo(left.Encoded));
+            int returned = 0;
+            foreach ((_, string? key) in keys)
+            {
+                IEnumerable<ulong> identities = TryClassifyStringKeyState(key, out NullKey keyState)
+                    ? IterateKeyState(index, keyState, null, direction)
+                    : IterateRange(index, key, key, null, direction);
+                foreach (ulong identity in identities)
+                {
+                    if (takeLimit is int limit && returned >= limit)
+                        yield break;
+                    yield return identity;
+                    returned++;
+                }
+            }
+            yield break;
+        }
         int yielded = 0;
         foreach (object? value in values)
         {
@@ -3585,14 +3770,14 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
     /// <param name="predicate">The compiled string predicate.</param>
     /// <param name="takeLimit">Optional identity limit.</param>
     /// <returns>The matching scalar identities as runtime objects.</returns>
-    private static IEnumerable<ulong> IterateStringPattern(VarKeyScalar8Index index, LibraDexStringPatternPredicate predicate, int? takeLimit)
+    private static IEnumerable<ulong> IterateStringPattern(VarKeyScalar8Index index, LibraDexStringPatternPredicate predicate, int? takeLimit, QueryDirection direction = QueryDirection.Ascending)
     {
         IReadOnlyList<(string Lower, string Upper)> candidateRanges = predicate.CreateCandidateRanges();
         LibraDexUtf8StringPatternPredicate? byteMatcher = predicate.TryCreateUtf8ByteMatcher(IdentityTransform, allowCaseNormalizedBytes: false, out LibraDexUtf8StringPatternPredicate? matcher)
             ? matcher
             : null;
         int yielded = 0;
-        if (predicate.Matches(string.Empty))
+        if (direction == QueryDirection.Ascending && predicate.Matches(string.Empty))
         {
             foreach (ulong identity in IterateKeyState(index, NullKey.Empty, takeLimit))
             {
@@ -3607,7 +3792,7 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
 
         if (candidateRanges.Count == 0)
         {
-            foreach (ulong identity in IterateStringPatternRange(index, FullLowerBound(), FullUpperBound(index.Handle.MaxKeyLength), predicate, byteMatcher, takeLimit.HasValue ? takeLimit.Value - yielded : null))
+            foreach (ulong identity in IterateStringPatternRange(index, FullLowerBound(), FullUpperBound(index.Handle.MaxKeyLength), predicate, byteMatcher, takeLimit.HasValue ? takeLimit.Value - yielded : null, direction))
             {
                 yield return identity;
                 yielded++;
@@ -3617,12 +3802,20 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
                 }
             }
 
+            if (direction == QueryDirection.Descending && predicate.Matches(string.Empty))
+            {
+                foreach (ulong identity in IterateKeyState(index, NullKey.Empty, takeLimit.HasValue ? takeLimit.Value - yielded : null, direction))
+                    yield return identity;
+            }
             yield break;
         }
 
-        foreach ((string lower, string upper) in candidateRanges)
+        IEnumerable<(string Lower, string Upper)> orderedRanges = direction == QueryDirection.Descending
+            ? candidateRanges.OrderByDescending(static range => Encode(range.Lower), Comparer<byte[]>.Create(static (left, right) => left.AsSpan().SequenceCompareTo(right)))
+            : candidateRanges;
+        foreach ((string lower, string upper) in orderedRanges)
         {
-            foreach (ulong identity in IterateStringPatternRange(index, Encode(lower), Encode(upper), predicate, byteMatcher, takeLimit.HasValue ? takeLimit.Value - yielded : null))
+            foreach (ulong identity in IterateStringPatternRange(index, Encode(lower), Encode(upper), predicate, byteMatcher, takeLimit.HasValue ? takeLimit.Value - yielded : null, direction))
             {
                 yield return identity;
                 yielded++;
@@ -3631,6 +3824,11 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
                     yield break;
                 }
             }
+        }
+        if (direction == QueryDirection.Descending && predicate.Matches(string.Empty))
+        {
+            foreach (ulong identity in IterateKeyState(index, NullKey.Empty, takeLimit.HasValue ? takeLimit.Value - yielded : null, direction))
+                yield return identity;
         }
     }
 
@@ -3650,11 +3848,12 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         byte[] upper,
         LibraDexStringPatternPredicate predicate,
         LibraDexUtf8StringPatternPredicate? byteMatcher,
-        int? takeLimit)
+        int? takeLimit,
+        QueryDirection direction = QueryDirection.Ascending)
     {
-        using VarKeyScalar8RangeReader reader = index.OpenEncodedRangeReader(lower, upper);
+        using VarKeyScalar8RangeReader reader = index.OpenEncodedRangeReader(lower, upper, direction);
         int yielded = 0;
-        while (reader.MoveNext())
+        while (direction == QueryDirection.Descending ? reader.MovePrevious() : reader.MoveNext())
         {
             ReadOnlySpan<byte> currentKey = reader.CurrentKey;
             if (byteMatcher is not null)
@@ -4158,11 +4357,11 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         return new LibraDexGenericInsertResult(inserted, false, default, default);
     }
 
-    private static IEnumerable<ulong> IterateKeyState(VarKeyScalar8Index index, NullKey keyState, int? takeLimit)
+    private static IEnumerable<ulong> IterateKeyState(VarKeyScalar8Index index, NullKey keyState, int? takeLimit, QueryDirection direction = QueryDirection.Ascending)
     {
         if (keyState != NullKey.NullOrEmpty)
         {
-            foreach (ulong identity in ReadStringKeyStateIdentities(index, keyState, takeLimit))
+            foreach (ulong identity in ReadStringKeyStateIdentities(index, keyState, takeLimit, direction))
             {
                 yield return identity;
             }
@@ -4171,7 +4370,9 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         }
 
         int returned = 0;
-        foreach (ulong identity in ReadStringKeyStateIdentities(index, NullKey.Null, takeLimit))
+        NullKey first = direction == QueryDirection.Descending ? NullKey.Empty : NullKey.Null;
+        NullKey second = direction == QueryDirection.Descending ? NullKey.Null : NullKey.Empty;
+        foreach (ulong identity in ReadStringKeyStateIdentities(index, first, takeLimit, direction))
         {
             yield return identity;
             returned++;
@@ -4182,7 +4383,7 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         }
 
         int? remaining = takeLimit is null ? null : takeLimit.Value - returned;
-        foreach (ulong identity in ReadStringKeyStateIdentities(index, NullKey.Empty, remaining))
+        foreach (ulong identity in ReadStringKeyStateIdentities(index, second, remaining, direction))
         {
             yield return identity;
         }
@@ -4193,7 +4394,7 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         return ReadStringKeyStateIdentities(exact, keyState, takeLimit);
     }
 
-    private static IEnumerable<ulong> ReadStringKeyStateIdentities(VarKeyScalar8Index index, NullKey keyState, int? takeLimit)
+    private static IEnumerable<ulong> ReadStringKeyStateIdentities(VarKeyScalar8Index index, NullKey keyState, int? takeLimit, QueryDirection direction = QueryDirection.Ascending)
     {
         if (takeLimit is < 0)
         {
@@ -4206,10 +4407,12 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         }
 
         ulong[] identities = index.Session.ReadScalar8KeyStateIdentities(index.SlotIndex, ToKeyStateRoute(keyState));
-        for (int i = 0; i < identities.Length; i++)
+        for (int i = direction == QueryDirection.Descending ? identities.Length - 1 : 0;
+            direction == QueryDirection.Descending ? i >= 0 : i < identities.Length;
+            i += direction == QueryDirection.Descending ? -1 : 1)
         {
             yield return identities[i];
-            if (takeLimit is not null && i + 1 >= takeLimit.Value)
+            if (takeLimit is not null && (direction == QueryDirection.Descending ? identities.Length - i : i + 1) >= takeLimit.Value)
             {
                 yield break;
             }
@@ -4535,6 +4738,7 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         private readonly Catalog catalog;
         private readonly VarKeyScalar8Index index;
         private readonly Func<string?, string?> transform;
+        private readonly LibraDexIndexSortOrder sortOrder;
 
         internal LibraDexStringScalar8ProjectionIndex(
             Catalog catalog,
@@ -4542,7 +4746,8 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
             string name,
             VarKeyScalar8Index index,
             Func<string?, string?> transform,
-            LibraDexTextNormalization textNormalization)
+            LibraDexTextNormalization textNormalization,
+            LibraDexIndexSortOrder sortOrder)
         {
             this.catalog = catalog;
             Group = group;
@@ -4550,6 +4755,7 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
             this.index = index;
             this.transform = transform;
             TextNormalization = textNormalization;
+            this.sortOrder = sortOrder;
         }
 
         public string Name { get; }
@@ -4579,6 +4785,11 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         internal VarKeyScalar8Index PhysicalIndex => index;
 
         public LibraDexIndexShapeSpec? LogicalShape => null;
+
+        /// <summary>
+        /// Gets the owning string index's natural traversal order for this maintained projection.<br/>
+        /// </summary>
+        public LibraDexIndexSortOrder SortOrder => sortOrder;
 
         public LibraDexGenericInsertResult Insert(object? key, object identity)
         {
@@ -4831,14 +5042,14 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         {
             return request.CriteriaKind switch
             {
-                LibraDexCriteriaKind.All => IterateStringProjectionTupleRange(index, FullLowerBound(), FullUpperBound(index.Handle.MaxKeyLength), keyFilter: null, textFilter: null, request.TakeLimit),
-                LibraDexCriteriaKind.Find => IterateStringProjectionFind(index, transform(RequireString(request.Values, 0)), request.TakeLimit),
-                LibraDexCriteriaKind.Between => IterateStringProjectionTupleRange(index, Encode(transform(RequireString(request.Values, 0))), Encode(transform(RequireString(request.Values, 1))), keyFilter: null, textFilter: null, request.TakeLimit),
-                LibraDexCriteriaKind.Before => IterateStringProjectionBefore(index, transform(RequireString(request.Values, 0)), inclusive: false, request.TakeLimit),
-                LibraDexCriteriaKind.AtOrBefore => IterateStringProjectionTupleRange(index, FullLowerBound(), Encode(transform(RequireString(request.Values, 0))), keyFilter: null, textFilter: null, request.TakeLimit),
-                LibraDexCriteriaKind.After => IterateStringProjectionAfter(index, transform(RequireString(request.Values, 0)), inclusive: false, request.TakeLimit),
-                LibraDexCriteriaKind.AtOrAfter => IterateStringProjectionTupleRange(index, Encode(transform(RequireString(request.Values, 0))), FullUpperBound(index.Handle.MaxKeyLength), keyFilter: null, textFilter: null, request.TakeLimit),
-                LibraDexCriteriaKind.StringPattern => IterateStringProjectionPatternTuples(index, RequireStringPatternPredicate(request.Values), transform, request.TakeLimit),
+                LibraDexCriteriaKind.All => IterateStringProjectionTupleRange(index, FullLowerBound(), FullUpperBound(index.Handle.MaxKeyLength), keyFilter: null, textFilter: null, request.TakeLimit, request.Direction),
+                LibraDexCriteriaKind.Find => IterateStringProjectionFind(index, transform(RequireString(request.Values, 0)), request.TakeLimit, request.Direction),
+                LibraDexCriteriaKind.Between => IterateStringProjectionTupleRange(index, Encode(transform(RequireString(request.Values, 0))), Encode(transform(RequireString(request.Values, 1))), keyFilter: null, textFilter: null, request.TakeLimit, request.Direction),
+                LibraDexCriteriaKind.Before => IterateStringProjectionBefore(index, transform(RequireString(request.Values, 0)), inclusive: false, request.TakeLimit, request.Direction),
+                LibraDexCriteriaKind.AtOrBefore => IterateStringProjectionTupleRange(index, FullLowerBound(), Encode(transform(RequireString(request.Values, 0))), keyFilter: null, textFilter: null, request.TakeLimit, request.Direction),
+                LibraDexCriteriaKind.After => IterateStringProjectionAfter(index, transform(RequireString(request.Values, 0)), inclusive: false, request.TakeLimit, request.Direction),
+                LibraDexCriteriaKind.AtOrAfter => IterateStringProjectionTupleRange(index, Encode(transform(RequireString(request.Values, 0))), FullUpperBound(index.Handle.MaxKeyLength), keyFilter: null, textFilter: null, request.TakeLimit, request.Direction),
+                LibraDexCriteriaKind.StringPattern => IterateStringProjectionPatternTuples(index, RequireStringPatternPredicate(request.Values), transform, request.TakeLimit, request.Direction),
                 _ => throw new NotSupportedException($"{request.CriteriaKind} is not connected to string projection tuple streaming yet.")
             };
         }
@@ -4847,14 +5058,14 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         /// Streams exact matches for one transformed projection key.<br/>
         /// Null and empty keys are not stored in maintained projection indexes, so key-state sentinels produce an empty stream.<br/>
         /// </summary>
-        private static IEnumerable<LibraDexObjectTuple> IterateStringProjectionFind(VarKeyScalar8Index index, string? key, int? takeLimit)
+        private static IEnumerable<LibraDexObjectTuple> IterateStringProjectionFind(VarKeyScalar8Index index, string? key, int? takeLimit, QueryDirection direction = QueryDirection.Ascending)
         {
             if (TryClassifyStringKeyState(key, out _))
             {
                 yield break;
             }
 
-            foreach (LibraDexObjectTuple tuple in IterateStringProjectionTupleRange(index, Encode(key), Encode(key), keyFilter: null, textFilter: null, takeLimit))
+            foreach (LibraDexObjectTuple tuple in IterateStringProjectionTupleRange(index, Encode(key), Encode(key), keyFilter: null, textFilter: null, takeLimit, direction))
             {
                 yield return tuple;
             }
@@ -4864,22 +5075,22 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         /// Streams projection tuples before one already transformed string boundary.<br/>
         /// The encoded boundary is captured once so exclusive filtering does not allocate per candidate row.<br/>
         /// </summary>
-        private static IEnumerable<LibraDexObjectTuple> IterateStringProjectionBefore(VarKeyScalar8Index index, string? boundary, bool inclusive, int? takeLimit)
+        private static IEnumerable<LibraDexObjectTuple> IterateStringProjectionBefore(VarKeyScalar8Index index, string? boundary, bool inclusive, int? takeLimit, QueryDirection direction = QueryDirection.Ascending)
         {
             byte[] encodedBoundary = Encode(boundary);
             Func<byte[], bool>? filter = inclusive ? null : key => key.AsSpan().SequenceCompareTo(encodedBoundary) < 0;
-            return IterateStringProjectionTupleRange(index, FullLowerBound(), encodedBoundary, filter, textFilter: null, takeLimit);
+            return IterateStringProjectionTupleRange(index, FullLowerBound(), encodedBoundary, filter, textFilter: null, takeLimit, direction);
         }
 
         /// <summary>
         /// Streams projection tuples after one already transformed string boundary.<br/>
         /// The encoded boundary is captured once so exclusive filtering does not allocate per candidate row.<br/>
         /// </summary>
-        private static IEnumerable<LibraDexObjectTuple> IterateStringProjectionAfter(VarKeyScalar8Index index, string? boundary, bool inclusive, int? takeLimit)
+        private static IEnumerable<LibraDexObjectTuple> IterateStringProjectionAfter(VarKeyScalar8Index index, string? boundary, bool inclusive, int? takeLimit, QueryDirection direction = QueryDirection.Ascending)
         {
             byte[] encodedBoundary = Encode(boundary);
             Func<byte[], bool>? filter = inclusive ? null : key => key.AsSpan().SequenceCompareTo(encodedBoundary) > 0;
-            return IterateStringProjectionTupleRange(index, encodedBoundary, FullUpperBound(index.Handle.MaxKeyLength), filter, textFilter: null, takeLimit);
+            return IterateStringProjectionTupleRange(index, encodedBoundary, FullUpperBound(index.Handle.MaxKeyLength), filter, textFilter: null, takeLimit, direction);
         }
 
         /// <summary>
@@ -4892,8 +5103,9 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
             byte[] upper,
             Func<byte[], bool>? keyFilter,
             Func<string, bool>? textFilter,
-            int? takeLimit)
-            => IterateStringProjectionTupleRange(index, lower, upper, keyFilter, textFilter, byteMatcher: null, takeLimit);
+            int? takeLimit,
+            QueryDirection direction = QueryDirection.Ascending)
+            => IterateStringProjectionTupleRange(index, lower, upper, keyFilter, textFilter, byteMatcher: null, takeLimit, direction);
 
         /// <summary>
         /// Streams projection key and identity tuples from one encoded projection key range with an optional byte residual predicate.<br/>
@@ -4906,11 +5118,12 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
             Func<byte[], bool>? keyFilter,
             Func<string, bool>? textFilter,
             LibraDexUtf8StringPatternPredicate? byteMatcher,
-            int? takeLimit)
+            int? takeLimit,
+            QueryDirection direction = QueryDirection.Ascending)
         {
-            using VarKeyScalar8RangeReader reader = index.OpenEncodedRangeReader(lower, upper);
+            using VarKeyScalar8RangeReader reader = index.OpenEncodedRangeReader(lower, upper, direction);
             int yielded = 0;
-            while (reader.MoveNext())
+            while (direction == QueryDirection.Descending ? reader.MovePrevious() : reader.MoveNext())
             {
                 ReadOnlySpan<byte> currentKey = reader.CurrentKey;
                 if (keyFilter is not null)
@@ -4960,7 +5173,8 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
             VarKeyScalar8Index index,
             LibraDexStringPatternPredicate predicate,
             Func<string?, string?> transform,
-            int? takeLimit)
+            int? takeLimit,
+            QueryDirection direction = QueryDirection.Ascending)
         {
             int yielded = 0;
             IReadOnlyList<(string Lower, string Upper)> candidateRanges = predicate.CreateCandidateRanges();
@@ -4969,7 +5183,7 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
                 : null;
             if (candidateRanges.Count == 0)
             {
-                foreach (LibraDexObjectTuple tuple in IterateStringProjectionTupleRange(index, FullLowerBound(), FullUpperBound(index.Handle.MaxKeyLength), keyFilter: null, textFilter: predicate.Matches, byteMatcher: byteMatcher, takeLimit: takeLimit))
+                foreach (LibraDexObjectTuple tuple in IterateStringProjectionTupleRange(index, FullLowerBound(), FullUpperBound(index.Handle.MaxKeyLength), keyFilter: null, textFilter: predicate.Matches, byteMatcher: byteMatcher, takeLimit: takeLimit, direction))
                 {
                     yield return tuple;
                 }
@@ -4977,10 +5191,13 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
                 yield break;
             }
 
-            foreach ((string lower, string upper) in candidateRanges)
+            IEnumerable<(string Lower, string Upper)> orderedRanges = direction == QueryDirection.Descending
+                ? candidateRanges.OrderByDescending(range => Encode(transform(range.Lower)), Comparer<byte[]>.Create(static (left, right) => left.AsSpan().SequenceCompareTo(right)))
+                : candidateRanges;
+            foreach ((string lower, string upper) in orderedRanges)
             {
                 int? remaining = takeLimit.HasValue ? takeLimit.Value - yielded : null;
-                foreach (LibraDexObjectTuple tuple in IterateStringProjectionTupleRange(index, Encode(transform(lower)), Encode(transform(upper)), keyFilter: null, textFilter: predicate.Matches, byteMatcher: byteMatcher, takeLimit: remaining))
+                foreach (LibraDexObjectTuple tuple in IterateStringProjectionTupleRange(index, Encode(transform(lower)), Encode(transform(upper)), keyFilter: null, textFilter: predicate.Matches, byteMatcher: byteMatcher, takeLimit: remaining, direction))
                 {
                     yield return tuple;
                     yielded++;
@@ -4997,13 +5214,15 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
     {
         private readonly Catalog catalog;
         private readonly VarKeyScalar8Index index;
+        private readonly LibraDexIndexSortOrder sortOrder;
 
-        internal LibraDexStringScalar8SortKeyProjectionIndex(Catalog catalog, string group, string name, VarKeyScalar8Index index)
+        internal LibraDexStringScalar8SortKeyProjectionIndex(Catalog catalog, string group, string name, VarKeyScalar8Index index, LibraDexIndexSortOrder sortOrder)
         {
             this.catalog = catalog;
             Group = group;
             Name = name;
             this.index = index;
+            this.sortOrder = sortOrder;
         }
 
         public string Name { get; }
@@ -5031,6 +5250,11 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         internal VarKeyScalar8Index PhysicalIndex => index;
 
         public LibraDexIndexShapeSpec? LogicalShape => null;
+
+        /// <summary>
+        /// Gets the owning string index's natural traversal order for this sort-key projection.<br/>
+        /// </summary>
+        public LibraDexIndexSortOrder SortOrder => sortOrder;
 
         public LibraDexGenericInsertResult Insert(object? key, object identity)
         {
@@ -5217,22 +5441,22 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
             switch (request.CriteriaKind)
             {
                 case LibraDexCriteriaKind.All:
-                    return IterateLogicalByteRange(index, Array.Empty<byte>(), new byte[] { 0xFF }, null);
+                    return IterateLogicalByteRange(index, Array.Empty<byte>(), new byte[] { 0xFF }, request.TakeLimit, request.Direction);
                 case LibraDexCriteriaKind.Find:
                     byte[] key = RequireBytes(request.Values, 0);
-                    return IterateLogicalByteRange(index, key, key, null);
+                    return IterateLogicalByteRange(index, key, key, request.TakeLimit, request.Direction);
                 case LibraDexCriteriaKind.Between:
-                    return IterateLogicalByteRange(index, RequireBytes(request.Values, 0), RequireBytes(request.Values, 1), request.TakeLimit);
+                    return IterateLogicalByteRange(index, RequireBytes(request.Values, 0), RequireBytes(request.Values, 1), request.TakeLimit, request.Direction);
                 case LibraDexCriteriaKind.Before:
-                    return IterateLogicalByteBefore(index, RequireBytes(request.Values, 0), inclusive: false, request.TakeLimit);
+                    return IterateLogicalByteBefore(index, RequireBytes(request.Values, 0), inclusive: false, request.TakeLimit, request.Direction);
                 case LibraDexCriteriaKind.AtOrBefore:
-                    return IterateLogicalByteBefore(index, RequireBytes(request.Values, 0), inclusive: true, request.TakeLimit);
+                    return IterateLogicalByteBefore(index, RequireBytes(request.Values, 0), inclusive: true, request.TakeLimit, request.Direction);
                 case LibraDexCriteriaKind.After:
-                    return IterateLogicalByteAfter(index, RequireBytes(request.Values, 0), inclusive: false, request.TakeLimit);
+                    return IterateLogicalByteAfter(index, RequireBytes(request.Values, 0), inclusive: false, request.TakeLimit, request.Direction);
                 case LibraDexCriteriaKind.AtOrAfter:
-                    return IterateLogicalByteAfter(index, RequireBytes(request.Values, 0), inclusive: true, request.TakeLimit);
+                    return IterateLogicalByteAfter(index, RequireBytes(request.Values, 0), inclusive: true, request.TakeLimit, request.Direction);
                 case LibraDexCriteriaKind.InSet:
-                    return IterateByteMembership(index, request.Values, request.TakeLimit);
+                    return IterateByteMembership(index, request.Values, request.TakeLimit, request.Direction);
                 default:
                     throw new NotSupportedException($"{request.CriteriaKind} is not connected to the sort-key string projection facade yet.");
             }
@@ -5249,14 +5473,14 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         {
             return request.CriteriaKind switch
             {
-                LibraDexCriteriaKind.All => IterateLogicalByteTupleRange(index, Array.Empty<byte>(), new byte[] { 0xFF }, null, request.TakeLimit),
-                LibraDexCriteriaKind.Find => IterateLogicalByteTupleRange(index, RequireBytes(request.Values, 0), RequireBytes(request.Values, 0), null, request.TakeLimit),
-                LibraDexCriteriaKind.Between => IterateLogicalByteTupleRange(index, RequireBytes(request.Values, 0), RequireBytes(request.Values, 1), null, request.TakeLimit),
-                LibraDexCriteriaKind.Before => IterateLogicalByteTupleRange(index, Array.Empty<byte>(), RequireBytes(request.Values, 0), key => key.AsSpan().SequenceCompareTo(RequireBytes(request.Values, 0)) < 0, request.TakeLimit),
-                LibraDexCriteriaKind.AtOrBefore => IterateLogicalByteTupleRange(index, Array.Empty<byte>(), RequireBytes(request.Values, 0), null, request.TakeLimit),
-                LibraDexCriteriaKind.After => IterateLogicalByteTupleRange(index, RequireBytes(request.Values, 0), new byte[] { 0xFF }, key => key.AsSpan().SequenceCompareTo(RequireBytes(request.Values, 0)) > 0, request.TakeLimit),
-                LibraDexCriteriaKind.AtOrAfter => IterateLogicalByteTupleRange(index, RequireBytes(request.Values, 0), new byte[] { 0xFF }, null, request.TakeLimit),
-                LibraDexCriteriaKind.InSet => IterateByteMembershipTuples(index, request.Values, request.TakeLimit),
+                LibraDexCriteriaKind.All => IterateLogicalByteTupleRange(index, Array.Empty<byte>(), new byte[] { 0xFF }, null, request.TakeLimit, request.Direction),
+                LibraDexCriteriaKind.Find => IterateLogicalByteTupleRange(index, RequireBytes(request.Values, 0), RequireBytes(request.Values, 0), null, request.TakeLimit, request.Direction),
+                LibraDexCriteriaKind.Between => IterateLogicalByteTupleRange(index, RequireBytes(request.Values, 0), RequireBytes(request.Values, 1), null, request.TakeLimit, request.Direction),
+                LibraDexCriteriaKind.Before => IterateLogicalByteTupleRange(index, Array.Empty<byte>(), RequireBytes(request.Values, 0), key => key.AsSpan().SequenceCompareTo(RequireBytes(request.Values, 0)) < 0, request.TakeLimit, request.Direction),
+                LibraDexCriteriaKind.AtOrBefore => IterateLogicalByteTupleRange(index, Array.Empty<byte>(), RequireBytes(request.Values, 0), null, request.TakeLimit, request.Direction),
+                LibraDexCriteriaKind.After => IterateLogicalByteTupleRange(index, RequireBytes(request.Values, 0), new byte[] { 0xFF }, key => key.AsSpan().SequenceCompareTo(RequireBytes(request.Values, 0)) > 0, request.TakeLimit, request.Direction),
+                LibraDexCriteriaKind.AtOrAfter => IterateLogicalByteTupleRange(index, RequireBytes(request.Values, 0), new byte[] { 0xFF }, null, request.TakeLimit, request.Direction),
+                LibraDexCriteriaKind.InSet => IterateByteMembershipTuples(index, request.Values, request.TakeLimit, request.Direction),
                 _ => throw new NotSupportedException($"{request.CriteriaKind} is not connected to sort-key projection tuple streaming yet.")
             };
         }
@@ -5265,11 +5489,11 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         /// Streams sort-key projection key and identity tuples from one logical byte-key range.<br/>
         /// Optional key filtering handles exclusive boundary forms after the inclusive range reader has pruned to the candidate route set.<br/>
         /// </summary>
-        private static IEnumerable<LibraDexObjectTuple> IterateLogicalByteTupleRange(VarKeyScalar8Index index, byte[] lower, byte[] upper, Func<byte[], bool>? keyFilter, int? takeLimit)
+        private static IEnumerable<LibraDexObjectTuple> IterateLogicalByteTupleRange(VarKeyScalar8Index index, byte[] lower, byte[] upper, Func<byte[], bool>? keyFilter, int? takeLimit, QueryDirection direction = QueryDirection.Ascending)
         {
-            using VarKeyScalar8RangeReader reader = index.OpenRangeReader(lower, upper);
+            using VarKeyScalar8RangeReader reader = index.OpenRangeReader(lower, upper, direction);
             int yielded = 0;
-            while (reader.MoveNext())
+            while (direction == QueryDirection.Descending ? reader.MovePrevious() : reader.MoveNext())
             {
                 byte[] key = reader.MaterializeCurrentKey();
                 if (keyFilter is not null && !keyFilter(key))
@@ -5290,27 +5514,18 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         /// Streams sort-key projection tuples for repeated exact byte-key membership requests.<br/>
         /// Key order follows the supplied membership values; duplicate-key behavior remains the physical projection's tuple behavior.<br/>
         /// </summary>
-        private static IEnumerable<LibraDexObjectTuple> IterateByteMembershipTuples(VarKeyScalar8Index index, IReadOnlyList<object?> values, int? takeLimit)
+        private static IEnumerable<LibraDexObjectTuple> IterateByteMembershipTuples(VarKeyScalar8Index index, IReadOnlyList<object?> values, int? takeLimit, QueryDirection direction = QueryDirection.Ascending)
         {
             int yielded = 0;
-            foreach (object? value in values)
+            foreach (byte[] key in OrderedByteMembershipKeys(values, direction))
             {
-                if (value is not IEnumerable<object> objects)
+                foreach (LibraDexObjectTuple tuple in IterateLogicalByteTupleRange(index, key, key, null, null, direction))
                 {
-                    throw new InvalidOperationException("Sort-key membership primitive requires an object enumerable operand.");
-                }
-
-                foreach (object item in objects)
-                {
-                    byte[] key = item as byte[] ?? throw new InvalidOperationException("Sort-key membership primitive requires byte[] values.");
-                    foreach (LibraDexObjectTuple tuple in IterateLogicalByteTupleRange(index, key, key, null, null))
+                    yield return tuple;
+                    yielded++;
+                    if (takeLimit is int limit && yielded >= limit)
                     {
-                        yield return tuple;
-                        yielded++;
-                        if (takeLimit is int limit && yielded >= limit)
-                        {
-                            yield break;
-                        }
+                        yield break;
                     }
                 }
             }
@@ -5324,42 +5539,33 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         /// <param name="values">The primitive request values containing one enumerable of byte-array sort keys.</param>
         /// <param name="takeLimit">Optional identity limit.</param>
         /// <returns>The matching scalar identities as runtime objects.</returns>
-        private static IEnumerable<ulong> IterateByteMembership(VarKeyScalar8Index index, IReadOnlyList<object?> values, int? takeLimit)
+        private static IEnumerable<ulong> IterateByteMembership(VarKeyScalar8Index index, IReadOnlyList<object?> values, int? takeLimit, QueryDirection direction = QueryDirection.Ascending)
         {
             int yielded = 0;
-            foreach (object? value in values)
+            foreach (byte[] key in OrderedByteMembershipKeys(values, direction))
             {
-                if (value is not IEnumerable<object> objects)
+                foreach (ulong identity in IterateLogicalByteRange(index, key, key, null, direction))
                 {
-                    throw new InvalidOperationException("Sort-key membership primitive requires an object enumerable operand.");
-                }
-
-                foreach (object item in objects)
-                {
-                    byte[] key = item as byte[] ?? throw new InvalidOperationException("Sort-key membership primitive requires byte[] values.");
-                    foreach (ulong identity in IterateLogicalByteRange(index, key, key, null))
+                    yield return identity;
+                    yielded++;
+                    if (takeLimit is int limit && yielded >= limit)
                     {
-                        yield return identity;
-                        yielded++;
-                        if (takeLimit is int limit && yielded >= limit)
-                        {
-                            yield break;
-                        }
+                        yield break;
                     }
                 }
             }
         }
 
-        private static IEnumerable<ulong> IterateLogicalByteRange(VarKeyScalar8Index index, byte[] lower, byte[] upper, int? takeLimit)
+        private static IEnumerable<ulong> IterateLogicalByteRange(VarKeyScalar8Index index, byte[] lower, byte[] upper, int? takeLimit, QueryDirection direction = QueryDirection.Ascending)
         {
-            return IterateLogicalByteRange(index, lower, upper, takeLimit, keyFilter: null);
+            return IterateLogicalByteRange(index, lower, upper, takeLimit, keyFilter: null, direction);
         }
 
-        private static IEnumerable<ulong> IterateLogicalByteRange(VarKeyScalar8Index index, byte[] lower, byte[] upper, int? takeLimit, Func<byte[], bool>? keyFilter)
+        private static IEnumerable<ulong> IterateLogicalByteRange(VarKeyScalar8Index index, byte[] lower, byte[] upper, int? takeLimit, Func<byte[], bool>? keyFilter, QueryDirection direction = QueryDirection.Ascending)
         {
-            using VarKeyScalar8RangeReader reader = index.OpenRangeReader(lower, upper);
+            using VarKeyScalar8RangeReader reader = index.OpenRangeReader(lower, upper, direction);
             int yielded = 0;
-            while (reader.MoveNext())
+            while (direction == QueryDirection.Descending ? reader.MovePrevious() : reader.MoveNext())
             {
                 byte[] key = reader.MaterializeCurrentKey();
                 if (keyFilter is not null && !keyFilter(key))
@@ -5376,24 +5582,24 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
             }
         }
 
-        private static IEnumerable<ulong> IterateLogicalByteBefore(VarKeyScalar8Index index, byte[] boundary, bool inclusive, int? takeLimit)
+        private static IEnumerable<ulong> IterateLogicalByteBefore(VarKeyScalar8Index index, byte[] boundary, bool inclusive, int? takeLimit, QueryDirection direction = QueryDirection.Ascending)
         {
             return IterateLogicalByteRange(
                 index,
                 Array.Empty<byte>(),
                 boundary,
                 takeLimit,
-                inclusive ? null : key => key.AsSpan().SequenceCompareTo(boundary) < 0);
+                inclusive ? null : key => key.AsSpan().SequenceCompareTo(boundary) < 0, direction);
         }
 
-        private static IEnumerable<ulong> IterateLogicalByteAfter(VarKeyScalar8Index index, byte[] boundary, bool inclusive, int? takeLimit)
+        private static IEnumerable<ulong> IterateLogicalByteAfter(VarKeyScalar8Index index, byte[] boundary, bool inclusive, int? takeLimit, QueryDirection direction = QueryDirection.Ascending)
         {
             return IterateLogicalByteRange(
                 index,
                 boundary,
                 new byte[] { 0xFF },
                 takeLimit,
-                inclusive ? null : key => key.AsSpan().SequenceCompareTo(boundary) > 0);
+                inclusive ? null : key => key.AsSpan().SequenceCompareTo(boundary) > 0, direction);
         }
 
         /// <summary>
@@ -5555,6 +5761,28 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
             return values.Count > ordinal && values[ordinal] is byte[] bytes
                 ? bytes
                 : throw new InvalidOperationException("Sort-key primitive requests require byte[] operands.");
+        }
+
+        /// <summary>
+        /// Enumerates sort-key membership operands in physical byte-key order for descending reads.<br/>
+        /// Only the operand keys are sorted; each matching identity run stays on the reverse storage cursor.<br/>
+        /// </summary>
+        /// <param name="values">The condition-builder membership operand containers.<br/></param>
+        /// <param name="direction">The requested physical tuple direction.<br/></param>
+        /// <returns>Validated sort-key byte arrays in requested order.<br/></returns>
+        private static IEnumerable<byte[]> OrderedByteMembershipKeys(IReadOnlyList<object?> values, QueryDirection direction)
+        {
+            List<byte[]> keys = new();
+            foreach (object? value in values)
+            {
+                if (value is not IEnumerable<object> objects)
+                    throw new InvalidOperationException("Sort-key membership primitive requires an object enumerable operand.");
+                foreach (object item in objects)
+                    keys.Add(item as byte[] ?? throw new InvalidOperationException("Sort-key membership primitive requires byte[] values."));
+            }
+            if (direction == QueryDirection.Descending)
+                keys.Sort(static (left, right) => right.AsSpan().SequenceCompareTo(left));
+            return keys;
         }
     }
 
@@ -6216,11 +6444,13 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
     /// <param name="catalog">The catalog that owns every physical projection.<br/></param>
     /// <param name="group">The logical identity group shared by the projections.<br/></param>
     /// <param name="bindings">The physical slots and semantic profiles persisted for this logical string index.<br/></param>
+    /// <param name="sortOrder">The owning logical index's natural tuple order.<br/></param>
     /// <returns>The validated runtime projection array in persisted preference order.<br/></returns>
     private static LibraDexStringSortKeyProjection[] CreateSortKeyProjections(
         Catalog catalog,
         string group,
-        IReadOnlyList<LibraDexStringSortKeyProjectionBinding> bindings)
+        IReadOnlyList<LibraDexStringSortKeyProjectionBinding> bindings,
+        LibraDexIndexSortOrder sortOrder)
     {
         ArgumentNullException.ThrowIfNull(bindings);
         LibraDexStringSortKeyProjection[] result = new LibraDexStringSortKeyProjection[bindings.Count];
@@ -6238,7 +6468,7 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
             }
 
             result[i] = new LibraDexStringSortKeyProjection(
-                new LibraDexStringScalar8SortKeyProjectionIndex(catalog, group, binding.PhysicalName, binding.Index),
+                new LibraDexStringScalar8SortKeyProjectionIndex(catalog, group, binding.PhysicalName, binding.Index, sortOrder),
                 culture,
                 binding.CompareOptions);
         }
@@ -6657,7 +6887,8 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
             CollectionsMarshal.AsSpan(ordinary),
             allowDuplicateKeys: true,
             singleKeyPerIdentity: true,
-            cancellationToken);
+            cancellationToken,
+            exact.Handle.Descending);
         if (build.TupleCount != ordinary.Count)
         {
             throw new InvalidDataException($"Native unordered UTF-8 string replacement built {build.TupleCount:N0} ordinary tuples from {ordinary.Count:N0} validated inputs.");
@@ -6757,7 +6988,8 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
             CollectionsMarshal.AsSpan(ordinary),
             allowDuplicateKeys: true,
             singleKeyPerIdentity: true,
-            cancellationToken);
+            cancellationToken,
+            exact.Handle.Descending);
         if (build.TupleCount != ordinary.Count)
         {
             throw new InvalidDataException($"Native unordered string replacement built {build.TupleCount:N0} ordinary tuples from {ordinary.Count:N0} validated inputs.");
@@ -6942,7 +7174,8 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
             CollectionsMarshal.AsSpan(tuples),
             allowDuplicateKeys: true,
             singleKeyPerIdentity: true,
-            cancellationToken);
+            cancellationToken,
+            index.Handle.Descending);
 
     /// <summary>
     /// Encodes one non-empty borrowed UTF-8 payload into the exact physical `VS8` key representation used by this facade.<br/>
@@ -7010,7 +7243,8 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
             ordinary,
             allowDuplicateKeys,
             SingleKeyPerIdentity: true,
-            identityMultiplicityAlreadyValidated);
+            identityMultiplicityAlreadyValidated,
+            exact.Handle.Descending);
     }
 
     /// <summary>
@@ -7082,7 +7316,8 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
             allowDuplicateKeys,
             singleKeyPerIdentity: true,
             identityMultiplicityAlreadyValidated,
-            cancellationToken);
+            cancellationToken,
+            exact.Handle.Descending);
         InsertNativeStringKeyStateIdentities(NullKey.Null, nullIdentities, cancellationToken);
         InsertNativeStringKeyStateIdentities(NullKey.Empty, emptyIdentities, cancellationToken);
         return checked((long)build.TupleCount + nullIdentities.Count + emptyIdentities.Count);

@@ -24,6 +24,7 @@ internal static class Scalar8Scalar8Layout
     public const int FlagsOffset = 8;
     public const int ItemCountOffset = 12;
     public const uint DuplicateRunFlag = 1U;
+    public const uint DescendingFlag = 2U;
     public const int DuplicateRunKeyOffset = 16;
     public const int DuplicateRunNextOffset = 24;
     public const int DuplicateRunIdentityOffset = HeaderSize;

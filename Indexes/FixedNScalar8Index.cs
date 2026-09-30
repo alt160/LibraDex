@@ -509,11 +509,14 @@ internal sealed class FixedNScalar8Index : IDisposable
     /// Streams every live ordinary tuple through the shape-native fixed-N reader.<br/>
     /// Keys are returned as owned sortable bytes and identities remain encoded for facade-level decoding.<br/>
     /// </summary>
+    /// <param name="direction">The requested complete tuple traversal direction.<br/></param>
+    /// <param name="lowerKey">Optional inclusive encoded lower key.<br/></param>
+    /// <param name="upperKey">Optional inclusive encoded upper key.<br/></param>
     /// <returns>Authoritative ordinary tuples in physical key/identity order.<br/></returns>
-    internal IEnumerable<FixedNScalar8Tuple> IterateTuples()
+    internal IEnumerable<FixedNScalar8Tuple> IterateTuples(QueryDirection direction = QueryDirection.Ascending, byte[]? lowerKey = null, byte[]? upperKey = null)
     {
         ThrowIfDisposed();
-        return session.IterateFixedNScalar8Tuples(handle);
+        return session.IterateFixedNScalar8Tuples(handle, direction, lowerKey, upperKey);
     }
 
     /// <summary>

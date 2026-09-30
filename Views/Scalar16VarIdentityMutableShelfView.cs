@@ -107,7 +107,8 @@ internal sealed class Scalar16VarIdentityMutableShelfView
             Scalar16VarIdentityLayout.ReadMagic(bytes) != Scalar16VarIdentityLayout.Magic ||
             Scalar16VarIdentityLayout.ReadFormatVersion(bytes) != Scalar16VarIdentityLayout.FormatVersion ||
             Scalar16VarIdentityLayout.ReadHeaderSize(bytes) != Scalar16VarIdentityLayout.HeaderSize ||
-            Scalar16VarIdentityLayout.ReadShelfExtentSize(bytes) != profile.ShelfExtentSize)
+            Scalar16VarIdentityLayout.ReadShelfExtentSize(bytes) != profile.ShelfExtentSize ||
+            ((Scalar16VarIdentityLayout.ReadFlags(bytes) & Scalar16VarIdentityLayout.DescendingFlag) != 0) != profile.Descending)
         {
             return false;
         }
@@ -197,7 +198,7 @@ internal sealed class Scalar16VarIdentityMutableShelfView
                 return Scalar16VarIdentityInsertResult.AlreadyPresent;
             }
 
-            sortedAppend = lastComparison < 0;
+            sortedAppend = Profile.Descending ? lastComparison > 0 : lastComparison < 0;
             if (!sortedAppend)
             {
                 insertIndex = LowerBoundTuple(encodedKeyHigh, encodedKeyLow, prefix, identity);
@@ -368,8 +369,12 @@ internal sealed class Scalar16VarIdentityMutableShelfView
             return 0;
         }
 
-        int startSlot = LowerBoundKey(lowerEncodedKeyHigh, lowerEncodedKeyLow, Scalar16VarIdentityLayout.CreateKeyPrefix(lowerEncodedKeyHigh, lowerEncodedKeyLow));
-        int endSlot = LowerBoundKeyAfter(upperEncodedKeyHigh, upperEncodedKeyLow, Scalar16VarIdentityLayout.CreateKeyPrefix(upperEncodedKeyHigh, upperEncodedKeyLow));
+        ulong startHigh = Profile.Descending ? upperEncodedKeyHigh : lowerEncodedKeyHigh;
+        ulong startLow = Profile.Descending ? upperEncodedKeyLow : lowerEncodedKeyLow;
+        ulong endHigh = Profile.Descending ? lowerEncodedKeyHigh : upperEncodedKeyHigh;
+        ulong endLow = Profile.Descending ? lowerEncodedKeyLow : upperEncodedKeyLow;
+        int startSlot = LowerBoundKey(startHigh, startLow, Scalar16VarIdentityLayout.CreateKeyPrefix(startHigh, startLow));
+        int endSlot = LowerBoundKeyAfter(endHigh, endLow, Scalar16VarIdentityLayout.CreateKeyPrefix(endHigh, endLow));
         return MarkSlotRangeDeleted(startSlot, endSlot - startSlot);
     }
 
@@ -592,7 +597,7 @@ internal sealed class Scalar16VarIdentityMutableShelfView
         {
             int middle = low + ((high - low) >> 1);
             int comparison = CompareSlotKey(middle, prefix, encodedKeyHigh, encodedKeyLow);
-            if (comparison < 0)
+            if (Profile.Descending ? comparison > 0 : comparison < 0)
             {
                 low = middle + 1;
             }
@@ -613,7 +618,7 @@ internal sealed class Scalar16VarIdentityMutableShelfView
         {
             int middle = low + ((high - low) >> 1);
             int comparison = CompareSlotKey(middle, prefix, encodedKeyHigh, encodedKeyLow);
-            if (comparison <= 0)
+            if (Profile.Descending ? comparison >= 0 : comparison <= 0)
             {
                 low = middle + 1;
             }
@@ -663,7 +668,7 @@ internal sealed class Scalar16VarIdentityMutableShelfView
         {
             int middle = low + ((high - low) >> 1);
             int comparison = CompareSlotTuple(middle, prefix, encodedKeyHigh, encodedKeyLow, identity);
-            if (comparison < 0)
+            if (Profile.Descending ? comparison > 0 : comparison < 0)
             {
                 low = middle + 1;
             }

@@ -53,7 +53,7 @@ internal ref struct Fixed32Scalar16
         Fixed32Scalar16Layout.WriteMagic(bytes, Fixed32Scalar16Layout.Magic);
         Fixed32Scalar16Layout.WriteFormatVersion(bytes, Fixed32Scalar16Layout.FormatVersion);
         Fixed32Scalar16Layout.WriteHeaderSize(bytes, Fixed32Scalar16Layout.HeaderSize);
-        Fixed32Scalar16Layout.WriteFlags(bytes, 0);
+        Fixed32Scalar16Layout.WriteFlags(bytes, profile.Descending ? Fixed32Scalar16Layout.DescendingFlag : 0);
         Fixed32Scalar16Layout.WriteItemCount(bytes, 0);
     }
 
@@ -131,7 +131,7 @@ internal ref struct Fixed32Scalar16
         ushort count = ItemCount;
         if (count >= profile.MaxItemCount)
         {
-            return Fixed32Scalar16InsertResult.Full;
+            return ClassifyFullInsert(key0, key1, key2, key3, encodedIdentityHigh, encodedIdentityLow, allowDuplicateKeys);
         }
 
         if (TryAppendInSortedOrder(key0, key1, key2, key3, encodedIdentityHigh, encodedIdentityLow, allowDuplicateKeys, count, out mutationBounds))
@@ -356,7 +356,7 @@ internal ref struct Fixed32Scalar16
         {
             ushort lastOffset = Fixed32Scalar16Layout.ReadSlot(bytes, profile, count - 1);
             int keyComparison = Fixed32Scalar16Layout.CompareItemKey(bytes, lastOffset, key0, key1, key2, key3);
-            if (keyComparison > 0)
+            if (profile.Descending ? keyComparison < 0 : keyComparison > 0)
             {
                 return false;
             }
@@ -370,8 +370,11 @@ internal ref struct Fixed32Scalar16
 
                 ulong lastIdentityHigh = Fixed32Scalar16Layout.ReadItemIdentityHigh(bytes, lastOffset);
                 ulong lastIdentityLow = Fixed32Scalar16Layout.ReadItemIdentityLow(bytes, lastOffset);
-                if (lastIdentityHigh > encodedIdentityHigh ||
-                    (lastIdentityHigh == encodedIdentityHigh && lastIdentityLow >= encodedIdentityLow))
+                if (profile.Descending
+                    ? lastIdentityHigh < encodedIdentityHigh ||
+                        (lastIdentityHigh == encodedIdentityHigh && lastIdentityLow <= encodedIdentityLow)
+                    : lastIdentityHigh > encodedIdentityHigh ||
+                        (lastIdentityHigh == encodedIdentityHigh && lastIdentityLow >= encodedIdentityLow))
                 {
                     return false;
                 }
@@ -446,5 +449,41 @@ internal ref struct Fixed32Scalar16
         Fixed32Scalar16Layout.WriteSlot(bytes, profile, count, checked((ushort)itemOffset));
         Fixed32Scalar16Layout.WriteItemCount(bytes, checked((ushort)(count + 1)));
         return Fixed32Scalar16InsertResult.Inserted;
+    }
+
+    /// <summary>Classifies a capacity-bound insertion before the caller attempts any structural growth.<br/>
+    /// Exact tuples remain idempotent and unique-key conflicts remain conflicts even when no payload slot is free.<br/>
+    /// Only the full-shelf branch calls this allocation-free binary-search path; ordinary insert and append code is unchanged.<br/></summary>
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private Fixed32Scalar16InsertResult ClassifyFullInsert(ulong key0, ulong key1, ulong key2, ulong key3, ulong encodedIdentityHigh, ulong encodedIdentityLow, bool allowDuplicateKeys)
+    {
+        ushort count = ItemCount;
+        Fixed32Scalar16ReadOnly readOnly = AsReadOnly();
+        int insertIndex = readOnly.LowerBound(key0, key1, key2, key3, encodedIdentityHigh, encodedIdentityLow);
+
+        if (insertIndex < count)
+        {
+            ushort existingOffset = Fixed32Scalar16Layout.ReadSlot(bytes, profile, insertIndex);
+            int comparison = Fixed32Scalar16Layout.CompareItemTuple(bytes, existingOffset, key0, key1, key2, key3, encodedIdentityHigh, encodedIdentityLow);
+            if (comparison == 0)
+            {
+                return Fixed32Scalar16InsertResult.AlreadyPresent;
+            }
+        }
+
+        if (!allowDuplicateKeys)
+        {
+            int keyIndex = readOnly.LowerBoundKey(key0, key1, key2, key3);
+            if (keyIndex < count)
+            {
+                ushort keyOffset = Fixed32Scalar16Layout.ReadSlot(bytes, profile, keyIndex);
+                if (Fixed32Scalar16Layout.CompareItemKey(bytes, keyOffset, key0, key1, key2, key3) == 0)
+                {
+                    return Fixed32Scalar16InsertResult.KeyConflict;
+                }
+            }
+        }
+
+        return Fixed32Scalar16InsertResult.Full;
     }
 }

@@ -62,6 +62,7 @@ internal static class LibraDexCatalogBackup
             throw new ArgumentException("The LibraDex backup path must differ from the live catalog path.", nameof(path));
 
         LibraDexBackupOptions effective = options ?? new LibraDexBackupOptions();
+        DataKernel.RejectPublicationSidecarCollision(destinationPath);
         if (!effective.Overwrite && File.Exists(destinationPath))
             throw new IOException($"The LibraDex backup file already exists: {destinationPath}");
 
@@ -103,6 +104,7 @@ internal static class LibraDexCatalogBackup
                 indexCount = validation.Indexes.List().Length;
 
             cancellationToken.ThrowIfCancellationRequested();
+            DataKernel.RejectPublicationSidecarCollision(destinationPath);
             File.Move(stagingPath, destinationPath, effective.Overwrite);
             return new LibraDexBackupResult(destinationPath, bytes, sourceHash, indexCount);
         }

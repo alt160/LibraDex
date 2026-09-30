@@ -13,7 +13,8 @@ internal enum Scalar8VarIdentityInsertResult
 
 internal readonly record struct Scalar8VarIdentityProfile(
     int ShelfExtentSize,
-    int MaxIdentityLength)
+    int MaxIdentityLength,
+    bool Descending = false)
 {
     public static readonly Scalar8VarIdentityProfile Default4KiB = Create(4 * 1024, 1024);
     public static readonly Scalar8VarIdentityProfile Default8KiB = Create(8 * 1024, 1024);
@@ -23,7 +24,7 @@ internal readonly record struct Scalar8VarIdentityProfile(
     public static readonly Scalar8VarIdentityProfile Default128KiB = Create(128 * 1024, 1024);
     public static readonly Scalar8VarIdentityProfile DefaultInitial = Default64KiB;
 
-    public static Scalar8VarIdentityProfile Create(int shelfExtentSize, int maxIdentityLength)
+    public static Scalar8VarIdentityProfile Create(int shelfExtentSize, int maxIdentityLength, bool descending = false)
     {
         if (shelfExtentSize < Scalar8VarIdentityLayout.HeaderSize + 32)
         {
@@ -35,7 +36,7 @@ internal readonly record struct Scalar8VarIdentityProfile(
             throw new ArgumentOutOfRangeException(nameof(maxIdentityLength), maxIdentityLength, "The first SV8 profile supports raw byte identities from 1 to 1024 bytes.");
         }
 
-        return new Scalar8VarIdentityProfile(shelfExtentSize, maxIdentityLength);
+        return new Scalar8VarIdentityProfile(shelfExtentSize, maxIdentityLength, descending);
     }
 
     public Scalar8VarIdentityProfile NextGrowthClass()
@@ -53,7 +54,7 @@ internal readonly record struct Scalar8VarIdentityProfile(
             <= 32 * 1024 => 64 * 1024,
             _ => 128 * 1024
         };
-        return Create(nextSize, MaxIdentityLength);
+        return Create(nextSize, MaxIdentityLength, Descending);
     }
 }
 
@@ -168,7 +169,8 @@ internal enum Scalar16VarIdentityInsertResult
 
 internal readonly record struct Scalar16VarIdentityProfile(
     int ShelfExtentSize,
-    int MaxIdentityLength)
+    int MaxIdentityLength,
+    bool Descending = false)
 {
     public static readonly Scalar16VarIdentityProfile Default4KiB = Create(4 * 1024, 1024);
     public static readonly Scalar16VarIdentityProfile Default8KiB = Create(8 * 1024, 1024);
@@ -178,7 +180,7 @@ internal readonly record struct Scalar16VarIdentityProfile(
     public static readonly Scalar16VarIdentityProfile Default128KiB = Create(128 * 1024, 1024);
     public static readonly Scalar16VarIdentityProfile DefaultInitial = Default64KiB;
 
-    public static Scalar16VarIdentityProfile Create(int shelfExtentSize, int maxIdentityLength)
+    public static Scalar16VarIdentityProfile Create(int shelfExtentSize, int maxIdentityLength, bool descending = false)
     {
         if (shelfExtentSize < Scalar16VarIdentityLayout.HeaderSize + 32)
         {
@@ -190,7 +192,7 @@ internal readonly record struct Scalar16VarIdentityProfile(
             throw new ArgumentOutOfRangeException(nameof(maxIdentityLength), maxIdentityLength, "The first SV16 profile supports raw byte identities from 1 to 1024 bytes.");
         }
 
-        return new Scalar16VarIdentityProfile(shelfExtentSize, maxIdentityLength);
+        return new Scalar16VarIdentityProfile(shelfExtentSize, maxIdentityLength, descending);
     }
 
     public Scalar16VarIdentityProfile NextGrowthClass()
@@ -205,7 +207,7 @@ internal readonly record struct Scalar16VarIdentityProfile(
             : ShelfExtentSize <= 32 * 1024
                 ? 64 * 1024
                 : 128 * 1024;
-        return Create(nextSize, MaxIdentityLength);
+        return Create(nextSize, MaxIdentityLength, Descending);
     }
 }
 

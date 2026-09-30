@@ -55,7 +55,7 @@ internal ref struct Scalar8Scalar8
         Scalar8Scalar8Layout.WriteMagic(bytes, Scalar8Scalar8Layout.Magic);
         Scalar8Scalar8Layout.WriteFormatVersion(bytes, Scalar8Scalar8Layout.FormatVersion);
         Scalar8Scalar8Layout.WriteHeaderSize(bytes, Scalar8Scalar8Layout.HeaderSize);
-        Scalar8Scalar8Layout.WriteFlags(bytes, 0);
+        Scalar8Scalar8Layout.WriteFlags(bytes, profile.Descending ? Scalar8Scalar8Layout.DescendingFlag : 0);
         Scalar8Scalar8Layout.WriteItemCount(bytes, 0);
     }
 
@@ -92,7 +92,7 @@ internal ref struct Scalar8Scalar8
         ushort count = ItemCount;
         if (count >= profile.MaxItemCount)
         {
-            return Scalar8Scalar8InsertResult.Full;
+            return ClassifyFullInsert(encodedKey, encodedIdentity, allowDuplicateKeys);
         }
 
         if (TryAppendInSortedOrder(encodedKey, encodedIdentity, allowDuplicateKeys, count, out mutationBounds))
@@ -171,6 +171,13 @@ internal ref struct Scalar8Scalar8
         }
 
         ushort count = ItemCount;
+        int insertIndex = readOnly.LowerBound(encodedKey, encodedIdentity);
+        if (insertIndex < count &&
+            Scalar8Scalar8Layout.ReadDuplicateRunIdentity(bytes, insertIndex) == encodedIdentity)
+        {
+            return Scalar8Scalar8InsertResult.AlreadyPresent;
+        }
+
         if (!allowDuplicateKeys && count != 0)
         {
             return Scalar8Scalar8InsertResult.KeyConflict;
@@ -180,13 +187,6 @@ internal ref struct Scalar8Scalar8
             count >= Scalar8Scalar8Layout.GetDuplicateRunCapacity(profile))
         {
             return Scalar8Scalar8InsertResult.Full;
-        }
-
-        int insertIndex = readOnly.LowerBound(encodedKey, encodedIdentity);
-        if (insertIndex < count &&
-            Scalar8Scalar8Layout.ReadDuplicateRunIdentity(bytes, insertIndex) == encodedIdentity)
-        {
-            return Scalar8Scalar8InsertResult.AlreadyPresent;
         }
 
         for (int i = count; i > insertIndex; i--)
@@ -239,7 +239,7 @@ internal ref struct Scalar8Scalar8
         ushort count = ItemCount;
         if (count >= profile.MaxItemCount)
         {
-            return Scalar8Scalar8InsertResult.Full;
+            return ClassifyFullInsert(encodedKey, encodedIdentity, allowDuplicateKeys);
         }
 
         long appendStart = Stopwatch.GetTimestamp();
@@ -499,7 +499,8 @@ internal ref struct Scalar8Scalar8
         {
             ushort lastOffset = Scalar8Scalar8Layout.ReadSlot(bytes, profile, count - 1);
             ulong lastKey = Scalar8Scalar8Layout.ReadItemKey(bytes, lastOffset);
-            if (lastKey > encodedKey)
+            bool descending = (Scalar8Scalar8Layout.ReadFlags(bytes) & Scalar8Scalar8Layout.DescendingFlag) != 0;
+            if (descending ? lastKey < encodedKey : lastKey > encodedKey)
             {
                 return false;
             }
@@ -512,7 +513,7 @@ internal ref struct Scalar8Scalar8
                 }
 
                 ulong lastIdentity = Scalar8Scalar8Layout.ReadItemIdentity(bytes, lastOffset);
-                if (lastIdentity >= encodedIdentity)
+                if (descending ? lastIdentity <= encodedIdentity : lastIdentity >= encodedIdentity)
                 {
                     return false;
                 }
@@ -553,5 +554,41 @@ internal ref struct Scalar8Scalar8
     public Scalar8Scalar8ReadOnly AsReadOnly()
     {
         return new Scalar8Scalar8ReadOnly(bytes, profile);
+    }
+
+    /// <summary>Classifies a capacity-bound insertion before the caller attempts any structural growth.<br/>
+    /// Exact tuples remain idempotent and unique-key conflicts remain conflicts even when no payload slot is free.<br/>
+    /// Only the full-shelf branch calls this allocation-free binary-search path; ordinary insert and append code is unchanged.<br/></summary>
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private Scalar8Scalar8InsertResult ClassifyFullInsert(ulong encodedKey, ulong encodedIdentity, bool allowDuplicateKeys)
+    {
+        ushort count = ItemCount;
+        Scalar8Scalar8ReadOnly readOnly = AsReadOnly();
+        int insertIndex = readOnly.LowerBound(encodedKey, encodedIdentity);
+
+        if (insertIndex < count)
+        {
+            ushort existingOffset = Scalar8Scalar8Layout.ReadSlot(bytes, profile, insertIndex);
+            int comparison = Scalar8Scalar8Layout.CompareItemTuple(bytes, existingOffset, encodedKey, encodedIdentity);
+            if (comparison == 0)
+            {
+                return Scalar8Scalar8InsertResult.AlreadyPresent;
+            }
+        }
+
+        if (!allowDuplicateKeys)
+        {
+            int keyIndex = readOnly.LowerBoundKey(encodedKey);
+            if (keyIndex < count)
+            {
+                ushort keyOffset = Scalar8Scalar8Layout.ReadSlot(bytes, profile, keyIndex);
+                if (Scalar8Scalar8Layout.ReadItemKey(bytes, keyOffset) == encodedKey)
+                {
+                    return Scalar8Scalar8InsertResult.KeyConflict;
+                }
+            }
+        }
+
+        return Scalar8Scalar8InsertResult.Full;
     }
 }

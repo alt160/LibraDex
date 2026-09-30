@@ -205,7 +205,7 @@ internal static class Scalar8VarIdentityLayout
         WriteMagic(target, Magic);
         WriteFormatVersion(target, FormatVersion);
         WriteHeaderSize(target, HeaderSize);
-        WriteFlags(target, 0);
+        WriteFlags(target, profile.Descending ? 1U : 0U);
         WriteItemCount(target, 0);
         WriteShelfExtentSize(target, profile.ShelfExtentSize);
         WriteSlotStreamLength(target, 0);

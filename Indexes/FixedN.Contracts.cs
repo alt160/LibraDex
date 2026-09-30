@@ -125,7 +125,8 @@ internal enum FixedNVarIdentityInsertResult
 /// <param name="ShelfExtentSize">The total shelf extent size in bytes.</param>
 /// <param name="KeySize">The fixed key width in bytes.</param>
 /// <param name="MaxIdentityLength">The maximum variable identity length accepted by the shelf.</param>
-internal readonly record struct FixedNVarIdentityProfile(int ShelfExtentSize, int KeySize, int MaxIdentityLength)
+/// <param name="Descending">Whether the physical tuple slots run from highest key and identity to lowest.<br/></param>
+internal readonly record struct FixedNVarIdentityProfile(int ShelfExtentSize, int KeySize, int MaxIdentityLength, bool Descending = false)
 {
     public const int DefaultShelfExtentSize = 64 * 1024;
     public const int MinimumKeySize = 1;

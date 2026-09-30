@@ -691,6 +691,27 @@ internal static partial class RawHarness
         ValidateFixedNScalar16NormalCondition(resolver, new BigInteger(86), movedGuid, 1, "scalar16-null-to-normal-after-rekey");
         ValidateFixedNScalar16NormalCondition(resolver, new BigInteger(87), normalGuid, 0, "scalar16-normal-to-null-after-rekey");
 
+        LibraDexConditionEndCondition promotedNullCount = LibraDexCondition
+            .ForGroup("fixedn-key-state-promotion-proof")
+            .Index("score8")
+            .AsBigInt
+            .EqualTo(ScalarNull.Null)
+            .EndCondition;
+        const int countProbeIterations = 500;
+        long allocationStart = GC.GetAllocatedBytesForCurrentThread();
+        Stopwatch countTimer = Stopwatch.StartNew();
+        for (int i = 0; i < countProbeIterations; i++)
+        {
+            if (promotedNullCount.Count(resolver, IdentityDeduplication.Preserve) != scalar8Count - 1)
+                throw new InvalidDataException("The promoted fixed-N count changed during the repeated count probe.");
+        }
+
+        countTimer.Stop();
+        long countAllocatedBytes = GC.GetAllocatedBytesForCurrentThread() - allocationStart;
+        Console.WriteLine($"fixedn-promoted-count scalar8={scalar8Count - 1} calls={countProbeIterations} elapsedMs={countTimer.Elapsed.TotalMilliseconds:F3} allocatedBytes={countAllocatedBytes}");
+
+        ValidateFileBackedFixedNKeyStatePromotionProof();
+
         Console.WriteLine(string.Format(
             CultureInfo.InvariantCulture,
             "fixedn-key-state-promotion scalar8-count {0} scalar8-inline-capacity {1} scalar16-count {2} scalar16-inline-capacity {3}",
@@ -3492,4 +3513,71 @@ internal static partial class RawHarness
         long Count,
         long FirstIdentity,
         long LastIdentity);
+
+    /// <summary>
+    /// Verifies promoted scalar-null counts after a file-backed catalog is closed and reopened.<br/>
+    /// The proof crosses both inline capacities, compares condition materialization with the primitive count, then mutates the reopened routes and repeats those checks.<br/>
+    /// Only a uniquely named temporary catalog created by this method is removed after all handles close.<br/>
+    /// </summary>
+    private static void ValidateFileBackedFixedNKeyStatePromotionProof()
+    {
+        string path = Path.Combine(Path.GetTempPath(), $"libradex-fixedn-keystate-{Guid.NewGuid():N}.lbdx");
+        if (File.Exists(path))
+        {
+            throw new IOException($"The fixed-N reopen proof target already exists: {path}");
+        }
+
+        const int scalar8Count = 1_024;
+        const int scalar16Count = 512;
+        try
+        {
+            using (Catalog catalog = Catalog.Create(path))
+            {
+                CatalogIdentityGroupIndexes group = catalog.Indexes["fixedn-key-state-promotion-proof"];
+                using LibraDexBigIntScalar8Index<long> scalar8 = group["score8"].BigIntKeys<long>(maxBytes: 32).Create();
+                using LibraDexBigIntScalar8Index<Guid> scalar16 = group["score16"].BigIntKeys<Guid>(maxBytes: 32).Create();
+                for (int i = 0; i < scalar8Count; i++)
+                {
+                    if (!scalar8.Add(ScalarNull.Null, i + 1L).Inserted)
+                        throw new InvalidDataException("The file-backed scalar-8 proof did not insert its null identity.");
+                }
+
+                for (int i = 0; i < scalar16Count; i++)
+                {
+                    if (!scalar16.Add(ScalarNull.Null, CreateScalar16KeyStateProofGuid(i + 1)).Inserted)
+                        throw new InvalidDataException("The file-backed scalar-16 proof did not insert its null identity.");
+                }
+            }
+
+            using (Catalog reopened = Catalog.Open(path))
+            {
+                CatalogIdentityGroupIndexes group = reopened.Indexes["fixedn-key-state-promotion-proof"];
+                using LibraDexBigIntScalar8Index<long> scalar8 = group["score8"].BigIntKeys<long>(maxBytes: 32).Open();
+                using LibraDexBigIntScalar8Index<Guid> scalar16 = group["score16"].BigIntKeys<Guid>(maxBytes: 32).Open();
+                Func<string, IIndex> resolver = name => name switch
+                {
+                    "score8" => scalar8,
+                    "score16" => scalar16,
+                    _ => throw new KeyNotFoundException(name)
+                };
+                ValidateFixedNScalar8KeyStatePromotionCount(resolver, scalar8Count, "scalar8-after-reopen");
+                ValidateFixedNScalar16KeyStatePromotionCount(resolver, scalar16Count, "scalar16-after-reopen");
+                if (!scalar8.Delete(ScalarNull.Null, 1L) ||
+                    !scalar16.Delete(ScalarNull.Null, CreateScalar16KeyStateProofGuid(1)))
+                    throw new InvalidDataException("The reopened fixed-N routes did not delete their first null identities.");
+                if (!scalar8.Add(ScalarNull.Null, scalar8Count + 1L).Inserted ||
+                    !scalar16.Add(ScalarNull.Null, CreateScalar16KeyStateProofGuid(scalar16Count + 1)).Inserted)
+                    throw new InvalidDataException("The reopened fixed-N routes did not accept replacement null identities.");
+                ValidateFixedNScalar8KeyStatePromotionCount(resolver, scalar8Count, "scalar8-after-reopen-mutation");
+                ValidateFixedNScalar16KeyStatePromotionCount(resolver, scalar16Count, "scalar16-after-reopen-mutation");
+            }
+
+            Console.WriteLine("fixedn-key-state file-backed reopen ok");
+        }
+        finally
+        {
+            if (File.Exists(path))
+                File.Delete(path);
+        }
+    }
 }

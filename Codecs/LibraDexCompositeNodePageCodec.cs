@@ -258,6 +258,9 @@ internal static class LibraDexCompositeNodePageCodec
         }
 
         LibraDexCompositeKeyPartSpec part = shape.CompositeParts[tier];
+        if (shape.SortOrder == LibraDexIndexSortOrder.Descending)
+            part = part with { SortOrder = part.SortOrder == LibraDexIndexSortOrder.Descending
+                ? LibraDexIndexSortOrder.Ascending : LibraDexIndexSortOrder.Descending };
         int low = 0;
         int high = childCount - 1;
         while (low <= high)
@@ -323,6 +326,11 @@ internal static class LibraDexCompositeNodePageCodec
         }
 
         LibraDexCompositeKeyPartSpec part = shape.CompositeParts[tier];
+        if (shape.SortOrder == LibraDexIndexSortOrder.Descending)
+            part = part with { SortOrder = part.SortOrder == LibraDexIndexSortOrder.Descending
+                ? LibraDexIndexSortOrder.Ascending : LibraDexIndexSortOrder.Descending };
+        if (part.SortOrder == LibraDexIndexSortOrder.Descending)
+            (lower, upper) = (upper, lower);
         if (LibraDexCompositeKeyValueSemantics.ComparePartValues(part, lower, upper) > 0)
         {
             return true;
@@ -381,7 +389,36 @@ internal static class LibraDexCompositeNodePageCodec
         }
 
         LibraDexCompositeKeyPartSpec part = shape.CompositeParts[tier];
-        int first = LowerBound(source, childDirectoryOffset, childCount, part, prefix);
+        if (shape.SortOrder == LibraDexIndexSortOrder.Descending)
+            part = part with { SortOrder = part.SortOrder == LibraDexIndexSortOrder.Descending
+                ? LibraDexIndexSortOrder.Ascending : LibraDexIndexSortOrder.Descending };
+        int first;
+        if (part.SortOrder == LibraDexIndexSortOrder.Descending)
+        {
+            int low = 0;
+            int high = childCount;
+            while (low < high)
+            {
+                int mid = low + ((high - low) / 2);
+                if (!TryReadChildEntry(source, childDirectoryOffset, mid, part, out object midValue, out _))
+                    return false;
+                string midText = midValue as string ?? throw new InvalidDataException("Composite node page prefix child value is not a string.");
+                int shared = Math.Min(midText.Length, prefix.Length);
+                int comparison = string.CompareOrdinal(midText, 0, prefix, 0, shared);
+                if (comparison == 0 && midText.Length < prefix.Length)
+                    comparison = -1;
+                if (comparison > 0)
+                    low = mid + 1;
+                else
+                    high = mid;
+            }
+
+            first = low;
+        }
+        else
+        {
+            first = LowerBound(source, childDirectoryOffset, childCount, part, prefix);
+        }
         if (first < 0)
         {
             return false;
@@ -438,6 +475,11 @@ internal static class LibraDexCompositeNodePageCodec
         }
 
         LibraDexCompositeKeyPartSpec part = shape.CompositeParts[tier];
+        if (shape.SortOrder == LibraDexIndexSortOrder.Descending)
+            part = part with { SortOrder = part.SortOrder == LibraDexIndexSortOrder.Descending
+                ? LibraDexIndexSortOrder.Ascending : LibraDexIndexSortOrder.Descending };
+        if (part.SortOrder == LibraDexIndexSortOrder.Descending)
+            isLowerBound = !isLowerBound;
         List<LibraDexCompositeNodeChildPage> matches = new();
         int start = 0;
         if (isLowerBound)

@@ -53,7 +53,8 @@ internal readonly ref struct SuperblockReader
 
     public bool IsValid =>
         Magic == SuperblockLayout.Magic &&
-        FormatVersion == SuperblockLayout.FormatVersion &&
+        (FormatVersion == SuperblockLayout.LegacyFormatVersion ||
+         FormatVersion == SuperblockLayout.RecoverableFormatVersion) &&
         HeaderSize == SuperblockLayout.Size &&
         IndexDirectoryLength == IndexDirectoryLayout.Size &&
         IndexSlotCount == IndexDirectoryLayout.SlotCount;

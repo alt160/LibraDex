@@ -21,7 +21,8 @@ internal readonly record struct VarKeyVarIdentityMutationHint(
 internal readonly record struct VarKeyVarIdentityProfile(
     int ShelfExtentSize,
     int MaxKeyLength,
-    int MaxIdentityLength)
+    int MaxIdentityLength,
+    bool Descending = false)
 {
     public static readonly VarKeyVarIdentityProfile Default4KiB = Create(4 * 1024, 1024);
     public static readonly VarKeyVarIdentityProfile Default8KiB = Create(8 * 1024, 1024);
@@ -98,7 +99,7 @@ internal readonly record struct VarKeyVarIdentityProfile(
             : ShelfExtentSize <= 32 * 1024
                 ? 64 * 1024
                 : 128 * 1024;
-        return Create(nextSize, MaxKeyLength, MaxIdentityLength);
+        return Create(nextSize, MaxKeyLength, MaxIdentityLength) with { Descending = Descending };
     }
 }
 

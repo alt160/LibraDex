@@ -38,6 +38,9 @@ internal sealed class VarKeyScalar8RangeReader : IDisposable
     private int ordinal = -1;
     private int retiredStreamingRowCount;
     private int maxKeyLength;
+    private long terminalContinuationOffset;
+    private int terminalContinuationExtentSize;
+    private byte[]? terminalContinuationKey;
     private bool decodeLogicalKeys;
     private bool captureDiagnostics;
     private bool descendingTraversal;
@@ -339,26 +342,39 @@ internal sealed class VarKeyScalar8RangeReader : IDisposable
         if (ordinal < 0)
         {
             currentShelfIndex = 0;
-            currentSlotIndex = startSlots[0];
+            bool physicalDescending = terminalShelfFlags![0] != 0
+                ? (terminalShelfFlags[0] & 2) != 0
+                : shelves[0].IsDescending;
+            currentSlotIndex = physicalDescending ? endSlots[0] - 1 : startSlots[0];
         }
         else if (resumeAtAppendedTarget)
         {
             if ((uint)currentShelfIndex >= (uint)shelfCount)
                 throw new InvalidDataException("The appended VS8 continuation target did not load a matching shelf range.");
 
-            currentSlotIndex = startSlots[currentShelfIndex];
+            bool physicalDescending = terminalShelfFlags![currentShelfIndex] != 0
+                ? (terminalShelfFlags[currentShelfIndex] & 2) != 0
+                : shelves[currentShelfIndex].IsDescending;
+            currentSlotIndex = physicalDescending ? endSlots[currentShelfIndex] - 1 : startSlots[currentShelfIndex];
             resumeAtAppendedTarget = false;
         }
         else
         {
-            currentSlotIndex++;
-            while (currentShelfIndex < shelfCount && currentSlotIndex >= endSlots[currentShelfIndex])
+            bool physicalDescending = terminalShelfFlags![currentShelfIndex] != 0
+                ? (terminalShelfFlags[currentShelfIndex] & 2) != 0
+                : shelves[currentShelfIndex].IsDescending;
+            currentSlotIndex += physicalDescending ? -1 : 1;
+            while (currentShelfIndex < shelfCount &&
+                (physicalDescending ? currentSlotIndex < startSlots[currentShelfIndex] : currentSlotIndex >= endSlots[currentShelfIndex]))
             {
                 ReleaseConsumedStreamingShelf(currentShelfIndex);
                 currentShelfIndex++;
                 if (currentShelfIndex < shelfCount)
                 {
-                    currentSlotIndex = startSlots[currentShelfIndex];
+                    physicalDescending = terminalShelfFlags[currentShelfIndex] != 0
+                        ? (terminalShelfFlags[currentShelfIndex] & 2) != 0
+                        : shelves[currentShelfIndex].IsDescending;
+                    currentSlotIndex = physicalDescending ? endSlots[currentShelfIndex] - 1 : startSlots[currentShelfIndex];
                 }
             }
         }
@@ -406,17 +422,27 @@ internal sealed class VarKeyScalar8RangeReader : IDisposable
             if (ordinal < 0)
             {
                 currentShelfIndex = 0;
-                currentSlotIndex = endSlots[0] - 1;
+                bool physicalDescending = terminalShelfFlags![0] != 0
+                    ? (terminalShelfFlags[0] & 2) != 0
+                    : shelves[0].IsDescending;
+                currentSlotIndex = physicalDescending ? startSlots[0] : endSlots[0] - 1;
             }
             else
             {
-                currentSlotIndex--;
-                while (currentShelfIndex < shelfCount && currentSlotIndex < startSlots[currentShelfIndex])
+                bool physicalDescending = terminalShelfFlags![currentShelfIndex] != 0
+                    ? (terminalShelfFlags[currentShelfIndex] & 2) != 0
+                    : shelves[currentShelfIndex].IsDescending;
+                currentSlotIndex += physicalDescending ? 1 : -1;
+                while (currentShelfIndex < shelfCount &&
+                    (physicalDescending ? currentSlotIndex >= endSlots[currentShelfIndex] : currentSlotIndex < startSlots[currentShelfIndex]))
                 {
                     currentShelfIndex++;
                     if (currentShelfIndex < shelfCount)
                     {
-                        currentSlotIndex = endSlots[currentShelfIndex] - 1;
+                        physicalDescending = terminalShelfFlags[currentShelfIndex] != 0
+                            ? (terminalShelfFlags[currentShelfIndex] & 2) != 0
+                            : shelves[currentShelfIndex].IsDescending;
+                        currentSlotIndex = physicalDescending ? startSlots[currentShelfIndex] : endSlots[currentShelfIndex] - 1;
                     }
                 }
             }
@@ -436,17 +462,27 @@ internal sealed class VarKeyScalar8RangeReader : IDisposable
         if (ordinal < 0)
         {
             currentShelfIndex = shelfCount - 1;
-            currentSlotIndex = endSlots[currentShelfIndex] - 1;
+            bool physicalDescending = terminalShelfFlags![currentShelfIndex] != 0
+                ? (terminalShelfFlags[currentShelfIndex] & 2) != 0
+                : shelves[currentShelfIndex].IsDescending;
+            currentSlotIndex = physicalDescending ? startSlots[currentShelfIndex] : endSlots[currentShelfIndex] - 1;
         }
         else
         {
-            currentSlotIndex--;
-            while (currentShelfIndex >= 0 && currentSlotIndex < startSlots[currentShelfIndex])
+            bool physicalDescending = terminalShelfFlags![currentShelfIndex] != 0
+                ? (terminalShelfFlags[currentShelfIndex] & 2) != 0
+                : shelves[currentShelfIndex].IsDescending;
+            currentSlotIndex += physicalDescending ? 1 : -1;
+            while (currentShelfIndex >= 0 &&
+                (physicalDescending ? currentSlotIndex >= endSlots[currentShelfIndex] : currentSlotIndex < startSlots[currentShelfIndex]))
             {
                 currentShelfIndex--;
                 if (currentShelfIndex >= 0)
                 {
-                    currentSlotIndex = endSlots[currentShelfIndex] - 1;
+                    physicalDescending = terminalShelfFlags[currentShelfIndex] != 0
+                        ? (terminalShelfFlags[currentShelfIndex] & 2) != 0
+                        : shelves[currentShelfIndex].IsDescending;
+                    currentSlotIndex = physicalDescending ? startSlots[currentShelfIndex] : endSlots[currentShelfIndex] - 1;
                 }
             }
         }
@@ -564,9 +600,10 @@ internal sealed class VarKeyScalar8RangeReader : IDisposable
             throw new InvalidDataException("The routed VS8 range target shelf is invalid.");
         }
 
-        int startSlot = shelf.LowerBoundKey(lowerKey);
+        int startSlot = shelf.LowerBoundKey(shelf.IsDescending ? upperKey : lowerKey);
         int endSlot = startSlot;
-        while (endSlot < shelf.ItemCount && shelf.ReadKeyAt(endSlot).SequenceCompareTo(upperKey) <= 0)
+        while (endSlot < shelf.ItemCount &&
+            (shelf.IsDescending ? shelf.ReadKeyAt(endSlot).SequenceCompareTo(lowerKey) >= 0 : shelf.ReadKeyAt(endSlot).SequenceCompareTo(upperKey) <= 0))
         {
             endSlot++;
         }
@@ -654,6 +691,8 @@ internal sealed class VarKeyScalar8RangeReader : IDisposable
         terminalShelfFlags = null;
         terminalIdentityShelves = null;
         terminalKeys = null;
+        terminalContinuationKey = null;
+        terminalContinuationOffset = 0;
         rentedShelfBuffers = null;
         visitedShelves = null;
         visitedRouters = null;
@@ -718,7 +757,7 @@ internal sealed class VarKeyScalar8RangeReader : IDisposable
         return true;
     }
 
-    private void AddTerminalIdentityShelfRange(byte[] shelfBytes, byte[] keyBytes)
+    private void AddTerminalIdentityShelfRange(byte[] shelfBytes, byte[] keyBytes, bool physicalDescending)
     {
         int itemCount = TerminalIdentity8ShelfLayout.ReadItemCount(shelfBytes);
         if (itemCount <= 0)
@@ -735,7 +774,7 @@ internal sealed class VarKeyScalar8RangeReader : IDisposable
         shelves[shelfCount] = null!;
         startSlots[shelfCount] = 0;
         endSlots[shelfCount] = itemCount;
-        terminalShelfFlags![shelfCount] = 1;
+        terminalShelfFlags![shelfCount] = (byte)(physicalDescending ? 3 : 1);
         terminalIdentityShelves![shelfCount] = shelfBytes;
         terminalKeys![shelfCount] = keyBytes;
         shelfCount++;
@@ -761,8 +800,30 @@ internal sealed class VarKeyScalar8RangeReader : IDisposable
         int previousRowCount = rowCount;
         byte[] routerBytes = routerScratch ??= ArrayPool<byte>.Shared.Rent(RouterLayout.Size);
         Span<byte> routerPage = routerBytes.AsSpan(0, RouterLayout.Size);
-        while (pendingCount > 0)
+        while (pendingCount > 0 || terminalContinuationOffset != 0)
         {
+            if (terminalContinuationOffset != 0)
+            {
+                long continuationOffset = terminalContinuationOffset;
+                if (!localVisitedShelves.Add(continuationOffset))
+                {
+                    terminalContinuationOffset = 0;
+                    continue;
+                }
+                byte[] identityShelfBytes = localSession.ReadTerminalIdentity8ShelfBytes(continuationOffset, terminalContinuationExtentSize);
+                if (captureDiagnostics)
+                {
+                    terminalIdentityShelvesVisited++;
+                    terminalBytesTouched += identityShelfBytes.Length;
+                }
+                terminalContinuationOffset = TerminalIdentity8ShelfLayout.ReadNextShelfOffset(identityShelfBytes);
+                AddTerminalIdentityShelfRange(identityShelfBytes,
+                    terminalContinuationKey ?? throw new InvalidDataException("The VS8 terminal continuation key is missing."),
+                    physicalDescending: true);
+                if (rowCount > previousRowCount)
+                    return true;
+                continue;
+            }
             PopTarget(out long targetOffset, out int remainingHops, out bool lowerEdge, out bool upperEdge);
             if (captureDiagnostics)
             {
@@ -795,7 +856,7 @@ internal sealed class VarKeyScalar8RangeReader : IDisposable
                         duplicateRunShelvesVisited++;
                     }
                 }
-                if (descendingTraversal && shelf.IsDuplicateRun)
+                if (descendingTraversal != shelf.IsDescending && shelf.IsDuplicateRun)
                 {
                     int firstShelfIndex = shelfCount;
                     while (true)
@@ -869,6 +930,7 @@ internal sealed class VarKeyScalar8RangeReader : IDisposable
                     continue;
                 }
 
+                bool physicalDescending = rootBytes[TerminalIdentityRootLayout.SortDirectionOffset] != 0;
                 int shelfExtentSize = TerminalIdentityRootLayout.ReadShelfExtentSize(rootBytes);
                 long identityShelfOffset = TerminalIdentityRootLayout.ReadFirstShelfOffset(rootBytes);
                 int firstShelfIndex = shelfCount;
@@ -886,10 +948,17 @@ internal sealed class VarKeyScalar8RangeReader : IDisposable
                         terminalBytesTouched += identityShelfBytes.Length;
                     }
                     long nextOffset = TerminalIdentity8ShelfLayout.ReadNextShelfOffset(identityShelfBytes);
-                    AddTerminalIdentityShelfRange(identityShelfBytes, keyBytes);
+                    AddTerminalIdentityShelfRange(identityShelfBytes, keyBytes, physicalDescending);
                     identityShelfOffset = nextOffset;
+                    if (descendingTraversal && physicalDescending)
+                    {
+                        terminalContinuationOffset = nextOffset;
+                        terminalContinuationExtentSize = shelfExtentSize;
+                        terminalContinuationKey = keyBytes;
+                        break;
+                    }
                 }
-                if (descendingTraversal)
+                if (descendingTraversal != physicalDescending && terminalContinuationOffset == 0)
                 {
                     ReverseShelfRanges(firstShelfIndex, shelfCount);
                 }
@@ -1290,7 +1359,12 @@ internal sealed class VarKeyScalar8RangeReader : IDisposable
             if (remaining < length)
             {
                 currentShelfIndex = i;
-                currentSlotIndex = startSlots[i] + remaining;
+                bool physicalDescending = terminalShelfFlags![i] != 0
+                    ? (terminalShelfFlags[i] & 2) != 0
+                    : shelves[i].IsDescending;
+                currentSlotIndex = physicalDescending == descendingTraversal
+                    ? startSlots[i] + remaining
+                    : endSlots[i] - 1 - remaining;
                 ordinal = targetOrdinal;
                 return;
             }

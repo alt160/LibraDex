@@ -12,7 +12,8 @@ internal readonly record struct VarKeyScalar8IndexHandle(
     long RootRouterOffset,
     int MaxKeyLength,
     int OptimizerRouteFanout,
-    VarLenOptimizerMaintenancePolicy OptimizerPolicy)
+    VarLenOptimizerMaintenancePolicy OptimizerPolicy,
+    bool Descending = false)
 {
     /// <summary>
     /// Validates the runtime handle before it is used by an internal `VS8` index operation.<br/>
@@ -46,12 +47,16 @@ internal readonly record struct VarKeyScalar8IndexHandle(
 /// <param name="MaxKeyLength">The maximum raw key length accepted by this runtime index.</param>
 /// <param name="OptimizerRouteFanout">The compressed-route fanout requested by optimizer maintenance.</param>
 /// <param name="OptimizerPolicy">The internal optimizer observation and maintenance scheduling policy.</param>
+/// <param name="Descending">Whether this index stores key-then-identity tuples in descending physical order.</param>
 internal readonly record struct VarKeyScalar16IndexHandle(
     long RootRouterOffset,
     int MaxKeyLength,
     int OptimizerRouteFanout,
-    VarLenOptimizerMaintenancePolicy OptimizerPolicy)
+    VarLenOptimizerMaintenancePolicy OptimizerPolicy,
+    bool Descending = false)
 {
+    internal const byte DescendingSlotFlag = 0x01;
+
     /// <summary>
     /// Validates the runtime handle before it is used by an internal `VS16` index operation.<br/>
     /// Offset zero is reserved for the superblock, keys are bounded to the current varlen shelf contract, and optimizer fanout must be positive.<br/>

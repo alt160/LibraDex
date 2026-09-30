@@ -104,10 +104,10 @@ internal sealed partial class VarKeyScalar8Index : IDisposable
     {
         if (BackingKind != DataKernelBackingKind.Memory)
         {
-            return VarKeyScalar8Profile.DefaultInitial;
+            return VarKeyScalar8Profile.DefaultInitial with { Descending = handle.Descending };
         }
 
-        return ParseMemoryShelfKiB("LIBRADEX_MEMORY_VS8_SHELF_KB", 8) switch
+        return (ParseMemoryShelfKiB("LIBRADEX_MEMORY_VS8_SHELF_KB", 8) switch
         {
             4 => VarKeyScalar8Profile.Default4KiB,
             8 => VarKeyScalar8Profile.Default8KiB,
@@ -116,7 +116,7 @@ internal sealed partial class VarKeyScalar8Index : IDisposable
             64 => VarKeyScalar8Profile.Default64KiB,
             128 => VarKeyScalar8Profile.Default128KiB,
             _ => VarKeyScalar8Profile.Default8KiB
-        };
+        }) with { Descending = handle.Descending };
     }
 
     internal LibraDexFileSession Session => session;
@@ -636,7 +636,7 @@ internal sealed partial class VarKeyScalar8Index : IDisposable
     /// <param name="lowerKey">The inclusive lower key payload.</param>
     /// <param name="upperKey">The inclusive upper key payload.</param>
     /// <returns>A forward-only reader over matching logical key and encoded identity rows.</returns>
-    public VarKeyScalar8RangeReader OpenRangeReader(ReadOnlySpan<byte> lowerKey, ReadOnlySpan<byte> upperKey)
+    public VarKeyScalar8RangeReader OpenRangeReader(ReadOnlySpan<byte> lowerKey, ReadOnlySpan<byte> upperKey, QueryDirection direction = QueryDirection.Ascending)
     {
         ThrowIfDisposed();
         byte[] encodedLowerKey = LibraDexVarLenKeyCodec.Encode(lowerKey, handle.MaxKeyLength, nameof(lowerKey));
@@ -646,7 +646,8 @@ internal sealed partial class VarKeyScalar8Index : IDisposable
             handle.MaxKeyLength,
             encodedLowerKey,
             encodedUpperKey,
-            decodeLogicalKeys: true);
+            decodeLogicalKeys: true,
+            direction: direction);
     }
 
     /// <summary>
@@ -656,7 +657,7 @@ internal sealed partial class VarKeyScalar8Index : IDisposable
     /// <param name="lowerKey">The inclusive lower key payload, or null for the null-key sentinel.</param>
     /// <param name="upperKey">The inclusive upper key payload, or null for the null-key sentinel.</param>
     /// <returns>A forward-only reader over matching logical key and encoded identity rows.</returns>
-    public VarKeyScalar8RangeReader OpenRangeReader(byte[]? lowerKey, byte[]? upperKey)
+    public VarKeyScalar8RangeReader OpenRangeReader(byte[]? lowerKey, byte[]? upperKey, QueryDirection direction = QueryDirection.Ascending)
     {
         ThrowIfDisposed();
         byte[] encodedLowerKey = LibraDexVarLenKeyCodec.Encode(lowerKey, handle.MaxKeyLength, nameof(lowerKey));
@@ -666,13 +667,15 @@ internal sealed partial class VarKeyScalar8Index : IDisposable
             handle.MaxKeyLength,
             encodedLowerKey,
             encodedUpperKey,
-            decodeLogicalKeys: true);
+            decodeLogicalKeys: true,
+            direction: direction);
     }
 
     internal VarKeyScalar8RangeReader OpenEncodedRangeReader(
         ReadOnlySpan<byte> lowerKey,
         ReadOnlySpan<byte> upperKey,
-        QueryDirection direction = QueryDirection.Ascending)
+        QueryDirection direction = QueryDirection.Ascending,
+        bool allowWriteUpgrade = false)
     {
         ThrowIfDisposed();
         return session.OpenVarKeyScalar8RangeReader(
@@ -681,7 +684,8 @@ internal sealed partial class VarKeyScalar8Index : IDisposable
             lowerKey,
             upperKey,
             decodeLogicalKeys: false,
-            direction: direction);
+            direction: direction,
+            allowWriteUpgrade: allowWriteUpgrade);
     }
 
     /// <summary>
@@ -913,10 +917,10 @@ internal sealed class VarKeyScalar16Index : IDisposable
     {
         if (BackingKind != DataKernelBackingKind.Memory)
         {
-            return VarKeyScalar16Profile.DefaultInitial;
+            return VarKeyScalar16Profile.DefaultInitial with { Descending = handle.Descending };
         }
 
-        return ParseMemoryShelfKiB("LIBRADEX_MEMORY_VS16_SHELF_KB", 8) switch
+        VarKeyScalar16Profile profile = ParseMemoryShelfKiB("LIBRADEX_MEMORY_VS16_SHELF_KB", 8) switch
         {
             4 => VarKeyScalar16Profile.Default4KiB,
             8 => VarKeyScalar16Profile.Default8KiB,
@@ -926,6 +930,7 @@ internal sealed class VarKeyScalar16Index : IDisposable
             128 => VarKeyScalar16Profile.Default128KiB,
             _ => VarKeyScalar16Profile.Default8KiB
         };
+        return profile with { Descending = handle.Descending };
     }
 
     internal LibraDexFileSession Session => session;
@@ -1214,7 +1219,8 @@ internal sealed class VarKeyScalar16Index : IDisposable
             encodedLowerKey,
             encodedUpperKey,
             encodedIdentityHighs,
-            encodedIdentityLows);
+            encodedIdentityLows,
+            handle.Descending);
     }
 
     /// <summary>
@@ -1241,7 +1247,8 @@ internal sealed class VarKeyScalar16Index : IDisposable
             encodedLowerKey,
             encodedUpperKey,
             encodedIdentityHighs,
-            encodedIdentityLows);
+            encodedIdentityLows,
+            handle.Descending);
     }
 
     /// <summary>
@@ -1262,7 +1269,8 @@ internal sealed class VarKeyScalar16Index : IDisposable
             handle.MaxKeyLength,
             encodedLowerKey,
             encodedUpperKey,
-            decodeLogicalKeys: true);
+            decodeLogicalKeys: true,
+            descending: handle.Descending);
     }
 
     /// <summary>
@@ -1282,7 +1290,8 @@ internal sealed class VarKeyScalar16Index : IDisposable
             handle.MaxKeyLength,
             encodedLowerKey,
             encodedUpperKey,
-            decodeLogicalKeys: true);
+            decodeLogicalKeys: true,
+            descending: handle.Descending);
     }
 
     internal VarKeyScalar16RangeReader OpenEncodedRangeReader(ReadOnlySpan<byte> lowerKey, ReadOnlySpan<byte> upperKey)
@@ -1293,7 +1302,8 @@ internal sealed class VarKeyScalar16Index : IDisposable
             handle.MaxKeyLength,
             lowerKey,
             upperKey,
-            decodeLogicalKeys: false);
+            decodeLogicalKeys: false,
+            descending: handle.Descending);
     }
 
     /// <summary>
@@ -1718,7 +1728,8 @@ internal sealed class VarKeyScalar16Batch : IDisposable
             encodedIdentityHigh,
             encodedIdentityLow,
             allowDuplicateKeys,
-            maxRouterHops: LibraDexFileSession.DefaultVarKeyScalar16MaxRouterHops);
+            maxRouterHops: LibraDexFileSession.DefaultVarKeyScalar16MaxRouterHops,
+            descending: index.Handle.Descending);
 
         VarKeyScalar16InsertOutcome publicResult = VarKeyScalar16InsertOutcome.FromStorage(result, createdInitialShelfRoute);
         Count(publicResult);

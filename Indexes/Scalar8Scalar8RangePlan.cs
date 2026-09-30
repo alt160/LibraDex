@@ -79,9 +79,11 @@ internal sealed class Scalar8Scalar8RangePlan : IDisposable
             throw new InvalidDataException("The routed SS8-8 range plan target shelf is invalid.");
         }
 
-        int startSlot = shelf.LowerBoundKey(lowerEncodedKey);
+        int startSlot = shelf.LowerBoundKey(shelf.IsDescending ? upperEncodedKey : lowerEncodedKey);
         int endSlot = startSlot;
-        while (endSlot < shelf.ItemCount && shelf.ReadKeyAt(endSlot) <= upperEncodedKey)
+        while (endSlot < shelf.ItemCount && (shelf.IsDescending
+            ? shelf.ReadKeyAt(endSlot) >= lowerEncodedKey
+            : shelf.ReadKeyAt(endSlot) <= upperEncodedKey))
         {
             endSlot++;
         }

@@ -76,7 +76,8 @@ internal sealed partial class LibraDexFileSession
         ulong lowerEncodedKeyHigh,
         ulong lowerEncodedKeyLow,
         ulong upperEncodedKeyHigh,
-        ulong upperEncodedKeyLow)
+        ulong upperEncodedKeyLow,
+        bool descending = false)
     {
         if (CompareScalar16VarIdentityKey(lowerEncodedKeyHigh, lowerEncodedKeyLow, upperEncodedKeyHigh, upperEncodedKeyLow) > 0)
         {
@@ -87,7 +88,7 @@ internal sealed partial class LibraDexFileSession
         byte upperPrefix = GetScalar16VarIdentityPrefix(upperEncodedKeyHigh, upperEncodedKeyLow, 0);
         if (lowerPrefix == upperPrefix || lowerPrefix == byte.MaxValue || upperPrefix == byte.MinValue)
         {
-            using Scalar16VarIdentityRangeReader reader = OpenScalar16VarIdentityRangeReader(rootRouterOffset, maxIdentityLength, lowerEncodedKeyHigh, lowerEncodedKeyLow, upperEncodedKeyHigh, upperEncodedKeyLow);
+            using Scalar16VarIdentityRangeReader reader = OpenScalar16VarIdentityRangeReader(rootRouterOffset, maxIdentityLength, lowerEncodedKeyHigh, lowerEncodedKeyLow, upperEncodedKeyHigh, upperEncodedKeyLow, descending);
             return reader.Count;
         }
 
@@ -101,7 +102,7 @@ internal sealed partial class LibraDexFileSession
 
         if (!router.HasDirectIndex)
         {
-            using Scalar16VarIdentityRangeReader reader = OpenScalar16VarIdentityRangeReader(rootRouterOffset, maxIdentityLength, lowerEncodedKeyHigh, lowerEncodedKeyLow, upperEncodedKeyHigh, upperEncodedKeyLow);
+            using Scalar16VarIdentityRangeReader reader = OpenScalar16VarIdentityRangeReader(rootRouterOffset, maxIdentityLength, lowerEncodedKeyHigh, lowerEncodedKeyLow, upperEncodedKeyHigh, upperEncodedKeyLow, descending);
             return reader.Count;
         }
 
@@ -112,14 +113,14 @@ internal sealed partial class LibraDexFileSession
             long target = router.GetRouteTargetAt(prefix);
             if (target != 0 && (target == lowerTarget || target == upperTarget))
             {
-                using Scalar16VarIdentityRangeReader reader = OpenScalar16VarIdentityRangeReader(rootRouterOffset, maxIdentityLength, lowerEncodedKeyHigh, lowerEncodedKeyLow, upperEncodedKeyHigh, upperEncodedKeyLow);
+                using Scalar16VarIdentityRangeReader reader = OpenScalar16VarIdentityRangeReader(rootRouterOffset, maxIdentityLength, lowerEncodedKeyHigh, lowerEncodedKeyLow, upperEncodedKeyHigh, upperEncodedKeyLow, descending);
                 return reader.Count;
             }
         }
 
         long count = 0;
         CreateScalar16PrefixUpperBound(lowerPrefix, out ulong lowerEdgeHigh, out ulong lowerEdgeLow);
-        using (Scalar16VarIdentityRangeReader lowerReader = OpenScalar16VarIdentityRangeReader(rootRouterOffset, maxIdentityLength, lowerEncodedKeyHigh, lowerEncodedKeyLow, lowerEdgeHigh, lowerEdgeLow))
+        using (Scalar16VarIdentityRangeReader lowerReader = OpenScalar16VarIdentityRangeReader(rootRouterOffset, maxIdentityLength, lowerEncodedKeyHigh, lowerEncodedKeyLow, lowerEdgeHigh, lowerEdgeLow, descending))
         {
             count += lowerReader.Count;
         }
@@ -132,7 +133,7 @@ internal sealed partial class LibraDexFileSession
         }
 
         CreateScalar16PrefixLowerBound(upperPrefix, out ulong upperEdgeHigh, out ulong upperEdgeLow);
-        using (Scalar16VarIdentityRangeReader upperReader = OpenScalar16VarIdentityRangeReader(rootRouterOffset, maxIdentityLength, upperEdgeHigh, upperEdgeLow, upperEncodedKeyHigh, upperEncodedKeyLow))
+        using (Scalar16VarIdentityRangeReader upperReader = OpenScalar16VarIdentityRangeReader(rootRouterOffset, maxIdentityLength, upperEdgeHigh, upperEdgeLow, upperEncodedKeyHigh, upperEncodedKeyLow, descending))
         {
             count += upperReader.Count;
         }
@@ -386,7 +387,9 @@ internal sealed partial class LibraDexFileSession
                 long directTargetOffset = directView.GetTarget(directPrefixByte);
                 if (directTargetOffset == 0)
                 {
-                    throw new InvalidDataException("The routed SV16 target is unset.");
+                    return new Scalar16VarIdentityRoutePathTarget(
+                        new Scalar16VarIdentityRouteTarget(Scalar16VarIdentityRouteTargetKind.None, 0, directView.KeyDepth, directView.AllocationClassId),
+                        routerOffset, directPrefixByte, directPrefixByte);
                 }
 
                 Scalar16VarIdentityRouteTargetKind directKind = ToScalar16VarIdentityRouteTargetKind(directView.GetTargetKind(directPrefixByte));
@@ -425,7 +428,9 @@ internal sealed partial class LibraDexFileSession
             long targetOffset = reader.FindTarget(prefixByte, out int routeIndex);
             if (targetOffset == 0)
             {
-                throw new InvalidDataException("The routed SV16 target is unset.");
+                return new Scalar16VarIdentityRoutePathTarget(
+                    new Scalar16VarIdentityRouteTarget(Scalar16VarIdentityRouteTargetKind.None, 0, reader.KeyDepth, reader.AllocationClassId),
+                    routerOffset, prefixByte, routeIndex);
             }
 
             Scalar16VarIdentityRouteTargetKind kind = ClassifyScalar16VarIdentityRouteTarget(targetOffset);
@@ -550,7 +555,8 @@ internal sealed partial class LibraDexFileSession
         ulong encodedKeyLow,
         ReadOnlySpan<byte> identity,
         bool allowDuplicateKeys,
-        int maxRouterHops)
+        int maxRouterHops,
+        bool descending = false)
     {
         return InsertWalkedRoutedScalar16VarIdentity(
             rootRouterOffset,
@@ -561,6 +567,7 @@ internal sealed partial class LibraDexFileSession
             allowDuplicateKeys,
             maxRouterHops,
             collectAttribution: false,
+            descending,
             out _);
     }
 
@@ -585,7 +592,8 @@ internal sealed partial class LibraDexFileSession
         ReadOnlySpan<byte> identity,
         bool allowDuplicateKeys,
         int maxRouterHops,
-        out Scalar16VarIdentityWalkedWriteAttribution attribution)
+        out Scalar16VarIdentityWalkedWriteAttribution attribution,
+        bool descending = false)
     {
         return InsertWalkedRoutedScalar16VarIdentity(
             rootRouterOffset,
@@ -596,6 +604,7 @@ internal sealed partial class LibraDexFileSession
             allowDuplicateKeys,
             maxRouterHops,
             collectAttribution: true,
+            descending,
             out attribution);
     }
 
@@ -608,6 +617,7 @@ internal sealed partial class LibraDexFileSession
         bool allowDuplicateKeys,
         int maxRouterHops,
         bool collectAttribution,
+        bool descending,
         out Scalar16VarIdentityWalkedWriteAttribution attribution)
     {
         long routeWalkTicks = 0;
@@ -624,6 +634,20 @@ internal sealed partial class LibraDexFileSession
         }
 
         Scalar16VarIdentityRouteTarget target = pathTarget.Target;
+        if (target.Kind == Scalar16VarIdentityRouteTargetKind.None)
+        {
+            var coldProfile = Scalar16VarIdentityProfile.Create(Scalar16VarIdentityProfile.DefaultInitial.ShelfExtentSize, maxIdentityLength, descending);
+            byte[] coldBytes = Scalar16VarIdentity.CreateEmpty(coldProfile);
+            var inserted = Scalar16VarIdentity.InsertInPlace(coldBytes, coldProfile, encodedKeyHigh, encodedKeyLow, identity, allowDuplicateKeys, out coldBytes);
+            if (inserted != Scalar16VarIdentityInsertResult.Inserted)
+                throw new InvalidDataException("A cold SV16 shelf rejected its initial tuple.");
+
+            var (offset, commit) = PublishColdFixedShelf(pathTarget.ParentRouterOffset, pathTarget.RoutePrefixByte, coldBytes);
+            attribution = new Scalar16VarIdentityWalkedWriteAttribution(routeWalkTicks, 0, 0, 0, 0,
+                collectAttribution ? Stopwatch.GetTimestamp() - started : 0);
+            return new Scalar16VarIdentityRoutedInsertResult(Scalar16VarIdentityRoutedInsertKind.WalkedNoSplit, inserted,
+                offset, offset, commit, 1, coldProfile.ShelfExtentSize, target.RouterDepth);
+        }
         if (target.Kind != Scalar16VarIdentityRouteTargetKind.Shelf)
         {
             throw new InvalidDataException("The classified route walker did not terminate at an SV16 shelf.");
@@ -638,6 +662,8 @@ internal sealed partial class LibraDexFileSession
 
         byte[] shelfBytes = mutableShelf.Bytes;
         Scalar16VarIdentityProfile profile = mutableShelf.Profile;
+        if (profile.Descending != descending)
+            throw new InvalidDataException("The SV16 shelf sort order does not match its index metadata.");
         int beforeItemCount = mutableShelf.ItemCount;
         started = collectAttribution ? Stopwatch.GetTimestamp() : 0;
         if (Scalar16VarIdentityLayout.ReadNextShelfOffset(mutableShelf.Bytes) != 0 &&
@@ -774,6 +800,7 @@ internal sealed partial class LibraDexFileSession
                     allowDuplicateKeys,
                     maxRouterHops,
                     collectAttribution,
+                    descending,
                     out attribution);
             }
 
@@ -817,10 +844,20 @@ internal sealed partial class LibraDexFileSession
                 out Scalar16VarIdentityInsertResult splitInsertResult))
         {
             scalar16VarIdentityMutableBatchShelves.Remove(target.Offset);
+            ushort childDepth = splitDepth;
+            if (splitDepth > target.RouterDepth)
+            {
+                byte prefix = GetScalar16VarIdentityPrefix(encodedKeyHigh, encodedKeyLow, target.RouterDepth);
+                RefineDirectShelfOwner(pathTarget.ParentRouterOffset, target.Offset,
+                    checked((ushort)(target.RouterDepth + 1)), prefix,
+                    GetScalar16VarIdentityPrefix(mutableShelf.ReadKeyHighAt(0), mutableShelf.ReadKeyLowAt(0), target.RouterDepth),
+                    GetScalar16VarIdentityPrefix(mutableShelf.ReadKeyHighAt(mutableShelf.ItemCount - 1), mutableShelf.ReadKeyLowAt(mutableShelf.ItemCount - 1), target.RouterDepth));
+                childDepth = checked((ushort)(target.RouterDepth + 1));
+            }
             DataKernelCommitTelemetry telemetry = PublishScalar16VarIdentityShelfTransformSplit(
                 target.Offset,
                 profile,
-                splitDepth,
+                childDepth,
                 splitDepth,
                 target.AllocationClassId,
                 selectedRightPrefix,
@@ -934,7 +971,8 @@ internal sealed partial class LibraDexFileSession
         ulong lowerEncodedKeyHigh,
         ulong lowerEncodedKeyLow,
         ulong upperEncodedKeyHigh,
-        ulong upperEncodedKeyLow)
+        ulong upperEncodedKeyLow,
+        bool descending = false)
     {
         if (CompareScalar16VarIdentityKey(lowerEncodedKeyHigh, lowerEncodedKeyLow, upperEncodedKeyHigh, upperEncodedKeyLow) > 0)
         {
@@ -948,7 +986,8 @@ internal sealed partial class LibraDexFileSession
             lowerEncodedKeyHigh,
             lowerEncodedKeyLow,
             upperEncodedKeyHigh,
-            upperEncodedKeyLow);
+            upperEncodedKeyLow,
+            descending);
     }
 
     /// <summary>
@@ -1529,7 +1568,8 @@ internal sealed partial class LibraDexFileSession
         }
 
         int shelfExtentSize = Scalar16VarIdentityLayout.ReadShelfExtentSize(header);
-        profile = Scalar16VarIdentityProfile.Create(shelfExtentSize, maxIdentityLength);
+        profile = Scalar16VarIdentityProfile.Create(shelfExtentSize, maxIdentityLength,
+            (Scalar16VarIdentityLayout.ReadFlags(header) & Scalar16VarIdentityLayout.DescendingFlag) != 0);
         byte[] shelfBytes = new byte[shelfExtentSize];
         kernel.Read(shelfOffset, shelfBytes);
         return shelfBytes;
@@ -1790,7 +1830,7 @@ internal sealed partial class LibraDexFileSession
             ulong currentKeyHigh = mutableShelf.ReadKeyHighAt(sourceIndex);
             ulong currentKeyLow = mutableShelf.ReadKeyLowAt(sourceIndex);
             ReadOnlySpan<byte> currentIdentity = mutableShelf.ReadIdentityAt(sourceIndex);
-            if (!inserted && CompareScalar16VarIdentityTuple(currentKeyHigh, currentKeyLow, currentIdentity, incomingKeyHigh, incomingKeyLow, incomingIdentity) > 0)
+            if (!inserted && CompareScalar16VarIdentityTuple(currentKeyHigh, currentKeyLow, currentIdentity, incomingKeyHigh, incomingKeyLow, incomingIdentity, profile.Descending) > 0)
             {
                 keyHighs[targetIndex] = incomingKeyHigh;
                 keyLows[targetIndex] = incomingKeyLow;
@@ -1951,7 +1991,9 @@ internal sealed partial class LibraDexFileSession
 
             long nextOffset = Scalar16VarIdentityLayout.ReadNextShelfOffset(currentBytes);
             ReadOnlySpan<byte> lastIdentity = shelf.ReadIdentityAt(shelf.ItemCount - 1);
-            if (Scalar16VarIdentityLayout.CompareIdentityBytes(identity, lastIdentity) <= 0 || nextOffset == 0)
+            if ((profile.Descending
+                    ? Scalar16VarIdentityLayout.CompareIdentityBytes(identity, lastIdentity) >= 0
+                    : Scalar16VarIdentityLayout.CompareIdentityBytes(identity, lastIdentity) <= 0) || nextOffset == 0)
             {
                 Scalar16VarIdentityInsertResult insertResult = Scalar16VarIdentity.Insert(
                     currentBytes,
@@ -1964,7 +2006,9 @@ internal sealed partial class LibraDexFileSession
                 if (insertResult == Scalar16VarIdentityInsertResult.Full)
                 {
                     if (nextOffset == 0 &&
-                        Scalar16VarIdentityLayout.CompareIdentityBytes(identity, lastIdentity) > 0 &&
+                        (profile.Descending
+                            ? Scalar16VarIdentityLayout.CompareIdentityBytes(identity, lastIdentity) < 0
+                            : Scalar16VarIdentityLayout.CompareIdentityBytes(identity, lastIdentity) > 0) &&
                         TryAppendScalar16VarIdentityDuplicateRunTail(
                             headShelfOffset,
                             currentOffset,
@@ -1987,6 +2031,7 @@ internal sealed partial class LibraDexFileSession
                     Scalar16VarIdentityLayout.WriteNextShelfOffset(rewrittenBytes, nextOffset);
                     RawDataReservation rewrite = kernel.ReserveAt(currentOffset, profile.ShelfExtentSize);
                     rewrittenBytes.CopyTo(rewrite.Span);
+                    scalar16VarIdentityReadCache.Remove(currentOffset);
                     DataKernelCommitTelemetry telemetry = CommitWithoutInvalidatingRouterReadCache();
                     result = new Scalar16VarIdentityRoutedInsertResult(
                         Scalar16VarIdentityRoutedInsertKind.WalkedDuplicateRunOverflow,
@@ -2071,7 +2116,8 @@ internal sealed partial class LibraDexFileSession
             return false;
         }
 
-        if (Scalar16VarIdentityLayout.CompareIdentityBytes(identity, tailMutableShelf.ReadIdentityAt(tailMutableShelf.ItemCount - 1)) <= 0)
+        int tailOrder = Scalar16VarIdentityLayout.CompareIdentityBytes(identity, tailMutableShelf.ReadIdentityAt(tailMutableShelf.ItemCount - 1));
+        if (profile.Descending ? tailOrder >= 0 : tailOrder <= 0)
         {
             result = default;
             return false;
@@ -2113,7 +2159,6 @@ internal sealed partial class LibraDexFileSession
         if (insertResult == Scalar16VarIdentityInsertResult.Full)
         {
             tailMutableShelf.EnsureSlotBytesCurrent();
-            scalar16VarIdentityMutableBatchShelves.Remove(tailShelfOffset);
             return TryAppendScalar16VarIdentityDuplicateRunTail(
                 headShelfOffset,
                 tailShelfOffset,
@@ -2190,7 +2235,8 @@ internal sealed partial class LibraDexFileSession
             return false;
         }
 
-        if (Scalar16VarIdentityLayout.CompareIdentityBytes(identity, terminalShelf.ReadIdentityAt(terminalShelf.ItemCount - 1)) <= 0)
+        int terminalOrder = Scalar16VarIdentityLayout.CompareIdentityBytes(identity, terminalShelf.ReadIdentityAt(terminalShelf.ItemCount - 1));
+        if (profile.Descending ? terminalOrder >= 0 : terminalOrder <= 0)
         {
             return false;
         }
@@ -2219,14 +2265,25 @@ internal sealed partial class LibraDexFileSession
 
         RawDataReservation tailReservation = kernel.Reserve(profile.ShelfExtentSize);
         rewrittenTail.CopyTo(tailReservation.Span);
-        scalar16VarIdentityMutableBatchShelves.Remove(headShelfOffset);
-        scalar16VarIdentityMutableBatchShelves.Remove(terminalShelfOffset);
+        if (!durabilityBatchActive)
+        {
+            scalar16VarIdentityMutableBatchShelves.Remove(headShelfOffset);
+            scalar16VarIdentityMutableBatchShelves.Remove(terminalShelfOffset);
+        }
         RawDataReservation terminalRewrite = kernel.ReserveAt(terminalShelfOffset, profile.ShelfExtentSize);
         terminalShelfBytes.AsSpan(0, profile.ShelfExtentSize).CopyTo(terminalRewrite.Span);
         Scalar16VarIdentityLayout.WriteNextShelfOffset(terminalRewrite.Span, tailReservation.Extent.Offset);
+        if (durabilityBatchActive)
+        {
+            Scalar16VarIdentityLayout.WriteNextShelfOffset(terminalShelfBytes, tailReservation.Extent.Offset);
+            if (scalar16VarIdentityMutableBatchShelves.TryGetValue(terminalShelfOffset, out Scalar16VarIdentityMutableShelfView? terminalMutable))
+                terminalMutable.MarkDirty();
+        }
         if (headShelfOffset == terminalShelfOffset)
         {
             Scalar16VarIdentityLayout.WriteTailShelfOffset(terminalRewrite.Span, tailReservation.Extent.Offset);
+            if (durabilityBatchActive)
+                Scalar16VarIdentityLayout.WriteTailShelfOffset(terminalShelfBytes, tailReservation.Extent.Offset);
         }
         else
         {
@@ -2237,10 +2294,15 @@ internal sealed partial class LibraDexFileSession
             }
 
             Scalar16VarIdentityLayout.WriteTailShelfOffset(headBytes, tailReservation.Extent.Offset);
+            if (durabilityBatchActive &&
+                scalar16VarIdentityMutableBatchShelves.TryGetValue(headShelfOffset, out Scalar16VarIdentityMutableShelfView? headMutable))
+                headMutable.MarkDirty();
             RawDataReservation headRewrite = kernel.ReserveAt(headShelfOffset, profile.ShelfExtentSize);
             headBytes.CopyTo(headRewrite.Span);
         }
 
+        scalar16VarIdentityReadCache.Remove(headShelfOffset);
+        scalar16VarIdentityReadCache.Remove(terminalShelfOffset);
         DataKernelCommitTelemetry telemetry = CommitWithoutInvalidatingRouterReadCache();
         result = new Scalar16VarIdentityRoutedInsertResult(
             Scalar16VarIdentityRoutedInsertKind.WalkedDuplicateRunOverflow,
@@ -2330,7 +2392,8 @@ internal sealed partial class LibraDexFileSession
                     return false;
                 }
 
-                if (!incomingAdded && Scalar16VarIdentityLayout.CompareIdentityBytes(incomingIdentity, existingIdentity) < 0)
+                int identityOrder = Scalar16VarIdentityLayout.CompareIdentityBytes(incomingIdentity, existingIdentity);
+                if (!incomingAdded && (profile.Descending ? identityOrder > 0 : identityOrder < 0))
                 {
                     AddScalar16VarIdentityRef(ref identities, ref identityCount, new Scalar16VarIdentityIdentityRef(incomingIdentityBytes, 0, true));
                     incomingAdded = true;
@@ -2396,6 +2459,7 @@ internal sealed partial class LibraDexFileSession
         Scalar16VarIdentityLayout.WriteTailShelfOffset(rebuiltShelves[0], tailOffset == headShelfOffset ? 0 : tailOffset);
         RawDataReservation headRewrite = kernel.ReserveAt(headShelfOffset, profile.ShelfExtentSize);
         rebuiltShelves[0].CopyTo(headRewrite.Span);
+        scalar16VarIdentityReadCache.Remove(headShelfOffset);
         telemetry = CommitWithoutInvalidatingRouterReadCache();
         tailShelfOffset = tailOffset;
         chainShelfCount = rebuiltShelfCount;
@@ -2544,7 +2608,7 @@ internal sealed partial class LibraDexFileSession
             ulong currentKeyHigh = mutableShelf.ReadKeyHighAt(sourceIndex);
             ulong currentKeyLow = mutableShelf.ReadKeyLowAt(sourceIndex);
             ReadOnlySpan<byte> currentIdentity = mutableShelf.ReadIdentityAt(sourceIndex);
-            if (!inserted && CompareScalar16VarIdentityTuple(currentKeyHigh, currentKeyLow, currentIdentity, incomingKeyHigh, incomingKeyLow, incomingIdentity) > 0)
+            if (!inserted && CompareScalar16VarIdentityTuple(currentKeyHigh, currentKeyLow, currentIdentity, incomingKeyHigh, incomingKeyLow, incomingIdentity, profile.Descending) > 0)
             {
                 keyHighs[targetIndex] = incomingKeyHigh;
                 keyLows[targetIndex] = incomingKeyLow;
@@ -2696,7 +2760,7 @@ internal sealed partial class LibraDexFileSession
     /// <param name="identities">The sorted raw identity byte arrays aligned with <paramref name="keys"/>.</param>
     /// <param name="profile">The `SV16` shelf profile used for both replacement shelves.</param>
     /// <param name="splitDepth">The scalar-key byte depth used to choose the right-side router prefix.</param>
-    /// <param name="boundary">The first tuple index that belongs to the right replacement shelf.</param>
+    /// <param name="boundary">The boundary between two physical-order tuple segments; the first segment is the numeric right shelf when the profile is descending.<br/></param>
     /// <param name="selectedRightPrefix">Receives the first prefix byte routed to the right replacement shelf.</param>
     /// <param name="leftShelf">Receives the rebuilt left shelf bytes.</param>
     /// <param name="rightShelf">Receives the rebuilt right shelf bytes.</param>
@@ -2716,13 +2780,18 @@ internal sealed partial class LibraDexFileSession
         out int leftCount,
         out int rightCount)
     {
-        selectedRightPrefix = GetScalar16VarIdentityPrefix(keyHighs[boundary], keyLows[boundary], splitDepth);
+        int rightStart = profile.Descending ? 0 : boundary;
+        int rightLength = profile.Descending ? boundary : keyHighs.Length - boundary;
+        int leftStart = profile.Descending ? boundary : 0;
+        int leftLength = profile.Descending ? keyHighs.Length - boundary : boundary;
+        int rightBoundaryIndex = profile.Descending ? boundary - 1 : boundary;
+        selectedRightPrefix = GetScalar16VarIdentityPrefix(keyHighs[rightBoundaryIndex], keyLows[rightBoundaryIndex], splitDepth);
         leftShelf = [];
         rightShelf = [];
-        leftCount = boundary;
-        rightCount = keyHighs.Length - boundary;
-        if (!TryBuildScalar16VarIdentityShelfFromSource(keyHighs, keyLows, identities, 0, boundary, profile, out leftShelf) ||
-            !TryBuildScalar16VarIdentityShelfFromSource(keyHighs, keyLows, identities, boundary, keyHighs.Length - boundary, profile, out rightShelf))
+        leftCount = leftLength;
+        rightCount = rightLength;
+        if (!TryBuildScalar16VarIdentityShelfFromSource(keyHighs, keyLows, identities, leftStart, leftLength, profile, out leftShelf) ||
+            !TryBuildScalar16VarIdentityShelfFromSource(keyHighs, keyLows, identities, rightStart, rightLength, profile, out rightShelf))
         {
             leftShelf = [];
             rightShelf = [];
@@ -2795,15 +2864,16 @@ internal sealed partial class LibraDexFileSession
         return true;
     }
 
-    private static int CompareScalar16VarIdentityTuple(ulong leftKeyHigh, ulong leftKeyLow, ReadOnlySpan<byte> leftIdentity, ulong rightKeyHigh, ulong rightKeyLow, ReadOnlySpan<byte> rightIdentity)
+    private static int CompareScalar16VarIdentityTuple(ulong leftKeyHigh, ulong leftKeyLow, ReadOnlySpan<byte> leftIdentity, ulong rightKeyHigh, ulong rightKeyLow, ReadOnlySpan<byte> rightIdentity, bool descending)
     {
         int keyComparison = CompareScalar16VarIdentityKey(leftKeyHigh, leftKeyLow, rightKeyHigh, rightKeyLow);
         if (keyComparison != 0)
         {
-            return keyComparison;
+            return descending ? -keyComparison : keyComparison;
         }
 
-        return Scalar16VarIdentityLayout.CompareIdentityBytes(leftIdentity, rightIdentity);
+        int identityComparison = Scalar16VarIdentityLayout.CompareIdentityBytes(leftIdentity, rightIdentity);
+        return descending ? -identityComparison : identityComparison;
     }
 
     internal static int CompareScalar16VarIdentityKey(ulong leftHigh, ulong leftLow, ulong rightHigh, ulong rightLow)

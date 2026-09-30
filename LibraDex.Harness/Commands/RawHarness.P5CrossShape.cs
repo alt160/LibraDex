@@ -105,11 +105,7 @@ internal static partial class RawHarness
                 throw new InvalidDataException("FS32-16 depth-3 transform did not return the expected structural result.");
             }
 
-            long expectedBytes = (profile.ShelfExtentSize * 2L) + (RouterLayout.Size * 2L);
-            if (commit.SetLengthCallCount != 0 || commit.BytesWritten != expectedBytes)
-            {
-                throw new InvalidDataException($"FS32-16 depth-3 transform write shape drifted. Bytes={commit.BytesWritten}; Expected={expectedBytes}; SetLength={commit.SetLengthCallCount}.");
-            }
+            ValidateAllocatedWalkedTransformCommit(commit, profile.ShelfExtentSize, allocationHeaderPages: 1);
 
             if (session.FindRouterTarget(rootOffset, 0x00) != childRouterOffset ||
                 session.FindRouterTarget(childRouterOffset, 0x00) != sourceShelfOffset)

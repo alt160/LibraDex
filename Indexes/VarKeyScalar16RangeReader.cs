@@ -28,6 +28,9 @@ internal sealed class VarKeyScalar16RangeReader : IDisposable
     private LibraDexFileSession? session;
     private byte[]? lowerKey;
     private byte[]? upperKey;
+    private byte[]? terminalContinuationKey;
+    private long terminalContinuationOffset;
+    private int terminalContinuationExtentSize;
     private int shelfCount;
     private int rowCount;
     private int pendingCount;
@@ -36,6 +39,7 @@ internal sealed class VarKeyScalar16RangeReader : IDisposable
     private int ordinal = -1;
     private int maxKeyLength;
     private bool decodeLogicalKeys;
+    private bool descendingTraversal;
     private bool traversalComplete = true;
     private bool disposed;
 
@@ -57,12 +61,14 @@ internal sealed class VarKeyScalar16RangeReader : IDisposable
         ReadOnlySpan<byte> lowerKey,
         ReadOnlySpan<byte> upperKey,
         int maxRouterHops = 8,
-        bool decodeLogicalKeys = false)
+        bool decodeLogicalKeys = false,
+        bool descending = false)
         : this()
     {
         this.session = session;
         this.maxKeyLength = maxKeyLength;
         this.decodeLogicalKeys = decodeLogicalKeys;
+        descendingTraversal = descending;
         this.lowerKey = lowerKey.ToArray();
         this.upperKey = upperKey.ToArray();
         pendingOffsets = ArrayPool<long>.Shared.Rent(DefaultShelfCapacity);
@@ -74,7 +80,9 @@ internal sealed class VarKeyScalar16RangeReader : IDisposable
 
         byte lowerPrefix = LibraDexFileSession.GetVarKeyScalar8Prefix(lowerKey, 0);
         byte upperPrefix = LibraDexFileSession.GetVarKeyScalar8Prefix(upperKey, 0);
-        for (int prefix = upperPrefix; prefix >= lowerPrefix; prefix--)
+        for (int prefix = descending ? lowerPrefix : upperPrefix;
+            descending ? prefix <= upperPrefix : prefix >= lowerPrefix;
+            prefix += descending ? 1 : -1)
         {
             long targetOffset = session.FindRouterTarget(rootRouterOffset, (byte)prefix);
             if (targetOffset != 0)
@@ -280,9 +288,10 @@ internal sealed class VarKeyScalar16RangeReader : IDisposable
             throw new InvalidDataException("The routed VS16 range target shelf is invalid.");
         }
 
-        int startSlot = shelf.LowerBoundKey(lowerKey);
+        int startSlot = shelf.LowerBoundKey(shelf.IsDescending ? upperKey : lowerKey);
         int endSlot = startSlot;
-        while (endSlot < shelf.ItemCount && shelf.ReadKeyAt(endSlot).SequenceCompareTo(upperKey) <= 0)
+        while (endSlot < shelf.ItemCount &&
+            (shelf.IsDescending ? shelf.ReadKeyAt(endSlot).SequenceCompareTo(lowerKey) >= 0 : shelf.ReadKeyAt(endSlot).SequenceCompareTo(upperKey) <= 0))
         {
             endSlot++;
         }
@@ -304,6 +313,11 @@ internal sealed class VarKeyScalar16RangeReader : IDisposable
         disposed = true;
         ArrayPool<VarKeyScalar16ReadOnly?>.Shared.Return(shelves, clearArray: true);
         ArrayPool<byte[]?>.Shared.Return(terminalKeys, clearArray: true);
+        for (int i = 0; i < shelfCount; i++)
+        {
+            if (terminalShelfBytes[i] is byte[] terminalBytes)
+                ArrayPool<byte>.Shared.Return(terminalBytes, clearArray: false);
+        }
         ArrayPool<byte[]?>.Shared.Return(terminalShelfBytes, clearArray: true);
         ArrayPool<int>.Shared.Return(startSlots, clearArray: false);
         ArrayPool<int>.Shared.Return(endSlots, clearArray: false);
@@ -338,6 +352,9 @@ internal sealed class VarKeyScalar16RangeReader : IDisposable
         session = null;
         lowerKey = null;
         upperKey = null;
+        terminalContinuationKey = null;
+        terminalContinuationOffset = 0;
+        terminalContinuationExtentSize = 0;
         shelfCount = 0;
         rowCount = 0;
         pendingCount = 0;
@@ -393,6 +410,7 @@ internal sealed class VarKeyScalar16RangeReader : IDisposable
         int itemCount = TerminalVarIdentityShelfLayout.ReadItemCount(shelfBytes);
         if (itemCount <= 0)
         {
+            ArrayPool<byte>.Shared.Return(shelfBytes, clearArray: false);
             return;
         }
 
@@ -403,6 +421,7 @@ internal sealed class VarKeyScalar16RangeReader : IDisposable
                 throw new InvalidDataException("The VS16 terminal cursor encountered a non-16-byte identity.");
             }
         }
+        int newRowCount = checked(rowCount + itemCount);
 
         if (shelfCount == shelves.Length)
         {
@@ -415,7 +434,7 @@ internal sealed class VarKeyScalar16RangeReader : IDisposable
         startSlots[shelfCount] = 0;
         endSlots[shelfCount] = itemCount;
         shelfCount++;
-        rowCount = checked(rowCount + itemCount);
+        rowCount = newRowCount;
     }
 
     /// <summary>
@@ -483,8 +502,31 @@ internal sealed class VarKeyScalar16RangeReader : IDisposable
         int previousRowCount = rowCount;
         byte[] routerBytes = routerScratch ??= ArrayPool<byte>.Shared.Rent(RouterLayout.Size);
         Span<byte> routerPage = routerBytes.AsSpan(0, RouterLayout.Size);
-        while (pendingCount > 0)
+        while (pendingCount > 0 || terminalContinuationOffset != 0)
         {
+            if (terminalContinuationOffset != 0)
+            {
+                long terminalShelfOffset = terminalContinuationOffset;
+                if (!localVisitedShelves.Add(terminalShelfOffset))
+                    throw new InvalidDataException("The VS16 terminal identity chain contains a repeated shelf offset.");
+                byte[] terminalBytes = localSession.ReadTerminalVarIdentityShelfBytes(
+                    terminalShelfOffset, terminalContinuationExtentSize);
+                try
+                {
+                    TerminalVarIdentityShelfLayout.Validate(terminalBytes, terminalContinuationExtentSize);
+                    terminalContinuationOffset = TerminalVarIdentityShelfLayout.ReadNextShelfOffset(terminalBytes);
+                    AddTerminalShelfRange(terminalContinuationKey ?? throw new InvalidDataException("The VS16 terminal continuation has no key."), terminalBytes);
+                }
+                catch
+                {
+                    ArrayPool<byte>.Shared.Return(terminalBytes, clearArray: false);
+                    throw;
+                }
+                if (rowCount > previousRowCount)
+                    return true;
+                continue;
+            }
+
             PopTarget(out long targetOffset, out int remainingHops, out bool lowerEdge, out bool upperEdge);
             if (remainingHops <= 0)
             {
@@ -527,20 +569,9 @@ internal sealed class VarKeyScalar16RangeReader : IDisposable
                 if (terminalKey.AsSpan().SequenceCompareTo(localLowerKey) >= 0 &&
                     terminalKey.AsSpan().SequenceCompareTo(localUpperKey) <= 0)
                 {
-                    int shelfExtentSize = TerminalIdentityRootLayout.ReadShelfExtentSize(rootBytes);
-                    long terminalShelfOffset = TerminalIdentityRootLayout.ReadFirstShelfOffset(rootBytes);
-                    while (terminalShelfOffset != 0)
-                    {
-                        byte[] terminalBytes = localSession.ReadTerminalVarIdentityShelfBytes(terminalShelfOffset, shelfExtentSize);
-                        TerminalVarIdentityShelfLayout.Validate(terminalBytes, shelfExtentSize);
-                        AddTerminalShelfRange(terminalKey, terminalBytes);
-                        terminalShelfOffset = TerminalVarIdentityShelfLayout.ReadNextShelfOffset(terminalBytes);
-                    }
-                }
-
-                if (rowCount > previousRowCount)
-                {
-                    return true;
+                    terminalContinuationKey = terminalKey;
+                    terminalContinuationExtentSize = TerminalIdentityRootLayout.ReadShelfExtentSize(rootBytes);
+                    terminalContinuationOffset = TerminalIdentityRootLayout.ReadFirstShelfOffset(rootBytes);
                 }
 
                 continue;
@@ -588,7 +619,9 @@ internal sealed class VarKeyScalar16RangeReader : IDisposable
                     _ = router.FindTarget(localUpperKey, router.KeyDepth, out upperRouteIndex);
                 }
 
-                for (int routeIndex = router.RouteCount - 1; routeIndex >= 0; routeIndex--)
+                for (int routeIndex = descendingTraversal ? 0 : router.RouteCount - 1;
+                    descendingTraversal ? routeIndex < router.RouteCount : routeIndex >= 0;
+                    routeIndex += descendingTraversal ? 1 : -1)
                 {
                     if (router.TrySelectMultiByteRangeRoute(
                         routeIndex,
@@ -612,19 +645,23 @@ internal sealed class VarKeyScalar16RangeReader : IDisposable
 
             byte lowerPrefix = lowerEdge ? LibraDexFileSession.GetVarKeyScalar8Prefix(localLowerKey, router.KeyDepth) : byte.MinValue;
             byte upperPrefix = upperEdge ? LibraDexFileSession.GetVarKeyScalar8Prefix(localUpperKey, router.KeyDepth) : byte.MaxValue;
-            int prefix = upperPrefix;
-            while (prefix >= lowerPrefix)
+            int prefix = descendingTraversal ? lowerPrefix : upperPrefix;
+            while (descendingTraversal ? prefix <= upperPrefix : prefix >= lowerPrefix)
             {
                 long childTargetOffset = router.FindTarget((byte)prefix);
                 if (childTargetOffset == 0)
                 {
-                    prefix--;
+                    prefix += descendingTraversal ? 1 : -1;
                     continue;
                 }
 
                 int runEnd = prefix;
                 int runStart = prefix;
-                while (runStart > lowerPrefix && router.FindTarget((byte)(runStart - 1)) == childTargetOffset)
+                while (descendingTraversal && runEnd < upperPrefix && router.FindTarget((byte)(runEnd + 1)) == childTargetOffset)
+                {
+                    runEnd++;
+                }
+                while (!descendingTraversal && runStart > lowerPrefix && router.FindTarget((byte)(runStart - 1)) == childTargetOffset)
                 {
                     runStart--;
                 }
@@ -635,7 +672,7 @@ internal sealed class VarKeyScalar16RangeReader : IDisposable
                     remainingHops - 1,
                     singlePrefixRun && lowerEdge && runStart == lowerPrefix,
                     singlePrefixRun && upperEdge && runEnd == upperPrefix);
-                prefix = runStart - 1;
+                prefix = descendingTraversal ? runEnd + 1 : runStart - 1;
             }
         }
 

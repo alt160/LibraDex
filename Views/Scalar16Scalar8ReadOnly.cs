@@ -41,6 +41,8 @@ internal readonly ref struct Scalar16Scalar8ReadOnly
 
     public uint Flags => Scalar16Scalar8Layout.ReadFlags(bytes);
 
+    public bool IsDescending => (Flags & Scalar16Scalar8Layout.DescendingFlag) != 0;
+
     public ushort ItemCount => Scalar16Scalar8Layout.ReadItemCount(bytes);
 
     public ushort PhysicalItemCount => ItemCount;
@@ -126,13 +128,14 @@ internal readonly ref struct Scalar16Scalar8ReadOnly
         int high = ItemCount;
         ReadOnlySpan<byte> localBytes = bytes;
         Scalar16Scalar8Profile localProfile = profile;
+        bool descending = IsDescending;
 
         while (low < high)
         {
             int middle = low + ((high - low) >> 1);
             ushort itemOffset = Scalar16Scalar8Layout.ReadSlot(localBytes, localProfile, middle);
             int comparison = Scalar16Scalar8Layout.CompareItemTuple(localBytes, itemOffset, encodedKeyHigh, encodedKeyLow, encodedIdentity);
-            if (comparison < 0)
+            if (descending ? comparison > 0 : comparison < 0)
             {
                 low = middle + 1;
             }
@@ -158,13 +161,14 @@ internal readonly ref struct Scalar16Scalar8ReadOnly
         int high = ItemCount;
         ReadOnlySpan<byte> localBytes = bytes;
         Scalar16Scalar8Profile localProfile = profile;
+        bool descending = IsDescending;
 
         while (low < high)
         {
             int middle = low + ((high - low) >> 1);
             ushort itemOffset = Scalar16Scalar8Layout.ReadSlot(localBytes, localProfile, middle);
             int comparison = Scalar16Scalar8Layout.CompareItemKey(localBytes, itemOffset, encodedKeyHigh, encodedKeyLow);
-            if (comparison < 0)
+            if (descending ? comparison > 0 : comparison < 0)
             {
                 low = middle + 1;
             }
@@ -229,16 +233,20 @@ internal readonly ref struct Scalar16Scalar8ReadOnly
             throw new ArgumentException("The upper encoded key must be greater than or equal to the lower encoded key.", nameof(upperKeyHigh));
         }
 
+        bool descending = IsDescending;
         int copied = 0;
-        int slotIndex = LowerBoundKey(lowerKeyHigh, lowerKeyLow);
+        int slotIndex = LowerBoundKey(descending ? upperKeyHigh : lowerKeyHigh, descending ? upperKeyLow : lowerKeyLow);
         ushort count = ItemCount;
         ReadOnlySpan<byte> localBytes = bytes;
         Scalar16Scalar8Profile localProfile = profile;
         for (int i = slotIndex; i < count; i++)
         {
             ushort itemOffset = Scalar16Scalar8Layout.ReadSlot(localBytes, localProfile, i);
-            int upperComparison = Scalar16Scalar8Layout.CompareItemKey(localBytes, itemOffset, upperKeyHigh, upperKeyLow);
-            if (upperComparison > 0)
+            int boundaryComparison = Scalar16Scalar8Layout.CompareItemKey(
+                localBytes, itemOffset,
+                descending ? lowerKeyHigh : upperKeyHigh,
+                descending ? lowerKeyLow : upperKeyLow);
+            if (descending ? boundaryComparison < 0 : boundaryComparison > 0)
             {
                 break;
             }

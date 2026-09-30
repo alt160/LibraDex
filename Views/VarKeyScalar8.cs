@@ -454,21 +454,22 @@ internal static class VarKeyScalar8
         int[] recordOffsets = GC.AllocateUninitializedArray<int>(count);
         for (int i = 0; i < count; i++)
         {
-            ReadOnlySpan<byte> key = source.GetKey(start + i);
+            int sourceIndex = profile.Descending ? end - 1 - i : start + i;
+            ReadOnlySpan<byte> key = source.GetKey(sourceIndex);
             if (key.Length <= 0 || key.Length > profile.MaxKeyLength)
                 return false;
             int recordLength = VarKeyScalar8Layout.GetNewRecordLength(key.Length);
             if (recordCursor + recordLength > profile.ShelfExtentSize)
                 return false;
             recordOffsets[i] = recordCursor;
-            VarKeyScalar8Layout.WriteRecord(bytes, recordCursor, key, source.GetIdentity(start + i));
+            VarKeyScalar8Layout.WriteRecord(bytes, recordCursor, key, source.GetIdentity(sourceIndex));
             recordCursor += recordLength;
         }
 
         int slotCursor = VarKeyScalar8Layout.HeaderSize;
         for (int i = 0; i < count; i++)
         {
-            ReadOnlySpan<byte> key = source.GetKey(start + i);
+            ReadOnlySpan<byte> key = source.GetKey(profile.Descending ? end - 1 - i : start + i);
             VarKeyScalar8Layout.WriteSlotRecordOffset(bytes, slotCursor, recordOffsets[i]);
             VarKeyScalar8Layout.WriteSlotKeyPrefix(bytes, slotCursor, VarKeyScalar8Layout.CreateKeyPrefix(key));
             slotCursor += VarKeyScalar8Layout.SlotSize;

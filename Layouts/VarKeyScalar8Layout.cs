@@ -25,6 +25,7 @@ internal static class VarKeyScalar8Layout
     public const int SlotCapacityBytesOffset = 28;
     public const int SlotReserveKeyLengthFloor = 17;
     public const uint DuplicateRunFlag = 1U;
+    public const uint DescendingFlag = 0x8000_0000U;
     public const int DuplicateRunKeyOffset = HeaderSize;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -81,7 +82,7 @@ internal static class VarKeyScalar8Layout
     /// <param name="source">The shelf header or complete shelf byte image.<br/></param>
     /// <returns>The exact non-negative orphaned payload byte count.<br/></returns>
     public static int ReadReclaimablePayloadBytes(ReadOnlySpan<byte> source)
-        => ReclaimablePayloadFlags.Read(ReadFlags(source));
+        => ReclaimablePayloadFlags.Read(ReadFlags(source) & ~DescendingFlag);
 
     /// <summary>
     /// Persists exact orphaned variable-record bytes while preserving the duplicate-run flag.<br/>
@@ -89,7 +90,8 @@ internal static class VarKeyScalar8Layout
     /// <param name="target">The writable shelf header or complete shelf byte image.<br/></param>
     /// <param name="byteCount">The exact non-negative orphaned payload byte count.<br/></param>
     public static void WriteReclaimablePayloadBytes(Span<byte> target, int byteCount)
-        => WriteFlags(target, ReclaimablePayloadFlags.Write(ReadFlags(target), byteCount));
+        => WriteFlags(target, ReclaimablePayloadFlags.Write(ReadFlags(target) & ~DescendingFlag, byteCount) |
+            (ReadFlags(target) & DescendingFlag));
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool HasDuplicateRunFlag(ReadOnlySpan<byte> source)
@@ -245,7 +247,7 @@ internal static class VarKeyScalar8Layout
         WriteMagic(target, Magic);
         WriteFormatVersion(target, FormatVersion);
         WriteHeaderSize(target, HeaderSize);
-        WriteFlags(target, 0);
+        WriteFlags(target, profile.Descending ? DescendingFlag : 0);
         WriteItemCount(target, 0);
         WriteShelfExtentSize(target, profile.ShelfExtentSize);
         WriteSlotStreamLength(target, 0);
