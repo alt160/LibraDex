@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented in this file.
 
-## 1.0.0 - Unreleased
+## 1.0.0 - 2026-10-05
 
 - Initial public release.
 - Added durable and memory-only typed key-to-identity catalogs for application-owned data.
