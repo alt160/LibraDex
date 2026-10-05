@@ -19,9 +19,11 @@ Purpose: track the remaining work to move LibraDex from controlled internal prot
 - `[x]` Package includes library DLL, XML documentation, and README; symbol package generated. Harness projects are excluded from the compiled package.
 - `[x]` CI prepared for Windows/Linux and .NET 8/9/10 consumers. Release workflow prepared for NuGet trusted publishing and a precompiled library ZIP with checksums.
 - `[x]` Hosted CI passed for `c58d16c5d73f2eb8358e8d4a8b961f529bd9346d`: all six Windows/Linux and .NET 8/9/10 jobs succeeded. Run: `https://github.com/alt160/LibraDex/actions/runs/37328106460`.
-- `[!]` NuGet trusted-publisher authentication is blocked: the 2026-10-05 release run returned HTTP 401, reporting no matching trust policy owned by `iqueue`. Confirm the policy is created by `iqueue` for `alt160/LibraDex`, `release.yml`, environment `release`, package glob `LibraDex`.
+- `[x]` RepoAdmin IPC created and reload-verified the NuGet trusted publisher owned by `iqueue` for `alt160/LibraDex`, `release.yml`, environment `release`, exact package `LibraDex`. A repeated create operation was a no-op; existing component policies were unchanged.
 - `[x]` The `v1.0.0` tag is pushed at `74c1c9e6c316623acf7fefc3cace1f13764eff3b`; all six final-commit CI jobs passed.
-- `[!]` NuGet publication and GitHub release creation remain pending. Release build, package-consumer smoke test, precompiled ZIP, checksums, and provenance attestation passed. Failed run: `https://github.com/alt160/LibraDex/actions/runs/37375675765`. After correcting the trust policy, rerun this existing release workflow; do not move the tag.
+- `[x]` Release workflow attempt 2 succeeded: `https://github.com/alt160/LibraDex/actions/runs/37375675765`. Release build (zero warnings/errors), package-consumer smoke test, precompiled ZIP, checksums, provenance, NuGet authentication, and both package/symbol uploads passed.
+- `[x]` Public GitHub release: `https://github.com/alt160/LibraDex/releases/tag/v1.0.0`. Downloaded ZIP, package, and symbol package checksums match the release manifest. Package README, Apache-2.0 metadata, author `alt160`, and 9,476-member XML documentation verified.
+- `[~]` NuGet accepted the uploads at 2026-10-05 14:57 America/Phoenix; public package download availability is still being checked. Do not repeat the upload while validation/indexing proceeds.
 
 The sections below preserve historical engineering gates and evidence; this dated checkpoint records the current package and release-preparation work without treating older unchecked items as newly validated.
 
