@@ -26,7 +26,7 @@ public sealed class Catalog : IDisposable
         string? path,
         DataKernelBackingKind backingKind,
         CatalogOptions options,
-        bool isNamed = false)
+        bool? isNamed = null)
     {
         this.session = session;
         Path = path;
@@ -64,11 +64,10 @@ public sealed class Catalog : IDisposable
     /// Gets the resolved logical location for a file-backed catalog, or null for a memory-backed catalog.<br/>
     /// A named location preserves the catalog name, storage directory, and deterministic primary-file resolution that opened the active session.<br/>
     /// </summary>
-    public CatalogLocation? Location => Path is null ? null : IsNamed
-        ? CatalogLocation.Named(System.IO.Path.GetFileNameWithoutExtension(Path), System.IO.Path.GetDirectoryName(Path))
-        : CatalogLocation.FromFilePath(Path);
+    public CatalogLocation? Location => Path is null || IsNamed is null ? null
+        : CatalogLocation.FromResolvedFilePath(Path, IsNamed.Value);
 
-    private bool IsNamed { get; }
+    private bool? IsNamed { get; }
 
     /// <summary>
     /// Gets whether this catalog is memory-backed or file-backed.<br/>
@@ -2840,4 +2839,14 @@ public readonly record struct CatalogLocation
 
         return FilePath;
     }
+
+    /// <summary>
+    /// Reconstructs compatibility metadata from an already resolved catalog path without normalizing its name again.<br/>
+    /// This preserves filenames containing repeated .lbdx suffixes and does not affect ordinary catalog opening.<br/>
+    /// </summary>
+    /// <param name="filePath">The catalog's resolved primary path.<br/></param>
+    /// <param name="isNamed">Whether the original entry point used named resolution.<br/></param>
+    /// <returns>The compatibility metadata preserving the exact path.<br/></returns>
+    internal static CatalogLocation FromResolvedFilePath(string filePath, bool isNamed) =>
+        new(System.IO.Path.GetFileNameWithoutExtension(filePath), System.IO.Path.GetDirectoryName(filePath)!, filePath, isNamed);
 }

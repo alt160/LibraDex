@@ -69,6 +69,11 @@ void ValidateLifetimeContracts()
     }
     using (var created = Catalog.Create("created", directory: catalogDirectory)) { }
     using (var reopened = Catalog.CreateOrOpen("created", directory: catalogDirectory)) { }
+    using (var repeated = Catalog.Create("suffix.lbdx.lbdx", directory: catalogDirectory))
+    {
+        if (repeated.Location?.FilePath != repeated.Path)
+            throw new InvalidOperationException("Compatibility metadata normalized an already-resolved filename twice.");
+    }
     using (var memory = Catalog.CreateMemory())
     {
         if (memory.Name is not null || memory.DirectoryPath is not null || memory.Location is not null)
