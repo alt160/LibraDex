@@ -11,6 +11,36 @@ Purpose: track the remaining work to move LibraDex from controlled internal prot
 
 ## Current Readiness
 
+### 2026-10-05 index lifecycle API 1.2.0 checkpoint
+
+- 🟩 [x] Typed index lifecycle is verb-first: root and index-set `Create`, `Open`, and
+  `CreateOrOpen<TKey,TIdentity>`; indexers retrieve existing sets/handles only.
+  Specialized construction uses explicit `IndexSet(...).Define(...)` builders.
+- 🟩 [x] README, XML documentation, examples, Abraxas callers, and package-consumer
+  coverage match the corrected API, including multiple index sets per catalog.
+- 🟩 [x] The explicitly approved early-launch 1.2.0 version is source-breaking;
+  this minor-version exception is documented. Catalog/index file formats are unchanged.
+- 🟩 [x] Source commit `0cad179b1d44ba0c91e032db2a0abffa288f0f27` passed all six
+  Windows/Linux .NET 8/9/10 jobs: https://github.com/alt160/LibraDex/actions/runs/37386500917.
+- 🟩 [x] Release workflow succeeded: https://github.com/alt160/LibraDex/actions/runs/37386692124.
+  Public release: https://github.com/alt160/LibraDex/releases/tag/v1.2.0.
+- 🟩 [x] All GitHub asset SHA-256 checksums match. The public NuGet 1.2.0 DLL,
+  README, and XML match the release package; XML parses with 9,494 member entries.
+  https://www.nuget.org/packages/LibraDex/1.2.0.
+- 🟩 [x] Abraxas library/harness and Wherzit builds passed with zero warnings/errors.
+  Full local-package acceptance ran 135 commands independently: 134 passed;
+  the sole Inheto corruption-fixture failure also reproduces against published 1.0.0.
+- 🟩 [x] Fresh-cache restore from nuget.org, zero-warning/error Abraxas build,
+  and six public-package integration checks passed; restored/copied DLL hashes match.
+- 🟩 [x] RepoAdmin IPC deprecated/unlisted 1.0.0 and 1.1.0 with recommendation to
+  1.2.0; authenticated reload verified persistence. Exact old versions remain restorable.
+  Public NuGet registration independently confirmed both legacy/unlisted states and
+  replacement range `[1.2.0, )` at 16:19 America/Phoenix; 1.2.0 remains listed.
+- 🟩 [x] Old GitHub release objects/assets removed after local archival; their
+  source tags and commit history remain. Only v1.2.0 remains in the release list.
+
+Earlier checkpoints below are historical evidence, not current release links.
+
 ### 2026-10-05 catalog API 1.1.0 checkpoint
 
 - `[x]` Direct named catalog creation/opening/compaction and path resolution no longer require constructing `CatalogLocation`; existing exact-path and compatibility overloads remain available.
