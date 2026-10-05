@@ -31,9 +31,7 @@ Create a durable catalog and a typed index. Here, `products` is the shared ident
 ```csharp
 using LibraDex;
 
-CatalogLocation products = CatalogLocation.Named("products", directory: "data");
-
-using Catalog catalog = Catalog.CreateOrOpen(products);
+using Catalog catalog = Catalog.CreateOrOpen("products", directory: "data");
 using LibraDexIndex<long, long> sku = catalog.Indexes["products"]["sku"]
     .Int64Keys<long>()
     .CreateOrOpen(keys: IndexKeys.NonUnique);
@@ -46,7 +44,7 @@ sku.Insert(100_043, 503);
 Open an existing catalog and index explicitly when creation is not part of the operation:
 
 ```csharp
-using Catalog catalog = Catalog.Open(CatalogLocation.Named("products", directory: "data"));
+using Catalog catalog = Catalog.Open("products", directory: "data");
 using LibraDexIndex<long, long> sku = catalog.Indexes["products"]["sku"]
     .Int64Keys<long>()
     .Open();
@@ -62,6 +60,8 @@ while (reader.MoveNext())
 ```
 
 For a process-local, non-durable catalog, use `Catalog.CreateMemory()`. It uses the same catalog and index API shape but has no reopen lifecycle.
+
+Named calls take the catalog basename and directory; LibraDex resolves the `.lbdx` filename. `catalog.Name`, `catalog.DirectoryPath`, and `catalog.Path` expose the resulting metadata. Use `Catalog.GetFilePath("products", "data")` when you need the resolved path without opening the catalog. The original single-string file-path calls and `CatalogLocation` overloads remain supported for compatibility. To supply options, use the named `options:` argument; use `directory:` to select named-catalog behavior unambiguously.
 
 ## Good fits
 

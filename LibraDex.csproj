@@ -7,7 +7,7 @@
     <IsPackable>true</IsPackable>
     <PackageId>LibraDex</PackageId>
     <Title>LibraDex</Title>
-    <PackageVersion>1.0.0</PackageVersion>
+    <PackageVersion>1.1.0</PackageVersion>
     <Authors>alt160</Authors>
     <Copyright>Copyright (c) 2026 alt160</Copyright>
     <Description>A .NET-native identity-index catalog for durable or memory-only typed key-to-identity relationships, filtering, counting, and ordered traversal over data owned elsewhere.</Description>
@@ -19,7 +19,7 @@
     <RepositoryType>git</RepositoryType>
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
     <PackageReadmeFile>README.md</PackageReadmeFile>
-    <PackageReleaseNotes>Initial public release of the .NET-native typed identity-index catalog.</PackageReleaseNotes>
+    <PackageReleaseNotes>Direct catalog name/directory APIs remove CatalogLocation ceremony. Existing file-path and CatalogLocation APIs remain compatible.</PackageReleaseNotes>
     <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <IncludeSymbols>true</IncludeSymbols>
