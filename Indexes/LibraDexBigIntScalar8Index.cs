@@ -155,6 +155,7 @@ public sealed class LibraDexBigIntScalar8Index<TIdentity> : IIndex, IIdentityPri
     /// </summary>
     public IndexKeys KeyContract => keyContract;
 
+    /// <summary>Gets the relationship that permits one scalar identity to occur under multiple BigInteger keys.<br/></summary>
     public IdentityKeyMultiplicity IdentityKeyMultiplicity => IdentityKeyMultiplicity.MultipleKeysPerIdentity;
 
     /// <summary>

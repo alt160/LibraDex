@@ -6905,6 +6905,46 @@ internal static partial class RawHarness
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
         File.Delete(path);
 
+        string namedCatalogDirectory = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(path))!, "named-catalog-location");
+        CatalogLocation namedCatalogLocation = CatalogLocation.Named("catalog-api", namedCatalogDirectory);
+        CatalogLocation legacyNamedCatalogLocation = CatalogLocation.Named("catalog-api.lbdx", namedCatalogDirectory);
+        if (legacyNamedCatalogLocation != namedCatalogLocation)
+        {
+            throw new InvalidDataException("Named catalog compatibility did not normalize an existing .lbdx catalog name.");
+        }
+
+        Directory.CreateDirectory(namedCatalogDirectory);
+        File.Delete(namedCatalogLocation.FilePath);
+        try
+        {
+            using (Catalog namedCatalog = Catalog.CreateOrOpen(namedCatalogLocation))
+            {
+                if (namedCatalog.Location is not CatalogLocation resolvedLocation ||
+                    resolvedLocation != namedCatalogLocation ||
+                    !string.Equals(namedCatalog.Path, namedCatalogLocation.FilePath, StringComparison.Ordinal) ||
+                    !File.Exists(namedCatalogLocation.FilePath))
+                {
+                    throw new InvalidDataException("Named catalog creation did not preserve its resolved catalog location.");
+                }
+
+                _ = namedCatalog.Indexes["named"]["primary"].Int64Keys<long>().Create();
+            }
+
+            using Catalog reopenedNamedCatalog = Catalog.Open(CatalogLocation.Named("catalog-api", namedCatalogDirectory));
+            if (reopenedNamedCatalog.Location is not CatalogLocation reopenedLocation ||
+                !reopenedLocation.IsNamed ||
+                reopenedLocation.Name != "catalog-api" ||
+                !reopenedNamedCatalog.HasIndex("named", "primary"))
+            {
+                throw new InvalidDataException("Named catalog reopen did not resolve the persisted catalog contract.");
+            }
+        }
+        finally
+        {
+            if (File.Exists(namedCatalogLocation.FilePath)) File.Delete(namedCatalogLocation.FilePath);
+            if (Directory.Exists(namedCatalogDirectory)) Directory.Delete(namedCatalogDirectory);
+        }
+
         using Catalog catalog = Catalog.CreateMemory();
         if (catalog.BackingKind != DataKernelBackingKind.Memory)
         {

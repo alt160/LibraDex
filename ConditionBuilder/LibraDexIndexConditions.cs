@@ -89,7 +89,7 @@ public sealed class LibraDexIndexWhere<TKey, TIdentity>
     /// Resumes same-index condition grammar from an existing completed condition.<br/>
     /// This is intended for staged builders that stored a condition fragment and later need to append another predicate over this opened index.<br/>
     /// </summary>
-    /// <param name="expression">The existing expression to continue.</param>
+    /// <param name="condition">The existing condition to continue.</param>
     /// <returns>A same-index continuation rooted at the supplied expression.</returns>
     public LibraDexIndexConditionContinuation<TKey, TIdentity> Continue(LibraDexConditionEndCondition condition)
     {
@@ -122,7 +122,7 @@ public sealed class LibraDexIndexWhere<TKey, TIdentity>
     /// Resumes same-index condition grammar from an existing reusable expression using union for the next predicate.<br/>
     /// This keeps staged same-index `.Or` continuation available even after a fragment has been widened to the common expression type.<br/>
     /// </summary>
-    /// <param name="expression">The existing expression to continue.</param>
+    /// <param name="condition">The existing condition to continue.</param>
     /// <returns>A same-index union continuation rooted at the supplied expression.</returns>
     public LibraDexIndexConditionContinuation<TKey, TIdentity> ContinueOr(LibraDexConditionEndCondition condition)
     {

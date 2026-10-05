@@ -68,6 +68,7 @@ internal sealed partial class LibraDexFileSession
     /// <param name="keys">The key slice to include in the replacement subtree.</param>
     /// <param name="maxKeyLength">The maximum raw key length supported by the target `VS8` profile.</param>
     /// <param name="requestedRouteCount">The preferred compressed-router fanout cap.</param>
+    /// <param name="descending">Whether the physical key traversal and replacement ordering are descending.</param>
     /// <returns>The staged replacement subtree offset and planner telemetry.</returns>
     internal VarLenOptimizerReplacementSubtree CreateVarKeyScalar8OptimizerReplacementSubtree(
         ReadOnlySpan<byte[]> keys,
@@ -126,6 +127,7 @@ internal sealed partial class LibraDexFileSession
     /// <param name="identities">The encoded identities aligned with <paramref name="keys"/>.<br/></param>
     /// <param name="maxKeyLength">The maximum encoded key length supported by the physical profile.<br/></param>
     /// <param name="requestedRouteCount">The preferred compressed-router fanout cap.<br/></param>
+    /// <param name="descending">Whether the physical key traversal and replacement ordering are descending.</param>
     /// <returns>The staged replacement subtree offset and topology telemetry.<br/></returns>
     internal VarLenOptimizerReplacementSubtree CreateVarKeyScalar8OptimizerReplacementSubtree(
         ReadOnlySpan<byte[]> keys,
@@ -173,6 +175,7 @@ internal sealed partial class LibraDexFileSession
     /// <param name="tuples">One non-empty canonical tuple range sharing a single encoded root prefix.<br/></param>
     /// <param name="maxKeyLength">The maximum encoded key length supported by the physical profile.<br/></param>
     /// <param name="requestedRouteCount">The preferred compressed-router fanout cap.<br/></param>
+    /// <param name="descending">Whether the physical key traversal and replacement ordering are descending.</param>
     /// <returns>The staged replacement subtree offset and topology telemetry.<br/></returns>
     internal VarLenOptimizerReplacementSubtree CreateVarKeyScalar8OptimizerReplacementSubtreeFromSorted(
         ReadOnlySpan<VarKeyScalar8SortedTuple> tuples,
@@ -199,6 +202,7 @@ internal sealed partial class LibraDexFileSession
     /// <param name="end">Exclusive tuple ordinal for this root-prefix group.<br/></param>
     /// <param name="maxKeyLength">Maximum encoded key length supported by the physical profile.<br/></param>
     /// <param name="requestedRouteCount">Preferred compressed-router fanout cap.<br/></param>
+    /// <param name="descending">Whether the physical key traversal and replacement ordering are descending.</param>
     /// <returns>The staged replacement subtree offset and topology telemetry.<br/></returns>
     internal VarLenOptimizerReplacementSubtree CreateVarKeyScalar8OptimizerReplacementSubtreeFromSorted(
         IVarKeyScalar8SortedTupleSource tuples,
@@ -241,6 +245,7 @@ internal sealed partial class LibraDexFileSession
     /// <param name="keyDepth">The first encoded key byte not fully discriminated by the owning parent route.<br/></param>
     /// <param name="maxKeyLength">The maximum encoded key length supported by the physical profile.<br/></param>
     /// <param name="requestedRouteCount">The preferred compressed-router fanout cap.<br/></param>
+    /// <param name="descending">Whether the physical key traversal and replacement ordering are descending.</param>
     /// <returns>The staged replacement target offset and bounded topology-build telemetry.<br/></returns>
     internal (long TargetOffset, VarLenOptimizerReplacementBuildResult Build) CreateVarKeyScalar8OptimizerReplacementTargetFromSorted(
         ReadOnlySpan<VarKeyScalar8SortedTuple> tuples,
@@ -314,6 +319,7 @@ internal sealed partial class LibraDexFileSession
     /// <param name="telemetry">Receives the final durability publication telemetry.<br/></param>
     /// <param name="replacementTargetOffset">Receives the newly published root-prefix subtree target.<br/></param>
     /// <param name="tupleCount">Receives the exact distinct tuple population published for the affected root prefix.<br/></param>
+    /// <param name="descending">Whether the physical key traversal and replacement ordering are descending.</param>
     /// <returns><see langword="true"/> when the observed root route remained current and the replacement published; otherwise <see langword="false"/> so the caller can retry from a fresh route walk.<br/></returns>
     private bool TryPublishVarKeyScalar8RootPrefixRebuild(
         long rootRouterOffset,
@@ -491,6 +497,7 @@ internal sealed partial class LibraDexFileSession
     /// <param name="maxKeyLength">The maximum encoded key length for the index.<br/></param>
     /// <param name="requestedRouteCount">The preferred compressed-router fanout cap.<br/></param>
     /// <param name="maxWorkItems">The maximum authoritative tuples to consume, or null for the complete tuple stream.<br/></param>
+    /// <param name="descending">Whether the physical key traversal and replacement ordering are descending.</param>
     /// <returns>The exact tuple work count, published subtree count, and any reason the tuple stream was not completed.<br/></returns>
     internal LibraDexMaintenanceWalkResult OptimizeVarKeyScalar8Topology(
         long rootRouterOffset,
@@ -585,6 +592,7 @@ internal sealed partial class LibraDexFileSession
     /// <param name="keys">The key slice to include in the replacement subtree.</param>
     /// <param name="maxKeyLength">The maximum raw key length supported by the target `VS16` profile.</param>
     /// <param name="requestedRouteCount">The preferred compressed-router fanout cap.</param>
+    /// <param name="descending">Whether the physical key traversal and replacement ordering are descending.</param>
     /// <returns>The staged replacement subtree offset and planner telemetry.</returns>
     internal VarLenOptimizerReplacementSubtree CreateVarKeyScalar16OptimizerReplacementSubtree(
         ReadOnlySpan<byte[]> keys,
@@ -652,6 +660,7 @@ internal sealed partial class LibraDexFileSession
     /// <param name="identityLows">The encoded low identity halves aligned with <paramref name="keys"/>.<br/></param>
     /// <param name="maxKeyLength">The maximum encoded key length supported by the physical profile.<br/></param>
     /// <param name="requestedRouteCount">The preferred compressed-router fanout cap.<br/></param>
+    /// <param name="descending">Whether the physical key traversal and replacement ordering are descending.</param>
     /// <returns>The staged replacement subtree offset and topology telemetry.<br/></returns>
     internal VarLenOptimizerReplacementSubtree CreateVarKeyScalar16OptimizerReplacementSubtree(
         ReadOnlySpan<byte[]> keys,
@@ -716,6 +725,7 @@ internal sealed partial class LibraDexFileSession
     /// <param name="maxKeyLength">The maximum encoded key length for the index.<br/></param>
     /// <param name="requestedRouteCount">The preferred compressed-router fanout cap.<br/></param>
     /// <param name="maxWorkItems">The maximum authoritative tuples to consume, or null for the complete tuple stream.<br/></param>
+    /// <param name="descending">Whether the physical key traversal and replacement ordering are descending.</param>
     /// <returns>The exact tuple work count, published subtree count, and any reason the tuple stream was not completed.<br/></returns>
     internal LibraDexMaintenanceWalkResult OptimizeVarKeyScalar16Topology(
         long rootRouterOffset,
@@ -834,6 +844,7 @@ internal sealed partial class LibraDexFileSession
     /// <param name="keys">The key slice used to build the replacement subtree.</param>
     /// <param name="maxKeyLength">The maximum raw key length supported by the target `VS8` profile.</param>
     /// <param name="requestedRouteCount">The preferred compressed-router fanout cap.</param>
+    /// <param name="descending">Whether the physical key traversal and replacement ordering are descending.</param>
     /// <returns>The bounded maintenance result for this drain attempt.</returns>
     internal VarLenOptimizerMaintenanceResult TryDrainVarKeyScalar8OptimizerCandidate(
         long rootRouterOffset,
@@ -882,6 +893,7 @@ internal sealed partial class LibraDexFileSession
     /// <param name="requestedRouteCount">The preferred compressed-router fanout cap.</param>
     /// <param name="policy">The maintenance policy that authorizes this bounded drain.</param>
     /// <param name="boundary">The scheduler boundary where maintenance is being attempted.</param>
+    /// <param name="descending">Whether the physical key traversal and replacement ordering are descending.</param>
     /// <returns>The aggregate maintenance result for the bounded drain.</returns>
     internal VarLenOptimizerMaintenanceResult TryDrainVarKeyScalar8OptimizerCandidates(
         long rootRouterOffset,
@@ -981,6 +993,7 @@ internal sealed partial class LibraDexFileSession
     /// <param name="keys">The key slice used to build the replacement subtree.</param>
     /// <param name="maxKeyLength">The maximum raw key length supported by the target `VS16` profile.</param>
     /// <param name="requestedRouteCount">The preferred compressed-router fanout cap.</param>
+    /// <param name="descending">Whether the physical key traversal and replacement ordering are descending.</param>
     /// <returns>The bounded maintenance result for this drain attempt.</returns>
     internal VarLenOptimizerMaintenanceResult TryDrainVarKeyScalar16OptimizerCandidate(
         long rootRouterOffset,
@@ -1029,6 +1042,7 @@ internal sealed partial class LibraDexFileSession
     /// <param name="requestedRouteCount">The preferred compressed-router fanout cap.</param>
     /// <param name="policy">The maintenance policy that authorizes this bounded drain.</param>
     /// <param name="boundary">The scheduler boundary where maintenance is being attempted.</param>
+    /// <param name="descending">Whether the physical key traversal and replacement ordering are descending.</param>
     /// <returns>The aggregate maintenance result for the bounded drain.</returns>
     internal VarLenOptimizerMaintenanceResult TryDrainVarKeyScalar16OptimizerCandidates(
         long rootRouterOffset,
@@ -1358,6 +1372,7 @@ internal sealed partial class LibraDexFileSession
     /// <param name="keyDepth">The first encoded key depth not already owned by the parent route.<br/></param>
     /// <param name="maxKeyLength">The maximum encoded key length accepted by the index.<br/></param>
     /// <param name="state">The replacement build telemetry state to update.<br/></param>
+    /// <param name="descending">Whether the physical key traversal and replacement ordering are descending.</param>
     /// <returns>The top exact-key router or terminal-root offset for the replacement node.<br/></returns>
     private long CreateVarKeyScalar8OptimizerTerminalNode(
         IVarKeyScalar8SortedTupleSource items,
@@ -1588,6 +1603,7 @@ internal sealed partial class LibraDexFileSession
     /// <param name="keyDepth">The first encoded key depth not already owned by the parent route.<br/></param>
     /// <param name="maxKeyLength">The maximum encoded key length accepted by the index.<br/></param>
     /// <param name="state">The replacement build telemetry state to update.<br/></param>
+    /// <param name="descending">Whether the physical key traversal and replacement ordering are descending.</param>
     /// <returns>The top exact-key router or terminal-root offset for the replacement node.<br/></returns>
     private long CreateVarKeyScalar16OptimizerTerminalNode(
         VarKeyScalar16OptimizerItem[] items,

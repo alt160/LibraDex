@@ -29,6 +29,7 @@ internal sealed class SessionReadCache<TShelf>
     /// The name is used only on configuration or corruption failures and does not enter the read-hit path.<br/>
     /// </summary>
     /// <param name="shapeName">The short persisted shelf-shape name.<br/></param>
+    /// <param name="getRetainedBytes">The callback that reports the retained byte size of each cached shelf.<br/></param>
     internal SessionReadCache(string shapeName, Func<TShelf, long> getRetainedBytes)
     {
         this.shapeName = shapeName;

@@ -5,6 +5,9 @@ using System.Text;
 
 namespace LibraDex;
 
+/// <summary>
+/// Represents a completed reusable condition and exposes its execution and result-shaping operations.<br/>
+/// </summary>
 public sealed class LibraDexConditionEndCondition
 {
     private readonly LibraDexConditionNode root;
@@ -1135,8 +1138,3 @@ public sealed class LibraDexConditionEndCondition
             projectionKind);
     }
 }
-
-/// <summary>
-/// Provides grouping helpers for a completed adopted condition.<br/>
-/// The condition supplies candidate identities, and the grouping index supplies the key axis, keeping grouping attached to selection rather than root index retrieval.<br/>
-/// </summary>

@@ -17,6 +17,8 @@ internal sealed partial class LibraDexFileSession
     /// <param name="maxRouterHops">The maximum number of router pages to follow.</param>
     /// <param name="direction">The requested physical tuple traversal direction.<br/></param>
     /// <param name="allowWriteUpgrade">Whether this internal reader owns the maintenance-only upgradeable coherent lease needed to publish replacements while preserving its source generation.<br/></param>
+    /// <param name="captureDiagnostics">Whether the reader records optional traversal diagnostics.<br/></param>
+    /// <param name="decodeLogicalKeys">Whether the reader decodes physical key bytes into the logical key representation.<br/></param>
     /// <returns>A cursor positioned before the first matching row.</returns>
     /// <exception cref="ArgumentException">Thrown when <paramref name="upperKey"/> sorts before <paramref name="lowerKey"/>.</exception>
     /// <exception cref="ArgumentOutOfRangeException">Thrown when <paramref name="maxRouterHops"/> is not positive.</exception>
@@ -82,6 +84,7 @@ internal sealed partial class LibraDexFileSession
     /// <param name="upperKey">The inclusive upper raw key.</param>
     /// <param name="maxRouterHops">The maximum number of router pages to follow.</param>
     /// <param name="descending">Whether to visit higher-key route targets first.</param>
+    /// <param name="decodeLogicalKeys">Whether the reader decodes physical key bytes into the logical key representation.<br/></param>
     /// <returns>A cursor positioned before the first matching row.</returns>
     /// <exception cref="ArgumentException">Thrown when <paramref name="upperKey"/> sorts before <paramref name="lowerKey"/>.</exception>
     /// <exception cref="ArgumentOutOfRangeException">Thrown when <paramref name="maxRouterHops"/> is not positive.</exception>

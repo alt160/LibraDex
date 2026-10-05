@@ -5,6 +5,9 @@ using System.Text;
 
 namespace LibraDex;
 
+/// <summary>
+/// Builds a condition leaf over the named or ordered parts of a routed composite index.<br/>
+/// </summary>
 public sealed class LibraDexCompositeConditionWhere
 {
     private readonly LibraDexConditionBuilder builder;
@@ -3077,9 +3080,3 @@ public sealed class LibraDexCompositeScalarPartCondition<TValue>
             : values.ToArray();
     }
 }
-
-/// <summary>
-/// Captures numeric comparison and bitmask operators for one adopted condition leaf.<br/>
-/// Bitmask operators intentionally stay on numeric selectors rather than string, date, GUID, or binary selectors so they do not leak into unrelated condition grammar.<br/>
-/// </summary>
-/// <typeparam name="TValue">The numeric operand value accepted by this operator chain.</typeparam>

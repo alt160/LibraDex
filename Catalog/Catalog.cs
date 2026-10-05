@@ -25,10 +25,12 @@ public sealed class Catalog : IDisposable
         LibraDexFileSession session,
         string? path,
         DataKernelBackingKind backingKind,
-        CatalogOptions options)
+        CatalogOptions options,
+        CatalogLocation? location = null)
     {
         this.session = session;
         Path = path;
+        Location = location;
         BackingKind = backingKind;
         Options = options;
         Indexes = new CatalogIndexFactories(this);
@@ -57,6 +59,12 @@ public sealed class Catalog : IDisposable
     /// The path is metadata for diagnostics and reopen flows; the active catalog uses its already-open session.<br/>
     /// </summary>
     public string? Path { get; }
+
+    /// <summary>
+    /// Gets the resolved logical location for a file-backed catalog, or null for a memory-backed catalog.<br/>
+    /// A named location preserves the catalog name, storage directory, and deterministic primary-file resolution that opened the active session.<br/>
+    /// </summary>
+    public CatalogLocation? Location { get; }
 
     /// <summary>
     /// Gets whether this catalog is memory-backed or file-backed.<br/>
@@ -185,7 +193,19 @@ public sealed class Catalog : IDisposable
     /// <returns>A disposable catalog over the newly initialized file.</returns>
     public static Catalog Create(string path, CatalogOptions? options = null)
     {
-        string requiredPath = RequirePath(path);
+        return Create(CatalogLocation.FromFilePath(RequirePath(path)), options);
+    }
+
+    /// <summary>
+    /// Creates a new file-backed catalog at a resolved named or exact-file location.<br/>
+    /// Creation fails when the location's primary catalog file already exists, preserving the explicit create/open split.<br/>
+    /// </summary>
+    /// <param name="location">The named catalog or exact file location to create.<br/></param>
+    /// <param name="options">Optional catalog policy, including explicit version-two recoverable-format creation.<br/></param>
+    /// <returns>A disposable catalog over the newly initialized file.</returns>
+    public static Catalog Create(CatalogLocation location, CatalogOptions? options = null)
+    {
+        string requiredPath = location.GetRequiredFilePath();
         if (File.Exists(requiredPath))
         {
             throw new IOException($"The LibraDex catalog file already exists: {requiredPath}");
@@ -206,7 +226,7 @@ public sealed class Catalog : IDisposable
             effectiveOptions.UseRecoverableFileFormat
                 ? SuperblockLayout.RecoverableFormatVersion
                 : SuperblockLayout.LegacyFormatVersion);
-        return new Catalog(session, requiredPath, DataKernelBackingKind.File, effectiveOptions);
+        return new Catalog(session, requiredPath, DataKernelBackingKind.File, effectiveOptions, location);
     }
 
     /// <summary>
@@ -218,7 +238,18 @@ public sealed class Catalog : IDisposable
     /// <returns>A disposable catalog over the existing file.</returns>
     public static Catalog Open(string path, CatalogOptions? options = null)
     {
-        string requiredPath = RequirePath(path);
+        return Open(CatalogLocation.FromFilePath(RequirePath(path)), options);
+    }
+
+    /// <summary>
+    /// Opens an existing file-backed catalog at a resolved named or exact-file location.<br/>
+    /// </summary>
+    /// <param name="location">The named catalog or exact file location to open.<br/></param>
+    /// <param name="options">Optional catalog policy; recoverable-format creation policy never upgrades an existing file during open.<br/></param>
+    /// <returns>A disposable catalog over the existing file.</returns>
+    public static Catalog Open(CatalogLocation location, CatalogOptions? options = null)
+    {
+        string requiredPath = location.GetRequiredFilePath();
         if (!File.Exists(requiredPath))
         {
             throw new FileNotFoundException("The LibraDex catalog file does not exist.", requiredPath);
@@ -229,7 +260,7 @@ public sealed class Catalog : IDisposable
             requiredPath,
             CreateDefaultDataKernelOptions(),
             DataKernelTelemetryOptions.FromLevel(effectiveOptions.DiagnosticsLevel));
-        Catalog catalog = new(session, requiredPath, DataKernelBackingKind.File, effectiveOptions);
+        Catalog catalog = new(session, requiredPath, DataKernelBackingKind.File, effectiveOptions, location);
         catalog.ValidateExistingIdentityContracts();
         return catalog;
     }
@@ -243,9 +274,20 @@ public sealed class Catalog : IDisposable
     /// <returns>A disposable catalog over the opened or newly initialized file.</returns>
     public static Catalog CreateOrOpen(string path, CatalogOptions? options = null)
     {
-        return File.Exists(RequirePath(path))
-            ? Open(path, options)
-            : Create(path, options);
+        return CreateOrOpen(CatalogLocation.FromFilePath(RequirePath(path)), options);
+    }
+
+    /// <summary>
+    /// Opens an existing file-backed catalog at a resolved named or exact-file location, or creates it when it does not exist.<br/>
+    /// </summary>
+    /// <param name="location">The named catalog or exact file location to open or create.<br/></param>
+    /// <param name="options">Optional catalog policy applied to creation when the file is absent and to runtime behavior after open.<br/></param>
+    /// <returns>A disposable catalog over the opened or newly initialized file.</returns>
+    public static Catalog CreateOrOpen(CatalogLocation location, CatalogOptions? options = null)
+    {
+        return File.Exists(location.GetRequiredFilePath())
+            ? Open(location, options)
+            : Create(location, options);
     }
 
     /// <summary>
@@ -279,6 +321,21 @@ public sealed class Catalog : IDisposable
         CancellationToken cancellationToken = default)
     {
         return LibraDexCatalogCompactor.Compact(path, options, cancellationToken);
+    }
+
+    /// <summary>
+    /// Compacts one closed file-backed catalog at a resolved named or exact-file location.<br/>
+    /// </summary>
+    /// <param name="location">The named catalog or exact file location to compact.<br/></param>
+    /// <param name="options">Optional compaction and catalog-open policy.<br/></param>
+    /// <param name="cancellationToken">A token observed before replacement and between logical-index copy/validation boundaries.<br/></param>
+    /// <returns>Exact file-size, index-count, tuple-count, and rollback-path results for the completed replacement.<br/></returns>
+    public static LibraDexCompactionResult Compact(
+        CatalogLocation location,
+        LibraDexCompactionOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        return LibraDexCatalogCompactor.Compact(location.GetRequiredFilePath(), options, cancellationToken);
     }
 
     /// <summary>
@@ -2540,5 +2597,126 @@ internal readonly struct LibraDexIdentityMapKey<TIdentity> : IEquatable<LibraDex
     public override int GetHashCode()
     {
         return LibraDexTupleEqualityComparer<TIdentity>.Instance.GetHashCode(value);
+    }
+}
+
+/// <summary>
+/// Identifies one file-backed LibraDex catalog by a logical name and storage directory or by an explicit file path.<br/>
+/// Named locations resolve their primary file as <c>&lt;directory&gt;/&lt;name&gt;.lbdx</c>, keeping file-extension and companion-file conventions outside ordinary application code.<br/>
+/// </summary>
+public readonly record struct CatalogLocation
+{
+    private const string CatalogFileExtension = ".lbdx";
+
+    private CatalogLocation(string name, string directoryPath, string filePath, bool isNamed)
+    {
+        Name = name;
+        DirectoryPath = directoryPath;
+        FilePath = filePath;
+        IsNamed = isNamed;
+    }
+
+    /// <summary>
+    /// Gets the logical catalog name without the LibraDex file extension.<br/>
+    /// Exact-file locations derive this value from the specified file name.<br/>
+    /// </summary>
+    public string Name { get; }
+
+    /// <summary>
+    /// Gets the normalized absolute directory that contains the catalog's primary file.<br/>
+    /// </summary>
+    public string DirectoryPath { get; }
+
+    /// <summary>
+    /// Gets the normalized absolute primary file path resolved for this catalog.<br/>
+    /// </summary>
+    public string FilePath { get; }
+
+    /// <summary>
+    /// Gets whether this location was constructed from a logical name rather than an exact file path.<br/>
+    /// </summary>
+    public bool IsNamed { get; }
+
+    /// <summary>
+    /// Creates a named catalog location whose primary file uses the standard `.lbdx` extension.<br/>
+    /// The name must be one file-name segment; a trailing `.lbdx` is accepted only as a compatibility input and is normalized away.<br/>
+    /// </summary>
+    /// <param name="name">The logical catalog name.</param>
+    /// <param name="directory">The optional containing directory; the current directory is used when omitted.<br/></param>
+    /// <returns>The validated named catalog location.</returns>
+    public static CatalogLocation Named(string name, string? directory = null)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            throw new ArgumentException("A named LibraDex catalog requires a name.", nameof(name));
+        }
+
+        if (!string.Equals(System.IO.Path.GetFileName(name), name, StringComparison.Ordinal))
+        {
+            throw new ArgumentException("A named LibraDex catalog name must be one logical file-name segment.", nameof(name));
+        }
+
+        string logicalName = name.EndsWith(CatalogFileExtension, StringComparison.OrdinalIgnoreCase)
+            ? name[..^CatalogFileExtension.Length]
+            : name;
+        if (string.IsNullOrWhiteSpace(logicalName) || logicalName.IndexOfAny(System.IO.Path.GetInvalidFileNameChars()) >= 0)
+        {
+            throw new ArgumentException("A named LibraDex catalog name contains an invalid file-name character.", nameof(name));
+        }
+
+        string directoryPath = string.IsNullOrWhiteSpace(directory)
+            ? Directory.GetCurrentDirectory()
+            : System.IO.Path.GetFullPath(directory);
+        string filePath = System.IO.Path.Combine(directoryPath, logicalName + CatalogFileExtension);
+        return new CatalogLocation(logicalName, directoryPath, filePath, isNamed: true);
+    }
+
+    /// <summary>
+    /// Creates an exact-file catalog location for compatibility with application-controlled file paths.<br/>
+    /// The path is normalized but its extension is not changed.<br/>
+    /// </summary>
+    /// <param name="filePath">The exact catalog file path.</param>
+    /// <returns>The validated exact-file catalog location.</returns>
+    public static CatalogLocation FromFilePath(string filePath)
+    {
+        if (string.IsNullOrWhiteSpace(filePath))
+        {
+            throw new ArgumentException("A file-backed LibraDex catalog requires a path.", nameof(filePath));
+        }
+
+        string resolvedFilePath = System.IO.Path.GetFullPath(filePath);
+        string? directoryPath = System.IO.Path.GetDirectoryName(resolvedFilePath);
+        string name = System.IO.Path.GetFileNameWithoutExtension(resolvedFilePath);
+        if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(directoryPath))
+        {
+            throw new ArgumentException("A file-backed LibraDex catalog path must include a file name.", nameof(filePath));
+        }
+
+        return new CatalogLocation(name, directoryPath, resolvedFilePath, isNamed: false);
+    }
+
+    /// <summary>
+    /// Returns the resolved primary catalog file path.<br/>
+    /// </summary>
+    /// <returns>The resolved primary catalog file path.</returns>
+    public override string ToString()
+    {
+        return FilePath;
+    }
+
+    /// <summary>
+    /// Validates that this value was created by one of the catalog-location factories and returns its primary file path.<br/>
+    /// </summary>
+    /// <returns>The validated primary file path.</returns>
+    internal string GetRequiredFilePath()
+    {
+        if (string.IsNullOrWhiteSpace(Name) ||
+            string.IsNullOrWhiteSpace(DirectoryPath) ||
+            string.IsNullOrWhiteSpace(FilePath))
+        {
+            throw new ArgumentException("A file-backed LibraDex catalog requires a location created by CatalogLocation.Named or CatalogLocation.FromFilePath.");
+        }
+
+        return FilePath;
     }
 }

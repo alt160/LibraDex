@@ -1049,6 +1049,7 @@ public readonly record struct CatalogIndexSetInverseBuildStats(
 /// <param name="MultiValueKeyBucketCount">The number of identity/key buckets with more than one key value.</param>
 /// <param name="IsFresh">Whether the runtime map is current against catalog mutation counters.</param>
 /// <param name="EstimatedMapBytes">A rough managed-memory estimate for the runtime map.</param>
+/// <param name="SchemaIndexNames">The forward index names in the ordered inverse-key schema.<br/></param>
 public readonly record struct CatalogIndexSetInverseShape(
     string IndexSetName,
     int IncludedIndexCount,

@@ -1094,6 +1094,7 @@ internal sealed partial class LibraDexFileSession
     /// <param name="identity">The raw byte identity to insert.</param>
     /// <param name="allowDuplicateKeys">Whether duplicate keys with different identities are allowed.</param>
     /// <param name="maxRouterHops">The maximum number of router pages to follow.</param>
+    /// <param name="descending">Whether newly created shelves retain descending natural key order.</param>
     /// <returns>The storage-facing routed insert result.</returns>
     internal VarKeyVarIdentityRoutedInsertResult InsertWalkedRoutedVarKeyVarIdentity(
         long rootRouterOffset,
@@ -2390,6 +2391,7 @@ internal sealed partial class LibraDexFileSession
     /// </summary>
     /// <param name="maxKeyLength">The maximum raw key length in bytes.</param>
     /// <param name="maxIdentityLength">The maximum raw identity length in bytes.</param>
+    /// <param name="descending">Whether the selected profile retains descending natural key order.</param>
     /// <returns>The initial `VV` shelf profile for the current backing kind and write intent.</returns>
     private VarKeyVarIdentityProfile SelectInitialVarKeyVarIdentityProfile(int maxKeyLength, int maxIdentityLength, bool descending = false)
     {
@@ -3007,6 +3009,11 @@ internal sealed partial class LibraDexFileSession
     /// The full shelf plus incoming tuple are merged in persisted key/identity order, a raw-key byte boundary is selected near the median, and two replacement shelves are appended.<br/>
     /// If all rows share the immediate child byte, the router can consume a multi-byte prefix or append a short one-byte chain until a later key byte divides the rows.<br/>
     /// </summary>
+    /// <param name="parentRouterOffset">The parent router page whose route will be repointed to the replacement child router.</param>
+    /// <param name="parentHasDirectIndex">Whether the parent router uses its direct-index route representation.</param>
+    /// <param name="parentRangeStart">The parent route range start for the transformed child.</param>
+    /// <param name="parentRangeEnd">The parent route range end for the transformed child.</param>
+    /// <param name="parentFinalKeyDepth">The final key depth owned by the parent route.</param>
     /// <param name="childRouterOffset">The existing shelf offset that will be rewritten as the child router.</param>
     /// <param name="existingShelf">The full existing shelf as a decoded mutable sidecar.</param>
     /// <param name="rightPrefixByte">The incoming key prefix byte at <paramref name="childRouterKeyDepth"/>.</param>
@@ -3353,7 +3360,6 @@ internal sealed partial class LibraDexFileSession
     /// <param name="existingShelfBytes">The authoritative byte image of the existing shelf.</param>
     /// <param name="keyOffsets">The sorted key-payload offsets, with negative values representing the incoming tuple.</param>
     /// <param name="keyLengths">The sorted key lengths matching <paramref name="keyOffsets"/>.</param>
-    /// <param name="identityLengths">The sorted identity lengths matching <paramref name="keyOffsets"/>.</param>
     /// <param name="identityOffsets">The sorted identity-payload offsets, with negative values representing the incoming tuple.</param>
     /// <param name="identityLengths">The sorted identity lengths matching <paramref name="identityOffsets"/>.</param>
     /// <param name="incomingKey">The incoming raw key bytes.</param>
@@ -3555,6 +3561,7 @@ internal sealed partial class LibraDexFileSession
     /// <param name="existingShelfBytes">The existing shelf byte image containing persisted records.</param>
     /// <param name="keyOffsets">The sorted key-payload offsets, with negative values representing the incoming tuple.</param>
     /// <param name="keyLengths">The sorted key lengths matching <paramref name="keyOffsets"/>.</param>
+    /// <param name="identityLengths">The sorted identity lengths matching <paramref name="keyOffsets"/>.</param>
     /// <param name="incomingKey">The incoming raw key bytes.</param>
     /// <param name="firstKeyDepth">The first key depth eligible for the replacement router.</param>
     /// <param name="hintRightPrefixByte">The incoming key prefix byte at <paramref name="firstKeyDepth"/>.</param>

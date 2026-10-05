@@ -5,6 +5,9 @@ using System.Text;
 
 namespace LibraDex;
 
+/// <summary>
+/// Creates grouped queries over identities selected by a completed condition in one catalog identity group.<br/>
+/// </summary>
 public sealed class LibraDexConditionGroups
 {
     private readonly LibraDexConditionEndCondition condition;
@@ -1736,8 +1739,3 @@ internal readonly struct LibraDexGroupedKey<TKey> : IEquatable<LibraDexGroupedKe
     public override int GetHashCode()
         => isNull ? 0 : Comparer.GetHashCode(Value!);
 }
-
-/// <summary>
-/// Starts or continues an adopted condition by selecting the next LibraDex index name.<br/>
-/// This class is the LibraDex replacement for Abraxas' property-path clause: the selected string is an index name inside the active identity group.<br/>
-/// </summary>

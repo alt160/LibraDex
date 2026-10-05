@@ -34,6 +34,7 @@ public sealed partial class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrim
     /// Creates a routed composite index over an optional durable composite snapshot anchor.<br/>
     /// When a session and slot are supplied, successful inserts rewrite the first durable snapshot format and update the catalog slot root offset; when entries are supplied, the in-memory routed tier tree is rebuilt from reopened snapshot data.<br/>
     /// </summary>
+    /// <param name="catalog">The open catalog that owns the composite index and its durable slot.</param>
     /// <param name="shape">The logical composite shape descriptor.</param>
     /// <param name="session">The optional owning file session for durable snapshot updates.</param>
     /// <param name="slotIndex">The optional fixed catalog slot that anchors the durable snapshot.</param>
@@ -54,6 +55,7 @@ public sealed partial class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrim
     /// Creates a routed composite index over an optional durable composite node-page root.<br/>
     /// The root offset is used by localized path-copy persistence so inserts can append changed node pages and publish a replacement root without rewriting unrelated branches.<br/>
     /// </summary>
+    /// <param name="catalog">The open catalog that owns the composite index and its durable slot.</param>
     /// <param name="shape">The logical composite shape descriptor.</param>
     /// <param name="session">The optional owning file session for durable node updates.</param>
     /// <param name="slotIndex">The optional fixed catalog slot that anchors the durable root.</param>
@@ -111,6 +113,7 @@ public sealed partial class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrim
     /// Opens a routed composite index from durable composite node pages.<br/>
     /// The method rebuilds the in-memory tier tree with each node's durable offset so later inserts can path-copy only the changed route back to the root.<br/>
     /// </summary>
+    /// <param name="catalog">The open catalog that owns the composite index and its durable slot.</param>
     /// <param name="shape">The logical composite shape descriptor.</param>
     /// <param name="session">The owning file session.</param>
     /// <param name="slotIndex">The fixed catalog slot anchoring the root node.</param>
@@ -162,6 +165,9 @@ public sealed partial class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrim
     /// </summary>
     public IndexKeys KeyContract => shape.KeyContract;
 
+    /// <summary>
+    /// Gets the relationship between one identity and the composite keys stored by this index.<br/>
+    /// </summary>
     public IdentityKeyMultiplicity IdentityKeyMultiplicity => shape.IdentityKeyMultiplicity;
 
     /// <summary>
@@ -698,6 +704,7 @@ public sealed partial class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrim
     /// The traversal still reconstructs explicit composite-key containers at terminal paths because callers need stable full-key values for grouping and mutation.<br/>
     /// </summary>
     /// <param name="takeLimit">The optional maximum number of tuples to return.<br/></param>
+    /// <param name="direction">The requested composite-key traversal direction.</param>
     /// <returns>A forward-only tuple sequence over all composite entries.<br/></returns>
     private IEnumerable<LibraDexObjectTuple> IterateAllTupleObjects(int? takeLimit, QueryDirection direction = QueryDirection.Ascending)
     {
@@ -795,6 +802,7 @@ public sealed partial class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrim
     /// Criteria-scoped re-key uses this tuple path so it can preserve the original composite key while replacing only exact old tuples later.<br/>
     /// </summary>
     /// <param name="key">The complete composite key to locate.</param>
+    /// <param name="direction">The requested identity traversal direction at the exact key.</param>
     /// <returns>The matching key/identity tuples.</returns>
     private IEnumerable<LibraDexObjectTuple> EnumerateExactTuples(LibraDexCompositeKey key, QueryDirection direction = QueryDirection.Ascending)
     {
@@ -1009,6 +1017,7 @@ public sealed partial class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrim
     /// This mirrors `CompositeMatch` identity retrieval but reconstructs the full composite key at terminal paths so mutation can later delete exact old tuples.<br/>
     /// </summary>
     /// <param name="predicate">The composite predicate materialized from the condition builder.</param>
+    /// <param name="direction">The requested routed composite traversal direction.</param>
     /// <returns>The matching key/identity tuples.</returns>
     private IEnumerable<LibraDexObjectTuple> EnumerateCompositeMatchTuples(LibraDexCompositePredicate predicate, QueryDirection direction = QueryDirection.Ascending)
     {
@@ -1028,6 +1037,7 @@ public sealed partial class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrim
     /// <param name="tier">The current composite part ordinal.</param>
     /// <param name="predicate">The composite predicate being applied.</param>
     /// <param name="values">The reusable routed path buffer.</param>
+    /// <param name="direction">The requested routed composite traversal direction.</param>
     /// <returns>The matching key/identity tuples below the node.</returns>
     private IEnumerable<LibraDexObjectTuple> EnumerateCompositeMatchTuples(
         CompositeNode node,
@@ -2967,6 +2977,7 @@ public sealed partial class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrim
     /// <param name="node">The node to enumerate.</param>
     /// <param name="tier">The current composite part ordinal.</param>
     /// <param name="values">The reusable traversal path value buffer.</param>
+    /// <param name="direction">The requested routed composite traversal direction.</param>
     /// <returns>The composite key/identity entries below the node.</returns>
     private IEnumerable<LibraDexCompositeEntry> EnumerateEntries(CompositeNode node, int tier, object?[] values, QueryDirection direction = QueryDirection.Ascending)
     {
@@ -3046,6 +3057,7 @@ public sealed partial class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrim
     /// </summary>
     /// <param name="node">The node to enumerate.</param>
     /// <param name="tier">The node's composite tier.</param>
+    /// <param name="direction">The requested routed composite traversal direction.</param>
     /// <returns>The identities stored at or below the supplied node.</returns>
     private IEnumerable<object> EnumerateIdentities(CompositeNode node, int tier, QueryDirection direction = QueryDirection.Ascending)
     {

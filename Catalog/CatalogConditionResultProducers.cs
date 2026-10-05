@@ -107,7 +107,7 @@ public sealed partial class CatalogIdentityGroupIndexes
 
     /// <summary>
     /// Materializes a caller-owned result collection from a completed typed condition.<br/>
-    /// Skip and take define the requested collection window up front; use <see cref="OpenReader{TResult}(LibraDexCondition{TResult})"/> for adaptive movement during consumption.<br/>
+    /// Skip and take define the requested collection window up front; use <c>OpenReader&lt;TResult&gt;(LibraDexCondition&lt;TResult&gt;)</c> for adaptive movement during consumption.<br/>
     /// </summary>
     /// <typeparam name="TResult">The logical result type declared by the condition.<br/></typeparam>
     /// <param name="condition">The completed typed condition to execute.<br/></param>
@@ -138,7 +138,7 @@ public sealed partial class CatalogIdentityGroupIndexes
 
     /// <summary>
     /// Streams the logical sequence described by a completed typed condition.<br/>
-    /// The sequence may internally buffer when <see cref="LibraDexCondition{TResult}.Plan"/> reports a blocking result shape, but it does not create the caller-owned collection used by <see cref="Get{TResult}(LibraDexCondition{TResult}, int, int?)"/>.<br/>
+    /// The sequence may internally buffer when <c>LibraDexCondition&lt;TResult&gt;.Plan</c> reports a blocking result shape, but it does not create the caller-owned collection used by <c>Get&lt;TResult&gt;(LibraDexCondition&lt;TResult&gt;, int, int?)</c>.<br/>
     /// </summary>
     /// <typeparam name="TResult">The logical result type declared by the condition.<br/></typeparam>
     /// <param name="condition">The completed typed condition to execute.<br/></param>

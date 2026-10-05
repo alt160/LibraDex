@@ -35,7 +35,7 @@ public abstract class LibraDexCompositeReaderBase : IDisposable
 
     /// <summary>
     /// Gets exact encoded bytes for one current composite component, including its null marker and type-specific framing.<br/>
-    /// The span is borrowed from the reader and must not be retained after the next <see cref="Read"/> or disposal.<br/>
+    /// The span is borrowed from the reader and must not be retained after the next <c>Read()</c> or disposal.<br/>
     /// </summary>
     /// <param name="partIndex">The zero-based composite part ordinal.<br/></param>
     /// <returns>The borrowed encoded component span.<br/></returns>
@@ -43,7 +43,7 @@ public abstract class LibraDexCompositeReaderBase : IDisposable
 
     /// <summary>
     /// Gets exact encoded bytes for one current composite component as borrowed memory, including its null marker and type-specific framing.<br/>
-    /// The memory must not be retained after the next <see cref="Read"/> or disposal.<br/>
+    /// The memory must not be retained after the next <c>Read()</c> or disposal.<br/>
     /// </summary>
     /// <param name="partIndex">The zero-based composite part ordinal.<br/></param>
     /// <returns>The borrowed encoded component memory.<br/></returns>
@@ -67,14 +67,14 @@ public abstract class LibraDexCompositeReaderBase : IDisposable
 
     /// <summary>
     /// Gets exact encoded bytes for the current identity.<br/>
-    /// The span is borrowed from the reader and must not be retained after the next <see cref="Read"/> or disposal.<br/>
+    /// The span is borrowed from the reader and must not be retained after the next <c>Read()</c> or disposal.<br/>
     /// </summary>
     /// <returns>The borrowed encoded identity span.<br/></returns>
     public ReadOnlySpan<byte> GetIdentityRawSpan() => inner.GetIdentityRawSpan();
 
     /// <summary>
     /// Gets exact encoded bytes for the current identity as borrowed memory.<br/>
-    /// The memory must not be retained after the next <see cref="Read"/> or disposal.<br/>
+    /// The memory must not be retained after the next <c>Read()</c> or disposal.<br/>
     /// </summary>
     /// <returns>The borrowed encoded identity memory.<br/></returns>
     public ReadOnlyMemory<byte> GetIdentityRawMem() => inner.GetIdentityRawMem();
@@ -115,10 +115,10 @@ public sealed class LibraDexCompositeReader<TPart1, TIdentity> : LibraDexComposi
     {
     }
 
-    /// <summary>Gets the current first key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current first key part after a successful <c>Read()</c>.<br/></summary>
     public TPart1 Part1 => ReadPart<TPart1>(0);
 
-    /// <summary>Gets the current identity after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current identity after a successful <c>Read()</c>.<br/></summary>
     public TIdentity Identity => ReadIdentity<TIdentity>();
 }
 
@@ -140,19 +140,19 @@ public sealed class LibraDexCompositeReader<TPart1, TPart2, TPart3, TPart4, TIde
     {
     }
 
-    /// <summary>Gets the current 1th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 1th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart1 Part1 => ReadPart<TPart1>(0);
 
-    /// <summary>Gets the current 2th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 2th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart2 Part2 => ReadPart<TPart2>(1);
 
-    /// <summary>Gets the current 3th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 3th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart3 Part3 => ReadPart<TPart3>(2);
 
-    /// <summary>Gets the current 4th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 4th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart4 Part4 => ReadPart<TPart4>(3);
 
-    /// <summary>Gets the current identity after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current identity after a successful <c>Read()</c>.<br/></summary>
     public TIdentity Identity => ReadIdentity<TIdentity>();
 }
 
@@ -175,22 +175,22 @@ public sealed class LibraDexCompositeReader<TPart1, TPart2, TPart3, TPart4, TPar
     {
     }
 
-    /// <summary>Gets the current 1th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 1th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart1 Part1 => ReadPart<TPart1>(0);
 
-    /// <summary>Gets the current 2th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 2th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart2 Part2 => ReadPart<TPart2>(1);
 
-    /// <summary>Gets the current 3th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 3th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart3 Part3 => ReadPart<TPart3>(2);
 
-    /// <summary>Gets the current 4th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 4th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart4 Part4 => ReadPart<TPart4>(3);
 
-    /// <summary>Gets the current 5th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 5th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart5 Part5 => ReadPart<TPart5>(4);
 
-    /// <summary>Gets the current identity after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current identity after a successful <c>Read()</c>.<br/></summary>
     public TIdentity Identity => ReadIdentity<TIdentity>();
 }
 
@@ -214,25 +214,25 @@ public sealed class LibraDexCompositeReader<TPart1, TPart2, TPart3, TPart4, TPar
     {
     }
 
-    /// <summary>Gets the current 1th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 1th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart1 Part1 => ReadPart<TPart1>(0);
 
-    /// <summary>Gets the current 2th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 2th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart2 Part2 => ReadPart<TPart2>(1);
 
-    /// <summary>Gets the current 3th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 3th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart3 Part3 => ReadPart<TPart3>(2);
 
-    /// <summary>Gets the current 4th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 4th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart4 Part4 => ReadPart<TPart4>(3);
 
-    /// <summary>Gets the current 5th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 5th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart5 Part5 => ReadPart<TPart5>(4);
 
-    /// <summary>Gets the current 6th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 6th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart6 Part6 => ReadPart<TPart6>(5);
 
-    /// <summary>Gets the current identity after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current identity after a successful <c>Read()</c>.<br/></summary>
     public TIdentity Identity => ReadIdentity<TIdentity>();
 }
 
@@ -257,28 +257,28 @@ public sealed class LibraDexCompositeReader<TPart1, TPart2, TPart3, TPart4, TPar
     {
     }
 
-    /// <summary>Gets the current 1th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 1th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart1 Part1 => ReadPart<TPart1>(0);
 
-    /// <summary>Gets the current 2th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 2th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart2 Part2 => ReadPart<TPart2>(1);
 
-    /// <summary>Gets the current 3th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 3th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart3 Part3 => ReadPart<TPart3>(2);
 
-    /// <summary>Gets the current 4th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 4th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart4 Part4 => ReadPart<TPart4>(3);
 
-    /// <summary>Gets the current 5th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 5th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart5 Part5 => ReadPart<TPart5>(4);
 
-    /// <summary>Gets the current 6th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 6th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart6 Part6 => ReadPart<TPart6>(5);
 
-    /// <summary>Gets the current 7th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 7th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart7 Part7 => ReadPart<TPart7>(6);
 
-    /// <summary>Gets the current identity after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current identity after a successful <c>Read()</c>.<br/></summary>
     public TIdentity Identity => ReadIdentity<TIdentity>();
 }
 
@@ -304,31 +304,31 @@ public sealed class LibraDexCompositeReader<TPart1, TPart2, TPart3, TPart4, TPar
     {
     }
 
-    /// <summary>Gets the current 1th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 1th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart1 Part1 => ReadPart<TPart1>(0);
 
-    /// <summary>Gets the current 2th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 2th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart2 Part2 => ReadPart<TPart2>(1);
 
-    /// <summary>Gets the current 3th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 3th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart3 Part3 => ReadPart<TPart3>(2);
 
-    /// <summary>Gets the current 4th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 4th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart4 Part4 => ReadPart<TPart4>(3);
 
-    /// <summary>Gets the current 5th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 5th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart5 Part5 => ReadPart<TPart5>(4);
 
-    /// <summary>Gets the current 6th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 6th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart6 Part6 => ReadPart<TPart6>(5);
 
-    /// <summary>Gets the current 7th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 7th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart7 Part7 => ReadPart<TPart7>(6);
 
-    /// <summary>Gets the current 8th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 8th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart8 Part8 => ReadPart<TPart8>(7);
 
-    /// <summary>Gets the current identity after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current identity after a successful <c>Read()</c>.<br/></summary>
     public TIdentity Identity => ReadIdentity<TIdentity>();
 }
 
@@ -355,34 +355,34 @@ public sealed class LibraDexCompositeReader<TPart1, TPart2, TPart3, TPart4, TPar
     {
     }
 
-    /// <summary>Gets the current 1th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 1th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart1 Part1 => ReadPart<TPart1>(0);
 
-    /// <summary>Gets the current 2th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 2th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart2 Part2 => ReadPart<TPart2>(1);
 
-    /// <summary>Gets the current 3th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 3th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart3 Part3 => ReadPart<TPart3>(2);
 
-    /// <summary>Gets the current 4th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 4th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart4 Part4 => ReadPart<TPart4>(3);
 
-    /// <summary>Gets the current 5th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 5th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart5 Part5 => ReadPart<TPart5>(4);
 
-    /// <summary>Gets the current 6th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 6th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart6 Part6 => ReadPart<TPart6>(5);
 
-    /// <summary>Gets the current 7th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 7th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart7 Part7 => ReadPart<TPart7>(6);
 
-    /// <summary>Gets the current 8th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 8th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart8 Part8 => ReadPart<TPart8>(7);
 
-    /// <summary>Gets the current 9th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 9th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart9 Part9 => ReadPart<TPart9>(8);
 
-    /// <summary>Gets the current identity after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current identity after a successful <c>Read()</c>.<br/></summary>
     public TIdentity Identity => ReadIdentity<TIdentity>();
 }
 
@@ -410,37 +410,37 @@ public sealed class LibraDexCompositeReader<TPart1, TPart2, TPart3, TPart4, TPar
     {
     }
 
-    /// <summary>Gets the current 1th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 1th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart1 Part1 => ReadPart<TPart1>(0);
 
-    /// <summary>Gets the current 2th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 2th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart2 Part2 => ReadPart<TPart2>(1);
 
-    /// <summary>Gets the current 3th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 3th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart3 Part3 => ReadPart<TPart3>(2);
 
-    /// <summary>Gets the current 4th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 4th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart4 Part4 => ReadPart<TPart4>(3);
 
-    /// <summary>Gets the current 5th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 5th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart5 Part5 => ReadPart<TPart5>(4);
 
-    /// <summary>Gets the current 6th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 6th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart6 Part6 => ReadPart<TPart6>(5);
 
-    /// <summary>Gets the current 7th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 7th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart7 Part7 => ReadPart<TPart7>(6);
 
-    /// <summary>Gets the current 8th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 8th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart8 Part8 => ReadPart<TPart8>(7);
 
-    /// <summary>Gets the current 9th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 9th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart9 Part9 => ReadPart<TPart9>(8);
 
-    /// <summary>Gets the current 10th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 10th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart10 Part10 => ReadPart<TPart10>(9);
 
-    /// <summary>Gets the current identity after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current identity after a successful <c>Read()</c>.<br/></summary>
     public TIdentity Identity => ReadIdentity<TIdentity>();
 }
 
@@ -469,40 +469,40 @@ public sealed class LibraDexCompositeReader<TPart1, TPart2, TPart3, TPart4, TPar
     {
     }
 
-    /// <summary>Gets the current 1th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 1th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart1 Part1 => ReadPart<TPart1>(0);
 
-    /// <summary>Gets the current 2th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 2th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart2 Part2 => ReadPart<TPart2>(1);
 
-    /// <summary>Gets the current 3th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 3th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart3 Part3 => ReadPart<TPart3>(2);
 
-    /// <summary>Gets the current 4th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 4th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart4 Part4 => ReadPart<TPart4>(3);
 
-    /// <summary>Gets the current 5th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 5th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart5 Part5 => ReadPart<TPart5>(4);
 
-    /// <summary>Gets the current 6th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 6th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart6 Part6 => ReadPart<TPart6>(5);
 
-    /// <summary>Gets the current 7th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 7th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart7 Part7 => ReadPart<TPart7>(6);
 
-    /// <summary>Gets the current 8th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 8th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart8 Part8 => ReadPart<TPart8>(7);
 
-    /// <summary>Gets the current 9th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 9th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart9 Part9 => ReadPart<TPart9>(8);
 
-    /// <summary>Gets the current 10th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 10th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart10 Part10 => ReadPart<TPart10>(9);
 
-    /// <summary>Gets the current 11th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 11th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart11 Part11 => ReadPart<TPart11>(10);
 
-    /// <summary>Gets the current identity after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current identity after a successful <c>Read()</c>.<br/></summary>
     public TIdentity Identity => ReadIdentity<TIdentity>();
 }
 
@@ -532,43 +532,43 @@ public sealed class LibraDexCompositeReader<TPart1, TPart2, TPart3, TPart4, TPar
     {
     }
 
-    /// <summary>Gets the current 1th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 1th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart1 Part1 => ReadPart<TPart1>(0);
 
-    /// <summary>Gets the current 2th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 2th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart2 Part2 => ReadPart<TPart2>(1);
 
-    /// <summary>Gets the current 3th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 3th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart3 Part3 => ReadPart<TPart3>(2);
 
-    /// <summary>Gets the current 4th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 4th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart4 Part4 => ReadPart<TPart4>(3);
 
-    /// <summary>Gets the current 5th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 5th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart5 Part5 => ReadPart<TPart5>(4);
 
-    /// <summary>Gets the current 6th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 6th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart6 Part6 => ReadPart<TPart6>(5);
 
-    /// <summary>Gets the current 7th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 7th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart7 Part7 => ReadPart<TPart7>(6);
 
-    /// <summary>Gets the current 8th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 8th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart8 Part8 => ReadPart<TPart8>(7);
 
-    /// <summary>Gets the current 9th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 9th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart9 Part9 => ReadPart<TPart9>(8);
 
-    /// <summary>Gets the current 10th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 10th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart10 Part10 => ReadPart<TPart10>(9);
 
-    /// <summary>Gets the current 11th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 11th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart11 Part11 => ReadPart<TPart11>(10);
 
-    /// <summary>Gets the current 12th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 12th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart12 Part12 => ReadPart<TPart12>(11);
 
-    /// <summary>Gets the current identity after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current identity after a successful <c>Read()</c>.<br/></summary>
     public TIdentity Identity => ReadIdentity<TIdentity>();
 }
 
@@ -599,46 +599,46 @@ public sealed class LibraDexCompositeReader<TPart1, TPart2, TPart3, TPart4, TPar
     {
     }
 
-    /// <summary>Gets the current 1th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 1th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart1 Part1 => ReadPart<TPart1>(0);
 
-    /// <summary>Gets the current 2th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 2th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart2 Part2 => ReadPart<TPart2>(1);
 
-    /// <summary>Gets the current 3th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 3th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart3 Part3 => ReadPart<TPart3>(2);
 
-    /// <summary>Gets the current 4th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 4th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart4 Part4 => ReadPart<TPart4>(3);
 
-    /// <summary>Gets the current 5th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 5th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart5 Part5 => ReadPart<TPart5>(4);
 
-    /// <summary>Gets the current 6th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 6th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart6 Part6 => ReadPart<TPart6>(5);
 
-    /// <summary>Gets the current 7th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 7th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart7 Part7 => ReadPart<TPart7>(6);
 
-    /// <summary>Gets the current 8th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 8th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart8 Part8 => ReadPart<TPart8>(7);
 
-    /// <summary>Gets the current 9th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 9th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart9 Part9 => ReadPart<TPart9>(8);
 
-    /// <summary>Gets the current 10th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 10th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart10 Part10 => ReadPart<TPart10>(9);
 
-    /// <summary>Gets the current 11th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 11th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart11 Part11 => ReadPart<TPart11>(10);
 
-    /// <summary>Gets the current 12th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 12th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart12 Part12 => ReadPart<TPart12>(11);
 
-    /// <summary>Gets the current 13th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 13th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart13 Part13 => ReadPart<TPart13>(12);
 
-    /// <summary>Gets the current identity after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current identity after a successful <c>Read()</c>.<br/></summary>
     public TIdentity Identity => ReadIdentity<TIdentity>();
 }
 
@@ -670,49 +670,49 @@ public sealed class LibraDexCompositeReader<TPart1, TPart2, TPart3, TPart4, TPar
     {
     }
 
-    /// <summary>Gets the current 1th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 1th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart1 Part1 => ReadPart<TPart1>(0);
 
-    /// <summary>Gets the current 2th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 2th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart2 Part2 => ReadPart<TPart2>(1);
 
-    /// <summary>Gets the current 3th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 3th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart3 Part3 => ReadPart<TPart3>(2);
 
-    /// <summary>Gets the current 4th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 4th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart4 Part4 => ReadPart<TPart4>(3);
 
-    /// <summary>Gets the current 5th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 5th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart5 Part5 => ReadPart<TPart5>(4);
 
-    /// <summary>Gets the current 6th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 6th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart6 Part6 => ReadPart<TPart6>(5);
 
-    /// <summary>Gets the current 7th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 7th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart7 Part7 => ReadPart<TPart7>(6);
 
-    /// <summary>Gets the current 8th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 8th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart8 Part8 => ReadPart<TPart8>(7);
 
-    /// <summary>Gets the current 9th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 9th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart9 Part9 => ReadPart<TPart9>(8);
 
-    /// <summary>Gets the current 10th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 10th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart10 Part10 => ReadPart<TPart10>(9);
 
-    /// <summary>Gets the current 11th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 11th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart11 Part11 => ReadPart<TPart11>(10);
 
-    /// <summary>Gets the current 12th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 12th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart12 Part12 => ReadPart<TPart12>(11);
 
-    /// <summary>Gets the current 13th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 13th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart13 Part13 => ReadPart<TPart13>(12);
 
-    /// <summary>Gets the current 14th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 14th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart14 Part14 => ReadPart<TPart14>(13);
 
-    /// <summary>Gets the current identity after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current identity after a successful <c>Read()</c>.<br/></summary>
     public TIdentity Identity => ReadIdentity<TIdentity>();
 }
 
@@ -745,52 +745,52 @@ public sealed class LibraDexCompositeReader<TPart1, TPart2, TPart3, TPart4, TPar
     {
     }
 
-    /// <summary>Gets the current 1th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 1th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart1 Part1 => ReadPart<TPart1>(0);
 
-    /// <summary>Gets the current 2th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 2th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart2 Part2 => ReadPart<TPart2>(1);
 
-    /// <summary>Gets the current 3th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 3th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart3 Part3 => ReadPart<TPart3>(2);
 
-    /// <summary>Gets the current 4th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 4th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart4 Part4 => ReadPart<TPart4>(3);
 
-    /// <summary>Gets the current 5th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 5th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart5 Part5 => ReadPart<TPart5>(4);
 
-    /// <summary>Gets the current 6th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 6th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart6 Part6 => ReadPart<TPart6>(5);
 
-    /// <summary>Gets the current 7th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 7th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart7 Part7 => ReadPart<TPart7>(6);
 
-    /// <summary>Gets the current 8th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 8th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart8 Part8 => ReadPart<TPart8>(7);
 
-    /// <summary>Gets the current 9th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 9th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart9 Part9 => ReadPart<TPart9>(8);
 
-    /// <summary>Gets the current 10th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 10th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart10 Part10 => ReadPart<TPart10>(9);
 
-    /// <summary>Gets the current 11th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 11th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart11 Part11 => ReadPart<TPart11>(10);
 
-    /// <summary>Gets the current 12th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 12th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart12 Part12 => ReadPart<TPart12>(11);
 
-    /// <summary>Gets the current 13th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 13th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart13 Part13 => ReadPart<TPart13>(12);
 
-    /// <summary>Gets the current 14th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 14th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart14 Part14 => ReadPart<TPart14>(13);
 
-    /// <summary>Gets the current 15th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 15th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart15 Part15 => ReadPart<TPart15>(14);
 
-    /// <summary>Gets the current identity after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current identity after a successful <c>Read()</c>.<br/></summary>
     public TIdentity Identity => ReadIdentity<TIdentity>();
 }
 
@@ -824,55 +824,55 @@ public sealed class LibraDexCompositeReader<TPart1, TPart2, TPart3, TPart4, TPar
     {
     }
 
-    /// <summary>Gets the current 1th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 1th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart1 Part1 => ReadPart<TPart1>(0);
 
-    /// <summary>Gets the current 2th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 2th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart2 Part2 => ReadPart<TPart2>(1);
 
-    /// <summary>Gets the current 3th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 3th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart3 Part3 => ReadPart<TPart3>(2);
 
-    /// <summary>Gets the current 4th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 4th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart4 Part4 => ReadPart<TPart4>(3);
 
-    /// <summary>Gets the current 5th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 5th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart5 Part5 => ReadPart<TPart5>(4);
 
-    /// <summary>Gets the current 6th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 6th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart6 Part6 => ReadPart<TPart6>(5);
 
-    /// <summary>Gets the current 7th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 7th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart7 Part7 => ReadPart<TPart7>(6);
 
-    /// <summary>Gets the current 8th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 8th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart8 Part8 => ReadPart<TPart8>(7);
 
-    /// <summary>Gets the current 9th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 9th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart9 Part9 => ReadPart<TPart9>(8);
 
-    /// <summary>Gets the current 10th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 10th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart10 Part10 => ReadPart<TPart10>(9);
 
-    /// <summary>Gets the current 11th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 11th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart11 Part11 => ReadPart<TPart11>(10);
 
-    /// <summary>Gets the current 12th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 12th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart12 Part12 => ReadPart<TPart12>(11);
 
-    /// <summary>Gets the current 13th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 13th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart13 Part13 => ReadPart<TPart13>(12);
 
-    /// <summary>Gets the current 14th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 14th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart14 Part14 => ReadPart<TPart14>(13);
 
-    /// <summary>Gets the current 15th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 15th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart15 Part15 => ReadPart<TPart15>(14);
 
-    /// <summary>Gets the current 16th key part after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current 16th key part after a successful <c>Read()</c>.<br/></summary>
     public TPart16 Part16 => ReadPart<TPart16>(15);
 
-    /// <summary>Gets the current identity after a successful <see cref="Read"/>.<br/></summary>
+    /// <summary>Gets the current identity after a successful <c>Read()</c>.<br/></summary>
     public TIdentity Identity => ReadIdentity<TIdentity>();
 }
 

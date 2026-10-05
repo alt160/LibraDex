@@ -8,6 +8,7 @@ namespace LibraDex;
 /// <param name="MaxKeyLength">The maximum raw key length accepted by this runtime index.</param>
 /// <param name="OptimizerRouteFanout">The compressed-route fanout requested by optimizer maintenance.</param>
 /// <param name="OptimizerPolicy">The internal optimizer observation and maintenance scheduling policy.</param>
+/// <param name="Descending">Whether the physical profile stores tuples in descending natural order.<br/></param>
 internal readonly record struct VarKeyScalar8IndexHandle(
     long RootRouterOffset,
     int MaxKeyLength,

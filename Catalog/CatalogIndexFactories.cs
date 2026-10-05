@@ -1408,9 +1408,6 @@ public sealed partial class CatalogIdentityGroupIndexes
     /// String projections delegate to the logical string facade so folded, sort-key, and reversed projection wrappers preserve their public key types.<br/>
     /// Binary suffix conditions map to the owning index's hidden reversed exact-byte projection when the catalog metadata declares one.<br/>
     /// </summary>
-    /// <param name="descriptor">The condition leaf requesting a projection route.</param>
-    /// <param name="classification">The planner classification that identified the projection need.</param>
-    /// <returns>The opened projection index, or <see langword="null"/> when no matching projection exists.</returns>
     /// <summary>
     /// Tries to open one condition index without throwing when its definition is currently absent.<br/>
     /// This resolver is reserved for structural condition guards; ordinary leaves continue through the strict name-first open path.<br/>
@@ -2342,7 +2339,7 @@ public sealed class CatalogNamedIndexBuilder
 
     /// <summary>
     /// Opens this named grouped index using explicit generic type arguments and validates those type arguments against persisted catalog metadata.<br/>
-    /// This supports compact call sites such as `catalog.Indexes["people"]["age"].Open<int, long>()` while preserving the safety of metadata-driven reopen.<br/>
+    /// This supports compact call sites such as <c>catalog.Indexes["people"]["age"].Open&lt;int, long&gt;()</c> while preserving the safety of metadata-driven reopen.<br/>
     /// </summary>
     /// <typeparam name="TKey">The expected public key type.</typeparam>
     /// <typeparam name="TIdentity">The expected public identity type.</typeparam>
@@ -3953,6 +3950,7 @@ public sealed class CatalogNamedTypedIndexBuilder<TKey, TIdentity>
     /// Non-binary typed builders return <see langword="null"/> so existing scalar metadata remains unchanged unless projection intent exists.<br/>
     /// </summary>
     /// <param name="keys">The duplicate-key contract selected for this index.</param>
+    /// <param name="sortOrder">The persisted natural key traversal order recorded in the logical shape.<br/></param>
     /// <returns>A logical shape descriptor for binary projection planning, or <see langword="null"/> for ordinary scalar indexes.</returns>
     private LibraDexIndexShapeSpec? CreateLogicalShape(IndexKeys keys, LibraDexIndexSortOrder sortOrder)
     {

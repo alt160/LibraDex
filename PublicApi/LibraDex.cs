@@ -652,6 +652,7 @@ internal static class Indexes
         /// <param name="developerMetadata">Optional superblock developer metadata.</param>
         /// <param name="telemetryOptions">Optional telemetry policy; enabled by default for early validation.</param>
         /// <param name="descending">Whether the new SV16 index stores keys and equal-key identities physically highest-first.<br/></param>
+        /// <param name="readCacheMaxBytes">The maximum retained byte budget for the session read cache, or zero for no configured limit.<br/></param>
         /// <returns>A runtime wrapper over the created routed raw-byte `SV16` index.</returns>
         internal static Scalar16VarIdentityIndex Create(
             string? path = null,
@@ -1174,6 +1175,7 @@ internal static class Indexes
         /// <param name="options">Optional DataKernel policy; defaults to a facade policy with the superblock at file offset zero.</param>
         /// <param name="developerMetadata">Optional superblock developer metadata.</param>
         /// <param name="telemetryOptions">Optional telemetry policy; enabled by default for early validation.</param>
+        /// <param name="descending">Whether the physical profile stores tuples in descending natural order.<br/></param>
         /// <returns>A runtime wrapper over the created routed raw-byte `VV` index.</returns>
         /// <exception cref="ArgumentException">Thrown when a file-backed path is missing or memory-backed open semantics are requested.</exception>
         /// <exception cref="ArgumentOutOfRangeException">Thrown when the maximum key or identity length is outside the current public limits.</exception>
@@ -1271,6 +1273,7 @@ internal static class Indexes
         /// <param name="options">Optional DataKernel policy; defaults to a facade policy with the superblock at file offset zero.</param>
         /// <param name="developerMetadata">Optional superblock developer metadata for newly created sessions.</param>
         /// <param name="telemetryOptions">Optional telemetry policy; enabled by default for early validation.</param>
+        /// <param name="descending">Whether the physical profile stores tuples in descending natural order.<br/></param>
         /// <returns>A runtime wrapper over the opened or created routed raw-byte `VV` index.</returns>
         /// <exception cref="ArgumentException">Thrown when a file-backed path is missing.</exception>
         /// <exception cref="ArgumentOutOfRangeException">Thrown when the maximum key or identity length is outside the current public limits.</exception>
@@ -1487,7 +1490,6 @@ internal static class Indexes
             /// <param name="slotIndex">The fixed index-directory slot to resolve.</param>
             /// <param name="options">Optional DataKernel policy; defaults to a facade policy with the superblock at file offset zero.</param>
             /// <param name="telemetryOptions">Optional telemetry policy; enabled by default for early validation.</param>
-            /// <param name="shelfExtentSize">The supported fixed shelf extent size to persist when creating a missing `SS8-8` profile.</param>
             /// <returns>A runtime wrapper over the opened encoded `SS8-8` index.</returns>
             /// <exception cref="ArgumentException">Thrown when <paramref name="path"/> is null or empty.</exception>
             /// <exception cref="FileNotFoundException">Thrown when the target file does not exist.</exception>
@@ -1535,6 +1537,7 @@ internal static class Indexes
             /// <param name="options">Optional DataKernel policy; defaults to a facade policy with the superblock at file offset zero.</param>
             /// <param name="developerMetadata">Optional superblock developer metadata for newly created sessions.</param>
             /// <param name="telemetryOptions">Optional telemetry policy; enabled by default for early validation.</param>
+            /// <param name="shelfExtentSize">The shelf extent size in bytes used when creating the index.<br/></param>
             /// <returns>A runtime wrapper over the opened or created encoded `SS8-8` index.</returns>
             /// <exception cref="ArgumentException">Thrown when a file-backed path is missing.</exception>
             /// <exception cref="InvalidDataException">Thrown when an existing active slot is not an `SS8-8` profile.</exception>
@@ -1782,7 +1785,6 @@ internal static class Indexes
                 /// <param name="slotIndex">The fixed index-directory slot to resolve.</param>
                 /// <param name="options">Optional DataKernel policy; defaults to a facade policy with the superblock at file offset zero.</param>
                 /// <param name="telemetryOptions">Optional telemetry policy; enabled by default for early validation.</param>
-                /// <param name="shelfExtentSize">The supported fixed shelf extent size to persist when creating a missing `SS8-8` profile.</param>
                 /// <returns>A typed runtime wrapper over the opened unsigned scalar `SS8-8` index.</returns>
                 /// <exception cref="ArgumentException">Thrown when <paramref name="path"/> is null or empty.</exception>
                 /// <exception cref="FileNotFoundException">Thrown when the target file does not exist.</exception>
@@ -1811,6 +1813,7 @@ internal static class Indexes
                 /// <param name="options">Optional DataKernel policy; defaults to a facade policy with the superblock at file offset zero.</param>
                 /// <param name="developerMetadata">Optional superblock developer metadata for newly created sessions.</param>
                 /// <param name="telemetryOptions">Optional telemetry policy; enabled by default for early validation.</param>
+                /// <param name="shelfExtentSize">The shelf extent size in bytes used when creating the index.<br/></param>
                 /// <returns>A typed runtime wrapper over the opened or created unsigned scalar `SS8-8` index.</returns>
                 /// <exception cref="ArgumentException">Thrown when a file-backed path is missing.</exception>
                 /// <exception cref="InvalidDataException">Thrown when an existing active slot is not an `SS8-8` profile.</exception>

@@ -889,6 +889,7 @@ internal readonly record struct Scalar16Scalar16MutationBounds(
 /// <param name="ItemRegionOffset">The byte offset where the fixed-width physical item region starts.</param>
 /// <param name="ItemRegionSize">The byte length reserved for the physical item region.</param>
 /// <param name="UnusedTailBytes">The unused bytes left at the end of the fixed shelf extent after partitioning.</param>
+/// <param name="Descending">Whether the physical profile stores tuples in descending natural order.<br/></param>
 internal readonly record struct Scalar16Scalar16Profile(
     int ShelfExtentSize,
     ushort MaxItemCount,

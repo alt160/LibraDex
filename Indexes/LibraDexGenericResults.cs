@@ -59,6 +59,7 @@ public readonly record struct LibraDexGenericRekeyResult(
 /// <param name="InitialShelfRouteCreateCount">The number of first-prefix shelf routes initialized by the batch.</param>
 /// <param name="DeferredCommitRequests">The number of lower-level commit requests folded into this batch commit.</param>
 /// <param name="CommitDiagnostics">Diagnostics for the batch publication.</param>
+/// <param name="StorageDiagnostics">The session storage counters captured at batch publication.<br/></param>
 public readonly record struct LibraDexGenericBatchCommitResult(
     long AttemptedInsertCount,
     long InsertedCount,

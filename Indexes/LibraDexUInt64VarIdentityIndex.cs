@@ -50,18 +50,25 @@ public sealed class LibraDexUInt64VarIdentityIndex : IIndex, IIdentityPrimitiveE
     /// </summary>
     public int MaxIdentityBytes => inner.MaxIdentityLength;
 
+    /// <summary>Gets the developer-facing UInt64 key type accepted by this index.</summary>
     public Type KeyType => typeof(ulong);
 
+    /// <summary>Gets the raw byte-array identity type accepted by this index.</summary>
     public Type IdentityType => typeof(byte[]);
 
+    /// <summary>Gets the configured duplicate-key contract.</summary>
     public IndexKeys KeyContract => keyContract;
 
+    /// <summary>Gets the relationship that permits one identity to occur under multiple UInt64 keys.</summary>
     public IdentityKeyMultiplicity IdentityKeyMultiplicity => IdentityKeyMultiplicity.MultipleKeysPerIdentity;
 
+    /// <summary>Gets the catalog scalar key family represented by this index.</summary>
     public CatalogIndexKeyFamily KeyFamily => CatalogIndexKeyFamily.Scalar;
 
+    /// <summary>Gets the catalog blob identity family represented by this index.</summary>
     public CatalogIndexIdentityFamily IdentityFamily => CatalogIndexIdentityFamily.Blob;
 
+    /// <summary>Gets no logical shape descriptor because this specialized variable-identity facade is not condition-materialized through a standard shape.</summary>
     public LibraDexIndexShapeSpec? LogicalShape => null;
 
     /// <summary>

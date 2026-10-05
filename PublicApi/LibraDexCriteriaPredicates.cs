@@ -240,6 +240,7 @@ internal sealed class LibraDexStringPatternPredicate
     /// <param name="mode">Whether the regex match is positive or negated.</param>
     /// <param name="pattern">The regular expression pattern.</param>
     /// <param name="policy">The comparison policy used to derive regex options for string patterns.</param>
+    /// <param name="textNormalization">The text-normalization policy used for string predicate evaluation.<br/></param>
     /// <returns>A compiled string predicate descriptor for the exact-index executor.</returns>
     internal static LibraDexStringPatternPredicate CreateRegex(
         LibraDexStringPatternMode mode,
@@ -262,6 +263,7 @@ internal sealed class LibraDexStringPatternPredicate
     /// <param name="mode">Whether the regex match is positive or negated.</param>
     /// <param name="regex">The caller-provided regular expression instance.</param>
     /// <param name="policy">The comparison policy used only by surrounding condition metadata; regex matching uses the supplied instance options.</param>
+    /// <param name="textNormalization">The text-normalization policy used for string predicate evaluation.<br/></param>
     /// <returns>A compiled string predicate descriptor for the exact-index executor.</returns>
     internal static LibraDexStringPatternPredicate CreateRegex(
         LibraDexStringPatternMode mode,
@@ -276,7 +278,7 @@ internal sealed class LibraDexStringPatternPredicate
 
     /// <summary>
     /// Creates a regex capture predicate that compares the selected regex match text or numbered capture group to one expected value.<br/>
-    /// Group zero is the whole match and matches the behavior of <see cref="Match.Value"/>; positive group numbers compare <see cref="Group.Value"/> for that group.<br/>
+    /// Group zero is the whole match and matches the behavior of <c>Match.Value</c>; positive group numbers compare <c>Group.Value</c> for that group.<br/>
     /// </summary>
     /// <param name="mode">Whether the comparison is positive or negated.</param>
     /// <param name="pattern">The regular expression pattern.</param>
@@ -326,7 +328,7 @@ internal sealed class LibraDexStringPatternPredicate
 
     /// <summary>
     /// Creates a regex capture predicate that compares the selected regex match text or numbered capture group to a value set.<br/>
-    /// Group zero is the whole match and matches the behavior of <see cref="Match.Value"/>; positive group numbers compare <see cref="Group.Value"/> for that group.<br/>
+    /// Group zero is the whole match and matches the behavior of <c>Match.Value</c>; positive group numbers compare <c>Group.Value</c> for that group.<br/>
     /// </summary>
     /// <param name="mode">Whether the comparison is positive or negated.</param>
     /// <param name="pattern">The regular expression pattern.</param>
@@ -995,8 +997,8 @@ internal sealed class LibraDexStringPatternPredicate
     /// </summary>
     /// <param name="candidate">The decoded exact-index key.</param>
     /// <param name="expected">The condition comparison operand.</param>
-    /// <param name="compareInfo">The culture-specific comparison engine.</param>
-    /// <param name="options">The comparison options selected by the condition.</param>
+    /// <param name="options">The .NET comparison options applied by the culture comparison implementation.<br/></param>
+    /// <param name="compareInfo">The culture comparison implementation used unless the policy requests folded ordinal comparison.<br/></param>
     /// <returns>The .NET comparison result.</returns>
     private int Compare(string candidate, string expected, CompareInfo compareInfo, CompareOptions options)
         => policy.Kind == LibraDexStringComparisonPolicyKind.FoldedOrdinal
@@ -1009,8 +1011,6 @@ internal sealed class LibraDexStringPatternPredicate
     /// </summary>
     /// <param name="candidate">The decoded exact-index key.</param>
     /// <param name="values">The condition membership operands.</param>
-    /// <param name="compareInfo">The culture-specific comparison engine.</param>
-    /// <param name="options">The comparison options selected by the condition.</param>
     /// <returns><see langword="true"/> when the candidate matches any membership operand.</returns>
     private static bool MatchesSet(string candidate, ISet<string> values)
         => values.Contains(candidate);
@@ -2908,6 +2908,7 @@ internal sealed class LibraDexGuidPatternPredicate
     /// Removes GUID formatting characters while preserving hex digits and wildcard markers.<br/>
     /// </summary>
     /// <param name="value">The raw user input.</param>
+    /// <param name="allowWildcard">Whether X or x characters are accepted as wildcard markers alongside hexadecimal digits.<br/></param>
     /// <returns>The cleaned lowercase pattern core.</returns>
     private static string Clean(string value, bool allowWildcard = true)
     {

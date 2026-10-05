@@ -2524,6 +2524,7 @@ internal interface IIdentityPrimitivePartitioner<TIdentity>
     /// <param name="request">The normalized primitive request whose complete semantics each partition must preserve.<br/></param>
     /// <param name="workerCount">The exact number of independent physical workers requested by the developer.<br/></param>
     /// <param name="partitions">The exact partition set when successful; otherwise <see langword="null"/>.<br/></param>
+    /// <param name="unsupportedReason">Receives the reason the request or current topology cannot supply the requested partitions.<br/></param>
     /// <returns><see langword="true"/> only when exactly <paramref name="workerCount"/> disjoint partitions were created.<br/></returns>
     bool TryCreateIdentityPrimitivePartitions(
         LibraDexIdentityPrimitiveRequest request,
@@ -2593,8 +2594,3 @@ internal sealed class LibraDexIdentityPrimitivePartitionSet<TIdentity> : IDispos
         ReleaseTransitionRead();
     }
 }
-
-/// <summary>
-/// Carries opaque continuation information for a public query.<br/>
-/// The first scaffold stores only public shape metadata; future implementations can add route, shelf, generation, and tie-breaker state without changing query method names.<br/>
-/// </summary>

@@ -11,6 +11,19 @@ Purpose: track the remaining work to move LibraDex from controlled internal prot
 
 ## Current Readiness
 
+### 2026-10-05 release preparation checkpoint
+
+- `[x]` Public GitHub repository created at `https://github.com/alt160/LibraDex` and local `origin` configured.
+- `[x]` Release/x64 and AnyCPU library builds and local NuGet packing complete with zero warnings and errors after remote configuration.
+- `[x]` The locally packed AnyCPU `net8.0` library is consumed successfully by independent .NET 8, 9, and 10 smoke applications on Windows: create, insert, dispose, reopen, ordered read, and end-of-range validation.
+- `[x]` Package includes library DLL, XML documentation, and README; symbol package generated. Harness projects are excluded from the compiled package.
+- `[x]` CI prepared for Windows/Linux and .NET 8/9/10 consumers. Release workflow prepared for NuGet trusted publishing and a precompiled library ZIP with checksums.
+- `[ ]` Confirm hosted CI passes on the first public commit.
+- `[ ]` Configure NuGet trusted publisher for `alt160/LibraDex`, `release.yml`, environment `release`, package `LibraDex`, using policy creator `iqueue`.
+- `[ ]` Publish the `v1.0.0` tag after CI and trusted-publisher readiness are verified.
+
+The sections below preserve historical engineering gates and evidence; this dated checkpoint records the current package and release-preparation work without treating older unchecked items as newly validated.
+
 - `[x]` Core file-backed index engine builds under Release x64.
 - `[x]` Public condition-builder syntax is broad enough for current Abraxas-style read/filter intent.
 - `[x]` Current read/filter execution matrix is green for the proven public condition families.
@@ -123,6 +136,13 @@ Purpose: track the remaining work to move LibraDex from controlled internal prot
 
 ## 4. Documentation And Developer Friction
 
+- `[x]` Complete release-library XML documentation warning cleanup.
+  - 2026-10-04 Release/x64 validation: MSBuild `Clean` followed by `Build`, zero C# warnings and zero errors.
+  - The regenerated `LibraDex.xml` parses successfully and contains 9,476 documented members.
+  - Local NuGet packing includes `lib/net8.0/LibraDex.xml`; its content exactly matches the regenerated build output. The package also includes `README.md`, and the symbol package was generated.
+  - Validation logs: `artifacts/build-libradex-release-x64-xml-final-clean-build-r25-20261004.log` and `artifacts/pack-libradex-xml-doc-verification-r25-20261004.log`.
+  - Two distinct build warnings remain: the repository has no Git remote, and SourceLink therefore has no source-control link information. These are release repository configuration concerns.
+  - This checkpoint verifies XML documentation and local packaging; the historical release gates below retain their own validation requirements.
 - `[ ]` Add a public quickstart.
   - Create/open a catalog.
   - Add identities.

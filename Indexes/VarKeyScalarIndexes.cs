@@ -635,6 +635,7 @@ internal sealed partial class VarKeyScalar8Index : IDisposable
     /// </summary>
     /// <param name="lowerKey">The inclusive lower key payload.</param>
     /// <param name="upperKey">The inclusive upper key payload.</param>
+    /// <param name="direction">The requested traversal direction for the matching keys and identities.<br/></param>
     /// <returns>A forward-only reader over matching logical key and encoded identity rows.</returns>
     public VarKeyScalar8RangeReader OpenRangeReader(ReadOnlySpan<byte> lowerKey, ReadOnlySpan<byte> upperKey, QueryDirection direction = QueryDirection.Ascending)
     {
@@ -656,6 +657,7 @@ internal sealed partial class VarKeyScalar8Index : IDisposable
     /// </summary>
     /// <param name="lowerKey">The inclusive lower key payload, or null for the null-key sentinel.</param>
     /// <param name="upperKey">The inclusive upper key payload, or null for the null-key sentinel.</param>
+    /// <param name="direction">The requested traversal direction for the matching keys and identities.<br/></param>
     /// <returns>A forward-only reader over matching logical key and encoded identity rows.</returns>
     public VarKeyScalar8RangeReader OpenRangeReader(byte[]? lowerKey, byte[]? upperKey, QueryDirection direction = QueryDirection.Ascending)
     {

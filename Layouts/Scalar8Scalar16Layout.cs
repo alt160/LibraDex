@@ -155,6 +155,7 @@ internal static class Scalar8Scalar16Layout
     /// </summary>
     /// <param name="source">The shelf bytes.</param>
     /// <param name="slotIndex">The zero-based sorted slot index.</param>
+    /// <param name="profile">The shelf profile defining slot and item region offsets and capacities.<br/></param>
     /// <returns>The byte offset of the referenced physical item.</returns>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static ushort ReadSlot(ReadOnlySpan<byte> source, Scalar8Scalar16Profile profile, int slotIndex)
@@ -169,6 +170,7 @@ internal static class Scalar8Scalar16Layout
     /// <param name="target">The writable shelf bytes.</param>
     /// <param name="slotIndex">The zero-based sorted slot index.</param>
     /// <param name="itemOffset">The byte offset of the referenced physical item.</param>
+    /// <param name="profile">The shelf profile defining slot and item region offsets and capacities.<br/></param>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void WriteSlot(Span<byte> target, Scalar8Scalar16Profile profile, int slotIndex, ushort itemOffset)
     {
@@ -180,6 +182,7 @@ internal static class Scalar8Scalar16Layout
     /// The slot region is fixed-width and pre-partitioned for the maximum shelf item count.<br/>
     /// </summary>
     /// <param name="slotIndex">The zero-based sorted slot index.</param>
+    /// <param name="profile">The shelf profile defining slot and item region offsets and capacities.<br/></param>
     /// <returns>The byte offset of the slot.</returns>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static int GetSlotOffset(Scalar8Scalar16Profile profile, int slotIndex)
@@ -192,6 +195,7 @@ internal static class Scalar8Scalar16Layout
     /// Physical item order is append order; sorted logical order is represented by the slot array.<br/>
     /// </summary>
     /// <param name="itemIndex">The zero-based physical item index.</param>
+    /// <param name="profile">The shelf profile defining slot and item region offsets and capacities.<br/></param>
     /// <returns>The byte offset of the item payload.</returns>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static int GetItemOffset(Scalar8Scalar16Profile profile, int itemIndex)
@@ -257,7 +261,8 @@ internal static class Scalar8Scalar16Layout
     /// </summary>
     /// <param name="target">The writable shelf bytes.</param>
     /// <param name="itemOffset">The byte offset of the physical item payload.</param>
-    /// <param name="encodedIdentity">The encoded sortable identity to persist.</param>
+    /// <param name="encodedIdentityHigh">The encoded high identity word to persist.</param>
+    /// <param name="encodedIdentityLow">The encoded low identity word to persist.</param>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void WriteItemIdentity(Span<byte> target, int itemOffset, ulong encodedIdentityHigh, ulong encodedIdentityLow)
     {

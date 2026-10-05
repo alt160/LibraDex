@@ -6,6 +6,9 @@ using System.Text.RegularExpressions;
 
 namespace LibraDex;
 
+/// <summary>
+/// Selects the index or nested group for the next clause in a reusable condition.<br/>
+/// </summary>
 public sealed class LibraDexConditionClause
 {
     private readonly LibraDexConditionBuilder builder;
@@ -198,7 +201,7 @@ public sealed class LibraDexConditionClause
     /// Adds a caller-supplied identity source factory as an external source clause.<br/>
     /// The factory is invoked when the condition executes, allowing callers to use request-time caches, precomputed lists, or another storage engine as the identity source.<br/>
     /// This source form can execute by itself and can also compose with indexed conditions through `And` and `Or` because it supplies its own identity universe.<br/>
-    /// The factory should return identities only; use `External<TKey, TIdentity>(...)` with `LibraDexExternalEntry<TKey, TIdentity>` when caller code needs LibraDex to apply key predicates to runtime key/identity pairs.<br/>
+    /// The factory should return identities only; use <c>External&lt;TKey, TIdentity&gt;(...)</c> with <c>LibraDexExternalEntry&lt;TKey, TIdentity&gt;</c> when caller code needs LibraDex to apply key predicates to runtime key/identity pairs.<br/>
     /// </summary>
     /// <typeparam name="TIdentity">The identity value type supplied by caller code.<br/></typeparam>
     /// <param name="identityFactory">Factory that returns the identities to expose as an external source stream.<br/></param>
@@ -249,7 +252,7 @@ public sealed class LibraDexConditionClause
     /// Adds a caller-supplied external key/identity entry source and selects key operators for the external branch.<br/>
     /// This is the runtime-index form: caller code supplies entries, LibraDex applies the selected external key predicate, and matching identities participate in normal condition composition.<br/>
     /// The factory is invoked when the condition executes, which allows the runtime key/identity source to be request-local or backed by another storage engine.<br/>
-    /// Use `LibraDexExternalEntry<TKey, TIdentity>` entries here so the condition can materialize identities after filtering the caller-owned keys.<br/>
+    /// Use <c>LibraDexExternalEntry&lt;TKey, TIdentity&gt;</c> entries here so the condition can materialize identities after filtering the caller-owned keys.<br/>
     /// </summary>
     /// <typeparam name="TKey">The external branch key type.<br/></typeparam>
     /// <typeparam name="TIdentity">The identity type associated with the external entries.<br/></typeparam>
@@ -279,7 +282,7 @@ public sealed class LibraDexConditionClause
     /// <summary>
     /// Adds a correlated caller-supplied external key source and selects key operators for the external branch.<br/>
     /// The factory receives each candidate identity from the indexed sibling branch and returns external keys for that identity; the selected key predicate decides whether the identity remains matched.<br/>
-    /// This is the anchored correlated-key form: use it with an indexed sibling branch such as `.And.External<TKey>(id => keys).Between(...)` so LibraDex has candidate identities to ask about.<br/>
+    /// This is the anchored correlated-key form: use it with an indexed sibling branch such as <c>.And.External&lt;TKey&gt;(id =&gt; keys).Between(...)</c> so LibraDex has candidate identities to ask about.<br/>
     /// Use the runtime-index entry form instead when caller code already has key/identity pairs and does not need a candidate identity anchor.<br/>
     /// </summary>
     /// <typeparam name="TKey">The external branch key type.<br/></typeparam>
@@ -1744,6 +1747,12 @@ public class LibraDexConditionOperator<TValue>
         where TValues : IEnumerable<TValue>
         => Add(LibraDexConditionOperatorKind.NotInSet, LibraDexConditionOperand.Parameter(values));
 
+    /// <summary>
+    /// Captures an operator and its operands as a leaf, applying the current clause negation and numeric transform.<br/>
+    /// </summary>
+    /// <param name="operatorKind">The operator before clause negation is applied.<br/></param>
+    /// <param name="operands">The captured constant, deferred, or parameter-backed operands.<br/></param>
+    /// <returns>The continuation for joining another clause or completing the condition.<br/></returns>
     protected LibraDexConditionContinueOrEnd Add(
         LibraDexConditionOperatorKind operatorKind,
         params LibraDexConditionOperand[] operands)
@@ -1818,6 +1827,11 @@ public class LibraDexConditionOperator<TValue>
         return Add(operatorKind, LibraDexConditionOperand.Value(state));
     }
 
+    /// <summary>
+    /// Resolves the operator after applying the current clause negation.<br/>
+    /// </summary>
+    /// <param name="operatorKind">The requested operator before negation.<br/></param>
+    /// <returns>The requested operator or its negated counterpart.<br/></returns>
     protected LibraDexConditionOperatorKind EffectiveOperator(LibraDexConditionOperatorKind operatorKind)
         => negate ? NegateOperator(operatorKind) : operatorKind;
 
@@ -2803,7 +2817,7 @@ public sealed class LibraDexStringConditionOperator : LibraDexConditionOperator<
 
     /// <summary>
     /// Captures a regex match-value comparison against the selected string index.<br/>
-    /// The regular expression is evaluated with <see cref="System.Text.RegularExpressions.Regex.Match(string, string)"/> semantics, and <see cref="System.Text.RegularExpressions.Match.Value"/> is compared to <paramref name="value"/>.<br/>
+    /// The regular expression is evaluated with <c>Regex.Match(string, string)</c> semantics, and <c>Match.Value</c> is compared to <paramref name="value"/>.<br/>
     /// </summary>
     /// <param name="pattern">The regular expression pattern.</param>
     /// <param name="value">The expected whole-match value.</param>
@@ -2815,7 +2829,7 @@ public sealed class LibraDexStringConditionOperator : LibraDexConditionOperator<
 
     /// <summary>
     /// Captures a regex match-value comparison from a caller-provided <see cref="Regex"/> instance.<br/>
-    /// The regular expression object is reused during execution, and <see cref="System.Text.RegularExpressions.Match.Value"/> is compared to <paramref name="value"/> using the supplied comparison metadata.<br/>
+    /// The regular expression object is reused during execution, and <c>Match.Value</c> is compared to <paramref name="value"/> using the supplied comparison metadata.<br/>
     /// </summary>
     /// <param name="regex">The regular expression instance.</param>
     /// <param name="value">The expected whole-match value.</param>
@@ -2853,7 +2867,7 @@ public sealed class LibraDexStringConditionOperator : LibraDexConditionOperator<
 
     /// <summary>
     /// Captures a negated regex match-value comparison against the selected string index.<br/>
-    /// The regular expression is evaluated with <see cref="System.Text.RegularExpressions.Regex.Match(string, string)"/> semantics, and identities match when <see cref="System.Text.RegularExpressions.Match.Value"/> differs from <paramref name="value"/> or the regex does not match.<br/>
+    /// The regular expression is evaluated with <c>Regex.Match(string, string)</c> semantics, and identities match when <c>Match.Value</c> differs from <paramref name="value"/> or the regex does not match.<br/>
     /// </summary>
     /// <param name="pattern">The regular expression pattern.</param>
     /// <param name="value">The whole-match value to exclude.</param>
@@ -2903,7 +2917,7 @@ public sealed class LibraDexStringConditionOperator : LibraDexConditionOperator<
 
     /// <summary>
     /// Captures regex match-value membership against the selected string index.<br/>
-    /// The regular expression is evaluated once per candidate key, and <see cref="System.Text.RegularExpressions.Match.Value"/> is compared to the supplied values.<br/>
+    /// The regular expression is evaluated once per candidate key, and <c>Match.Value</c> is compared to the supplied values.<br/>
     /// </summary>
     /// <param name="pattern">The regular expression pattern.</param>
     /// <param name="values">The expected whole-match values.</param>
@@ -2915,7 +2929,7 @@ public sealed class LibraDexStringConditionOperator : LibraDexConditionOperator<
 
     /// <summary>
     /// Captures regex match-value membership from a caller-provided <see cref="Regex"/> instance.<br/>
-    /// The regular expression object is reused during execution, and <see cref="System.Text.RegularExpressions.Match.Value"/> is compared to the supplied value set.<br/>
+    /// The regular expression object is reused during execution, and <c>Match.Value</c> is compared to the supplied value set.<br/>
     /// </summary>
     /// <param name="regex">The regular expression instance.</param>
     /// <param name="values">The expected whole-match values.</param>

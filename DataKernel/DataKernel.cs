@@ -1321,6 +1321,21 @@ internal sealed partial class DataKernel : IDisposable
     /// <param name="writeCallCount">The accumulated public file write call count.</param>
     /// <param name="backingWriteCallCount">The accumulated backing write call count.</param>
     /// <param name="bytesWritten">The accumulated committed byte count.</param>
+    /// <param name="phase">The pending-segment phase eligible for this commit pass.</param>
+    /// <param name="coalescedAdjacentSegmentCount">Receives the number of directly adjacent segments coalesced.</param>
+    /// <param name="coalescedGapCount">Receives the number of small gaps bridged during coalescing.</param>
+    /// <param name="coalescedGapBytes">Receives the total bytes copied from bridged gaps.</param>
+    /// <param name="maxCoalescedGapBytes">Receives the largest bridged gap size.</param>
+    /// <param name="rejectedGapCount">Receives the number of gaps rejected for coalescing.</param>
+    /// <param name="rejectedGapBytes">Receives the total bytes in rejected gaps.</param>
+    /// <param name="maxRejectedGapBytes">Receives the largest rejected gap size.</param>
+    /// <param name="overlapBreakCount">Receives the number of slice groups broken by overlap rules.</param>
+    /// <param name="fileCommitSliceBuildTicks">Receives accumulated commit-slice construction ticks.</param>
+    /// <param name="fileCommitCoveredRangeMergeTicks">Receives accumulated covered-range merge ticks.</param>
+    /// <param name="fileCommitGroupShapeTicks">Receives accumulated write-group shaping ticks.</param>
+    /// <param name="fileCommitBufferBuildTicks">Receives accumulated commit-buffer construction ticks.</param>
+    /// <param name="fileCommitGapReadTicks">Receives accumulated bridged-gap read ticks.</param>
+    /// <param name="fileCommitBackingWriteTicks">Receives accumulated backing-store write ticks.</param>
     private bool CommitFileSegments(
         PendingSegmentPhase phase,
         ref long writeCallCount,
@@ -2128,6 +2143,7 @@ internal sealed partial class DataKernel : IDisposable
         /// <param name="capacity">The number of source bytes available to the segment.<br/></param>
         /// <param name="isAppend">Whether the segment advances the append cursor.<br/></param>
         /// <param name="returnsBuffer">Whether cleanup returns <paramref name="buffer"/> to the shared array pool.<br/></param>
+        /// <param name="phase">The durable commit phase that owns this segment.<br/></param>
         public PendingSegment(
             byte[] buffer,
             int sourceOffset,

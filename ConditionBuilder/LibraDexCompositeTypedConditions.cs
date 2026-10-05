@@ -202,7 +202,7 @@ public sealed class LibraDexCompositeReader<TPart1, TPart2, TIdentity> : IDispos
 
     /// <summary>
     /// Gets the current first key part after a successful <see cref="Read"/>.<br/>
-    /// Reading a <see cref="string"/> or <see cref="byte[]"/> intentionally materializes that requested CLR value; use <see cref="GetUtf8Span(int)"/> or <see cref="GetRawSpan(int)"/> when a borrowed byte view is sufficient.<br/>
+    /// Reading a <see cref="string"/> or <c>byte[]</c> intentionally materializes that requested CLR value; use <see cref="GetUtf8Span(int)"/> or <see cref="GetRawSpan(int)"/> when a borrowed byte view is sufficient.<br/>
     /// </summary>
     public TPart1 Part1 => inner.ReadPart<TPart1>(0);
 

@@ -164,8 +164,3 @@ internal static class LibraDexKeyEquality<TKey>
         }
     }
 }
-
-/// <summary>
-/// Represents a strict non-generic public handle over an opened LibraDex index.<br/>
-/// This surface is for generated and programmatic callers that cannot comfortably carry `TKey` and `TIdentity` through every layer, while still preserving runtime type validation and metadata-driven behavior.<br/>
-/// </summary>

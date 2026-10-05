@@ -115,6 +115,9 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
     /// </summary>
     public IndexKeys KeyContract => IndexKeys.NonUnique;
 
+    /// <summary>
+    /// Gets the relationship between one scalar identity and the logical string keys stored by this index.<br/>
+    /// </summary>
     public IdentityKeyMultiplicity IdentityKeyMultiplicity => IdentityKeyMultiplicity.MultipleKeysPerIdentity;
 
     /// <summary>
@@ -597,12 +600,19 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
             default);
     }
 
+    /// <summary>
+    /// Clears the current thread's optional string-index insertion diagnostics and underlying variable-key/scalar-identity phase allocation diagnostics.<br/>
+    /// </summary>
     public static void ResetThreadInsertDiagnostics()
     {
         threadInsertDiagnostics = new LibraDexStringScalar8ThreadInsertDiagnostics();
         LibraDexFileSession.ResetVarKeyScalar8PhaseAllocationDiagnostics();
     }
 
+    /// <summary>
+    /// Creates a concise summary of the current thread's optional string-index insertion and phase-allocation diagnostics.<br/>
+    /// </summary>
+    /// <returns>A diagnostic summary, or <c>none</c> when no thread-local string insertion diagnostics were collected.</returns>
     public static string CreateThreadInsertDiagnosticsSummary()
     {
         return string.Concat(
@@ -2025,6 +2035,7 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
     /// The stream preserves the same exact-key semantics as previous tuple execution while avoiding the extra intermediate `StringScalar8Tuple` list for read-only callers.<br/>
     /// </summary>
     /// <param name="request">The normalized primitive request produced by the condition materializer.</param>
+    /// <param name="allowWriteUpgrade">True when the iterator may upgrade its coherent read lock for a caller that will mutate the captured tuples.</param>
     /// <returns>A forward-only stream of exact string key and scalar identity tuples.</returns>
     private IEnumerable<LibraDexObjectTuple> IterateExactTuplePrimitive(
         LibraDexIdentityPrimitiveRequest request,
@@ -3629,6 +3640,7 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
     /// <param name="upper">The inclusive upper encoded key bound.</param>
     /// <param name="takeLimit">Optional identity limit.</param>
     /// <param name="keyFilter">Optional encoded-key filter applied after range navigation.</param>
+    /// <param name="direction">The physical key traversal direction.</param>
     /// <returns>The matching scalar identities as runtime objects.</returns>
     private static IEnumerable<ulong> IterateRange(VarKeyScalar8Index index, byte[] lower, byte[] upper, int? takeLimit, Func<byte[], bool>? keyFilter, QueryDirection direction = QueryDirection.Ascending)
     {
@@ -3658,6 +3670,7 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
     /// <param name="boundary">The encoded boundary key.</param>
     /// <param name="inclusive">True to include keys equal to the boundary.</param>
     /// <param name="takeLimit">Optional identity limit.</param>
+    /// <param name="direction">The physical key traversal direction.</param>
     /// <returns>The matching scalar identities as runtime objects.</returns>
     private static IEnumerable<ulong> IterateBefore(VarKeyScalar8Index index, byte[] boundary, bool inclusive, int? takeLimit, QueryDirection direction = QueryDirection.Ascending)
     {
@@ -3678,6 +3691,7 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
     /// <param name="boundary">The encoded boundary key.</param>
     /// <param name="inclusive">True to include keys equal to the boundary.</param>
     /// <param name="takeLimit">Optional identity limit.</param>
+    /// <param name="direction">The physical key traversal direction.</param>
     /// <returns>The matching scalar identities as runtime objects.</returns>
     private static IEnumerable<ulong> IterateAfter(VarKeyScalar8Index index, byte[] boundary, bool inclusive, int? takeLimit, QueryDirection direction = QueryDirection.Ascending)
     {
@@ -3769,6 +3783,7 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
     /// <param name="index">The exact string index.</param>
     /// <param name="predicate">The compiled string predicate.</param>
     /// <param name="takeLimit">Optional identity limit.</param>
+    /// <param name="direction">The physical key traversal direction.</param>
     /// <returns>The matching scalar identities as runtime objects.</returns>
     private static IEnumerable<ulong> IterateStringPattern(VarKeyScalar8Index index, LibraDexStringPatternPredicate predicate, int? takeLimit, QueryDirection direction = QueryDirection.Ascending)
     {
@@ -3840,7 +3855,9 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
     /// <param name="lower">The inclusive lower encoded key bound.</param>
     /// <param name="upper">The inclusive upper encoded key bound.</param>
     /// <param name="predicate">The residual string predicate.</param>
+    /// <param name="byteMatcher">Optional UTF-8 matcher that can reject or confirm encoded key payloads before managed string materialization.</param>
     /// <param name="takeLimit">Optional identity limit for this range.</param>
+    /// <param name="direction">The physical key traversal direction.</param>
     /// <returns>The matching scalar identities as runtime objects.</returns>
     private static IEnumerable<ulong> IterateStringPatternRange(
         VarKeyScalar8Index index,
@@ -3907,6 +3924,7 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
     /// <param name="allowCaseNormalizedBytes">Whether the selected projection permits byte-native matching over already normalized key bytes.<br/></param>
     /// <param name="workerCount">The exact number of independent physical range readers required.<br/></param>
     /// <param name="partitions">The exact partition set when supported; otherwise <see langword="null"/>.<br/></param>
+    /// <param name="unsupportedReason">The explanation populated when the request or current topology cannot supply the requested independent partitions.</param>
     /// <returns><see langword="true"/> only when the primitive and current topology can supply exactly <paramref name="workerCount"/> workers.<br/></returns>
     private static bool TryCreateStringIdentityPartitions(
         LibraDexIdentityPrimitiveRequest request,
@@ -4141,7 +4159,7 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
 
         /// <summary>
         /// Opens this partition's `VS8` reader on the calling worker thread.<br/>
-        /// The first <see cref="IEnumerator{T}.MoveNext"/> call acquires the worker-local coherent read before the coordinator releases its transition read.<br/>
+        /// The first <c>IEnumerator&lt;T&gt;.MoveNext()</c> call acquires the worker-local coherent read before the coordinator releases its transition read.<br/>
         /// </summary>
         /// <returns>The worker-owned identity enumerator for this disjoint range.<br/></returns>
         public IEnumerator<ulong> OpenEnumerator()
@@ -4292,10 +4310,6 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
     /// Physical targets are entered directly instead of reopening the root cursor, while the original global bounds remain authoritative for every shelf slot.<br/>
     /// A null predicate denotes a byte-complete range; otherwise the same UTF-8 fast matcher and managed fallback used by the ordinary string-pattern cursor preserve exact semantics.<br/>
     /// </summary>
-    /// <param name="index">The exact or maintained string-projection index.<br/></param>
-    /// <param name="physical">The disjoint continuation targets and global encoded bounds owned by this worker.<br/></param>
-    /// <param name="predicate">The optional residual string-pattern predicate.<br/></param>
-    /// <param name="byteMatcher">The optional allocation-free UTF-8 matcher.<br/></param>
     /// <returns>Matching encoded identities from only this physical partition.<br/></returns>
     private static string? RequireString(IReadOnlyList<object?> values, int ordinal)
     {
@@ -4598,6 +4612,7 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
     /// </summary>
     /// <param name="value">The original developer-facing string value, or null for the null-key sentinel.</param>
     /// <param name="culture">The projection culture.</param>
+    /// <param name="normalization">The canonical-normalization policy applied before and after culture folding.</param>
     /// <returns>The culture-folded string value, or null for the null-key sentinel.</returns>
     private static string? Fold(string? value, CultureInfo culture, LibraDexTextNormalization normalization)
     {
@@ -5535,10 +5550,11 @@ public sealed class LibraDexStringScalar8Index : IIndex, IIdentityPrimitiveExecu
         /// Executes sort-key membership as repeated exact byte-key lookups against the maintained projection index.<br/>
         /// This keeps the first physical sort-key proof on the same ordinary byte-range primitive as exact lookup and ordered comparison.<br/>
         /// </summary>
-        /// <param name="index">The maintained sort-key projection index.</param>
-        /// <param name="values">The primitive request values containing one enumerable of byte-array sort keys.</param>
-        /// <param name="takeLimit">Optional identity limit.</param>
-        /// <returns>The matching scalar identities as runtime objects.</returns>
+    /// <param name="index">The maintained sort-key projection index.</param>
+    /// <param name="values">The primitive request values containing one enumerable of byte-array sort keys.</param>
+    /// <param name="takeLimit">Optional identity limit.</param>
+    /// <param name="direction">The physical key traversal direction.</param>
+    /// <returns>The matching scalar identities as runtime objects.</returns>
         private static IEnumerable<ulong> IterateByteMembership(VarKeyScalar8Index index, IReadOnlyList<object?> values, int? takeLimit, QueryDirection direction = QueryDirection.Ascending)
         {
             int yielded = 0;

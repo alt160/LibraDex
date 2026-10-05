@@ -339,6 +339,7 @@ internal ref struct Fixed32Scalar16
     /// <param name="encodedIdentityLow">The encoded identity low lane.</param>
     /// <param name="allowDuplicateKeys">True for non-unique index behavior; false for unique key behavior.</param>
     /// <param name="count">The current shelf item count already read by the caller.</param>
+    /// <param name="mutationBounds">Receives the byte regions changed by a successful append for publication tracking.<br/></param>
     /// <returns>True when the tuple was appended; otherwise false so the caller can use the general insert path.</returns>
     private bool TryAppendInSortedOrder(
         ulong key0,

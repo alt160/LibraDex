@@ -607,6 +607,7 @@ internal sealed class UInt64SetPrototype : IDisposable
     /// </summary>
     /// <param name="kernel">The newly opened empty DataKernel.<br/></param>
     /// <param name="path">The canonical file path, or null for memory backing.<br/></param>
+    /// <param name="kind">The sorted or routed presence-set format to initialize.<br/></param>
     /// <returns>The initialized prototype owner.<br/></returns>
     private static UInt64SetPrototype Initialize(DataKernel kernel, string? path, UInt64SetPrototypeKind kind)
     {

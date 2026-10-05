@@ -156,6 +156,7 @@ internal sealed partial class LibraDexFileSession
     /// <param name="key">The single exhausted fixed key shared by every tuple.<br/></param>
     /// <param name="shelfExtentSize">The fixed terminal identity shelf extent.<br/></param>
     /// <param name="identities">The complete sorted scalar-eight identity sequence including the incoming identity.<br/></param>
+    /// <param name="descending">Whether the physical profile stores tuples in descending natural order.<br/></param>
     /// <returns>The successful insert result and publication telemetry.<br/></returns>
     private (FixedNScalarInsertResult Result, DataKernelCommitTelemetry Commit) RewriteFixedNScalar8TerminalRoute(
         long rootOffset,
@@ -232,6 +233,7 @@ internal sealed partial class LibraDexFileSession
     /// <param name="key">The single exhausted fixed key shared by every tuple.<br/></param>
     /// <param name="shelfExtentSize">The terminal variable-identity shelf extent.<br/></param>
     /// <param name="identities">The complete sorted identity sequence including the incoming identity.<br/></param>
+    /// <param name="descending">Whether the physical profile stores tuples in descending natural order.<br/></param>
     /// <returns>Commit telemetry for the one-root publication.<br/></returns>
     private DataKernelCommitTelemetry RewriteFixedNVarIdentityTerminalRoute(
         long rootOffset,
@@ -261,6 +263,7 @@ internal sealed partial class LibraDexFileSession
     /// <param name="key">The complete canonical fixed key.<br/></param>
     /// <param name="shelfExtentSize">The terminal shelf extent.<br/></param>
     /// <param name="identities">The pooled sorted identity workspace.<br/></param>
+    /// <param name="descending">Whether the physical profile stores tuples in descending natural order.<br/></param>
     /// <returns>Commit telemetry for the terminal publication.<br/></returns>
     private DataKernelCommitTelemetry WriteNewFixedNVarIdentityTerminalRoute(
         long rootOffset,

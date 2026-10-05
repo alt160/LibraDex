@@ -239,6 +239,7 @@ internal static class LibraDexStructuredDateCodec
     /// This mirrors the Abraxas bit layout and intentionally ignores the encoded day-of-week field because it can be recomputed by reconstructed date values when needed.<br/>
     /// </summary>
     /// <param name="value">The structured scalar to unpack.</param>
+    /// <param name="encoding">The structured temporal encoding that determines how sub-millisecond precision is decoded.</param>
     /// <param name="year">The decoded year component.</param>
     /// <param name="month">The decoded month component.</param>
     /// <param name="day">The decoded day component.</param>

@@ -18,6 +18,7 @@ internal sealed partial class LibraDexFileSession
     /// <param name="allowDuplicateKeys">Whether multiple distinct identities may share one encoded key.<br/></param>
     /// <param name="singleKeyPerIdentity">Whether an encoded identity may occur under only one key.<br/></param>
     /// <param name="cancellationToken">Cancellation observed through validation, sorting, and unreachable child construction; publication proceeds without a cancellation gap after the final check.<br/></param>
+    /// <param name="descending">Whether the physical profile stores tuples in descending natural order.<br/></param>
     /// <returns>Tuple and topology counts plus child-build and stable-root publication timings.<br/></returns>
     internal VarKeyScalar8SortedBuildResult BuildVarKeyScalar8FromUnordered(
         long rootRouterOffset,
@@ -85,6 +86,7 @@ internal sealed partial class LibraDexFileSession
     /// <param name="singleKeyPerIdentity">Whether an encoded identity may occur under only one key.<br/></param>
     /// <param name="identityMultiplicityAlreadyValidated">Whether the authoritative extraction lifecycle already proved the single-key-per-identity contract.<br/></param>
     /// <param name="cancellationToken">Cancellation observed throughout validation and unreachable topology construction.<br/></param>
+    /// <param name="descending">Whether the physical profile stores tuples in descending natural order.<br/></param>
     /// <returns>Tuple and topology counts plus child-build and stable-root publication timings.<br/></returns>
     internal VarKeyScalar8SortedBuildResult BuildVarKeyScalar8FromSorted(
         long rootRouterOffset,
@@ -130,6 +132,7 @@ internal sealed partial class LibraDexFileSession
     /// <param name="requestedRouteCount">Preferred compressed-router fanout cap.<br/></param>
     /// <param name="tuples">Validated stable tuples in canonical order.<br/></param>
     /// <param name="cancellationToken">Cancellation observed before the stable-root publication boundary.<br/></param>
+    /// <param name="descending">Whether the physical profile stores tuples in descending natural order.<br/></param>
     /// <returns>Tuple and topology counts plus publication telemetry.<br/></returns>
     private VarKeyScalar8SortedBuildResult BuildVarKeyScalar8FromSortedCore(
         long rootRouterOffset,

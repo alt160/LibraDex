@@ -385,6 +385,7 @@ internal sealed class LibraDexConditionNode
     /// <param name="resolveIndex">The strict resolver for unguarded or sibling leaves.</param>
     /// <param name="resolveProjectionIndex">The optional maintained-projection resolver.</param>
     /// <param name="tryResolveIndex">The non-throwing guard resolver.</param>
+    /// <param name="parameterSnapshot">The execution-scoped snapshot used to resolve reusable parameters consistently.<br/></param>
     /// <returns>The dependent criterion, or an empty identity source when the guarded definition is absent.</returns>
     private IIdentityCriterion MaterializeGuarded(
         string group,
@@ -531,6 +532,7 @@ internal sealed class LibraDexConditionNode
     /// This keeps deferred operand evaluation visible and avoids LINQ allocation on the common materialization path.<br/>
     /// </summary>
     /// <param name="descriptor">The leaf descriptor whose operands should be evaluated.</param>
+    /// <param name="parameterSnapshot">The execution-scoped snapshot used to resolve reusable parameters consistently.<br/></param>
     /// <returns>The materialized operand values.</returns>
     private static object?[] MaterializeOperandValues(
         LibraDexConditionLeafDescriptor descriptor,
@@ -3094,6 +3096,7 @@ internal sealed class LibraDexConditionNode
     /// </summary>
     /// <param name="value">The original string value.</param>
     /// <param name="descriptor">The source descriptor carrying the optional culture name.</param>
+    /// <param name="normalization">The canonical text-normalization policy applied when building the maintained projection operand.<br/></param>
     /// <returns>The folded string value.</returns>
     private static string CreateFoldedTextProjectionValue(
         string value,
@@ -3115,6 +3118,7 @@ internal sealed class LibraDexConditionNode
     /// </summary>
     /// <param name="value">The original prefix value.</param>
     /// <param name="descriptor">The source descriptor carrying the optional culture name.</param>
+    /// <param name="normalization">The canonical text-normalization policy applied when building the maintained projection operand.<br/></param>
     /// <returns>The folded prefix plus the high sentinel character.</returns>
     private static string CreateFoldedTextPrefixUpperBound(string value, LibraDexConditionLeafDescriptor descriptor, LibraDexTextNormalization normalization)
         => CreateFoldedTextProjectionValue(value, descriptor, normalization) + '\uffff';
@@ -3125,6 +3129,7 @@ internal sealed class LibraDexConditionNode
     /// </summary>
     /// <param name="value">The original suffix value.</param>
     /// <param name="descriptor">The source descriptor carrying the optional culture name.</param>
+    /// <param name="normalization">The canonical text-normalization policy applied when building the maintained projection operand.<br/></param>
     /// <returns>The reversed folded suffix value.</returns>
     private static string CreateReversedFoldedTextProjectionValue(string value, LibraDexConditionLeafDescriptor descriptor, LibraDexTextNormalization normalization)
     {
@@ -3170,6 +3175,7 @@ internal sealed class LibraDexConditionNode
     /// </summary>
     /// <param name="value">The original suffix value.</param>
     /// <param name="descriptor">The source descriptor carrying the optional culture name.</param>
+    /// <param name="normalization">The canonical text-normalization policy applied when building the maintained projection operand.<br/></param>
     /// <returns>The reversed folded suffix plus the high sentinel character.</returns>
     private static string CreateReversedFoldedTextPrefixUpperBound(string value, LibraDexConditionLeafDescriptor descriptor, LibraDexTextNormalization normalization)
         => CreateReversedFoldedTextProjectionValue(value, descriptor, normalization) + '\uffff';

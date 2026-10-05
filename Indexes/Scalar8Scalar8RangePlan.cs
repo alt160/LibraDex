@@ -115,6 +115,7 @@ internal sealed class Scalar8Scalar8RangePlan : IDisposable
     /// <param name="shelfOffset">The durable offset of the terminal identity shelf.</param>
     /// <param name="shelfBytes">The retained terminal identity shelf image, rented from the shared byte array pool.</param>
     /// <param name="encodedKey">The exhausted route key stored on the terminal identity root.</param>
+    /// <param name="rootOffset">The owning terminal identity root offset retained for shelf traversal.<br/></param>
     internal void AddTerminalIdentityShelfRange(long rootOffset, long shelfOffset, byte[] shelfBytes, ulong encodedKey)
     {
         ThrowIfDisposed();

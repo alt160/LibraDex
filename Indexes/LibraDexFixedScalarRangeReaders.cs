@@ -16,6 +16,7 @@ internal sealed partial class LibraDexFileSession
     /// <param name="lowerEncodedKey">The inclusive lower encoded sortable key.</param>
     /// <param name="upperEncodedKey">The inclusive upper encoded sortable key.</param>
     /// <param name="maxRouterHops">The maximum number of router pages to follow.</param>
+    /// <param name="direction">The traversal direction used for the range reader.</param>
     /// <returns>A cursor positioned before the first matching row.</returns>
     /// <exception cref="ArgumentException">Thrown when <paramref name="upperEncodedKey"/> sorts before <paramref name="lowerEncodedKey"/>.</exception>
     /// <exception cref="ArgumentOutOfRangeException">Thrown when <paramref name="maxRouterHops"/> is not positive.</exception>
@@ -351,6 +352,7 @@ internal sealed partial class LibraDexFileSession
     /// <param name="upperKeyHigh">The inclusive upper encoded sortable key high lane.</param>
     /// <param name="upperKeyLow">The inclusive upper encoded sortable key low lane.</param>
     /// <param name="maxRouterHops">The maximum number of router pages to follow.</param>
+    /// <param name="direction">The traversal direction used for the range reader.</param>
     /// <returns>A cursor positioned before the first matching row.</returns>
     /// <exception cref="ArgumentException">Thrown when the upper key sorts before the lower key.</exception>
     /// <exception cref="ArgumentOutOfRangeException">Thrown when <paramref name="maxRouterHops"/> is not positive.</exception>
@@ -475,6 +477,7 @@ internal sealed partial class LibraDexFileSession
     /// <param name="lowerEncodedKey">The inclusive lower encoded sortable key.</param>
     /// <param name="upperEncodedKey">The inclusive upper encoded sortable key.</param>
     /// <param name="maxRouterHops">The maximum number of router pages to follow.</param>
+    /// <param name="direction">The traversal direction used for the range reader.</param>
     /// <returns>A cursor positioned before the first matching row.</returns>
     /// <exception cref="ArgumentException">Thrown when <paramref name="upperEncodedKey"/> sorts before <paramref name="lowerEncodedKey"/>.</exception>
     /// <exception cref="ArgumentOutOfRangeException">Thrown when <paramref name="maxRouterHops"/> is not positive.</exception>
@@ -643,6 +646,7 @@ internal sealed partial class LibraDexFileSession
     /// <param name="upperKeyHigh">The inclusive upper encoded sortable key high lane.</param>
     /// <param name="upperKeyLow">The inclusive upper encoded sortable key low lane.</param>
     /// <param name="maxRouterHops">The maximum number of router pages to follow.</param>
+    /// <param name="direction">The traversal direction used for the range reader.</param>
     /// <returns>A cursor positioned before the first matching row.</returns>
     /// <exception cref="ArgumentException">Thrown when the upper key sorts before the lower key.</exception>
     /// <exception cref="ArgumentOutOfRangeException">Thrown when <paramref name="maxRouterHops"/> is not positive.</exception>
@@ -798,6 +802,7 @@ internal sealed partial class LibraDexFileSession
     /// <param name="upper2">The inclusive upper encoded key lane 2.</param>
     /// <param name="upper3">The inclusive upper encoded key lane 3.</param>
     /// <param name="maxRouterHops">The maximum number of router pages to follow.</param>
+    /// <param name="direction">The traversal direction used for the range reader.</param>
     /// <returns>A cursor positioned before the first matching row.</returns>
     /// <exception cref="ArgumentException">Thrown when the upper key sorts before the lower key.</exception>
     /// <exception cref="ArgumentOutOfRangeException">Thrown when <paramref name="maxRouterHops"/> is not positive.</exception>
@@ -897,8 +902,9 @@ internal sealed partial class LibraDexFileSession
     /// <param name="upper3">The inclusive upper encoded key lane 3.<br/></param>
     /// <param name="lowerEdge">Whether this router is still on the lower range boundary.<br/></param>
     /// <param name="upperEdge">Whether this router is still on the upper range boundary.<br/></param>
-    /// <param name="visitedTargets">The shelf offsets already counted by the current traversal.<br/></param>
+    /// <param name="visitedShelves">The shelf offsets already counted by the current traversal.<br/></param>
     /// <param name="visitedRouters">The router offsets already counted by the current traversal.<br/></param>
+    /// <param name="rootRouterOffset">The root router offset for the indexed range traversal.</param>
     /// <returns>The number of `FS32-8` identities matched below the router.<br/></returns>
     private long CountFixed32Scalar8IdentityRangeFromRouter(
         long rootRouterOffset,
@@ -1104,8 +1110,9 @@ internal sealed partial class LibraDexFileSession
     /// <param name="upper3">The inclusive upper encoded key lane 3.<br/></param>
     /// <param name="lowerEdge">Whether the lower range boundary still applies to this target.<br/></param>
     /// <param name="upperEdge">Whether the upper range boundary still applies to this target.<br/></param>
-    /// <param name="visitedTargets">The shelf offsets already counted by the current traversal.<br/></param>
+    /// <param name="visitedShelves">The shelf offsets already counted by the current traversal.<br/></param>
     /// <param name="visitedRouters">The router offsets already counted by the current traversal.<br/></param>
+    /// <param name="rootRouterOffset">The root router offset for the indexed range traversal.</param>
     /// <returns>The count of matching `FS32-8` identities under the route target.<br/></returns>
     private long CountFixed32Scalar8IdentityRangeTarget(
         long rootRouterOffset,
@@ -1262,6 +1269,7 @@ internal sealed partial class LibraDexFileSession
     /// </summary>
     /// <param name="shelfOffset">The file offset of the shelf to read.</param>
     /// <param name="profile">The fixed shelf profile for the index.</param>
+    /// <param name="indexRootOffset">The index root offset used to validate the shelf route.</param>
     /// <returns>A borrowed immutable shelf byte array containing a valid `FS32-8` shelf image.</returns>
     /// <exception cref="InvalidDataException">Thrown when the loaded shelf bytes fail validation.</exception>
     internal byte[] ReadFixed32Scalar8ShelfBytes(long indexRootOffset, long shelfOffset, Fixed32Scalar8Profile profile)
@@ -1320,6 +1328,7 @@ internal sealed partial class LibraDexFileSession
     /// <param name="upper2">The inclusive upper encoded key lane 2.</param>
     /// <param name="upper3">The inclusive upper encoded key lane 3.</param>
     /// <param name="maxRouterHops">The maximum number of router pages to follow.</param>
+    /// <param name="direction">The traversal direction used for the range reader.</param>
     /// <returns>A cursor positioned before the first matching row.</returns>
     /// <exception cref="ArgumentException">Thrown when the upper key sorts before the lower key.</exception>
     /// <exception cref="ArgumentOutOfRangeException">Thrown when <paramref name="maxRouterHops"/> is not positive.</exception>
@@ -1419,8 +1428,9 @@ internal sealed partial class LibraDexFileSession
     /// <param name="upper3">The inclusive upper encoded key lane 3.<br/></param>
     /// <param name="lowerEdge">Whether this router is still on the lower range boundary.<br/></param>
     /// <param name="upperEdge">Whether this router is still on the upper range boundary.<br/></param>
-    /// <param name="visitedTargets">The shelf offsets already counted by the current traversal.<br/></param>
+    /// <param name="visitedShelves">The shelf offsets already counted by the current traversal.<br/></param>
     /// <param name="visitedRouters">The router offsets already counted by the current traversal.<br/></param>
+    /// <param name="rootRouterOffset">The root router offset for the indexed range traversal.</param>
     /// <returns>The number of `FS32-16` identities matched below the router.<br/></returns>
     private long CountFixed32Scalar16IdentityRangeFromRouter(
         long rootRouterOffset,
@@ -1626,8 +1636,9 @@ internal sealed partial class LibraDexFileSession
     /// <param name="upper3">The inclusive upper encoded key lane 3.<br/></param>
     /// <param name="lowerEdge">Whether the lower range boundary still applies to this target.<br/></param>
     /// <param name="upperEdge">Whether the upper range boundary still applies to this target.<br/></param>
-    /// <param name="visitedTargets">The shelf offsets already counted by the current traversal.<br/></param>
+    /// <param name="visitedShelves">The shelf offsets already counted by the current traversal.<br/></param>
     /// <param name="visitedRouters">The router offsets already counted by the current traversal.<br/></param>
+    /// <param name="rootRouterOffset">The root router offset for the indexed range traversal.</param>
     /// <returns>The count of matching `FS32-16` identities under the route target.<br/></returns>
     private long CountFixed32Scalar16IdentityRangeTarget(
         long rootRouterOffset,
@@ -1784,6 +1795,7 @@ internal sealed partial class LibraDexFileSession
     /// </summary>
     /// <param name="shelfOffset">The file offset of the shelf to read.</param>
     /// <param name="profile">The fixed shelf profile for the index.</param>
+    /// <param name="indexRootOffset">The index root offset used to validate the shelf route.</param>
     /// <returns>A borrowed immutable shelf byte array containing a valid `FS32-16` shelf image.</returns>
     /// <exception cref="InvalidDataException">Thrown when the loaded shelf bytes fail validation.</exception>
     internal byte[] ReadFixed32Scalar16ShelfBytes(long indexRootOffset, long shelfOffset, Fixed32Scalar16Profile profile)

@@ -62,18 +62,25 @@ public sealed class LibraDexBigIntVarIdentityIndex : IIndex, IIdentityPrimitiveE
     /// </summary>
     public int MaxIdentityBytes { get; }
 
+    /// <summary>Gets the developer-facing BigInteger key type accepted by this index.</summary>
     public Type KeyType => typeof(BigInteger);
 
+    /// <summary>Gets the raw byte-array identity type accepted by this index.</summary>
     public Type IdentityType => typeof(byte[]);
 
+    /// <summary>Gets the configured duplicate-key contract.</summary>
     public IndexKeys KeyContract => keyContract;
 
+    /// <summary>Gets the relationship that permits one identity to occur under multiple BigInteger keys.</summary>
     public IdentityKeyMultiplicity IdentityKeyMultiplicity => IdentityKeyMultiplicity.MultipleKeysPerIdentity;
 
+    /// <summary>Gets the catalog key family represented by this index.</summary>
     public CatalogIndexKeyFamily KeyFamily => CatalogIndexKeyFamily.BigInt;
 
+    /// <summary>Gets the catalog identity family represented by this index.</summary>
     public CatalogIndexIdentityFamily IdentityFamily => CatalogIndexIdentityFamily.Blob;
 
+    /// <summary>Gets no logical shape descriptor because this specialized BigInteger facade is not condition-materialized through a standard shape.</summary>
     public LibraDexIndexShapeSpec? LogicalShape => null;
 
     /// <summary>
@@ -112,6 +119,10 @@ public sealed class LibraDexBigIntVarIdentityIndex : IIndex, IIdentityPrimitiveE
             LibraDexOperationDiagnostics.FromDataKernel(commit));
     }
 
+    /// <summary>Validates and inserts one runtime BigInteger key and byte-array identity.</summary>
+    /// <param name="key">The runtime BigInteger key.</param>
+    /// <param name="identity">The runtime byte-array identity.</param>
+    /// <returns>The insert result and storage diagnostics.</returns>
     public LibraDexGenericInsertResult Insert(object? key, object identity)
     {
         if (key is not BigInteger typedKey)
@@ -238,6 +249,7 @@ public sealed class LibraDexBigIntVarIdentityIndex : IIndex, IIdentityPrimitiveE
         return IterateTuplePrimitive(request);
     }
 
+    /// <summary>Releases the underlying fixed-key/variable-identity index resources.</summary>
     public void Dispose()
     {
         disposed = true;

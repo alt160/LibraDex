@@ -33,7 +33,3 @@ public static class LibraDexCondition
         return Group(group);
     }
 }
-
-/// <summary>
-/// Identifies the value type selected for one adopted condition clause.<br/>
-/// The value kind is descriptor metadata first; physical execution still depends on the resolved LibraDex index and its persisted key contract.<br/>

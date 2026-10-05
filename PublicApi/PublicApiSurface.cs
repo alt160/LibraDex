@@ -373,6 +373,9 @@ public enum LibraDexCriteriaKind
     NumericTransform = 23
 }
 
+/// <summary>
+/// Identifies the combination applied to two query result streams.<br/>
+/// </summary>
 public enum LibraDexSetOperationKind
 {
     /// <summary>
@@ -445,7 +448,7 @@ public readonly record struct LibraDexExternalIdentityContext(object Identity, l
 /// <summary>
 /// Represents one caller-supplied external key/identity entry for an inline external condition branch.<br/>
 /// The key is local to the external branch's predicates, while the identity is composed with LibraDex identity streams and later retrieval still decides whether callers receive identities, keys, or entries.<br/>
-/// This value is for runtime-index style `.External<TKey>(...)` branches; it does not create or mutate a stored LibraDex index.<br/>
+/// This value is for runtime-index style <c>.External&lt;TKey&gt;(...)</c> branches; it does not create or mutate a stored LibraDex index.<br/>
 /// </summary>
 /// <typeparam name="TKey">The external branch key type.<br/></typeparam>
 /// <typeparam name="TIdentity">The identity type associated with the catalog group being filtered.<br/></typeparam>
@@ -485,8 +488,6 @@ public interface ILibraDexConcurrentInsertBatch : IDisposable
 /// Represents one public key/identity tuple returned by a LibraDex index.<br/>
 /// The left side is the indexed key and the right side is the identity associated with that key.<br/>
 /// </summary>
-/// <typeparam name="TKey">The public key type.</typeparam>
-/// <typeparam name="TIdentity">The public identity type.</typeparam>
 public interface IIndex
 {
     /// <summary>
@@ -855,9 +856,6 @@ public interface IIdentityCriterionProjection
 /// Describes one normalized internal read primitive requested by a materialized identity condition.<br/>
 /// Public builders keep developer-facing names such as `Prefix`, `Between`, and `InSet`; this request is the private bridge from that intent to the physical index executor.<br/>
 /// </summary>
-/// <param name="CriteriaKind">The normalized primitive lookup kind.</param>
-/// <param name="Values">The already materialized operand values for the primitive.</param>
-/// <param name="TakeLimit">An optional maximum number of identities required by the caller.</param>
 /// <summary>
 /// Represents the materialized result of a programmatic identity criteria projection.<br/>
 /// This keeps execution metadata beside the returned identities so generated callers can inspect plan shape without rerunning planning separately.<br/>
@@ -898,6 +896,9 @@ public sealed class LibraDexIdentityExecutionResult
 /// <param name="ProjectionName">The maintained projection or sub-index used by the query, when known.</param>
 /// <param name="RowsScanned">The number of rows scanned, when the implementation records it.</param>
 /// <param name="RowsReturned">The number of rows returned, when the implementation records it.</param>
+/// <param name="RequiresScan">Whether execution requires scanning candidates rather than a direct lookup alone.<br/></param>
+/// <param name="ThreadAllocatedBytes">The managed bytes allocated on the executing thread while collecting the diagnostic sample.<br/></param>
+/// <param name="ElapsedTicks">The recorded query execution duration in 100-nanosecond TimeSpan ticks.<br/></param>
 public readonly record struct LibraDexQueryDiagnostics(
     LibraDexExecutionKind ExecutionKind,
     string? ProjectionName = null,

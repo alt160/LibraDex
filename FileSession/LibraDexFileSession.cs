@@ -192,6 +192,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
     /// Enters the file-session concurrent-write scheduler with either the automatic budget or an expert override.<br/>
     /// </summary>
     /// <param name="maximumActiveWriters">The optional expert writer-count override.<br/></param>
+    /// <param name="maximumQueuedWriters">The maximum number of waiting writers permitted before admission rejects new requests.<br/></param>
+    /// <param name="queueTimeout">The maximum time a writer may wait for an admission lease.<br/></param>
     /// <param name="cancellationToken">A token that may cancel this request while it is queued.<br/></param>
     /// <returns>An active admission lease.<br/></returns>
     internal LibraDexWriteAdmissionLease EnterConcurrentWriteAdmission(
@@ -1767,6 +1769,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
     /// <param name="shelfBytes">The terminal identity shelf bytes to search.<br/></param>
     /// <param name="count">The number of live identities in the shelf.<br/></param>
     /// <param name="encodedIdentity">The encoded identity to locate.<br/></param>
+    /// <param name="descending">Whether the physical profile stores tuples in descending natural order.<br/></param>
     /// <returns>The insertion slot, or -1 when <paramref name="encodedIdentity"/> already exists.</returns>
     private static int FindTerminalIdentity8InsertIndex(
         ReadOnlySpan<byte> shelfBytes,
@@ -14844,6 +14847,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
     /// <param name="routerCount">The number of contiguous 4 KiB router pages to write.</param>
     /// <param name="keyDepth">The key byte depth where the routers begin.</param>
     /// <param name="allocationClassId">The allocation class identifier persisted in each router header.</param>
+    /// <param name="arenaLength">The byte length of the owned router arena.<br/></param>
+    /// <param name="arenaBaseOffset">The base file offset of the owned router arena.<br/></param>
     /// <returns>The created router snapshots and DataKernel commit telemetry.</returns>
     /// <exception cref="ArgumentOutOfRangeException">Thrown when router count is not positive.</exception>
     /// <exception cref="InvalidDataException">Thrown when any created router does not validate.</exception>
@@ -24586,6 +24591,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
     /// <param name="tuples">The complete canonical tuple set from the full shelf plus incoming tuple.<br/></param>
     /// <param name="telemetry">Receives durability telemetry when the replacement is published.<br/></param>
     /// <param name="replacementTargetOffset">Receives the appended replacement subtree target offset.<br/></param>
+    /// <param name="descending">Whether the physical profile stores tuples in descending natural order.<br/></param>
     /// <returns><see langword="true"/> when the expected parent route was still current and the replacement was published; otherwise <see langword="false"/>.<br/></returns>
     private bool TryPublishVarKeyScalar8RecursiveShelfReplacement(
         long rootRouterOffset,
@@ -26176,6 +26182,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
     /// <param name="encodedIdentityLow">The encoded low identity half to insert during the split.</param>
     /// <param name="allocationClassId">The allocation class identifier to persist in the transformed child router.</param>
     /// <param name="childRouterKeyDepth">The key byte depth where the transformed router begins.</param>
+    /// <param name="parentRouterOffset">The parent router that currently routes to the transformed shelf.</param>
+    /// <param name="parentRoutePrefixByte">The parent-route prefix that must be rewritten to the child router.</param>
     /// <returns>The child router offset, left/right shelf offsets, left/right item counts, insert result, and commit telemetry.</returns>
     /// <exception cref="ArgumentException">Thrown when supplied shelf bytes do not match the profiled extent size.</exception>
     /// <exception cref="InvalidDataException">Thrown when shelf validity or split partitioning is invalid.</exception>
@@ -26340,8 +26348,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
     /// <param name="profile">The `SS16-8` shelf profile used for both split shelves.</param>
     /// <param name="encodedKeyHigh">The encoded high key half to insert during the split.</param>
     /// <param name="encodedKeyLow">The encoded low key half to insert during the split.</param>
-    /// <param name="encodedIdentityHigh">The encoded high identity lane to insert during the split.</param>
-    /// <param name="encodedIdentityLow">The encoded low identity lane to insert during the split.</param>
+    /// <param name="encodedIdentity">The encoded scalar identity to insert during the split.</param>
     /// <returns>The left shelf offset, right shelf offset, left/right item counts, insert result, and commit telemetry.</returns>
     /// <exception cref="InvalidDataException">Thrown when routing, shelf validity, or split partitioning is invalid.</exception>
     internal (
@@ -26953,6 +26960,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
     /// <param name="encodedIdentity">The encoded scalar identity to insert during the split.</param>
     /// <param name="allocationClassId">The allocation class identifier to persist in the transformed child router.</param>
     /// <param name="childRouterKeyDepth">The key byte depth where the transformed router begins.</param>
+    /// <param name="parentRouterOffset">The parent router that currently routes to the transformed shelf.</param>
+    /// <param name="parentRoutePrefixByte">The parent-route prefix that must be rewritten to the child router.</param>
     /// <returns>The child router offset, left/right shelf offsets, left/right item counts, insert result, and commit telemetry.</returns>
     /// <exception cref="ArgumentException">Thrown when supplied shelf bytes do not match the profiled extent size.</exception>
     /// <exception cref="InvalidDataException">Thrown when shelf validity or split partitioning is invalid.</exception>
@@ -27327,6 +27336,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
     /// <param name="encodedIdentity">The encoded scalar identity to insert during the split.</param>
     /// <param name="allocationClassId">The allocation class identifier to persist in the transformed child router.</param>
     /// <param name="childRouterKeyDepth">The key byte depth where the transformed router begins.</param>
+    /// <param name="parentRouterOffset">The parent router that currently routes to the transformed shelf.</param>
+    /// <param name="parentRoutePrefixByte">The parent-route prefix that must be rewritten to the child router.</param>
     /// <returns>The child router offset, left/right shelf offsets, left/right item counts, insert result, and commit telemetry.</returns>
     /// <exception cref="ArgumentException">Thrown when supplied shelf bytes do not match the profiled extent size.</exception>
     /// <exception cref="InvalidDataException">Thrown when shelf validity or split partitioning is invalid.</exception>
@@ -27770,6 +27781,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
     /// <param name="encodedIdentityLow">The encoded low identity half to insert during the split.</param>
     /// <param name="allocationClassId">The allocation class identifier to persist in the transformed child router.</param>
     /// <param name="childRouterKeyDepth">The key byte depth where the transformed router begins.</param>
+    /// <param name="parentRouterOffset">The parent router that currently routes to the transformed shelf.</param>
+    /// <param name="parentRoutePrefixByte">The parent-route prefix that must be rewritten to the child router.</param>
     /// <returns>The child router offset, left/right shelf offsets, left/right item counts, insert result, and commit telemetry.</returns>
     /// <exception cref="ArgumentException">Thrown when supplied shelf bytes do not match the profiled extent size.</exception>
     /// <exception cref="InvalidDataException">Thrown when shelf validity or split partitioning is invalid.</exception>
@@ -29391,7 +29404,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
     /// The method merges the incoming tuple with the existing sorted shelf, chooses a median-near prefix boundary, and populates left/right shelf byte arrays.<br/>
     /// Returning false means that byte depth cannot distinguish the tuple set and the caller should try another structural split strategy.<br/>
     /// </summary>
-    /// <param name="existingShelf">The full existing shelf as a decoded mutable sidecar.</param>
+    /// <param name="existingShelfBytes">The full existing shelf bytes.</param>
     /// <param name="keyDepth">The encoded key byte depth used to divide the replacement shelves.</param>
     /// <param name="hintRightPrefixByte">The incoming tuple prefix at <paramref name="keyDepth"/>.</param>
     /// <param name="profile">The `SS8-8` shelf profile used for both replacement shelves.</param>
@@ -30193,6 +30206,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
     /// <param name="sortedKey3s">The complete sorted fourth key lanes for the full shelf plus the incoming tuple.</param>
     /// <param name="firstKeyDepth">The first encoded key byte depth that can be owned by the router being created at the transformed shelf offset.</param>
     /// <param name="hintRightPrefixByte">The incoming tuple prefix that older split code used directly as the right-side boundary.</param>
+    /// <param name="descending">Whether the physical profile stores tuples in descending natural order.<br/></param>
     /// <returns>The byte depth and first prefix byte that should route to the right replacement shelf.</returns>
     /// <exception cref="ArgumentException">Thrown when key lane vectors do not have the same length.</exception>
     /// <exception cref="InvalidDataException">Thrown when the key set has no usable prefix boundary in the encoded key.</exception>
@@ -30244,6 +30258,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
     /// <param name="keyDepth">The encoded key byte depth being evaluated.</param>
     /// <param name="hintRightPrefixByte">The incoming tuple prefix that older split code used directly as the right-side boundary.</param>
     /// <param name="rightPrefixByte">The selected first right-side prefix byte when a usable boundary exists.</param>
+    /// <param name="descending">Whether the physical profile stores tuples in descending natural order.<br/></param>
     /// <returns>True when a usable boundary exists at <paramref name="keyDepth"/>; otherwise false.</returns>
     private static bool TryChooseFixed32Scalar8TransformSplitRightPrefix(
         ReadOnlySpan<ulong> sortedKey0s,
@@ -35228,6 +35243,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
     /// <param name="encodedIdentity">The incoming encoded identity.</param>
     /// <param name="allocationClassId">The router allocation class identifier to preserve.</param>
     /// <param name="childRouterKeyDepth">The key byte depth owned by the router replacing the shelf.</param>
+    /// <param name="requestedRouteCount">The preferred compressed-router fanout cap for replacement topology.<br/></param>
+    /// <param name="routeMutationHint">The recent route mutation statistics supplied to the child-router shape planner.<br/></param>
     /// <returns>The child router offset, left/right shelf offsets, left/right item counts, insert result, and commit telemetry.</returns>
     private (
         long ChildRouterOffset,
@@ -35499,6 +35516,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
     /// <param name="leftItemCount">The number of tuples in the left replacement shelf.</param>
     /// <param name="rightItemCount">The number of tuples in the right replacement shelf.</param>
     /// <param name="insertResult">The split insert result.</param>
+    /// <param name="requiresRecursiveReplacement">Receives whether the tuple distribution requires a recursive replacement subtree instead of two shelves.<br/></param>
+    /// <param name="selectedPrefixStem">Receives the common encoded-key prefix consumed before the selected split depth.<br/></param>
     /// <returns>True when replacement shelves were created; otherwise false.</returns>
     private bool TryCreateVarKeyScalar8SplitShelves(
         VarKeyScalar8MutableShelf existingShelf,
@@ -36031,6 +36050,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
     /// <param name="hintRightPrefixByte">The incoming prefix byte at the initial child-router depth.</param>
     /// <param name="profile">The replacement-shelf profile whose independent slot and payload capacities every candidate must satisfy.</param>
     /// <param name="rightPrefixByte">The selected first right-side prefix byte.</param>
+    /// <param name="sourceOrderValid">Receives whether the source descriptors preserve the required routed key order.<br/></param>
     /// <returns>`true` when the source range can be divided at <paramref name="keyDepth"/>.</returns>
     private static bool TryChooseVarKeyScalar8TransformSplitRightPrefix(
         byte[] existingShelfBytes,
@@ -39461,6 +39481,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
     /// <param name="visitedShelves">The visited shelf set used to avoid repeated mutation of shared targets.<br/></param>
     /// <param name="visitedRouters">The visited router set used to avoid route cycles.<br/></param>
     /// <param name="remainingRouterHops">The remaining router hop budget.<br/></param>
+    /// <param name="routeIndex">The physical route index in the owning parent router.<br/></param>
+    /// <param name="parentRouterOffset">The parent router offset owning the target route.<br/></param>
     /// <returns>The number of live tuples marked deleted.<br/></returns>
     private long DeleteVarKeyScalar8RangeFromTargetForWriteContext(
         LibraDexWriteContext writeContext,
@@ -42024,7 +42046,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
 
     /// <summary>
     /// Rents small mutable shelf byte images and allocates large images as ordinary arrays.<br/>
-    /// Large var-key shelves are transient batch working buffers, and returning them to `ArrayPool<byte>.Shared` can retain hundreds of megabytes or more in the shared pool after each commit.<br/>
+    /// Large var-key shelves are transient batch working buffers, and returning them to <c>ArrayPool&lt;byte&gt;.Shared</c> can retain hundreds of megabytes or more in the shared pool after each commit.<br/>
     /// The returned <paramref name="ownsPooledBytes"/> flag tells the mutable shelf whether release should return the byte image to the pool, while non-pooled arrays are left for normal GC collection.<br/>
     /// </summary>
     /// <param name="shelfExtentSize">The exact persisted shelf extent size that must be readable and writable by the mutable view.</param>
@@ -42872,6 +42894,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
         /// <param name="arenaBaseOffset">The arena base file offset.</param>
         /// <param name="arenaBytes">The full arena bytes.</param>
         /// <param name="arenaLength">The valid byte length inside <paramref name="arenaBytes"/>.</param>
+        /// <param name="maxCachedBytes">The maximum total byte budget retained by the arena read cache.<br/></param>
         public void Store(long arenaBaseOffset, byte[] arenaBytes, int arenaLength, long maxCachedBytes)
         {
             if (arenaLength > maxCachedBytes)
@@ -44821,9 +44844,12 @@ internal sealed partial class LibraDexFileSession : IDisposable
     /// <param name="key1">The second encoded key lane to insert during the split.</param>
     /// <param name="key2">The third encoded key lane to insert during the split.</param>
     /// <param name="key3">The fourth encoded key lane to insert during the split.</param>
-    /// <param name="encodedIdentity">The encoded scalar identity to insert during the split.</param>
+    /// <param name="encodedIdentityHigh">The encoded high identity lane to insert during the split.</param>
+    /// <param name="encodedIdentityLow">The encoded low identity lane to insert during the split.</param>
     /// <param name="allocationClassId">The allocation class identifier to persist in the transformed child router.</param>
     /// <param name="childRouterKeyDepth">The key byte depth where the transformed router begins.</param>
+    /// <param name="parentRouterOffset">The parent router that currently routes to the transformed shelf.</param>
+    /// <param name="parentRoutePrefixByte">The parent-route prefix that must be rewritten to the child router.</param>
     /// <returns>The child router offset, left/right shelf offsets, left/right item counts, insert result, and commit telemetry.</returns>
     /// <exception cref="ArgumentException">Thrown when supplied shelf bytes do not match the profiled extent size.</exception>
     /// <exception cref="InvalidDataException">Thrown when shelf validity or split partitioning is invalid.</exception>
@@ -45150,7 +45176,8 @@ internal sealed partial class LibraDexFileSession : IDisposable
     /// <param name="key1">The second encoded key lane to insert during the split.</param>
     /// <param name="key2">The third encoded key lane to insert during the split.</param>
     /// <param name="key3">The fourth encoded key lane to insert during the split.</param>
-    /// <param name="encodedIdentity">The encoded scalar identity to insert during the split.</param>
+    /// <param name="encodedIdentityHigh">The encoded high identity lane to insert during the split.</param>
+    /// <param name="encodedIdentityLow">The encoded low identity lane to insert during the split.</param>
     /// <param name="selectedRightPrefixByte">The selected first right-side prefix byte.</param>
     /// <param name="leftShelfBytes">The populated left replacement shelf bytes.</param>
     /// <param name="rightShelfBytes">The populated right replacement shelf bytes.</param>
@@ -45292,6 +45319,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
     /// <param name="sortedKey3s">The complete sorted fourth key lanes for the full shelf plus the incoming tuple.</param>
     /// <param name="firstKeyDepth">The first encoded key byte depth that can be owned by the router being created at the transformed shelf offset.</param>
     /// <param name="hintRightPrefixByte">The incoming tuple prefix that older split code used directly as the right-side boundary.</param>
+    /// <param name="descending">Whether the physical profile stores tuples in descending natural order.<br/></param>
     /// <returns>The byte depth and first prefix byte that should route to the right replacement shelf.</returns>
     /// <exception cref="ArgumentException">Thrown when key lane vectors do not have the same length.</exception>
     /// <exception cref="InvalidDataException">Thrown when the key set has no usable prefix boundary in the encoded key.</exception>
@@ -45344,6 +45372,7 @@ internal sealed partial class LibraDexFileSession : IDisposable
     /// <param name="keyDepth">The encoded key byte depth being evaluated.</param>
     /// <param name="hintRightPrefixByte">The incoming tuple prefix that older split code used directly as the right-side boundary.</param>
     /// <param name="rightPrefixByte">The selected first right-side prefix byte when a usable boundary exists.</param>
+    /// <param name="descending">Whether the physical profile stores tuples in descending natural order.<br/></param>
     /// <returns>True when a usable boundary exists at <paramref name="keyDepth"/>; otherwise false.</returns>
     private static bool TryChooseFixed32Scalar16TransformSplitRightPrefix(
         ReadOnlySpan<ulong> sortedKey0s,
@@ -45642,28 +45671,6 @@ internal sealed partial class LibraDexFileSession : IDisposable
     }
 
 
-    /// <summary>
-    /// Tries to split a full walked `FS32-16` shelf by refining the parent router routes that currently point at that shelf.<br/>
-    /// This is the shape-local fixed-32-byte-key counterpart to the `SS16-8` parent-route split helper.<br/>
-    /// </summary>
-    /// <param name="parentRouterOffset">The file offset of the parent router that selected the full shelf.</param>
-    /// <param name="fullShelfOffset">The file offset of the full shelf being replaced.</param>
-    /// <param name="existingShelfBytes">The already-read full shelf bytes.</param>
-    /// <param name="parentRouterKeyDepth">The key byte depth owned by the parent router.</param>
-    /// <param name="profile">The `FS32-16` shelf profile used for both replacement shelves.</param>
-    /// <param name="key0">The first encoded key lane to insert during the split.</param>
-    /// <param name="key1">The second encoded key lane to insert during the split.</param>
-    /// <param name="key2">The third encoded key lane to insert during the split.</param>
-    /// <param name="key3">The fourth encoded key lane to insert during the split.</param>
-    /// <param name="encodedIdentity">The encoded scalar identity to insert during the split.</param>
-    /// <param name="resultParentRouterOffset">The parent router offset that was rewritten.</param>
-    /// <param name="leftShelfOffset">The left shelf offset after the split.</param>
-    /// <param name="rightShelfOffset">The right shelf offset after the split.</param>
-    /// <param name="leftItemCount">The left replacement shelf item count.</param>
-    /// <param name="rightItemCount">The right replacement shelf item count.</param>
-    /// <param name="insertResult">The split insert result.</param>
-    /// <param name="telemetry">The commit telemetry when a split occurred.</param>
-    /// <returns>True when the full shelf was split by parent-route refinement; otherwise false.</returns>
     /// <summary>
     /// Tries the allocation-minimal `FS32-16` sorted-tail split while preserving the original shelf as the left child.<br/>
     /// The source must be a full, deletion-free, dense physical image ordered by the parent-route prefix, and the incoming tuple must append after its last tuple.<br/>

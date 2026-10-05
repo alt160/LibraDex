@@ -609,6 +609,7 @@ internal sealed class Scalar8Scalar8QueuedWriter
     /// <param name="encodedKey">The already encoded sortable 8-byte scalar key.<br/></param>
     /// <param name="encodedIdentity">The already encoded 8-byte scalar identity value.<br/></param>
     /// <param name="allowDuplicateKeys">Whether multiple identities may share the same encoded key.<br/></param>
+    /// <param name="cancellationToken">Cancellation observed while waiting for or processing the queued operation.<br/></param>
     /// <returns>The operation-facing insert outcome and the commit telemetry for the path that published the insert.<br/></returns>
     /// <exception cref="ObjectDisposedException">Thrown when the owning index has already been disposed.<br/></exception>
     /// <exception cref="InvalidDataException">Thrown when the resolved route graph or shelf bytes are invalid.<br/></exception>
@@ -700,6 +701,8 @@ internal sealed class Scalar8Scalar8QueuedWriter
     /// <param name="encodedKey">The already encoded sortable 8-byte scalar key.<br/></param>
     /// <param name="encodedIdentity">The already encoded 8-byte scalar identity value.<br/></param>
     /// <param name="telemetry">Receives commit telemetry when one tuple was deleted and published.<br/></param>
+    /// <param name="cancellationToken">Cancellation observed while waiting for or processing the queued operation.<br/></param>
+    /// <param name="queuedPath">Receives the queued storage path used for the deletion.<br/></param>
     /// <returns>True when one exact tuple was deleted; false when the tuple was not present.<br/></returns>
     /// <exception cref="InvalidDataException">Thrown when the resolved route graph or shelf bytes are invalid.<br/></exception>
     internal bool DeleteEncoded(

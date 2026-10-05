@@ -222,7 +222,7 @@ internal readonly ref struct Scalar8Scalar16ReadOnly
     /// <param name="upperEncodedKey">The inclusive upper encoded sortable key.</param>
     /// <param name="encodedIdentityHighs">The caller-owned output span that receives matching encoded high identity halves.</param>
     /// <param name="encodedIdentityLows">The caller-owned output span that receives matching encoded low identity halves.</param>
-    /// <returns>The number of identities copied into <paramref name="encodedIdentities"/>.</returns>
+    /// <returns>The number of identities copied into the supplied high and low identity spans.</returns>
     /// <exception cref="ArgumentException">Thrown when <paramref name="upperEncodedKey"/> is lower than <paramref name="lowerEncodedKey"/> or the output span is too small.</exception>
     public int CopyIdentitiesInKeyRange(
         ulong lowerEncodedKey,

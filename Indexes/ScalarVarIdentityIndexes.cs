@@ -360,6 +360,7 @@ internal sealed class Scalar8VarIdentityIndex : IDisposable
     /// </summary>
     /// <param name="lowerEncodedKey">The inclusive lower encoded scalar key.</param>
     /// <param name="upperEncodedKey">The inclusive upper encoded scalar key.</param>
+    /// <param name="direction">The requested traversal direction for the matching keys and identities.<br/></param>
     /// <returns>A forward-only reader over matching raw identities.</returns>
     public Scalar8VarIdentityRangeReader OpenRangeReader(ulong lowerEncodedKey, ulong upperEncodedKey, QueryDirection direction = QueryDirection.Ascending)
     {
@@ -1568,6 +1569,10 @@ internal readonly record struct Scalar8VarIdentityBatchInsert(ulong EncodedKey, 
 /// <param name="AlreadyPresentCount">The number of duplicate exact tuples reported as already present.<br/></param>
 /// <param name="KeyConflictCount">The number of duplicate-key conflicts when duplicate keys were disabled.<br/></param>
 /// <param name="InitialShelfRouteCreateCount">The number of lazy root-prefix shelves created while routing the call.<br/></param>
+/// <param name="Sorted">Whether the prepared tuple batch was sorted before coalesced routing.<br/></param>
+/// <param name="LargestSameKeyFrequency">The largest number of prepared tuples sharing one encoded key.<br/></param>
+/// <param name="KindCounts">Optional insertion counts grouped by routed result kind.<br/></param>
+/// <param name="DiagnosticPathCounts">Optional insertion counts grouped by diagnostic storage path.<br/></param>
 internal readonly record struct Scalar8VarIdentityCoalescedInsertResult(
     long AttemptedInsertCount,
     long InsertedCount,

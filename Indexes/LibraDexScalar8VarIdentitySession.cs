@@ -3549,6 +3549,7 @@ internal sealed partial class LibraDexFileSession
     /// <param name="incomingIdentity">The raw identity being inserted.</param>
     /// <param name="allowDuplicateKeys">Whether duplicate scalar keys are allowed when identities differ.</param>
     /// <param name="result">Receives the routed insert result when the split succeeds or the tuple already exists.</param>
+    /// <param name="rootRouterOffset">The root router offset for the affected route.</param>
     /// <returns>`true` when the linked chain was handled without falling through to overflow rewrite.</returns>
     private bool TrySplitScalar8VarIdentityOverflowChain(
         long rootRouterOffset,
@@ -4421,7 +4422,7 @@ internal sealed partial class LibraDexFileSession
     /// This path is needed after an expanded one-byte router maps many final-byte prefixes to the same shelf and that shelf later fills again.<br/>
     /// The replacement shelves reuse the parent router directly instead of creating an impossible depth-8 child router.<br/>
     /// </summary>
-    /// <param name="shelfBytes">The current persisted shelf bytes.</param>
+    /// <param name="mutableShelf">The current decoded mutable shelf view.</param>
     /// <param name="profile">The shelf profile used to validate and rebuild the replacement shelves.</param>
     /// <param name="splitDepth">The scalar-key byte depth already represented by the parent router.</param>
     /// <param name="incomingKey">The encoded scalar key being inserted.</param>
@@ -4948,6 +4949,7 @@ internal sealed partial class LibraDexFileSession
     /// <param name="leftShelfOffset">The replacement shelf for lower prefixes.</param>
     /// <param name="rightShelfOffset">The replacement shelf for the selected and higher split prefixes.</param>
     /// <param name="selectedRightPrefix">The first split-depth prefix routed to the right shelf.</param>
+    /// <param name="descending">Whether physical ordering is descending.</param>
     /// <returns>The top router offset to publish into the parent router.</returns>
     private long CreateScalar8VarIdentitySplitRouterChain(
         ushort firstDepth,
@@ -5055,7 +5057,9 @@ internal sealed partial class LibraDexFileSession
     /// <param name="routerOffset">The router page currently being inspected.<br/></param>
     /// <param name="sourceTargetOffset">The stale shelf offset to replace.<br/></param>
     /// <param name="replacementTargetOffset">The new shelf or router target offset.<br/></param>
+    /// <param name="requiredRouterDepth">The router depth that the replacement route must satisfy.<br/></param>
     /// <param name="visitedRouters">The route-graph cycle and alias guard.<br/></param>
+    /// <param name="ownedStemKey">The encoded key stem owned by the route being repointed.<br/></param>
     private void RepointMatchingScalar8VarIdentityRoutesCore(
         long routerOffset,
         long sourceTargetOffset,
@@ -5155,6 +5159,7 @@ internal sealed partial class LibraDexFileSession
     /// <param name="leftShelfOffset">The left replacement shelf offset.</param>
     /// <param name="rightShelfOffset">The right replacement shelf offset.</param>
     /// <param name="requiredRouterDepth">The direct-router key depth represented by the same-depth split.</param>
+    /// <param name="descending">Whether physical ordering is descending.</param>
     private void RepointSameDepthScalar8VarIdentityRoutes(
         long rootRouterOffset,
         long sourceShelfOffset,
@@ -5177,6 +5182,7 @@ internal sealed partial class LibraDexFileSession
     /// <param name="leftShelfOffset">The left replacement shelf offset.</param>
     /// <param name="rightShelfOffset">The right replacement shelf offset.</param>
     /// <param name="requiredRouterDepth">The direct-router key depth represented by the same-depth split.</param>
+    /// <param name="descending">Whether physical ordering is descending.</param>
     /// <param name="visitedRouters">The route-graph cycle and alias guard.</param>
     private void RepointSameDepthScalar8VarIdentityRoutesCore(
         long routerOffset,
@@ -5651,6 +5657,7 @@ internal sealed partial class LibraDexFileSession
     /// <param name="incomingIdentity">The incoming raw identity for the duplicate key.</param>
     /// <param name="allowDuplicateKeys">Whether duplicate scalar keys are allowed by the owning index.</param>
     /// <param name="result">Receives the routed insert result when extraction is performed.</param>
+    /// <param name="rootRouterOffset">The root router offset for the affected route.</param>
     /// <returns><see langword="true"/> when the source shelf was converted or the incoming tuple was already present; otherwise <see langword="false"/>.</returns>
     private bool TryExtractScalar8VarIdentityDuplicateKeyToTerminalRoute(
         long rootRouterOffset,
@@ -5969,6 +5976,7 @@ internal sealed partial class LibraDexFileSession
     /// <param name="keyBytes">The encoded scalar key bytes stored once in the terminal root.<br/></param>
     /// <param name="shelfExtentSize">The terminal shelf extent size.<br/></param>
     /// <param name="identities">The pooled byte-native identity workspace in sorted identity order.<br/></param>
+    /// <param name="descending">Whether physical ordering is descending.</param>
     /// <returns>The terminal root offset.</returns>
     private long CreateScalar8VarIdentityTerminalRoute(byte shape, ReadOnlySpan<byte> keyBytes, int shelfExtentSize, PooledTerminalVarIdentitySet identities, bool descending = false)
     {
@@ -6882,6 +6890,7 @@ internal sealed partial class LibraDexFileSession
     /// </summary>
     /// <param name="identities">The pooled terminal identity workspace to search.<br/></param>
     /// <param name="identity">The identity bytes to locate.<br/></param>
+    /// <param name="descending">Whether physical ordering is descending.</param>
     /// <returns>The insertion index for <paramref name="identity"/>.</returns>
     private static int LowerBoundTerminalVarIdentity(PooledTerminalVarIdentitySet identities, ReadOnlySpan<byte> identity, bool descending = false)
     {
@@ -7478,6 +7487,7 @@ internal sealed partial class LibraDexFileSession
     /// <param name="shelfBytes">The validated terminal shelf byte image.<br/></param>
     /// <param name="count">The live identity count in the shelf.<br/></param>
     /// <param name="identity">The target raw identity bytes.<br/></param>
+    /// <param name="descending">Whether physical ordering is descending.</param>
     /// <returns>The lower-bound slot index in the range zero through <paramref name="count"/>.<br/></returns>
     private static int LowerBoundTerminalVarIdentityShelf(ReadOnlySpan<byte> shelfBytes, int count, ReadOnlySpan<byte> identity, bool descending = false)
     {

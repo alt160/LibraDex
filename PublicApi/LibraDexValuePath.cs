@@ -7,10 +7,15 @@ namespace LibraDex;
 /// <summary>Identifies why a CLR value path could not be prepared.<br/></summary>
 public enum LibraDexValuePathFailureKind
 {
+    /// <summary>The value path was prepared successfully.<br/></summary>
     None = 0,
+    /// <summary>The requested path contains no member segments.<br/></summary>
     EmptyPath = 1,
+    /// <summary>A requested public instance member could not be found.<br/></summary>
     MissingMember = 2,
+    /// <summary>A requested method is excluded by the value-path contract.<br/></summary>
     BlockedMethod = 3,
+    /// <summary>The resolved member result does not match the expected result type.<br/></summary>
     ResultTypeMismatch = 4
 }
 

@@ -4,6 +4,31 @@
     <TargetFramework>net8.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <IsPackable>true</IsPackable>
+    <PackageId>LibraDex</PackageId>
+    <Title>LibraDex</Title>
+    <PackageVersion>1.0.0</PackageVersion>
+    <Authors>alt160</Authors>
+    <Copyright>Copyright (c) 2026 alt160</Copyright>
+    <Description>A .NET-native identity-index catalog for durable or memory-only typed key-to-identity relationships, filtering, counting, and ordered traversal over data owned elsewhere.</Description>
+    <PackageTags>index catalog secondary-index identity filtering query ordered durable low-allocation</PackageTags>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+    <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
+    <PackageProjectUrl>https://github.com/alt160/LibraDex</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/alt160/LibraDex</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageReleaseNotes>Initial public release of the .NET-native typed identity-index catalog.</PackageReleaseNotes>
+    <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <DebugType>portable</DebugType>
+    <DebugSymbols>true</DebugSymbols>
+    <Deterministic>true</Deterministic>
+    <ContinuousIntegrationBuild Condition="'$(GITHUB_ACTIONS)' == 'true'">true</ContinuousIntegrationBuild>
+    <EnablePackageValidation>true</EnablePackageValidation>
   </PropertyGroup>
 
   <ItemGroup>
@@ -11,6 +36,15 @@
     <Compile Remove="LibraDex.FileSearch\**\*.cs" />
     <Compile Remove="LibraDex.FileSearch.Runner\**\*.cs" />
     <Compile Remove="LibraDex.ShapeBench\**\*.cs" />
+    <Compile Remove="tests\**\*.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.401" PrivateAssets="All" />
   </ItemGroup>
 
 </Project>

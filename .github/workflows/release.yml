@@ -1,0 +1,76 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+  artifact-metadata: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Derive version
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "LIBRADEX_PACKAGE_VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Restore and build
+        run: |
+          dotnet restore LibraDex.csproj
+          dotnet build LibraDex.csproj --configuration Release --no-restore
+
+      - name: Pack
+        run: dotnet pack LibraDex.csproj --configuration Release --no-build --output artifacts/packages /p:PackageVersion=${{ env.LIBRADEX_PACKAGE_VERSION }}
+
+      - name: Smoke test package consumer
+        run: |
+          dotnet restore tests/LibraDex.PackageSmoke/LibraDex.PackageSmoke.csproj /p:RestoreAdditionalProjectSources="$GITHUB_WORKSPACE/artifacts/packages" /p:LibraDexPackageVersion=${{ env.LIBRADEX_PACKAGE_VERSION }}
+          dotnet run --project tests/LibraDex.PackageSmoke/LibraDex.PackageSmoke.csproj --configuration Release --no-restore /p:LibraDexPackageVersion=${{ env.LIBRADEX_PACKAGE_VERSION }}
+
+      - name: Create precompiled library archive
+        shell: bash
+        run: |
+          mkdir -p artifacts/binaries
+          cp bin/Release/net8.0/LibraDex.dll bin/Release/net8.0/LibraDex.xml bin/Release/net8.0/LibraDex.pdb artifacts/binaries/
+          cp README.md LICENSE CHANGELOG.md artifacts/binaries/
+          (cd artifacts/binaries && zip -q "../packages/LibraDex-${LIBRADEX_PACKAGE_VERSION}-net8.0.zip" *)
+
+      - name: Create checksums
+        shell: bash
+        run: |
+          cd artifacts/packages
+          sha256sum *.nupkg *.snupkg *.zip > SHA256SUMS.txt
+
+      - name: Attest package provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: artifacts/packages/*.nupkg
+
+      - name: Authenticate to NuGet.org through trusted publishing
+        uses: NuGet/login@v1
+        id: nuget-login
+        with:
+          user: iqueue
+
+      - name: Publish NuGet package
+        run: dotnet nuget push artifacts/packages/*.nupkg --api-key ${{ steps.nuget-login.outputs.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${{ github.ref_name }}" artifacts/packages/* --generate-notes --verify-tag

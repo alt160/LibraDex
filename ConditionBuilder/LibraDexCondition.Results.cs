@@ -12,8 +12,11 @@ namespace LibraDex;
 /// </summary>
 public enum AggType
 {
+    /// <summary>Returns the minimum aggregate-index key in each group.<br/></summary>
     Min = 0,
+    /// <summary>Returns the maximum aggregate-index key in each group.<br/></summary>
     Max = 1,
+    /// <summary>Returns the selected identity count in each group.<br/></summary>
     Count = 2
 }
 
@@ -24,8 +27,11 @@ public enum AggType
 /// </summary>
 public enum SubIndexType
 {
+    /// <summary>Groups by the culture-folded string projection.<br/></summary>
     Folded = 0,
+    /// <summary>Groups by the culture sort-key byte projection.<br/></summary>
     SortKey = 1,
+    /// <summary>Groups by the case-preserving normalized string projection.<br/></summary>
     Normalized = 2
 }
 

@@ -54,6 +54,7 @@ public sealed partial class CatalogIdentityGroupIndexes
     /// <param name="identityMultiplicityAlreadyProven">Whether the owning layer proved one maintained key per identity for the exact logical index.<br/></param>
     /// <param name="workerCount">The exact number of independent physical workers required.<br/></param>
     /// <param name="partitions">The exact partition set when supported; otherwise <see langword="null"/>.<br/></param>
+    /// <param name="unsupportedReason">Receives the reason the request or current topology cannot supply the requested partitions.<br/></param>
     /// <returns><see langword="true"/> only when the condition is a safe primitive leaf and its physical index created exactly <paramref name="workerCount"/> partitions.<br/></returns>
     internal bool TryCreateMultiplicityProvenConditionIdentityPartitions<TIdentity>(
         LibraDexConditionEndCondition condition,

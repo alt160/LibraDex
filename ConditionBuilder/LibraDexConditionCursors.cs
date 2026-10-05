@@ -768,6 +768,7 @@ internal static class LibraDexConditionCursorExecutor
     /// <param name="targetIndex">The target index whose tuples are exposed by the cursor.<br/></param>
     /// <param name="targetLeaf">The direct target-index primitive leaf to stream.<br/></param>
     /// <param name="externalCriterion">The external identity-filter criterion.<br/></param>
+    /// <param name="direction">The requested traversal direction for the matching keys and identities.<br/></param>
     /// <returns>Target-index tuples accepted by the external identity filter.</returns>
     private static IEnumerable<LibraDexObjectTuple> IterateExternalFilteredTargetTuples(
         IIndex targetIndex,

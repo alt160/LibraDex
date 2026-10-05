@@ -765,6 +765,8 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
     /// This is an Abraxas-integration bridge, not a public all-shape concurrency contract; unsupported shapes are rejected explicitly.<br/>
     /// </summary>
     /// <param name="options">Optional concurrency options; defaults to queued-writer mode for this explicit queued-writer factory.<br/></param>
+    /// <param name="cancellationToken">A token that can cancel while writer admission is pending.<br/></param>
+    /// <param name="admissionAlreadyHeld">Whether the caller already owns the write-admission lease required by this writer.<br/></param>
     /// <returns>A generic queued writer facade for this index.<br/></returns>
     /// <exception cref="ObjectDisposedException">Thrown when the index has already been disposed.<br/></exception>
     /// <exception cref="NotSupportedException">Thrown when this index is not backed by a supported queued-writer shape.<br/></exception>
@@ -783,6 +785,8 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
     /// Public/deferred writer entry points call this only after rejection; immediate mutation internals use it for shelf-local delete/rekey plumbing that remains part of one synchronous operation.<br/>
     /// </summary>
     /// <param name="options">Optional concurrency options for the underlying queued writer.</param>
+    /// <param name="cancellationToken">A token that can cancel while writer admission is pending.</param>
+    /// <param name="admissionAlreadyHeld">Whether the caller already owns the write-admission lease required by this writer.</param>
     /// <returns>A generic queued writer facade for this index.</returns>
     private LibraDexQueuedWriter<TKey, TIdentity> BeginQueuedWriterAfterSingleKeyBatchCheck(
         LibraDexConcurrencyOptions? options = null,
@@ -5960,6 +5964,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
     /// The stream reads the scalar null route first, then falls through to the ordinary value router while preserving the caller's optional take limit across both route classes.<br/>
     /// </summary>
     /// <param name="takeLimit">The optional maximum number of identities to yield.</param>
+    /// <param name="direction">The traversal direction used to enumerate matching identities.</param>
     /// <returns>A forward-only sequence of decoded identities.</returns>
     private IEnumerable<TIdentity> IterateAllIdentityObjects(int? takeLimit = null, QueryDirection direction = QueryDirection.Ascending)
     {
@@ -6165,6 +6170,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
     /// </summary>
     /// <param name="values">The condition primitive operands; operand zero must be <see cref="ScalarNull"/>.</param>
     /// <param name="takeLimit">The optional maximum number of identities to yield.</param>
+    /// <param name="direction">The traversal direction used to enumerate matching identities.</param>
     /// <returns>A forward-only sequence of decoded identities.</returns>
     private IEnumerable<TIdentity> IterateScalarNullIdentityObjects(IReadOnlyList<object?> values, int? takeLimit = null, QueryDirection direction = QueryDirection.Ascending)
     {
@@ -6594,6 +6600,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
     /// </summary>
     /// <param name="values">The condition primitive operands; operand zero must be <see cref="NullKey"/>.</param>
     /// <param name="takeLimit">The optional maximum number of identities to yield.</param>
+    /// <param name="direction">The traversal direction used to enumerate matching identities.</param>
     /// <returns>A forward-only sequence of decoded identities.</returns>
     private IEnumerable<TIdentity> IterateNullKeyIdentityObjects(IReadOnlyList<object?> values, int? takeLimit = null, QueryDirection direction = QueryDirection.Ascending)
     {
@@ -7039,6 +7046,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
     /// </summary>
     /// <param name="keys">The membership keys to read.</param>
     /// <param name="takeLimit">The optional maximum number of tuples to yield across all keys.</param>
+    /// <param name="direction">The traversal direction used to enumerate matching tuples.</param>
     /// <returns>A forward-only tuple sequence.</returns>
     private IEnumerable<LibraDexObjectTuple> IterateMembershipTupleObjects(IEnumerable<object?> keys, int? takeLimit = null, QueryDirection direction = QueryDirection.Ascending)
     {
@@ -7095,6 +7103,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
     /// </summary>
     /// <param name="values">The condition operand values, either inline keys, an enumerable of keys, or a prepared set.</param>
     /// <param name="takeLimit">The optional maximum number of identities to yield across all keys.</param>
+    /// <param name="direction">The traversal direction used to enumerate matching identities.</param>
     /// <returns>A forward-only identity sequence.</returns>
     private IEnumerable<TIdentity> IterateMembershipIdentityObjects(IReadOnlyList<object?> values, int? takeLimit = null, QueryDirection direction = QueryDirection.Ascending)
     {
@@ -7122,6 +7131,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
     /// </summary>
     /// <param name="keys">The membership keys to read.</param>
     /// <param name="takeLimit">The optional maximum number of identities to yield across all keys.</param>
+    /// <param name="direction">The traversal direction used to enumerate matching identities.</param>
     /// <returns>A forward-only identity sequence.</returns>
     private IEnumerable<TIdentity> IterateMembershipIdentityObjects(IEnumerable<object?> keys, int? takeLimit = null, QueryDirection direction = QueryDirection.Ascending)
     {
@@ -7314,6 +7324,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
     /// </summary>
     /// <param name="values">The primitive operand list containing one range array.</param>
     /// <param name="takeLimit">The optional maximum number of tuples to yield across all ranges.</param>
+    /// <param name="direction">The traversal direction used to enumerate matching tuples.</param>
     /// <returns>A forward-only tuple sequence.</returns>
     private IEnumerable<LibraDexObjectTuple> IterateMultiRangeTupleObjects(IReadOnlyList<object?> values, int? takeLimit = null, QueryDirection direction = QueryDirection.Ascending)
     {
@@ -7353,6 +7364,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
     /// </summary>
     /// <param name="values">The primitive operand list containing one range array.</param>
     /// <param name="takeLimit">The optional maximum number of identities to yield across all ranges.</param>
+    /// <param name="direction">The traversal direction used to enumerate matching identities.</param>
     /// <returns>A forward-only identity sequence.</returns>
     private IEnumerable<TIdentity> IterateMultiRangeIdentityObjects(IReadOnlyList<object?> values, int? takeLimit = null, QueryDirection direction = QueryDirection.Ascending)
     {
@@ -7528,6 +7540,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
     /// </summary>
     /// <param name="values">The primitive operand list containing one compiled structured component predicate.</param>
     /// <param name="takeLimit">The optional maximum number of identities to yield.</param>
+    /// <param name="direction">The traversal direction used to enumerate matching identities.</param>
     /// <returns>A forward-only identity sequence.</returns>
     private IEnumerable<TIdentity> IterateStructuredComponentIdentityObjects(IReadOnlyList<object?> values, int? takeLimit = null, QueryDirection direction = QueryDirection.Ascending)
     {
@@ -7603,6 +7616,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
     /// </summary>
     /// <param name="values">The primitive operand list containing one compiled GUID predicate.</param>
     /// <param name="takeLimit">The optional maximum number of identities to yield.</param>
+    /// <param name="direction">The traversal direction used to enumerate matching identities.</param>
     /// <returns>A forward-only identity sequence.</returns>
     private IEnumerable<TIdentity> IterateGuidPatternIdentityObjects(IReadOnlyList<object?> values, int? takeLimit = null, QueryDirection direction = QueryDirection.Ascending)
     {
@@ -7670,6 +7684,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
     /// </summary>
     /// <param name="values">The primitive operand list containing one compiled binary predicate.</param>
     /// <param name="takeLimit">The optional maximum number of identities to yield.</param>
+    /// <param name="direction">The traversal direction used to enumerate matching identities.</param>
     /// <returns>A forward-only identity sequence.</returns>
     private IEnumerable<TIdentity> IterateBinaryPatternIdentityObjects(IReadOnlyList<object?> values, int? takeLimit = null, QueryDirection direction = QueryDirection.Ascending)
     {
@@ -7739,6 +7754,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
     /// </summary>
     /// <param name="values">The primitive operand list containing one compiled typed binary-slice predicate.</param>
     /// <param name="takeLimit">The optional maximum number of identities to yield.</param>
+    /// <param name="direction">The traversal direction used to enumerate matching identities.</param>
     /// <returns>A forward-only identity sequence.</returns>
     private IEnumerable<TIdentity> IterateBinaryTypedSliceIdentityObjects(IReadOnlyList<object?> values, int? takeLimit = null, QueryDirection direction = QueryDirection.Ascending)
     {
@@ -7808,6 +7824,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
     /// </summary>
     /// <param name="values">The primitive operand list containing one compiled bitmask predicate.</param>
     /// <param name="takeLimit">The optional maximum number of identities to yield.</param>
+    /// <param name="direction">The traversal direction used to enumerate matching identities.</param>
     /// <returns>A forward-only identity sequence.</returns>
     private IEnumerable<TIdentity> IterateBitmaskIdentityObjects(IReadOnlyList<object?> values, int? takeLimit = null, QueryDirection direction = QueryDirection.Ascending)
     {
@@ -7897,6 +7914,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
     /// </summary>
     /// <param name="values">The primitive operand list containing one compiled numeric transform predicate.</param>
     /// <param name="takeLimit">The optional maximum number of identities to yield.</param>
+    /// <param name="direction">The traversal direction used to enumerate matching identities.</param>
     /// <returns>A forward-only identity sequence.</returns>
     private IEnumerable<TIdentity> IterateNumericTransformIdentityObjects(IReadOnlyList<object?> values, int? takeLimit = null, QueryDirection direction = QueryDirection.Ascending)
     {
@@ -9504,6 +9522,7 @@ internal sealed class LibraDexStagedIdentityKeyGuard<TKey, TIdentity>
     /// </summary>
     /// <param name="identity">The identity requested for staging.</param>
     /// <param name="key">The ordinary key requested for staging.</param>
+    /// <param name="newlyTracked">Receives whether this call newly reserved the identity for the current staged operation.</param>
     /// <returns><see langword="true"/> when the staged insert does not violate `SingleKeyPerIdentity`.</returns>
     internal bool CanInsert(TIdentity identity, TKey key, out bool newlyTracked)
     {
@@ -9533,6 +9552,7 @@ internal sealed class LibraDexStagedIdentityKeyGuard<TKey, TIdentity>
     /// <param name="identity">The identity requested for staging.</param>
     /// <param name="newKey">The replacement ordinary key requested for staging.</param>
     /// <param name="oldKey">The old ordinary key allowed during the staged replacement.</param>
+    /// <param name="newlyTracked">Receives whether this call newly reserved the identity for the current staged operation.</param>
     /// <returns><see langword="true"/> when the staged replacement does not violate `SingleKeyPerIdentity`.</returns>
     internal bool CanReplace(TIdentity identity, TKey newKey, TKey oldKey, out bool newlyTracked)
     {
@@ -9575,9 +9595,7 @@ internal sealed class LibraDexStagedIdentityKeyGuard<TKey, TIdentity>
     /// The typed dictionary key reuses LibraDex tuple equality and hashing, including content semantics for byte arrays, so batch checks remain amortized constant time without scalar boxing.<br/>
     /// </summary>
     /// <param name="identity">The identity being inspected.</param>
-    /// <param name="allowedKey">The primary allowed key.</param>
-    /// <param name="hasAlternateAllowedKey">Whether the caller supplied a meaningful alternate key; this explicit flag avoids treating a value-type default as an alternate during ordinary insert checks.</param>
-    /// <param name="alternateAllowedKey">The optional second allowed key for rekey replacement.</param>
+    /// <param name="newlyTracked">Whether this call newly reserved the identity and must therefore release that reservation.</param>
     /// <returns><see langword="true"/> when a conflicting staged key exists.</returns>
     internal void CancelUnusedReservation(TIdentity identity, bool newlyTracked)
     {

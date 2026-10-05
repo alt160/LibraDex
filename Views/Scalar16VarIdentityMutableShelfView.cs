@@ -171,7 +171,8 @@ internal sealed class Scalar16VarIdentityMutableShelfView
     /// Inserts one scalar key and raw variable identity into the owned shelf image when reserved slot and record capacity are still available.<br/>
     /// Full results are non-mutating and tell the caller to use the existing grow, split, or duplicate-run overflow path with the current authoritative bytes.<br/>
     /// </summary>
-    /// <param name="encodedKey">The encoded scalar key to insert.</param>
+    /// <param name="encodedKeyHigh">The encoded high scalar-key word to insert.</param>
+    /// <param name="encodedKeyLow">The encoded low scalar-key word to insert.</param>
     /// <param name="identity">The raw variable identity bytes to insert.</param>
     /// <param name="allowDuplicateKeys">Whether duplicate scalar keys with different identities are allowed.</param>
     /// <returns>The insert result.</returns>

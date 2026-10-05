@@ -539,6 +539,7 @@ internal static class LibraDexGenericScalarCodec<T>
     /// </summary>
     /// <param name="current">The current scalar value.</param>
     /// <param name="previous">Receives the previous scalar value when one exists.</param>
+    /// <param name="dateTimeKeyEncoding">The temporal encoding that determines the representable predecessor or successor quantum for date-like values.<br/></param>
     /// <returns><see langword="true"/> when a previous value exists, otherwise <see langword="false"/>.</returns>
     private static bool TryGetPreviousSignedLikeValue(T current, DateTimeKeyEncoding dateTimeKeyEncoding, out T previous)
     {
@@ -762,6 +763,7 @@ internal static class LibraDexGenericScalarCodec<T>
     /// </summary>
     /// <param name="current">The current scalar value.</param>
     /// <param name="next">Receives the next scalar value when one exists.</param>
+    /// <param name="dateTimeKeyEncoding">The temporal encoding that determines the representable predecessor or successor quantum for date-like values.<br/></param>
     /// <returns><see langword="true"/> when a next value exists, otherwise <see langword="false"/>.</returns>
     private static bool TryGetNextSignedLikeValue(T current, DateTimeKeyEncoding dateTimeKeyEncoding, out T next)
     {
@@ -985,6 +987,7 @@ internal static class LibraDexGenericScalarCodec<T>
     /// </summary>
     /// <param name="ticks">The public CLR tick boundary.</param>
     /// <param name="maxTicks">The maximum valid tick value for the CLR type.</param>
+    /// <param name="encoding">The structured temporal encoding that defines the representable tick quantum.</param>
     /// <param name="nextTicks">The next encoded-quantum tick value when one exists.</param>
     /// <returns>True when a successor quantum exists within the type domain.</returns>
     private static bool TryGetNextStructuredDateTicks(long ticks, long maxTicks, DateTimeKeyEncoding encoding, out long nextTicks)
@@ -1010,6 +1013,7 @@ internal static class LibraDexGenericScalarCodec<T>
     /// </summary>
     /// <param name="ticks">The public CLR tick boundary.</param>
     /// <param name="minTicks">The minimum valid tick value for the CLR type.</param>
+    /// <param name="encoding">The structured temporal encoding that defines the representable tick quantum.</param>
     /// <param name="previousTicks">The previous encoded-quantum tick value when one exists.</param>
     /// <returns>True when a predecessor quantum exists within the type domain.</returns>
     private static bool TryGetPreviousStructuredDateTicks(long ticks, long minTicks, DateTimeKeyEncoding encoding, out long previousTicks)

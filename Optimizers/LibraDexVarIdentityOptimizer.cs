@@ -12,6 +12,7 @@ internal sealed partial class LibraDexFileSession
     /// <param name="rootRouterOffset">The physical index root router offset.<br/></param>
     /// <param name="maxIdentityLength">The maximum variable identity length for the index.<br/></param>
     /// <param name="maxWorkItems">The maximum authoritative tuples to consume, or null for the complete tuple stream.<br/></param>
+    /// <param name="descending">Whether the physical profile stores tuples in descending natural order.<br/></param>
     /// <returns>The exact tuple work count, published subtree count, and any reason the tuple stream was not completed.<br/></returns>
     internal LibraDexMaintenanceWalkResult OptimizeScalar16VarIdentityTopology(
         long rootRouterOffset,
@@ -146,6 +147,7 @@ internal sealed partial class LibraDexFileSession
     /// <param name="rootRouterOffset">The physical index root router offset.<br/></param>
     /// <param name="maxIdentityLength">The maximum variable identity length for the index.<br/></param>
     /// <param name="maxWorkItems">The maximum authoritative tuples to consume, or null for the complete tuple stream.<br/></param>
+    /// <param name="descending">Whether the physical profile stores tuples in descending natural order.<br/></param>
     /// <returns>The exact tuple work count, published subtree count, and any reason the tuple stream was not completed.<br/></returns>
     internal LibraDexMaintenanceWalkResult OptimizeScalar8VarIdentityTopology(
         long rootRouterOffset,
@@ -269,6 +271,7 @@ internal sealed partial class LibraDexFileSession
     /// <param name="maxKeyLength">The maximum encoded key length for the index.<br/></param>
     /// <param name="maxIdentityLength">The maximum variable identity length for the index.<br/></param>
     /// <param name="maxWorkItems">The maximum authoritative tuples to consume, or null for the complete tuple stream.<br/></param>
+    /// <param name="descending">Whether the physical profile stores tuples in descending natural order.<br/></param>
     /// <returns>The exact tuple work count, published subtree count, and any reason the tuple stream was not completed.<br/></returns>
     internal LibraDexMaintenanceWalkResult OptimizeVarKeyVarIdentityTopology(
         long rootRouterOffset,

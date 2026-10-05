@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        dotnet: [8, 9, 10]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: ${{ matrix.dotnet }}.0.x
+
+      - name: Restore and build
+        run: |
+          dotnet restore LibraDex.csproj
+          dotnet build LibraDex.csproj --configuration Release --no-restore
+
+      - name: Pack
+        run: dotnet pack LibraDex.csproj --configuration Release --no-build --output artifacts/packages
+
+      - name: Smoke test package consumer
+        shell: bash
+        run: |
+          dotnet restore tests/LibraDex.PackageSmoke/LibraDex.PackageSmoke.csproj -p:RestoreAdditionalProjectSources="$GITHUB_WORKSPACE/artifacts/packages" -p:TargetFramework=net${{ matrix.dotnet }}.0
+          dotnet run --project tests/LibraDex.PackageSmoke/LibraDex.PackageSmoke.csproj --configuration Release --no-restore -p:TargetFramework=net${{ matrix.dotnet }}.0

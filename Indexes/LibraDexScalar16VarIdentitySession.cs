@@ -69,6 +69,7 @@ internal sealed partial class LibraDexFileSession
     /// <param name="lowerEncodedKeyLow">The low half of the inclusive lower encoded scalar key.<br/></param>
     /// <param name="upperEncodedKeyHigh">The high half of the inclusive upper encoded scalar key.<br/></param>
     /// <param name="upperEncodedKeyLow">The low half of the inclusive upper encoded scalar key.<br/></param>
+    /// <param name="descending">Whether the physical profile stores tuples in descending natural order.<br/></param>
     /// <returns>The number of matching identities.<br/></returns>
     internal long CountScalar16VarIdentityRange(
         long rootRouterOffset,
@@ -583,6 +584,7 @@ internal sealed partial class LibraDexFileSession
     /// <param name="allowDuplicateKeys">True when duplicate keys are allowed and identity bytes provide stable duplicate ordering.</param>
     /// <param name="maxRouterHops">The maximum router hops allowed before treating the route as malformed.</param>
     /// <param name="attribution">The elapsed-time buckets captured during the walked write.</param>
+    /// <param name="descending">Whether the physical profile stores tuples in descending natural order.<br/></param>
     /// <returns>The routed insert result including structural mutation kind and commit telemetry.</returns>
     internal Scalar16VarIdentityRoutedInsertResult InsertWalkedRoutedScalar16VarIdentity(
         long rootRouterOffset,
@@ -1895,7 +1897,8 @@ internal sealed partial class LibraDexFileSession
     /// <param name="headShelfOffset">The route-owned head shelf offset.</param>
     /// <param name="headShelfBytes">The already-read head shelf bytes.</param>
     /// <param name="profile">The SV16 profile used by every chain segment.</param>
-    /// <param name="encodedKey">The encoded scalar key being inserted.</param>
+    /// <param name="encodedKeyHigh">The encoded high scalar-key word being inserted.</param>
+    /// <param name="encodedKeyLow">The encoded low scalar-key word being inserted.</param>
     /// <param name="identity">The raw identity being inserted.</param>
     /// <param name="allowDuplicateKeys">Whether duplicate scalar keys are allowed.</param>
     /// <param name="result">Receives the routed insert result when the chain handled the insert.</param>
@@ -2074,7 +2077,8 @@ internal sealed partial class LibraDexFileSession
     /// <param name="headShelfOffset">The route-owned chain head shelf offset.</param>
     /// <param name="tailShelfOffset">The known terminal shelf offset.</param>
     /// <param name="profile">The SV16 profile used by the tail shelf.</param>
-    /// <param name="encodedKey">The encoded scalar key being inserted.</param>
+    /// <param name="encodedKeyHigh">The encoded high scalar-key word being inserted.</param>
+    /// <param name="encodedKeyLow">The encoded low scalar-key word being inserted.</param>
     /// <param name="identity">The raw identity being inserted.</param>
     /// <param name="result">Receives the routed insert result when the tail fast path handles the insert.</param>
     /// <returns>`true` when the tail fast path produced a terminal result.</returns>
@@ -2191,7 +2195,8 @@ internal sealed partial class LibraDexFileSession
     /// <param name="terminalShelfOffset">The shelf offset that should become the predecessor of the new tail shelf.</param>
     /// <param name="terminalShelfBytes">The current terminal shelf bytes.</param>
     /// <param name="profile">The SV16 profile used by both shelves.</param>
-    /// <param name="encodedKey">The encoded scalar key being inserted.</param>
+    /// <param name="encodedKeyHigh">The encoded high scalar-key word being inserted.</param>
+    /// <param name="encodedKeyLow">The encoded low scalar-key word being inserted.</param>
     /// <param name="identity">The raw identity being appended.</param>
     /// <param name="allowDuplicateKeys">Whether duplicate scalar keys are allowed.</param>
     /// <param name="result">Receives the routed insert result when the append succeeds or terminates as conflict/no-op.</param>
@@ -2323,7 +2328,8 @@ internal sealed partial class LibraDexFileSession
     /// <param name="headShelfOffset">The route-owned head shelf offset.</param>
     /// <param name="headShelfBytes">The current head shelf bytes.</param>
     /// <param name="profile">The SV16 shelf profile used by every segment in the chain.</param>
-    /// <param name="encodedKey">The encoded scalar key being inserted.</param>
+    /// <param name="encodedKeyHigh">The encoded high scalar-key word being inserted.</param>
+    /// <param name="encodedKeyLow">The encoded low scalar-key word being inserted.</param>
     /// <param name="incomingIdentity">The raw identity being inserted.</param>
     /// <param name="allowDuplicateKeys">Whether duplicate scalar keys are allowed.</param>
     /// <param name="tailShelfOffset">Receives the final shelf offset in the rebuilt chain.</param>
@@ -2556,10 +2562,11 @@ internal sealed partial class LibraDexFileSession
     /// This path is needed after an expanded one-byte router maps many final-byte prefixes to the same shelf and that shelf later fills again.<br/>
     /// The replacement shelves reuse the parent router directly instead of creating an impossible depth-8 child router.<br/>
     /// </summary>
-    /// <param name="shelfBytes">The current persisted shelf bytes.</param>
+    /// <param name="mutableShelf">The current decoded mutable shelf view.</param>
     /// <param name="profile">The shelf profile used to validate and rebuild the replacement shelves.</param>
     /// <param name="splitDepth">The scalar-key byte depth already represented by the parent router.</param>
-    /// <param name="incomingKey">The encoded scalar key being inserted.</param>
+    /// <param name="incomingKeyHigh">The encoded high scalar-key word being inserted.</param>
+    /// <param name="incomingKeyLow">The encoded low scalar-key word being inserted.</param>
     /// <param name="incomingIdentity">The raw variable identity being inserted.</param>
     /// <param name="allowDuplicateKeys">Whether duplicate scalar keys are allowed when identities differ.</param>
     /// <param name="selectedRightPrefix">Receives the first parent-router prefix that should route to the right replacement shelf.</param>
@@ -2756,8 +2763,9 @@ internal sealed partial class LibraDexFileSession
     /// Builds the two replacement `SV16` shelves for a single already-selected split boundary.<br/>
     /// Split planning calls this after selecting a preferred boundary so common balanced splits avoid repeatedly rebuilding candidate shelf images.<br/>
     /// </summary>
-    /// <param name="keys">The sorted scalar-key array including the incoming tuple.</param>
-    /// <param name="identities">The sorted raw identity byte arrays aligned with <paramref name="keys"/>.</param>
+    /// <param name="keyHighs">The sorted high scalar-key words including the incoming tuple.</param>
+    /// <param name="keyLows">The sorted low scalar-key words aligned with <paramref name="keyHighs"/>.</param>
+    /// <param name="identities">The sorted raw identity byte arrays aligned with <paramref name="keyHighs"/> and <paramref name="keyLows"/>.</param>
     /// <param name="profile">The `SV16` shelf profile used for both replacement shelves.</param>
     /// <param name="splitDepth">The scalar-key byte depth used to choose the right-side router prefix.</param>
     /// <param name="boundary">The boundary between two physical-order tuple segments; the first segment is the numeric right shelf when the profile is descending.<br/></param>

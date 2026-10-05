@@ -80,6 +80,8 @@ internal sealed class Scalar8VarIdentityRangeReader : IDisposable
     /// <param name="maxIdentityLength">The maximum raw identity length accepted by the index.</param>
     /// <param name="lowerEncodedKey">The inclusive lower encoded scalar key.</param>
     /// <param name="upperEncodedKey">The inclusive upper encoded scalar key.</param>
+    /// <param name="physicalDescending">Whether the underlying physical shelf profile stores tuples in descending natural order.<br/></param>
+    /// <param name="direction">The requested traversal direction for the matching keys and identities.<br/></param>
     internal void Reset(
         LibraDexFileSession session,
         long rootRouterOffset,

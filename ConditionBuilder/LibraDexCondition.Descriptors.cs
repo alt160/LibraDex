@@ -5,6 +5,9 @@ using System.Text;
 
 namespace LibraDex;
 
+/// <summary>
+/// Identifies the logical key domain used to interpret a captured condition clause.<br/>
+/// </summary>
 public enum LibraDexConditionValueKind
 {
     /// <summary>
@@ -730,6 +733,7 @@ public sealed class LibraDexConditionIndexSelector
     /// The parameter's current index name is snapshotted once when execution begins.<br/>
     /// </summary>
     /// <param name="parameter">The parameter containing the current index name.</param>
+    /// <param name="name">The optional selector parameter name; defaults to the supplied parameter name.<br/></param>
     /// <returns>An index selector descriptor.</returns>
     internal static LibraDexConditionIndexSelector Parameter(LibraDexParameter<string> parameter, string? name = null)
     {
@@ -743,6 +747,7 @@ public sealed class LibraDexConditionIndexSelector
     /// </summary>
     /// <typeparam name="TIndex">The opened index handle type.</typeparam>
     /// <param name="parameter">The parameter containing the current opened index.</param>
+    /// <param name="name">The optional selector parameter name; defaults to the supplied parameter name.<br/></param>
     /// <returns>An index selector descriptor.</returns>
     internal static LibraDexConditionIndexSelector Parameter<TIndex>(LibraDexParameter<TIndex> parameter, string? name = null)
         where TIndex : IIndex
@@ -1014,13 +1019,6 @@ public sealed record LibraDexConditionBridgePlan(
 /// Describes one adopted condition leaf before it is resolved to an opened LibraDex index.<br/>
 /// The descriptor keeps source builder intent separate from physical execution so permutation tests can inspect what each condition requires before bridge code is widened.<br/>
 /// </summary>
-/// <param name="ValueKind">The selected value kind.</param>
-/// <param name="Operator">The adopted operator captured for this leaf.</param>
-/// <param name="Operands">The static or deferred operands captured by the operator.</param>
-/// <param name="IgnoreCase">Whether the source condition asked for case-insensitive text behavior.</param>
-/// <param name="Culture">The source culture name associated with text comparison, when supplied.</param>
-/// <param name="StringComparisonPolicy">The optional method-level managed string comparison policy.</param>
-/// <param name="TextNormalization">The optional selector-level text normalization applied before comparison.</param>
 public sealed class LibraDexConditionLeafDescriptor
 {
     /// <summary>
@@ -1205,8 +1203,3 @@ internal readonly record struct LibraDexNumericTransformDescriptor(
     LibraDexNumericTransformKind Kind,
     int Digits,
     MidpointRounding MidpointRounding);
-
-/// <summary>
-/// Represents a completed Abraxas-adopted LibraDex condition.<br/>
-/// A completed condition is still descriptor-shaped until the caller supplies an index resolver for the owning identity group.<br/>
-/// </summary>
