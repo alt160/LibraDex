@@ -18,7 +18,7 @@ Purpose: track the remaining work to move LibraDex from controlled internal prot
 - `[x]` The locally packed AnyCPU `net8.0` library is consumed successfully by independent .NET 8, 9, and 10 smoke applications on Windows: create, insert, dispose, reopen, ordered read, and end-of-range validation.
 - `[x]` Package includes library DLL, XML documentation, and README; symbol package generated. Harness projects are excluded from the compiled package.
 - `[x]` CI prepared for Windows/Linux and .NET 8/9/10 consumers. Release workflow prepared for NuGet trusted publishing and a precompiled library ZIP with checksums.
-- `[ ]` Confirm hosted CI passes on the first public commit.
+- `[x]` Hosted CI passed for `c58d16c5d73f2eb8358e8d4a8b961f529bd9346d`: all six Windows/Linux and .NET 8/9/10 jobs succeeded. Run: `https://github.com/alt160/LibraDex/actions/runs/37328106460`.
 - `[ ]` Configure NuGet trusted publisher for `alt160/LibraDex`, `release.yml`, environment `release`, package `LibraDex`, using policy creator `iqueue`.
 - `[ ]` Publish the `v1.0.0` tag after CI and trusted-publisher readiness are verified.
 
