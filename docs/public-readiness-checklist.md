@@ -19,8 +19,9 @@ Purpose: track the remaining work to move LibraDex from controlled internal prot
 - `[x]` Package includes library DLL, XML documentation, and README; symbol package generated. Harness projects are excluded from the compiled package.
 - `[x]` CI prepared for Windows/Linux and .NET 8/9/10 consumers. Release workflow prepared for NuGet trusted publishing and a precompiled library ZIP with checksums.
 - `[x]` Hosted CI passed for `c58d16c5d73f2eb8358e8d4a8b961f529bd9346d`: all six Windows/Linux and .NET 8/9/10 jobs succeeded. Run: `https://github.com/alt160/LibraDex/actions/runs/37328106460`.
-- `[ ]` Configure NuGet trusted publisher for `alt160/LibraDex`, `release.yml`, environment `release`, package `LibraDex`, using policy creator `iqueue`.
-- `[ ]` Publish the `v1.0.0` tag after CI and trusted-publisher readiness are verified.
+- `[!]` NuGet trusted-publisher authentication is blocked: the 2026-10-05 release run returned HTTP 401, reporting no matching trust policy owned by `iqueue`. Confirm the policy is created by `iqueue` for `alt160/LibraDex`, `release.yml`, environment `release`, package glob `LibraDex`.
+- `[x]` The `v1.0.0` tag is pushed at `74c1c9e6c316623acf7fefc3cace1f13764eff3b`; all six final-commit CI jobs passed.
+- `[!]` NuGet publication and GitHub release creation remain pending. Release build, package-consumer smoke test, precompiled ZIP, checksums, and provenance attestation passed. Failed run: `https://github.com/alt160/LibraDex/actions/runs/37375675765`. After correcting the trust policy, rerun this existing release workflow; do not move the tag.
 
 The sections below preserve historical engineering gates and evidence; this dated checkpoint records the current package and release-preparation work without treating older unchecked items as newly validated.
 
