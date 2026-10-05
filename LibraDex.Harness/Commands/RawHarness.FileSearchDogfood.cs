@@ -18,7 +18,7 @@ internal static partial class RawHarness
 
         using Catalog catalog = Catalog.CreateMemory();
         CatalogIdentityGroupIndexes group = catalog.CreateIndexSet("files");
-        LibraDexStringScalar8Index pathIndex = group["path"].StringKeys().CreateOrOpen(StringKeys.ExactAndFolded);
+        LibraDexStringScalar8Index pathIndex = group.Define("path").StringKeys().CreateOrOpen(StringKeys.ExactAndFolded);
 
         long scanned = 0;
         ulong id = 1;
@@ -54,11 +54,11 @@ internal static partial class RawHarness
 
         using Catalog catalog = Catalog.CreateMemory();
         CatalogIdentityGroupIndexes group = catalog.CreateIndexSet("files");
-        LibraDexIndex<ulong, ulong> sizeIndex = group["size"].CreateOrOpen<ulong, ulong>();
-        LibraDexIndex<ulong, ulong> createdUtcIndex = group["createdUtc"].CreateOrOpen<ulong, ulong>();
-        LibraDexIndex<ulong, ulong> modifiedUtcIndex = group["modifiedUtc"].CreateOrOpen<ulong, ulong>();
-        LibraDexIndex<ulong, ulong> accessedUtcIndex = group["accessedUtc"].CreateOrOpen<ulong, ulong>();
-        LibraDexIndex<uint, ulong> attributesIndex = group["attributes"].CreateOrOpen<uint, ulong>();
+        LibraDexIndex<ulong, ulong> sizeIndex = group.Define("size").CreateOrOpen<ulong, ulong>();
+        LibraDexIndex<ulong, ulong> createdUtcIndex = group.Define("createdUtc").CreateOrOpen<ulong, ulong>();
+        LibraDexIndex<ulong, ulong> modifiedUtcIndex = group.Define("modifiedUtc").CreateOrOpen<ulong, ulong>();
+        LibraDexIndex<ulong, ulong> accessedUtcIndex = group.Define("accessedUtc").CreateOrOpen<ulong, ulong>();
+        LibraDexIndex<uint, ulong> attributesIndex = group.Define("attributes").CreateOrOpen<uint, ulong>();
 
         long scanned = 0;
         ulong id = 1;
@@ -113,14 +113,14 @@ internal static partial class RawHarness
 
         using Catalog catalog = Catalog.CreateMemory();
         CatalogIdentityGroupIndexes group = catalog.CreateIndexSet("files");
-        LibraDexStringScalar8Index pathIndex = group["path"].StringKeys().CreateOrOpen(StringKeys.ExactAndFolded);
-        LibraDexStringScalar8Index fileNameIndex = group["fileName"].StringKeys().CreateOrOpen(StringKeys.ExactAndFolded);
-        IIndex extensionIndex = group["extension"].Composite<ulong>(C.Text("extension"), C.Scalar<ulong>("id")).CreateOrOpen();
-        LibraDexIndex<ulong, ulong> sizeIndex = group["size"].CreateOrOpen<ulong, ulong>();
-        LibraDexIndex<ulong, ulong> createdUtcIndex = group["createdUtc"].CreateOrOpen<ulong, ulong>();
-        LibraDexIndex<ulong, ulong> modifiedUtcIndex = group["modifiedUtc"].CreateOrOpen<ulong, ulong>();
-        LibraDexIndex<ulong, ulong> accessedUtcIndex = group["accessedUtc"].CreateOrOpen<ulong, ulong>();
-        LibraDexIndex<uint, ulong> attributesIndex = group["attributes"].CreateOrOpen<uint, ulong>();
+        LibraDexStringScalar8Index pathIndex = group.Define("path").StringKeys().CreateOrOpen(StringKeys.ExactAndFolded);
+        LibraDexStringScalar8Index fileNameIndex = group.Define("fileName").StringKeys().CreateOrOpen(StringKeys.ExactAndFolded);
+        IIndex extensionIndex = group.Define("extension").Composite<ulong>(C.Text("extension"), C.Scalar<ulong>("id")).CreateOrOpen();
+        LibraDexIndex<ulong, ulong> sizeIndex = group.Define("size").CreateOrOpen<ulong, ulong>();
+        LibraDexIndex<ulong, ulong> createdUtcIndex = group.Define("createdUtc").CreateOrOpen<ulong, ulong>();
+        LibraDexIndex<ulong, ulong> modifiedUtcIndex = group.Define("modifiedUtc").CreateOrOpen<ulong, ulong>();
+        LibraDexIndex<ulong, ulong> accessedUtcIndex = group.Define("accessedUtc").CreateOrOpen<ulong, ulong>();
+        LibraDexIndex<uint, ulong> attributesIndex = group.Define("attributes").CreateOrOpen<uint, ulong>();
         CatalogIdentityGroupBatchManager batch = group.Batch;
         batch.Enable(new LibraDexWriteIntent(
             LibraDexWriteOrder.Default,
@@ -233,14 +233,14 @@ internal static partial class RawHarness
 
         using Catalog catalog = Catalog.CreateMemory();
         CatalogIdentityGroupIndexes group = catalog.CreateIndexSet("files");
-        LibraDexStringScalar8Index pathIndex = group["path"].StringKeys().CreateOrOpen(StringKeys.ExactAndFolded);
-        LibraDexStringScalar8Index fileNameIndex = group["fileName"].StringKeys().CreateOrOpen(StringKeys.ExactAndFolded);
-        IIndex extensionIndex = group["extension"].Composite<ulong>(C.Text("extension"), C.Scalar<ulong>("id")).CreateOrOpen();
-        LibraDexIndex<ulong, ulong> sizeIndex = group["size"].CreateOrOpen<ulong, ulong>();
-        LibraDexIndex<ulong, ulong> createdUtcIndex = group["createdUtc"].CreateOrOpen<ulong, ulong>();
-        LibraDexIndex<ulong, ulong> modifiedUtcIndex = group["modifiedUtc"].CreateOrOpen<ulong, ulong>();
-        LibraDexIndex<ulong, ulong> accessedUtcIndex = group["accessedUtc"].CreateOrOpen<ulong, ulong>();
-        LibraDexIndex<uint, ulong> attributesIndex = group["attributes"].CreateOrOpen<uint, ulong>();
+        LibraDexStringScalar8Index pathIndex = group.Define("path").StringKeys().CreateOrOpen(StringKeys.ExactAndFolded);
+        LibraDexStringScalar8Index fileNameIndex = group.Define("fileName").StringKeys().CreateOrOpen(StringKeys.ExactAndFolded);
+        IIndex extensionIndex = group.Define("extension").Composite<ulong>(C.Text("extension"), C.Scalar<ulong>("id")).CreateOrOpen();
+        LibraDexIndex<ulong, ulong> sizeIndex = group.Define("size").CreateOrOpen<ulong, ulong>();
+        LibraDexIndex<ulong, ulong> createdUtcIndex = group.Define("createdUtc").CreateOrOpen<ulong, ulong>();
+        LibraDexIndex<ulong, ulong> modifiedUtcIndex = group.Define("modifiedUtc").CreateOrOpen<ulong, ulong>();
+        LibraDexIndex<ulong, ulong> accessedUtcIndex = group.Define("accessedUtc").CreateOrOpen<ulong, ulong>();
+        LibraDexIndex<uint, ulong> attributesIndex = group.Define("attributes").CreateOrOpen<uint, ulong>();
         CatalogIdentityGroupBatchManager batch = group.Batch;
         batch.Enable(new LibraDexWriteIntent(
             LibraDexWriteOrder.Default,
@@ -344,11 +344,11 @@ internal static partial class RawHarness
 
         using Catalog catalog = Catalog.CreateMemory();
         CatalogIdentityGroupIndexes group = catalog.CreateIndexSet("files");
-        LibraDexUInt64VarIdentityIndex sizeIndex = group["size"].UInt64VarIdentityKeys(maxPathIdentityBytes).CreateOrOpen();
-        LibraDexUInt64VarIdentityIndex createdUtcIndex = group["createdUtc"].UInt64VarIdentityKeys(maxPathIdentityBytes).CreateOrOpen();
-        LibraDexUInt64VarIdentityIndex modifiedUtcIndex = group["modifiedUtc"].UInt64VarIdentityKeys(maxPathIdentityBytes).CreateOrOpen();
-        LibraDexUInt64VarIdentityIndex accessedUtcIndex = group["accessedUtc"].UInt64VarIdentityKeys(maxPathIdentityBytes).CreateOrOpen();
-        LibraDexUInt64VarIdentityIndex attributesIndex = group["attributes"].UInt64VarIdentityKeys(maxPathIdentityBytes).CreateOrOpen();
+        LibraDexUInt64VarIdentityIndex sizeIndex = group.Define("size").UInt64VarIdentityKeys(maxPathIdentityBytes).CreateOrOpen();
+        LibraDexUInt64VarIdentityIndex createdUtcIndex = group.Define("createdUtc").UInt64VarIdentityKeys(maxPathIdentityBytes).CreateOrOpen();
+        LibraDexUInt64VarIdentityIndex modifiedUtcIndex = group.Define("modifiedUtc").UInt64VarIdentityKeys(maxPathIdentityBytes).CreateOrOpen();
+        LibraDexUInt64VarIdentityIndex accessedUtcIndex = group.Define("accessedUtc").UInt64VarIdentityKeys(maxPathIdentityBytes).CreateOrOpen();
+        LibraDexUInt64VarIdentityIndex attributesIndex = group.Define("attributes").UInt64VarIdentityKeys(maxPathIdentityBytes).CreateOrOpen();
         CatalogIdentityGroupBatchManager batch = group.Batch;
         batch.Enable(new LibraDexWriteIntent(
             LibraDexWriteOrder.Default,

@@ -154,7 +154,7 @@ internal static partial class RawHarness
         {
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
-        using LibraDexIndex<long, long> index = catalog.Indexes["concurrent-writer-cancel"]["value"].Int64Keys<long>().Create();
+        using LibraDexIndex<long, long> index = catalog.Indexes.IndexSet("concurrent-writer-cancel").Define("value").Int64Keys<long>().Create();
         long seedKey = CreateConcurrencyProofGenericLongKey(1, 0x42);
         long stagedKey = CreateConcurrencyProofGenericLongKey(2, 0x42);
         long canceledKey = CreateConcurrencyProofGenericLongKey(3, 0x43);
@@ -217,7 +217,7 @@ internal static partial class RawHarness
         {
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
-        using LibraDexIndex<long, long> index = catalog.Indexes["concurrent-batch-cancel"]["value"].Int64Keys<long>().Create();
+        using LibraDexIndex<long, long> index = catalog.Indexes.IndexSet("concurrent-batch-cancel").Define("value").Int64Keys<long>().Create();
         long seedKey = CreateConcurrencyProofGenericLongKey(1, 0x51);
         long canceledKey = CreateConcurrencyProofGenericLongKey(2, 0x51);
         _ = index.Insert(seedKey, seedKey);
@@ -255,7 +255,7 @@ internal static partial class RawHarness
     private static void RunPublicMixedLimitAdmissionStarvationProbe()
     {
         using Catalog catalog = Catalog.CreateMemory();
-        using LibraDexIndex<long, long> index = catalog.Indexes["admission-starvation"]["value"].Int64Keys<long>().Create();
+        using LibraDexIndex<long, long> index = catalog.Indexes.IndexSet("admission-starvation").Define("value").Int64Keys<long>().Create();
         LibraDexConcurrencyOptions highOptions = new()
         {
             Mode = LibraDexConcurrencyMode.QueuedWriter,
@@ -300,7 +300,7 @@ internal static partial class RawHarness
     private static void RunPublicAdmissionBoundTimeoutDiagnosticsProbe()
     {
         using Catalog catalog = Catalog.CreateMemory();
-        using LibraDexIndex<long, long> index = catalog.Indexes["admission-bounds"]["value"].Int64Keys<long>().Create();
+        using LibraDexIndex<long, long> index = catalog.Indexes.IndexSet("admission-bounds").Define("value").Int64Keys<long>().Create();
         LibraDexConcurrencyOptions options = new()
         {
             Mode = LibraDexConcurrencyMode.QueuedWriter,
@@ -366,7 +366,7 @@ internal static partial class RawHarness
     private static void RunPublicDirectWriterAdmissionProbe()
     {
         using Catalog catalog = Catalog.CreateMemory();
-        using LibraDexIndex<long, long> index = catalog.Indexes["direct-writer-admission"]["value"].Int64Keys<long>().Create();
+        using LibraDexIndex<long, long> index = catalog.Indexes.IndexSet("direct-writer-admission").Define("value").Int64Keys<long>().Create();
         LibraDexQueuedWriter<long, long> writer = index.BeginConcurrentWriter(new LibraDexConcurrencyOptions
         {
             Mode = LibraDexConcurrencyMode.QueuedWriter,
@@ -395,7 +395,7 @@ internal static partial class RawHarness
     private static void RunPublicActionRotationProbe()
     {
         using Catalog catalog = Catalog.CreateMemory();
-        using LibraDexIndex<long, long> index = catalog.Indexes["action-rotation"]["value"].Int64Keys<long>().Create();
+        using LibraDexIndex<long, long> index = catalog.Indexes.IndexSet("action-rotation").Define("value").Int64Keys<long>().Create();
         LibraDexConcurrencyOptions options = new()
         {
             Mode = LibraDexConcurrencyMode.QueuedWriter,
@@ -429,7 +429,7 @@ internal static partial class RawHarness
     private static void RunPublicShelfReleaseNotificationProbe()
     {
         using Catalog catalog = Catalog.CreateMemory();
-        using LibraDexIndex<long, long> index = catalog.Indexes["shelf-release-notification"]["value"].Int64Keys<long>().Create();
+        using LibraDexIndex<long, long> index = catalog.Indexes.IndexSet("shelf-release-notification").Define("value").Int64Keys<long>().Create();
         _ = index.Insert(1, 1);
         LibraDexConcurrencyOptions options = new()
         {
@@ -470,7 +470,7 @@ internal static partial class RawHarness
     private static void RunPublicConcurrentReaderProgressProbe()
     {
         using Catalog catalog = Catalog.CreateMemory();
-        using LibraDexIndex<long, long> index = catalog.Indexes["reader-progress"]["value"].Int64Keys<long>().Create();
+        using LibraDexIndex<long, long> index = catalog.Indexes.IndexSet("reader-progress").Define("value").Int64Keys<long>().Create();
         for (int i = 0; i < 100; i++)
         {
             _ = index.Insert(i, i);
@@ -1005,7 +1005,7 @@ internal static partial class RawHarness
         {
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
-        using LibraDexIndex<long, long> index = catalog.Indexes["ss88-primitive-generic-default"]["value"].Int64Keys<long>().Create();
+        using LibraDexIndex<long, long> index = catalog.Indexes.IndexSet("ss88-primitive-generic-default").Define("value").Int64Keys<long>().Create();
         _ = index.Insert(0L, 1L);
 
         long before = GC.GetAllocatedBytesForCurrentThread();
@@ -1046,7 +1046,7 @@ internal static partial class RawHarness
         {
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
-        using LibraDexIndex<long, long> index = catalog.Indexes["ss88-primitive-generic-queued"]["value"].Int64Keys<long>().Create();
+        using LibraDexIndex<long, long> index = catalog.Indexes.IndexSet("ss88-primitive-generic-queued").Define("value").Int64Keys<long>().Create();
         LibraDexQueuedWriter<long, long> writer = index.BeginConcurrentWriter(LibraDexConcurrencyOptions.QueuedWriter);
         _ = writer.Insert(0L, 1L);
 
@@ -1088,7 +1088,7 @@ internal static partial class RawHarness
         {
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
-        using LibraDexIndex<long, long> index = catalog.Indexes["ss88-primitive-generic-concurrent-batch"]["value"].Int64Keys<long>().Create();
+        using LibraDexIndex<long, long> index = catalog.Indexes.IndexSet("ss88-primitive-generic-concurrent-batch").Define("value").Int64Keys<long>().Create();
         for (int i = 0; i < operations; i++)
         {
             long seedKey = CreateConcurrencyProofGenericLongKey(i * 2, 0x20 + (i & 0x7F));
@@ -1388,7 +1388,7 @@ internal static partial class RawHarness
         {
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
-        using LibraDexIndex<long, long> index = catalog.Indexes["ss88-primitive-delete-rekey"]["value"].Int64Keys<long>().Create();
+        using LibraDexIndex<long, long> index = catalog.Indexes.IndexSet("ss88-primitive-delete-rekey").Define("value").Int64Keys<long>().Create();
         LibraDexQueuedWriter<long, long> writer = index.BeginQueuedWriter(LibraDexConcurrencyOptions.QueuedWriter);
         int seedPerThread = checked(opsPerThread * 2);
         for (int worker = 0; worker < threads; worker++)
@@ -1472,7 +1472,7 @@ internal static partial class RawHarness
         {
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
-        using LibraDexIndex<long, long> index = catalog.Indexes["ss88-primitive-generic-batch-mt"]["value"].Int64Keys<long>().Create();
+        using LibraDexIndex<long, long> index = catalog.Indexes.IndexSet("ss88-primitive-generic-batch-mt").Define("value").Int64Keys<long>().Create();
         for (int worker = 0; worker < threads; worker++)
         {
             long key = CreateConcurrencyProofGenericLongKey(0, 0x30 + worker);
@@ -1548,7 +1548,7 @@ internal static partial class RawHarness
         {
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
-        using LibraDexIndex<long, long> index = catalog.Indexes["ss88-primitive-generic-batch-mut"]["value"].Int64Keys<long>().Create();
+        using LibraDexIndex<long, long> index = catalog.Indexes.IndexSet("ss88-primitive-generic-batch-mut").Define("value").Int64Keys<long>().Create();
         using (LibraDexConcurrentBatch<long, long> missingOldBatch = index.BeginConcurrentBatch())
         {
             long missingOldKey = CreateConcurrencyProofGenericLongKey(900_000, 0x4F);
@@ -1986,7 +1986,7 @@ internal static partial class RawHarness
     /// <returns>The created projected index.</returns>
     private static LibraDexIndex<byte[], long> CreateFixed32Scalar8ProjectionIndex(Catalog catalog, string indexName)
     {
-        return catalog.Indexes["projection-proof"][indexName].Blob.Scalar<long>(
+        return catalog.Indexes.IndexSet("projection-proof").Define(indexName).Blob.Scalar<long>(
             LibraDexScalarWidth.Bytes32,
             directions: LibraDexProjectionDirectionSet.ForwardAndReversed).Create();
     }
@@ -2005,8 +2005,8 @@ internal static partial class RawHarness
         int projectionStripe,
         long expectedCount)
     {
-        IReadOnlyList<long> identities = catalog.Indexes["projection-proof"].GetIdentities<long>(
-            catalog.Indexes["projection-proof"].Where(indexName).AsBinary.EndsWith([(byte)projectionStripe]).EndCondition,
+        IReadOnlyList<long> identities = catalog.Indexes.IndexSet("projection-proof").GetIdentities<long>(
+            catalog.Indexes.IndexSet("projection-proof").Where(indexName).AsBinary.EndsWith([(byte)projectionStripe]).EndCondition,
             deduplication: IdentityDeduplication.Preserve);
         if (identities.Count != expectedCount)
         {
@@ -2293,7 +2293,7 @@ internal static partial class RawHarness
     /// <returns>The created string projected index.</returns>
     private static LibraDexStringScalar8Index CreateStringScalar8ProjectionIndex(Catalog catalog, string indexName)
     {
-        return catalog.Indexes["string-projection-proof"][indexName].String.Create(
+        return catalog.Indexes.IndexSet("string-projection-proof").Define(indexName).String.Create(
             stringKeys: StringKeys.ExactFoldedAndSortKey,
             directions: LibraDexProjectionDirectionSet.ForwardAndReversed,
             sortKeyCulture: "en-US");
@@ -2331,7 +2331,7 @@ internal static partial class RawHarness
         string foldedSuffix = suffix.ToLowerInvariant();
         string sortLower = foldedPrefix;
         string sortUpper = foldedPrefix + "\uffff";
-        var group = catalog.Indexes["string-projection-proof"];
+        var group = catalog.Indexes.IndexSet("string-projection-proof");
 
         IReadOnlyList<ulong> exactPrefix = group.GetIdentities<ulong>(
             group.Where(indexName).AsString.StartsWith(prefix).EndCondition,
@@ -2690,7 +2690,7 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        using LibraDexBigIntScalar8Index<long> index = catalog.Indexes["fixedn-batch-proof-oneshot-8"]["score"].BigIntKeys<long>(maxBytes: 32).Create();
+        using LibraDexBigIntScalar8Index<long> index = catalog.Indexes.IndexSet("fixedn-batch-proof-oneshot-8").Define("score").BigIntKeys<long>(maxBytes: 32).Create();
         WarmFixedNScalar8BatchShelf(index);
         long before = GC.GetTotalAllocatedBytes(precise: true);
         Stopwatch stopwatch = Stopwatch.StartNew();
@@ -2716,7 +2716,7 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        using LibraDexBigIntScalar8Index<long> index = catalog.Indexes["fixedn-batch-proof-batch-8"]["score"].BigIntKeys<long>(maxBytes: 32).Create();
+        using LibraDexBigIntScalar8Index<long> index = catalog.Indexes.IndexSet("fixedn-batch-proof-batch-8").Define("score").BigIntKeys<long>(maxBytes: 32).Create();
         WarmFixedNScalar8BatchShelf(index);
         long before = GC.GetTotalAllocatedBytes(precise: true);
         Stopwatch stopwatch = Stopwatch.StartNew();
@@ -2749,7 +2749,7 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        using LibraDexBigIntScalar8Index<Guid> index = catalog.Indexes["fixedn-batch-proof-oneshot-16"]["score"].BigIntKeys<Guid>(maxBytes: 32).Create();
+        using LibraDexBigIntScalar8Index<Guid> index = catalog.Indexes.IndexSet("fixedn-batch-proof-oneshot-16").Define("score").BigIntKeys<Guid>(maxBytes: 32).Create();
         WarmFixedNScalar16BatchShelf(index);
         long before = GC.GetTotalAllocatedBytes(precise: true);
         Stopwatch stopwatch = Stopwatch.StartNew();
@@ -2775,7 +2775,7 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        using LibraDexBigIntScalar8Index<Guid> index = catalog.Indexes["fixedn-batch-proof-batch-16"]["score"].BigIntKeys<Guid>(maxBytes: 32).Create();
+        using LibraDexBigIntScalar8Index<Guid> index = catalog.Indexes.IndexSet("fixedn-batch-proof-batch-16").Define("score").BigIntKeys<Guid>(maxBytes: 32).Create();
         WarmFixedNScalar16BatchShelf(index);
         long before = GC.GetTotalAllocatedBytes(precise: true);
         Stopwatch stopwatch = Stopwatch.StartNew();
@@ -2808,7 +2808,7 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        using LibraDexBigIntScalar8Index<long> index = catalog.Indexes["fixedn-batch-proof-delete-8"]["score"].BigIntKeys<long>(maxBytes: 32).Create();
+        using LibraDexBigIntScalar8Index<long> index = catalog.Indexes.IndexSet("fixedn-batch-proof-delete-8").Define("score").BigIntKeys<long>(maxBytes: 32).Create();
         WarmFixedNScalar8BatchShelf(index);
         for (int i = 0; i < batchSize; i++)
         {
@@ -2850,7 +2850,7 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        using LibraDexBigIntScalar8Index<long> index = catalog.Indexes["fixedn-batch-proof-delete-many-8"]["score"].BigIntKeys<long>(maxBytes: 32).Create();
+        using LibraDexBigIntScalar8Index<long> index = catalog.Indexes.IndexSet("fixedn-batch-proof-delete-many-8").Define("score").BigIntKeys<long>(maxBytes: 32).Create();
         WarmFixedNScalar8BatchShelf(index);
         (BigInteger Key, long Identity)[] deletes = new (BigInteger Key, long Identity)[batchSize];
         for (int i = 0; i < batchSize; i++)
@@ -2890,7 +2890,7 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        using LibraDexBigIntScalar8Index<long> index = catalog.Indexes["fixedn-batch-proof-rekey-8"]["score"].BigIntKeys<long>(maxBytes: 32).Create();
+        using LibraDexBigIntScalar8Index<long> index = catalog.Indexes.IndexSet("fixedn-batch-proof-rekey-8").Define("score").BigIntKeys<long>(maxBytes: 32).Create();
         WarmFixedNScalar8BatchShelf(index);
         for (int i = 0; i < batchSize; i++)
         {
@@ -2933,7 +2933,7 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        using LibraDexBigIntScalar8Index<long> index = catalog.Indexes["fixedn-batch-proof-rekey-many-8"]["score"].BigIntKeys<long>(maxBytes: 32).Create();
+        using LibraDexBigIntScalar8Index<long> index = catalog.Indexes.IndexSet("fixedn-batch-proof-rekey-many-8").Define("score").BigIntKeys<long>(maxBytes: 32).Create();
         WarmFixedNScalar8BatchShelf(index);
         LibraDexBigIntScalar8Rekey<long>[] rekeys = new LibraDexBigIntScalar8Rekey<long>[batchSize];
         for (int i = 0; i < batchSize; i++)
@@ -2975,7 +2975,7 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        using LibraDexBigIntScalar8Index<Guid> index = catalog.Indexes["fixedn-batch-proof-delete-16"]["score"].BigIntKeys<Guid>(maxBytes: 32).Create();
+        using LibraDexBigIntScalar8Index<Guid> index = catalog.Indexes.IndexSet("fixedn-batch-proof-delete-16").Define("score").BigIntKeys<Guid>(maxBytes: 32).Create();
         WarmFixedNScalar16BatchShelf(index);
         for (int i = 0; i < batchSize; i++)
         {
@@ -3017,7 +3017,7 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        using LibraDexBigIntScalar8Index<Guid> index = catalog.Indexes["fixedn-batch-proof-delete-many-16"]["score"].BigIntKeys<Guid>(maxBytes: 32).Create();
+        using LibraDexBigIntScalar8Index<Guid> index = catalog.Indexes.IndexSet("fixedn-batch-proof-delete-many-16").Define("score").BigIntKeys<Guid>(maxBytes: 32).Create();
         WarmFixedNScalar16BatchShelf(index);
         (BigInteger Key, Guid Identity)[] deletes = new (BigInteger Key, Guid Identity)[batchSize];
         for (int i = 0; i < batchSize; i++)
@@ -3057,7 +3057,7 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        using LibraDexBigIntScalar8Index<Guid> index = catalog.Indexes["fixedn-batch-proof-rekey-16"]["score"].BigIntKeys<Guid>(maxBytes: 32).Create();
+        using LibraDexBigIntScalar8Index<Guid> index = catalog.Indexes.IndexSet("fixedn-batch-proof-rekey-16").Define("score").BigIntKeys<Guid>(maxBytes: 32).Create();
         WarmFixedNScalar16BatchShelf(index);
         for (int i = 0; i < batchSize; i++)
         {
@@ -3100,7 +3100,7 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        using LibraDexBigIntScalar8Index<Guid> index = catalog.Indexes["fixedn-batch-proof-rekey-many-16"]["score"].BigIntKeys<Guid>(maxBytes: 32).Create();
+        using LibraDexBigIntScalar8Index<Guid> index = catalog.Indexes.IndexSet("fixedn-batch-proof-rekey-many-16").Define("score").BigIntKeys<Guid>(maxBytes: 32).Create();
         WarmFixedNScalar16BatchShelf(index);
         LibraDexBigIntScalar8Rekey<Guid>[] rekeys = new LibraDexBigIntScalar8Rekey<Guid>[batchSize];
         for (int i = 0; i < batchSize; i++)
@@ -3157,7 +3157,7 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        using LibraDexBigIntScalar8Index<long> index = catalog.Indexes["fixedn-proof-single-8"]["score"].BigIntKeys<long>(maxBytes: 32).Create();
+        using LibraDexBigIntScalar8Index<long> index = catalog.Indexes.IndexSet("fixedn-proof-single-8").Define("score").BigIntKeys<long>(maxBytes: 32).Create();
         long before = GC.GetTotalAllocatedBytes(precise: true);
         Stopwatch stopwatch = Stopwatch.StartNew();
         for (int i = 0; i < operations; i++)
@@ -3199,7 +3199,7 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        using LibraDexBigIntScalar8Index<Guid> index = catalog.Indexes["fixedn-proof-single-16"]["score"].BigIntKeys<Guid>(maxBytes: 32).Create();
+        using LibraDexBigIntScalar8Index<Guid> index = catalog.Indexes.IndexSet("fixedn-proof-single-16").Define("score").BigIntKeys<Guid>(maxBytes: 32).Create();
         long before = GC.GetTotalAllocatedBytes(precise: true);
         Stopwatch stopwatch = Stopwatch.StartNew();
         for (int i = 0; i < operations; i++)
@@ -3240,7 +3240,7 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        using LibraDexBigIntScalar8Index<long> index = catalog.Indexes["fixedn-proof-multi-8"]["score"].BigIntKeys<long>(maxBytes: 32).Create();
+        using LibraDexBigIntScalar8Index<long> index = catalog.Indexes.IndexSet("fixedn-proof-multi-8").Define("score").BigIntKeys<long>(maxBytes: 32).Create();
         using ManualResetEventSlim startGate = new(false);
         using CountdownEvent readyGate = new(threads);
         Task[] tasks = new Task[threads];
@@ -3284,7 +3284,7 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        using LibraDexBigIntScalar8Index<Guid> index = catalog.Indexes["fixedn-proof-multi-16"]["score"].BigIntKeys<Guid>(maxBytes: 32).Create();
+        using LibraDexBigIntScalar8Index<Guid> index = catalog.Indexes.IndexSet("fixedn-proof-multi-16").Define("score").BigIntKeys<Guid>(maxBytes: 32).Create();
         using ManualResetEventSlim startGate = new(false);
         using CountdownEvent readyGate = new(threads);
         Task[] tasks = new Task[threads];
@@ -3327,7 +3327,7 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        using LibraDexBigIntScalar8Index<long> index = catalog.Indexes["fixedn-proof-multi-mixed-8"]["score"].BigIntKeys<long>(maxBytes: 32).Create();
+        using LibraDexBigIntScalar8Index<long> index = catalog.Indexes.IndexSet("fixedn-proof-multi-mixed-8").Define("score").BigIntKeys<long>(maxBytes: 32).Create();
         int deleteCount = Math.Max(1, opsPerThread / 4);
         int rekeyCount = Math.Max(1, opsPerThread / 4);
         int seedPerThread = checked(deleteCount + rekeyCount + opsPerThread);
@@ -3391,7 +3391,7 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        using LibraDexBigIntScalar8Index<Guid> index = catalog.Indexes["fixedn-proof-multi-mixed-16"]["score"].BigIntKeys<Guid>(maxBytes: 32).Create();
+        using LibraDexBigIntScalar8Index<Guid> index = catalog.Indexes.IndexSet("fixedn-proof-multi-mixed-16").Define("score").BigIntKeys<Guid>(maxBytes: 32).Create();
         int deleteCount = Math.Max(1, opsPerThread / 4);
         int rekeyCount = Math.Max(1, opsPerThread / 4);
         int seedPerThread = checked(deleteCount + rekeyCount + opsPerThread);
@@ -4258,9 +4258,9 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        CatalogIdentityGroupIndexes group = catalog.Indexes["matrix-different-index"];
-        using LibraDexIndex<long, long> value = group["value"].Int64Keys<long>().Create();
-        using LibraDexIndex<long, long> status = group["status"].Int64Keys<long>().Create();
+        CatalogIdentityGroupIndexes group = catalog.Indexes.IndexSet("matrix-different-index");
+        using LibraDexIndex<long, long> value = group.Define("value").Int64Keys<long>().Create();
+        using LibraDexIndex<long, long> status = group.Define("status").Int64Keys<long>().Create();
         _ = value.Insert(100, 1000);
         _ = status.Insert(200, 2000);
 
@@ -4306,7 +4306,7 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        using LibraDexIndex<long, long> index = catalog.Indexes["matrix-same-index"]["range"].Int64Keys<long>().Create();
+        using LibraDexIndex<long, long> index = catalog.Indexes.IndexSet("matrix-same-index").Define("range").Int64Keys<long>().Create();
         _ = index.Insert(100, 1000);
         _ = index.Insert(long.MinValue + 100, 2000);
         LibraDexQueuedWriter<long, long> writer = index.BeginQueuedWriter(LibraDexConcurrencyOptions.QueuedWriter);
@@ -4351,7 +4351,7 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        using LibraDexIndex<long, long> index = catalog.Indexes["matrix-same-shelf"]["range"].Int64Keys<long>().Create();
+        using LibraDexIndex<long, long> index = catalog.Indexes.IndexSet("matrix-same-shelf").Define("range").Int64Keys<long>().Create();
         _ = index.Insert(100, 1000);
         LibraDexQueuedWriter<long, long> writer = index.BeginQueuedWriter(LibraDexConcurrencyOptions.QueuedWriter);
 
@@ -4388,7 +4388,7 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        using LibraDexIndex<long, long> index = catalog.Indexes["matrix-cold-route"]["range"].Int64Keys<long>().Create();
+        using LibraDexIndex<long, long> index = catalog.Indexes.IndexSet("matrix-cold-route").Define("range").Int64Keys<long>().Create();
         _ = index.Insert(100, 1000);
         LibraDexQueuedWriter<long, long> writer = index.BeginQueuedWriter(LibraDexConcurrencyOptions.QueuedWriter);
         LibraDexGenericInsertResult result = writer.Insert(long.MinValue + 300, 3000);
@@ -4563,7 +4563,7 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        using LibraDexIndex<long, long> index = catalog.Indexes["matrix-terminal-delete"]["ids"].Int64Keys<long>().Create();
+        using LibraDexIndex<long, long> index = catalog.Indexes.IndexSet("matrix-terminal-delete").Define("ids").Int64Keys<long>().Create();
         Scalar8Scalar8Profile profile = index.GetScalar8Scalar8Profile();
         const long duplicateKey = 371;
         for (int i = 0; i < profile.MaxItemCount + 1; i++)
@@ -4600,7 +4600,7 @@ internal static partial class RawHarness
     private static ConcurrencyWorkloadMatrixRow RunWorkloadMatrixScalar16Scalar8DifferentShelfWarm()
     {
         using Catalog catalog = Catalog.CreateMemory(new CatalogOptions { DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed });
-        using LibraDexIndex<Int128, long> index = catalog.Indexes["matrix-ss16-8-different-shelf"]["ids"].Int128Keys<long>().Create();
+        using LibraDexIndex<Int128, long> index = catalog.Indexes.IndexSet("matrix-ss16-8-different-shelf").Define("ids").Int128Keys<long>().Create();
         Int128 leftBase = 5100;
         Int128 leftNext = 5101;
         Int128 rightBase = ((Int128)long.MinValue << 64) + 5100;
@@ -4630,7 +4630,7 @@ internal static partial class RawHarness
     private static ConcurrencyWorkloadMatrixRow RunWorkloadMatrixScalar16Scalar8SameShelfWarm()
     {
         using Catalog catalog = Catalog.CreateMemory(new CatalogOptions { DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed });
-        using LibraDexIndex<Int128, long> index = catalog.Indexes["matrix-ss16-8-same-shelf"]["ids"].Int128Keys<long>().Create();
+        using LibraDexIndex<Int128, long> index = catalog.Indexes.IndexSet("matrix-ss16-8-same-shelf").Define("ids").Int128Keys<long>().Create();
         Int128 keyA = 5200;
         Int128 keyB = 5201;
         Int128 keyC = 5202;
@@ -4658,7 +4658,7 @@ internal static partial class RawHarness
     private static ConcurrencyWorkloadMatrixRow RunWorkloadMatrixScalar16Scalar8ColdRouteFallback()
     {
         using Catalog catalog = Catalog.CreateMemory(new CatalogOptions { DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed });
-        using LibraDexIndex<Int128, long> index = catalog.Indexes["matrix-ss16-8-cold-route"]["ids"].Int128Keys<long>().Create();
+        using LibraDexIndex<Int128, long> index = catalog.Indexes.IndexSet("matrix-ss16-8-cold-route").Define("ids").Int128Keys<long>().Create();
         _ = index.Insert(5300, 5301);
         LibraDexQueuedWriter<Int128, long> writer = index.BeginQueuedWriter(LibraDexConcurrencyOptions.QueuedWriter);
         LibraDexGenericInsertResult result = writer.Insert(((Int128)long.MinValue << 64) + 5300, 5302);
@@ -4678,7 +4678,7 @@ internal static partial class RawHarness
     private static ConcurrencyWorkloadMatrixRow RunWorkloadMatrixScalar16Scalar8FullShelfFallback()
     {
         using Catalog catalog = Catalog.CreateMemory(new CatalogOptions { DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed });
-        using LibraDexIndex<Int128, long> index = catalog.Indexes["matrix-ss16-8-full-shelf"]["ids"].Int128Keys<long>().Create();
+        using LibraDexIndex<Int128, long> index = catalog.Indexes.IndexSet("matrix-ss16-8-full-shelf").Define("ids").Int128Keys<long>().Create();
         Scalar16Scalar8Profile profile = index.GetScalar16Scalar8Profile();
         Int128 baseKey = 5400;
         for (int i = 0; i < profile.MaxItemCount; i++)
@@ -4708,7 +4708,7 @@ internal static partial class RawHarness
     private static ConcurrencyWorkloadMatrixRow RunWorkloadMatrixScalar8Scalar16DifferentShelfWarm()
     {
         using Catalog catalog = Catalog.CreateMemory(new CatalogOptions { DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed });
-        using LibraDexIndex<long, Guid> index = catalog.Indexes["matrix-ss8-16-different-shelf"]["ids"].Int64Keys<Guid>().Create();
+        using LibraDexIndex<long, Guid> index = catalog.Indexes.IndexSet("matrix-ss8-16-different-shelf").Define("ids").Int64Keys<Guid>().Create();
         _ = index.Insert(5500, Guid.Parse("55000000-0000-0000-0000-000000000001"));
         _ = index.Insert(long.MinValue + 5500, Guid.Parse("55000000-0000-0000-0000-000000000002"));
         LibraDexQueuedWriter<long, Guid> writer = index.BeginQueuedWriter(LibraDexConcurrencyOptions.QueuedWriter);
@@ -4734,7 +4734,7 @@ internal static partial class RawHarness
     private static ConcurrencyWorkloadMatrixRow RunWorkloadMatrixScalar8Scalar16SameShelfWarm()
     {
         using Catalog catalog = Catalog.CreateMemory(new CatalogOptions { DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed });
-        using LibraDexIndex<long, Guid> index = catalog.Indexes["matrix-ss8-16-same-shelf"]["ids"].Int64Keys<Guid>().Create();
+        using LibraDexIndex<long, Guid> index = catalog.Indexes.IndexSet("matrix-ss8-16-same-shelf").Define("ids").Int64Keys<Guid>().Create();
         _ = index.Insert(5600, Guid.Parse("56000000-0000-0000-0000-000000000001"));
         LibraDexQueuedWriter<long, Guid> writer = index.BeginQueuedWriter(LibraDexConcurrencyOptions.QueuedWriter);
 
@@ -4759,7 +4759,7 @@ internal static partial class RawHarness
     private static ConcurrencyWorkloadMatrixRow RunWorkloadMatrixScalar8Scalar16ColdRouteFallback()
     {
         using Catalog catalog = Catalog.CreateMemory(new CatalogOptions { DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed });
-        using LibraDexIndex<long, Guid> index = catalog.Indexes["matrix-ss8-16-cold-route"]["ids"].Int64Keys<Guid>().Create();
+        using LibraDexIndex<long, Guid> index = catalog.Indexes.IndexSet("matrix-ss8-16-cold-route").Define("ids").Int64Keys<Guid>().Create();
         _ = index.Insert(5700, Guid.Parse("57000000-0000-0000-0000-000000000001"));
         LibraDexQueuedWriter<long, Guid> writer = index.BeginQueuedWriter(LibraDexConcurrencyOptions.QueuedWriter);
         LibraDexGenericInsertResult result = writer.Insert(long.MinValue + 5700, Guid.Parse("57000000-0000-0000-0000-000000000002"));
@@ -4779,7 +4779,7 @@ internal static partial class RawHarness
     private static ConcurrencyWorkloadMatrixRow RunWorkloadMatrixScalar8Scalar16FullShelfFallback()
     {
         using Catalog catalog = Catalog.CreateMemory(new CatalogOptions { DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed });
-        using LibraDexIndex<long, Guid> index = catalog.Indexes["matrix-ss8-16-full-shelf"]["ids"].Int64Keys<Guid>().Create();
+        using LibraDexIndex<long, Guid> index = catalog.Indexes.IndexSet("matrix-ss8-16-full-shelf").Define("ids").Int64Keys<Guid>().Create();
         Scalar8Scalar16Profile profile = index.GetScalar8Scalar16Profile();
         for (int i = 0; i < profile.MaxItemCount; i++)
         {
@@ -4807,7 +4807,7 @@ internal static partial class RawHarness
     private static ConcurrencyWorkloadMatrixRow RunWorkloadMatrixScalar16Scalar16DifferentShelfWarm()
     {
         using Catalog catalog = Catalog.CreateMemory(new CatalogOptions { DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed });
-        using LibraDexIndex<Guid, Guid> index = catalog.Indexes["matrix-ss16-16-different-shelf"]["ids"].GuidKeys<Guid>().Create();
+        using LibraDexIndex<Guid, Guid> index = catalog.Indexes.IndexSet("matrix-ss16-16-different-shelf").Define("ids").GuidKeys<Guid>().Create();
         Guid leftBase = Guid.Parse("59000000-0000-0000-0000-000000000001");
         Guid leftNext = Guid.Parse("59000000-0000-0000-0000-000000000002");
         Guid rightBase = Guid.Parse("d9000000-0000-0000-0000-000000000001");
@@ -4837,7 +4837,7 @@ internal static partial class RawHarness
     private static ConcurrencyWorkloadMatrixRow RunWorkloadMatrixScalar16Scalar16SameShelfWarm()
     {
         using Catalog catalog = Catalog.CreateMemory(new CatalogOptions { DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed });
-        using LibraDexIndex<Guid, Guid> index = catalog.Indexes["matrix-ss16-16-same-shelf"]["ids"].GuidKeys<Guid>().Create();
+        using LibraDexIndex<Guid, Guid> index = catalog.Indexes.IndexSet("matrix-ss16-16-same-shelf").Define("ids").GuidKeys<Guid>().Create();
         Guid keyA = Guid.Parse("5a000000-0000-0000-0000-000000000001");
         Guid keyB = Guid.Parse("5a000000-0000-0000-0000-000000000002");
         Guid keyC = Guid.Parse("5a000000-0000-0000-0000-000000000003");
@@ -4865,7 +4865,7 @@ internal static partial class RawHarness
     private static ConcurrencyWorkloadMatrixRow RunWorkloadMatrixScalar16Scalar16ColdRouteFallback()
     {
         using Catalog catalog = Catalog.CreateMemory(new CatalogOptions { DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed });
-        using LibraDexIndex<Int128, Guid> index = catalog.Indexes["matrix-ss16-16-cold-route"]["ids"].Int128Keys<Guid>().Create();
+        using LibraDexIndex<Int128, Guid> index = catalog.Indexes.IndexSet("matrix-ss16-16-cold-route").Define("ids").Int128Keys<Guid>().Create();
         _ = index.Insert(5900, Guid.Parse("5b000000-0000-0000-0000-000000000001"));
         LibraDexQueuedWriter<Int128, Guid> writer = index.BeginQueuedWriter(LibraDexConcurrencyOptions.QueuedWriter);
         Int128 coldKey = ((Int128)long.MinValue << 64) + 5900;
@@ -4886,7 +4886,7 @@ internal static partial class RawHarness
     private static ConcurrencyWorkloadMatrixRow RunWorkloadMatrixScalar16Scalar16FullShelfFallback()
     {
         using Catalog catalog = Catalog.CreateMemory(new CatalogOptions { DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed });
-        using LibraDexIndex<Int128, Guid> index = catalog.Indexes["matrix-ss16-16-full-shelf"]["ids"].Int128Keys<Guid>().Create();
+        using LibraDexIndex<Int128, Guid> index = catalog.Indexes.IndexSet("matrix-ss16-16-full-shelf").Define("ids").Int128Keys<Guid>().Create();
         Scalar16Scalar16Profile profile = index.GetScalar16Scalar16Profile();
         Int128 baseKey = 6000;
         for (int i = 0; i < profile.MaxItemCount; i++)
@@ -4915,7 +4915,7 @@ internal static partial class RawHarness
     private static ConcurrencyWorkloadMatrixRow RunWorkloadMatrixScalar8Scalar8DeleteWarm()
     {
         using Catalog catalog = Catalog.CreateMemory(new CatalogOptions { DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed });
-        using LibraDexIndex<long, long> index = catalog.Indexes["matrix-ss8-8-delete"]["ids"].Int64Keys<long>().Create();
+        using LibraDexIndex<long, long> index = catalog.Indexes.IndexSet("matrix-ss8-8-delete").Define("ids").Int64Keys<long>().Create();
         _ = index.Insert(6100, 6101);
         _ = index.Insert(long.MinValue + 6100, 6102);
         LibraDexQueuedWriter<long, long> writer = index.BeginQueuedWriter(LibraDexConcurrencyOptions.QueuedWriter);
@@ -4941,7 +4941,7 @@ internal static partial class RawHarness
     private static ConcurrencyWorkloadMatrixRow RunWorkloadMatrixScalar8Scalar8RekeyWarm()
     {
         using Catalog catalog = Catalog.CreateMemory(new CatalogOptions { DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed });
-        using LibraDexIndex<long, long> index = catalog.Indexes["matrix-ss8-8-rekey"]["ids"].Int64Keys<long>().Create();
+        using LibraDexIndex<long, long> index = catalog.Indexes.IndexSet("matrix-ss8-8-rekey").Define("ids").Int64Keys<long>().Create();
         _ = index.Insert(6200, 6201);
         _ = index.Insert(long.MinValue + 6200, 6202);
         LibraDexQueuedWriter<long, long> writer = index.BeginQueuedWriter(LibraDexConcurrencyOptions.QueuedWriter);
@@ -4967,7 +4967,7 @@ internal static partial class RawHarness
     private static ConcurrencyWorkloadMatrixRow RunWorkloadMatrixScalar16Scalar8DeleteWarm()
     {
         using Catalog catalog = Catalog.CreateMemory(new CatalogOptions { DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed });
-        using LibraDexIndex<Int128, long> index = catalog.Indexes["matrix-ss16-8-delete"]["ids"].Int128Keys<long>().Create();
+        using LibraDexIndex<Int128, long> index = catalog.Indexes.IndexSet("matrix-ss16-8-delete").Define("ids").Int128Keys<long>().Create();
         Int128 leftKey = 6300;
         Int128 rightKey = ((Int128)long.MinValue << 64) + 6300;
         _ = index.Insert(leftKey, 6301);
@@ -4995,7 +4995,7 @@ internal static partial class RawHarness
     private static ConcurrencyWorkloadMatrixRow RunWorkloadMatrixScalar16Scalar8RekeyWarm()
     {
         using Catalog catalog = Catalog.CreateMemory(new CatalogOptions { DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed });
-        using LibraDexIndex<Int128, long> index = catalog.Indexes["matrix-ss16-8-rekey"]["ids"].Int128Keys<long>().Create();
+        using LibraDexIndex<Int128, long> index = catalog.Indexes.IndexSet("matrix-ss16-8-rekey").Define("ids").Int128Keys<long>().Create();
         Int128 leftKey = 6400;
         Int128 rightKey = ((Int128)long.MinValue << 64) + 6400;
         _ = index.Insert(leftKey, 6401);
@@ -5023,7 +5023,7 @@ internal static partial class RawHarness
     private static ConcurrencyWorkloadMatrixRow RunWorkloadMatrixScalar8Scalar16DeleteWarm()
     {
         using Catalog catalog = Catalog.CreateMemory(new CatalogOptions { DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed });
-        using LibraDexIndex<long, Guid> index = catalog.Indexes["matrix-ss8-16-delete"]["ids"].Int64Keys<Guid>().Create();
+        using LibraDexIndex<long, Guid> index = catalog.Indexes.IndexSet("matrix-ss8-16-delete").Define("ids").Int64Keys<Guid>().Create();
         Guid leftIdentity = Guid.Parse("65000000-0000-0000-0000-000000000001");
         Guid rightIdentity = Guid.Parse("65000000-0000-0000-0000-000000000002");
         _ = index.Insert(6500, leftIdentity);
@@ -5051,7 +5051,7 @@ internal static partial class RawHarness
     private static ConcurrencyWorkloadMatrixRow RunWorkloadMatrixScalar8Scalar16RekeyWarm()
     {
         using Catalog catalog = Catalog.CreateMemory(new CatalogOptions { DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed });
-        using LibraDexIndex<long, Guid> index = catalog.Indexes["matrix-ss8-16-rekey"]["ids"].Int64Keys<Guid>().Create();
+        using LibraDexIndex<long, Guid> index = catalog.Indexes.IndexSet("matrix-ss8-16-rekey").Define("ids").Int64Keys<Guid>().Create();
         Guid leftIdentity = Guid.Parse("66000000-0000-0000-0000-000000000001");
         Guid rightIdentity = Guid.Parse("66000000-0000-0000-0000-000000000002");
         _ = index.Insert(6600, leftIdentity);
@@ -5079,7 +5079,7 @@ internal static partial class RawHarness
     private static ConcurrencyWorkloadMatrixRow RunWorkloadMatrixScalar16Scalar16DeleteWarm()
     {
         using Catalog catalog = Catalog.CreateMemory(new CatalogOptions { DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed });
-        using LibraDexIndex<Int128, Guid> index = catalog.Indexes["matrix-ss16-16-delete"]["ids"].Int128Keys<Guid>().Create();
+        using LibraDexIndex<Int128, Guid> index = catalog.Indexes.IndexSet("matrix-ss16-16-delete").Define("ids").Int128Keys<Guid>().Create();
         Int128 leftKey = 6700;
         Int128 rightKey = ((Int128)long.MinValue << 64) + 6700;
         Guid leftIdentity = Guid.Parse("67000000-0000-0000-0000-000000000001");
@@ -5109,7 +5109,7 @@ internal static partial class RawHarness
     private static ConcurrencyWorkloadMatrixRow RunWorkloadMatrixScalar16Scalar16RekeyWarm()
     {
         using Catalog catalog = Catalog.CreateMemory(new CatalogOptions { DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed });
-        using LibraDexIndex<Int128, Guid> index = catalog.Indexes["matrix-ss16-16-rekey"]["ids"].Int128Keys<Guid>().Create();
+        using LibraDexIndex<Int128, Guid> index = catalog.Indexes.IndexSet("matrix-ss16-16-rekey").Define("ids").Int128Keys<Guid>().Create();
         Int128 leftKey = 6800;
         Int128 rightKey = ((Int128)long.MinValue << 64) + 6800;
         Guid leftIdentity = Guid.Parse("68000000-0000-0000-0000-000000000001");
@@ -5139,7 +5139,7 @@ internal static partial class RawHarness
     private static ConcurrencyWorkloadMatrixRow RunWorkloadMatrixExactReversedProjectionBoundary()
     {
         using Catalog catalog = Catalog.CreateMemory(new CatalogOptions { DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed });
-        using LibraDexIndex<byte[], long> index = catalog.Indexes["matrix-projection"]["fingerprint"].Blob.Scalar<long>(
+        using LibraDexIndex<byte[], long> index = catalog.Indexes.IndexSet("matrix-projection").Define("fingerprint").Blob.Scalar<long>(
             LibraDexScalarWidth.Bytes16,
             directions: LibraDexProjectionDirectionSet.ForwardAndReversed).Create();
 
@@ -5170,7 +5170,7 @@ internal static partial class RawHarness
     private static ConcurrencyWorkloadMatrixRow RunWorkloadMatrixExactReversedProjectionDeleteWarm()
     {
         using Catalog catalog = Catalog.CreateMemory(new CatalogOptions { DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed });
-        using LibraDexIndex<byte[], long> index = catalog.Indexes["matrix-projection-delete"]["fingerprint"].Blob.Scalar<long>(
+        using LibraDexIndex<byte[], long> index = catalog.Indexes.IndexSet("matrix-projection-delete").Define("fingerprint").Blob.Scalar<long>(
             LibraDexScalarWidth.Bytes16,
             directions: LibraDexProjectionDirectionSet.ForwardAndReversed).Create();
 
@@ -5201,7 +5201,7 @@ internal static partial class RawHarness
     private static ConcurrencyWorkloadMatrixRow RunWorkloadMatrixExactReversedProjectionRekeyWarm()
     {
         using Catalog catalog = Catalog.CreateMemory(new CatalogOptions { DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed });
-        using LibraDexIndex<byte[], long> index = catalog.Indexes["matrix-projection-rekey"]["fingerprint"].Blob.Scalar<long>(
+        using LibraDexIndex<byte[], long> index = catalog.Indexes.IndexSet("matrix-projection-rekey").Define("fingerprint").Blob.Scalar<long>(
             LibraDexScalarWidth.Bytes16,
             directions: LibraDexProjectionDirectionSet.ForwardAndReversed).Create();
 
@@ -5235,7 +5235,7 @@ internal static partial class RawHarness
     private static ConcurrencyWorkloadMatrixRow RunWorkloadMatrixFixed32Scalar8Warm()
     {
         using Catalog catalog = Catalog.CreateMemory(new CatalogOptions { DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed });
-        using LibraDexIndex<byte[], long> index = catalog.Indexes["matrix-fs32"]["hash8-warm"].Blob.Scalar<long>(LibraDexScalarWidth.Bytes32).Create();
+        using LibraDexIndex<byte[], long> index = catalog.Indexes.IndexSet("matrix-fs32").Define("hash8-warm").Blob.Scalar<long>(LibraDexScalarWidth.Bytes32).Create();
         byte[] leftSeed = Convert.FromHexString("100102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F");
         byte[] leftNext = Convert.FromHexString("100102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E20");
         byte[] rightSeed = Convert.FromHexString("900102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F");
@@ -5264,7 +5264,7 @@ internal static partial class RawHarness
     private static ConcurrencyWorkloadMatrixRow RunWorkloadMatrixFixed32Scalar8ColdRouteFallback()
     {
         using Catalog catalog = Catalog.CreateMemory(new CatalogOptions { DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed });
-        using LibraDexIndex<byte[], long> index = catalog.Indexes["matrix-fs32"]["hash8-cold"].Blob.Scalar<long>(LibraDexScalarWidth.Bytes32).Create();
+        using LibraDexIndex<byte[], long> index = catalog.Indexes.IndexSet("matrix-fs32").Define("hash8-cold").Blob.Scalar<long>(LibraDexScalarWidth.Bytes32).Create();
         LibraDexGenericInsertResult result = index.Insert(
             Convert.FromHexString("000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F"),
             7005);
@@ -5283,7 +5283,7 @@ internal static partial class RawHarness
     private static ConcurrencyWorkloadMatrixRow RunWorkloadMatrixFixed32Scalar8FullShelfFallback()
     {
         using Catalog catalog = Catalog.CreateMemory(new CatalogOptions { DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed });
-        using LibraDexIndex<byte[], long> index = catalog.Indexes["matrix-fs32"]["hash8-full"].Blob.Scalar<long>(LibraDexScalarWidth.Bytes32).Create();
+        using LibraDexIndex<byte[], long> index = catalog.Indexes.IndexSet("matrix-fs32").Define("hash8-full").Blob.Scalar<long>(LibraDexScalarWidth.Bytes32).Create();
         Fixed32Scalar8Profile profile = index.GetFixed32Scalar8Profile();
         const byte prefix = 0x13;
         for (int i = 0; i < profile.MaxItemCount; i++)
@@ -5311,7 +5311,7 @@ internal static partial class RawHarness
     private static ConcurrencyWorkloadMatrixRow RunWorkloadMatrixFixed32Scalar8DeleteWarm()
     {
         using Catalog catalog = Catalog.CreateMemory(new CatalogOptions { DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed });
-        using LibraDexIndex<byte[], long> index = catalog.Indexes["matrix-fs32"]["hash8-delete"].Blob.Scalar<long>(LibraDexScalarWidth.Bytes32).Create();
+        using LibraDexIndex<byte[], long> index = catalog.Indexes.IndexSet("matrix-fs32").Define("hash8-delete").Blob.Scalar<long>(LibraDexScalarWidth.Bytes32).Create();
         byte[] leftKey = Convert.FromHexString("110102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F");
         byte[] rightKey = Convert.FromHexString("910102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F");
         _ = index.Insert(leftKey, 7101);
@@ -5346,7 +5346,7 @@ internal static partial class RawHarness
     private static ConcurrencyWorkloadMatrixRow RunWorkloadMatrixFixed32Scalar8RekeyWarm()
     {
         using Catalog catalog = Catalog.CreateMemory(new CatalogOptions { DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed });
-        using LibraDexIndex<byte[], long> index = catalog.Indexes["matrix-fs32"]["hash8-rekey"].Blob.Scalar<long>(LibraDexScalarWidth.Bytes32).Create();
+        using LibraDexIndex<byte[], long> index = catalog.Indexes.IndexSet("matrix-fs32").Define("hash8-rekey").Blob.Scalar<long>(LibraDexScalarWidth.Bytes32).Create();
         byte[] leftOld = Convert.FromHexString("120102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F");
         byte[] leftNew = Convert.FromHexString("120102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E20");
         byte[] rightOld = Convert.FromHexString("920102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F");
@@ -5376,7 +5376,7 @@ internal static partial class RawHarness
     private static ConcurrencyWorkloadMatrixRow RunWorkloadMatrixFixed32Scalar16Warm()
     {
         using Catalog catalog = Catalog.CreateMemory(new CatalogOptions { DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed });
-        using LibraDexIndex<byte[], Guid> index = catalog.Indexes["matrix-fs32"]["hash16-warm"].Blob.Scalar<Guid>(LibraDexScalarWidth.Bytes32).Create();
+        using LibraDexIndex<byte[], Guid> index = catalog.Indexes.IndexSet("matrix-fs32").Define("hash16-warm").Blob.Scalar<Guid>(LibraDexScalarWidth.Bytes32).Create();
         byte[] leftSeed = Convert.FromHexString("300102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F");
         byte[] leftNext = Convert.FromHexString("300102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E20");
         byte[] rightSeed = Convert.FromHexString("B00102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F");
@@ -5405,7 +5405,7 @@ internal static partial class RawHarness
     private static ConcurrencyWorkloadMatrixRow RunWorkloadMatrixFixed32Scalar16ColdRouteFallback()
     {
         using Catalog catalog = Catalog.CreateMemory(new CatalogOptions { DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed });
-        using LibraDexIndex<byte[], Guid> index = catalog.Indexes["matrix-fs32"]["hash16-cold"].Blob.Scalar<Guid>(LibraDexScalarWidth.Bytes32).Create();
+        using LibraDexIndex<byte[], Guid> index = catalog.Indexes.IndexSet("matrix-fs32").Define("hash16-cold").Blob.Scalar<Guid>(LibraDexScalarWidth.Bytes32).Create();
         LibraDexGenericInsertResult result = index.Insert(
             Convert.FromHexString("202122232425262728292A2B2C2D2E2F303132333435363738393A3B3C3D3E3F"),
             Guid.Parse("70000000-0000-0000-0000-000000000005"));
@@ -5424,7 +5424,7 @@ internal static partial class RawHarness
     private static ConcurrencyWorkloadMatrixRow RunWorkloadMatrixFixed32Scalar16FullShelfFallback()
     {
         using Catalog catalog = Catalog.CreateMemory(new CatalogOptions { DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed });
-        using LibraDexIndex<byte[], Guid> index = catalog.Indexes["matrix-fs32"]["hash16-full"].Blob.Scalar<Guid>(LibraDexScalarWidth.Bytes32).Create();
+        using LibraDexIndex<byte[], Guid> index = catalog.Indexes.IndexSet("matrix-fs32").Define("hash16-full").Blob.Scalar<Guid>(LibraDexScalarWidth.Bytes32).Create();
         Fixed32Scalar16Profile profile = index.GetFixed32Scalar16Profile();
         const byte prefix = 0x33;
         for (int i = 0; i < profile.MaxItemCount; i++)
@@ -5452,7 +5452,7 @@ internal static partial class RawHarness
     private static ConcurrencyWorkloadMatrixRow RunWorkloadMatrixFixed32Scalar16DeleteWarm()
     {
         using Catalog catalog = Catalog.CreateMemory(new CatalogOptions { DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed });
-        using LibraDexIndex<byte[], Guid> index = catalog.Indexes["matrix-fs32"]["hash16-delete"].Blob.Scalar<Guid>(LibraDexScalarWidth.Bytes32).Create();
+        using LibraDexIndex<byte[], Guid> index = catalog.Indexes.IndexSet("matrix-fs32").Define("hash16-delete").Blob.Scalar<Guid>(LibraDexScalarWidth.Bytes32).Create();
         byte[] leftKey = Convert.FromHexString("310102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F");
         byte[] rightKey = Convert.FromHexString("C10102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F");
         Guid leftIdentity = Guid.Parse("71000000-0000-0000-0000-000000000001");
@@ -5489,7 +5489,7 @@ internal static partial class RawHarness
     private static ConcurrencyWorkloadMatrixRow RunWorkloadMatrixFixed32Scalar16RekeyWarm()
     {
         using Catalog catalog = Catalog.CreateMemory(new CatalogOptions { DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed });
-        using LibraDexIndex<byte[], Guid> index = catalog.Indexes["matrix-fs32"]["hash16-rekey"].Blob.Scalar<Guid>(LibraDexScalarWidth.Bytes32).Create();
+        using LibraDexIndex<byte[], Guid> index = catalog.Indexes.IndexSet("matrix-fs32").Define("hash16-rekey").Blob.Scalar<Guid>(LibraDexScalarWidth.Bytes32).Create();
         byte[] leftOld = Convert.FromHexString("320102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F");
         byte[] leftNew = Convert.FromHexString("320102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E20");
         byte[] rightOld = Convert.FromHexString("C20102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F");
@@ -5552,7 +5552,7 @@ internal static partial class RawHarness
         {
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
-        using LibraDexIndex<long, long> index = catalog.Indexes["concurrency"]["overlap"].Int64Keys<long>().Create();
+        using LibraDexIndex<long, long> index = catalog.Indexes.IndexSet("concurrency").Define("overlap").Int64Keys<long>().Create();
         using LibraDexBatch<long, long> active = index.BeginBatch();
 
         InvalidOperationException? secondWriterException = Task.Run(() =>
@@ -5593,7 +5593,7 @@ internal static partial class RawHarness
         {
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
-        using LibraDexIndex<long, long> index = catalog.Indexes["concurrency"]["cross-thread"].Int64Keys<long>().Create();
+        using LibraDexIndex<long, long> index = catalog.Indexes.IndexSet("concurrency").Define("cross-thread").Int64Keys<long>().Create();
         LibraDexBatch<long, long> active = index.BeginBatch();
 
         Task.Run(() =>
@@ -5617,9 +5617,9 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        CatalogIdentityGroupIndexes group = catalog.Indexes["batch-boundary-immediate"];
-        using LibraDexIndex<long, long> left = group["left"].Int64Keys<long>().Create();
-        using LibraDexIndex<long, long> right = group["right"].Int64Keys<long>().Create();
+        CatalogIdentityGroupIndexes group = catalog.Indexes.IndexSet("batch-boundary-immediate");
+        using LibraDexIndex<long, long> left = group.Define("left").Int64Keys<long>().Create();
+        using LibraDexIndex<long, long> right = group.Define("right").Int64Keys<long>().Create();
         _ = right.Insert(200, 2000);
 
         using LibraDexBatch<long, long> active = left.BeginBatch();
@@ -5654,9 +5654,9 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        CatalogIdentityGroupIndexes group = catalog.Indexes["batch-boundary-queued"];
-        using LibraDexIndex<long, long> left = group["left"].Int64Keys<long>().Create();
-        using LibraDexIndex<long, long> right = group["right"].Int64Keys<long>().Create();
+        CatalogIdentityGroupIndexes group = catalog.Indexes.IndexSet("batch-boundary-queued");
+        using LibraDexIndex<long, long> left = group.Define("left").Int64Keys<long>().Create();
+        using LibraDexIndex<long, long> right = group.Define("right").Int64Keys<long>().Create();
         _ = right.Insert(300, 3000);
         LibraDexQueuedWriter<long, long> writer = right.BeginQueuedWriter(LibraDexConcurrencyOptions.QueuedWriter);
 
@@ -5697,9 +5697,9 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        CatalogIdentityGroupIndexes group = catalog.Indexes["batch-boundary-scalar-key-state"];
-        using LibraDexIndex<long, long> owner = group["owner"].Int64Keys<long>().Create();
-        using LibraDexIndex<long, long> value = group["value"].Int64Keys<long>().Create();
+        CatalogIdentityGroupIndexes group = catalog.Indexes.IndexSet("batch-boundary-scalar-key-state");
+        using LibraDexIndex<long, long> owner = group.Define("owner").Int64Keys<long>().Create();
+        using LibraDexIndex<long, long> value = group.Define("value").Int64Keys<long>().Create();
         _ = value.Insert(ScalarNull.Null, 5101);
 
         using LibraDexBatch<long, long> active = owner.BeginBatch();
@@ -5737,9 +5737,9 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        CatalogIdentityGroupIndexes group = catalog.Indexes["batch-boundary-string"];
-        using LibraDexIndex<long, long> owner = group["owner"].Int64Keys<long>().Create();
-        using LibraDexStringScalar8Index text = group["text"].String.Create(stringKeys: StringKeys.Exact);
+        CatalogIdentityGroupIndexes group = catalog.Indexes.IndexSet("batch-boundary-string");
+        using LibraDexIndex<long, long> owner = group.Define("owner").Int64Keys<long>().Create();
+        using LibraDexStringScalar8Index text = group.Define("text").String.Create(stringKeys: StringKeys.Exact);
 
         using LibraDexBatch<long, long> active = owner.BeginBatch();
         InvalidOperationException? stringException = null;
@@ -5777,9 +5777,9 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        CatalogIdentityGroupIndexes group = catalog.Indexes["batch-boundary-composite"];
-        using LibraDexIndex<long, long> owner = group["owner"].Int64Keys<long>().Create();
-        IIndex composite = group["tenantUser"].Composite<ulong>(C.Text("tenant"), C.Text("user")).Create();
+        CatalogIdentityGroupIndexes group = catalog.Indexes.IndexSet("batch-boundary-composite");
+        using LibraDexIndex<long, long> owner = group.Define("owner").Int64Keys<long>().Create();
+        IIndex composite = group.Define("tenantUser").Composite<ulong>(C.Text("tenant"), C.Text("user")).Create();
 
         using LibraDexBatch<long, long> active = owner.BeginBatch();
         InvalidOperationException? compositeException = null;
@@ -5817,9 +5817,9 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        CatalogIdentityGroupIndexes group = catalog.Indexes["group-batch-boundary"];
-        using LibraDexIndex<long, long> left = group["left"].Int64Keys<long>().Create();
-        using LibraDexIndex<long, long> right = group["right"].Int64Keys<long>().Create();
+        CatalogIdentityGroupIndexes group = catalog.Indexes.IndexSet("group-batch-boundary");
+        using LibraDexIndex<long, long> left = group.Define("left").Int64Keys<long>().Create();
+        using LibraDexIndex<long, long> right = group.Define("right").Int64Keys<long>().Create();
 
         group.Batch.Enable();
         _ = left.Insert(400, 4000);
@@ -5842,8 +5842,8 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        CatalogIdentityGroupIndexes group = catalog.Indexes["concurrency"];
-        using LibraDexIndex<long, long> index = group["value"].Int64Keys<long>().Create();
+        CatalogIdentityGroupIndexes group = catalog.Indexes.IndexSet("concurrency");
+        using LibraDexIndex<long, long> index = group.Define("value").Int64Keys<long>().Create();
         index.Insert(10, 100);
         index.Insert(11, 110);
 
@@ -5905,9 +5905,9 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        CatalogIdentityGroupIndexes group = catalog.Indexes["generic-cold-route-narrow-fallback"];
-        using LibraDexIndex<long, long> staged = group["staged"].Int64Keys<long>().Create();
-        using LibraDexIndex<long, long> cold = group["cold"].Int64Keys<long>().Create();
+        CatalogIdentityGroupIndexes group = catalog.Indexes.IndexSet("generic-cold-route-narrow-fallback");
+        using LibraDexIndex<long, long> staged = group.Define("staged").Int64Keys<long>().Create();
+        using LibraDexIndex<long, long> cold = group.Define("cold").Int64Keys<long>().Create();
         _ = staged.Insert(100, 1000);
         _ = cold.Insert(200, 2000);
 
@@ -6070,9 +6070,9 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        CatalogIdentityGroupIndexes group = catalog.Indexes["root-prefix-split-narrow-fallback"];
-        using LibraDexIndex<long, long> staged = group["staged"].Int64Keys<long>().Create();
-        using LibraDexIndex<long, long> split = group["split"].Int64Keys<long>().Create();
+        CatalogIdentityGroupIndexes group = catalog.Indexes.IndexSet("root-prefix-split-narrow-fallback");
+        using LibraDexIndex<long, long> staged = group.Define("staged").Int64Keys<long>().Create();
+        using LibraDexIndex<long, long> split = group.Define("split").Int64Keys<long>().Create();
         _ = staged.Insert(100, 1000);
 
         Scalar8Scalar8Profile profile = split.GetScalar8Scalar8Profile();
@@ -6150,9 +6150,9 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        CatalogIdentityGroupIndexes group = catalog.Indexes["root-shelf-transform-narrow-fallback"];
-        using LibraDexIndex<long, long> staged = group["staged"].Int64Keys<long>().Create();
-        using LibraDexIndex<long, long> split = group["split"].Int64Keys<long>().Create();
+        CatalogIdentityGroupIndexes group = catalog.Indexes.IndexSet("root-shelf-transform-narrow-fallback");
+        using LibraDexIndex<long, long> staged = group.Define("staged").Int64Keys<long>().Create();
+        using LibraDexIndex<long, long> split = group.Define("split").Int64Keys<long>().Create();
         _ = staged.Insert(100, 1000);
 
         Scalar8Scalar8Profile profile = split.GetScalar8Scalar8Profile();
@@ -6220,9 +6220,9 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        CatalogIdentityGroupIndexes group = catalog.Indexes["parent-route-split-narrow-fallback"];
-        using LibraDexIndex<long, long> staged = group["staged"].Int64Keys<long>().Create();
-        using LibraDexIndex<long, long> split = group["split"].Int64Keys<long>().Create();
+        CatalogIdentityGroupIndexes group = catalog.Indexes.IndexSet("parent-route-split-narrow-fallback");
+        using LibraDexIndex<long, long> staged = group.Define("staged").Int64Keys<long>().Create();
+        using LibraDexIndex<long, long> split = group.Define("split").Int64Keys<long>().Create();
         _ = staged.Insert(100, 1000);
 
         Scalar8Scalar8Profile profile = split.GetScalar8Scalar8Profile();
@@ -6301,9 +6301,9 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        CatalogIdentityGroupIndexes group = catalog.Indexes["duplicate-key-overflow-narrow-fallback"];
-        using LibraDexIndex<long, long> staged = group["staged"].Int64Keys<long>().Create();
-        using LibraDexIndex<long, long> duplicate = group["duplicate"].Int64Keys<long>().Create();
+        CatalogIdentityGroupIndexes group = catalog.Indexes.IndexSet("duplicate-key-overflow-narrow-fallback");
+        using LibraDexIndex<long, long> staged = group.Define("staged").Int64Keys<long>().Create();
+        using LibraDexIndex<long, long> duplicate = group.Define("duplicate").Int64Keys<long>().Create();
         _ = staged.Insert(100, 1000);
 
         Scalar8Scalar8Profile profile = duplicate.GetScalar8Scalar8Profile();
@@ -6370,9 +6370,9 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        CatalogIdentityGroupIndexes group = catalog.Indexes["terminal-identity-overflow-narrow-fallback"];
-        using LibraDexIndex<long, long> staged = group["staged"].Int64Keys<long>().Create();
-        using LibraDexIndex<long, long> terminal = group["terminal"].Int64Keys<long>().Create();
+        CatalogIdentityGroupIndexes group = catalog.Indexes.IndexSet("terminal-identity-overflow-narrow-fallback");
+        using LibraDexIndex<long, long> staged = group.Define("staged").Int64Keys<long>().Create();
+        using LibraDexIndex<long, long> terminal = group.Define("terminal").Int64Keys<long>().Create();
         _ = staged.Insert(100, 1000);
 
         Scalar8Scalar8Profile profile = terminal.GetScalar8Scalar8Profile();
@@ -6445,9 +6445,9 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        CatalogIdentityGroupIndexes group = catalog.Indexes["duplicate-run-chain-narrow-fallback"];
-        using LibraDexIndex<long, long> staged = group["staged"].Int64Keys<long>().Create();
-        using LibraDexIndex<long, long> duplicateRun = group["duplicate-run"].Int64Keys<long>().Create();
+        CatalogIdentityGroupIndexes group = catalog.Indexes.IndexSet("duplicate-run-chain-narrow-fallback");
+        using LibraDexIndex<long, long> staged = group.Define("staged").Int64Keys<long>().Create();
+        using LibraDexIndex<long, long> duplicateRun = group.Define("duplicate-run").Int64Keys<long>().Create();
         _ = staged.Insert(100, 1000);
 
         Scalar8Scalar8Profile profile = duplicateRun.GetScalar8Scalar8Profile();
@@ -7952,7 +7952,7 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
         const int maxIdentityLength = 32;
-        _ = catalog.Indexes["sv8-writer-context"]["raw"].UInt64VarIdentityKeys(maxIdentityLength).Create();
+        _ = catalog.Indexes.IndexSet("sv8-writer-context").Define("raw").UInt64VarIdentityKeys(maxIdentityLength).Create();
         if (!catalog.Indexes.TryGetInfo("sv8-writer-context", "raw", out CatalogIndexInfo info))
         {
             throw new InvalidDataException("SV8 writer-context probe could not resolve created catalog metadata.");
@@ -9628,7 +9628,7 @@ internal static partial class RawHarness
         {
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
-        using LibraDexIndex<long, long> index = catalog.Indexes["generic-queued"]["ids"].Int64Keys<long>().Create();
+        using LibraDexIndex<long, long> index = catalog.Indexes.IndexSet("generic-queued").Define("ids").Int64Keys<long>().Create();
         _ = index.Insert(100, 1001);
         NotSupportedException? singleOwnerModeException = null;
         try
@@ -9716,7 +9716,7 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        using LibraDexIndex<long, long> index = catalog.Indexes["generic-queued-delete"]["ids"].Int64Keys<long>().Create();
+        using LibraDexIndex<long, long> index = catalog.Indexes.IndexSet("generic-queued-delete").Define("ids").Int64Keys<long>().Create();
         _ = index.Insert(100, 1001);
         _ = index.Insert(101, 1002);
         _ = index.Insert(200, 2001);
@@ -9792,7 +9792,7 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        using LibraDexIndex<long, long> index = catalog.Indexes["generic-queued-terminal-delete"]["ids"].Int64Keys<long>().Create();
+        using LibraDexIndex<long, long> index = catalog.Indexes.IndexSet("generic-queued-terminal-delete").Define("ids").Int64Keys<long>().Create();
         Scalar8Scalar8Profile profile = index.GetScalar8Scalar8Profile();
         const long duplicateKey = 700;
         for (int i = 0; i < profile.MaxItemCount + 1; i++)
@@ -9828,7 +9828,7 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        using LibraDexIndex<long, long> index = catalog.Indexes["generic-queued-rekey"]["ids"].Int64Keys<long>().Create();
+        using LibraDexIndex<long, long> index = catalog.Indexes.IndexSet("generic-queued-rekey").Define("ids").Int64Keys<long>().Create();
         _ = index.Insert(100, 1001);
         LibraDexQueuedWriter<long, long> queuedWriter = index.BeginQueuedWriter(LibraDexConcurrencyOptions.QueuedWriter);
         long replacementKey = long.MinValue + 200;
@@ -9868,7 +9868,7 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        using LibraDexIndex<long, long> index = catalog.Indexes["generic-direct-insert"]["ids"].Int64Keys<long>().Create();
+        using LibraDexIndex<long, long> index = catalog.Indexes.IndexSet("generic-direct-insert").Define("ids").Int64Keys<long>().Create();
         _ = index.Insert(100, 1001);
         using ManualResetEventSlim startGate = new(false);
         using CountdownEvent readyGate = new(2);
@@ -9947,7 +9947,7 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        using LibraDexIndex<long, long> index = catalog.Indexes["generic-direct-delete"]["ids"].Int64Keys<long>().Create();
+        using LibraDexIndex<long, long> index = catalog.Indexes.IndexSet("generic-direct-delete").Define("ids").Int64Keys<long>().Create();
         _ = index.Insert(100, 1001);
         _ = index.Insert(101, 1002);
         _ = index.Insert(102, 1003);
@@ -10004,7 +10004,7 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        using LibraDexIndex<long, long> index = catalog.Indexes["generic-cursor-delete"]["ids"].Int64Keys<long>().Create();
+        using LibraDexIndex<long, long> index = catalog.Indexes.IndexSet("generic-cursor-delete").Define("ids").Int64Keys<long>().Create();
         _ = index.Insert(100, 1001);
         _ = index.Insert(101, 1002);
         _ = index.Insert(102, 1003);
@@ -10072,8 +10072,8 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        CatalogIdentityGroupIndexes group = catalog.Indexes["generic-criteria-delete"];
-        using LibraDexIndex<long, long> index = group["score"].Int64Keys<long>().Create();
+        CatalogIdentityGroupIndexes group = catalog.Indexes.IndexSet("generic-criteria-delete");
+        using LibraDexIndex<long, long> index = group.Define("score").Int64Keys<long>().Create();
         _ = index.Insert(100, 1001);
         _ = index.Insert(101, 1002);
         _ = index.Insert(102, 1003);
@@ -10090,7 +10090,7 @@ internal static partial class RawHarness
         {
             readyGate.Signal();
             startGate.Wait();
-            deleteA = group["score"].Delete(LibraDexCondition
+            deleteA = group.Define("score").Delete(LibraDexCondition
                 .ForGroup("generic-criteria-delete")
                 .Index("score").AsInt64.EqualTo(100L)
                 .EndCondition);
@@ -10100,7 +10100,7 @@ internal static partial class RawHarness
         {
             readyGate.Signal();
             startGate.Wait();
-            deleteB = group["score"].Delete(LibraDexCondition
+            deleteB = group.Define("score").Delete(LibraDexCondition
                 .ForGroup("generic-criteria-delete")
                 .Index("score").AsInt64.EqualTo(101L)
                 .EndCondition);
@@ -10140,7 +10140,7 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        using LibraDexIndex<long, long> index = catalog.Indexes["generic-direct-rekey"]["ids"].Int64Keys<long>().Create();
+        using LibraDexIndex<long, long> index = catalog.Indexes.IndexSet("generic-direct-rekey").Define("ids").Int64Keys<long>().Create();
         _ = index.Insert(100, 1001);
         _ = index.Insert(101, 1002);
         IIndex runtimeIndex = index;
@@ -10204,7 +10204,7 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        using LibraDexIndex<long, long> index = catalog.Indexes["generic-cursor-setkey"]["ids"].Int64Keys<long>().Create();
+        using LibraDexIndex<long, long> index = catalog.Indexes.IndexSet("generic-cursor-setkey").Define("ids").Int64Keys<long>().Create();
         _ = index.Insert(100, 1001);
         _ = index.Insert(101, 1002);
         using ManualResetEventSlim startGate = new(false);
@@ -10279,8 +10279,8 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        CatalogIdentityGroupIndexes group = catalog.Indexes["generic-criteria-setkey"];
-        using LibraDexIndex<long, long> index = group["score"].Int64Keys<long>().Create();
+        CatalogIdentityGroupIndexes group = catalog.Indexes.IndexSet("generic-criteria-setkey");
+        using LibraDexIndex<long, long> index = group.Define("score").Int64Keys<long>().Create();
         _ = index.Insert(100, 1001);
         _ = index.Insert(101, 1002);
         Func<string, IIndex> resolver = indexName => string.Equals(indexName, "score", StringComparison.Ordinal)
@@ -10362,7 +10362,7 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        using LibraDexIndex<long, long> index = catalog.Indexes["generic-scalar-null-route"]["ids"].Int64Keys<long>().Create();
+        using LibraDexIndex<long, long> index = catalog.Indexes.IndexSet("generic-scalar-null-route").Define("ids").Int64Keys<long>().Create();
         using ManualResetEventSlim insertStartGate = new(false);
         using CountdownEvent insertReadyGate = new(2);
         LibraDexGenericInsertResult insertA = default;
@@ -10448,7 +10448,7 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        using LibraDexIndex<long, long> index = catalog.Indexes["generic-scalar-null-nonnull-delete"]["ids"].Int64Keys<long>().Create();
+        using LibraDexIndex<long, long> index = catalog.Indexes.IndexSet("generic-scalar-null-nonnull-delete").Define("ids").Int64Keys<long>().Create();
         _ = index.Insert(100, 1001);
         _ = index.Insert(101, 1002);
         _ = index.Insert(ScalarNull.Null, 2001);
@@ -10456,7 +10456,7 @@ internal static partial class RawHarness
             ? index
             : throw new InvalidDataException($"Unexpected scalar-null non-null delete index '{name}'.");
 
-        LibraDexIdentityMutationResult delete = catalog["generic-scalar-null-nonnull-delete"]["ids"].Delete(LibraDexCondition
+        LibraDexIdentityMutationResult delete = catalog.Indexes.IndexSet("generic-scalar-null-nonnull-delete").Define("ids").Delete(LibraDexCondition
             .ForGroup("generic-scalar-null-nonnull-delete")
             .Index("ids").AsInt64.EqualTo(ScalarNull.NonNull)
             .EndCondition);
@@ -10494,7 +10494,7 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        using LibraDexIndex<long, long> index = catalog.Indexes["generic-all-delete"]["ids"].Int64Keys<long>().Create();
+        using LibraDexIndex<long, long> index = catalog.Indexes.IndexSet("generic-all-delete").Define("ids").Int64Keys<long>().Create();
         _ = index.Insert(100, 1001);
         _ = index.Insert(101, 1002);
         _ = index.Insert(ScalarNull.Null, 2001);
@@ -10502,7 +10502,7 @@ internal static partial class RawHarness
             ? index
             : throw new InvalidDataException($"Unexpected all delete index '{name}'.");
 
-        LibraDexIdentityMutationResult delete = catalog["generic-all-delete"]["ids"].DeleteAll();
+        LibraDexIdentityMutationResult delete = catalog.Indexes.IndexSet("generic-all-delete").Define("ids").DeleteAll();
         if (delete.ChangedCount != 3)
         {
             throw new InvalidDataException($"Generic SS8-8 All delete expected three changed tuples but saw {delete.ChangedCount}.");
@@ -10541,7 +10541,7 @@ internal static partial class RawHarness
         Guid keyB = Guid.Parse("10000000-0000-0000-0000-000000000002");
         Guid keyC = Guid.Parse("10000000-0000-0000-0000-000000000003");
         Guid keyD = Guid.Parse("10000000-0000-0000-0000-000000000004");
-        using LibraDexIndex<Guid, long> index = catalog.Indexes["generic-ss16-8-cursor"]["ids"].GuidKeys<long>().Create();
+        using LibraDexIndex<Guid, long> index = catalog.Indexes.IndexSet("generic-ss16-8-cursor").Define("ids").GuidKeys<long>().Create();
         _ = index.Insert(keyA, 1001);
         _ = index.Insert(keyB, 1002);
         _ = index.Insert(keyC, 1003);
@@ -10604,7 +10604,7 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        using LibraDexIndex<Int128, long> index = catalog.Indexes["generic-ss16-8-queued-facade"]["ids"].Int128Keys<long>().Create();
+        using LibraDexIndex<Int128, long> index = catalog.Indexes.IndexSet("generic-ss16-8-queued-facade").Define("ids").Int128Keys<long>().Create();
         Int128 baseKey = 1500;
         _ = index.Insert(baseKey, 15001);
         LibraDexQueuedWriter<Int128, long> writer = index.BeginQueuedWriter(LibraDexConcurrencyOptions.QueuedWriter);
@@ -10659,7 +10659,7 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        using LibraDexIndex<Int128, long> index = catalog.Indexes["generic-ss16-8-direct-insert"]["ids"].Int128Keys<long>().Create();
+        using LibraDexIndex<Int128, long> index = catalog.Indexes.IndexSet("generic-ss16-8-direct-insert").Define("ids").Int128Keys<long>().Create();
         Int128 leftBase = 100;
         Int128 rightBase = ((Int128)long.MinValue << 64) + 100;
         _ = index.Insert(leftBase, 1001);
@@ -10729,7 +10729,7 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        using LibraDexIndex<Int128, long> index = catalog.Indexes["generic-ss16-8-same-shelf"]["ids"].Int128Keys<long>().Create();
+        using LibraDexIndex<Int128, long> index = catalog.Indexes.IndexSet("generic-ss16-8-same-shelf").Define("ids").Int128Keys<long>().Create();
         Int128 baseKey = 1300;
         _ = index.Insert(baseKey, 13001);
         using ManualResetEventSlim startGate = new(false);
@@ -10789,7 +10789,7 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        using LibraDexIndex<Int128, long> index = catalog.Indexes["generic-ss16-8-direct-delete"]["ids"].Int128Keys<long>().Create();
+        using LibraDexIndex<Int128, long> index = catalog.Indexes.IndexSet("generic-ss16-8-direct-delete").Define("ids").Int128Keys<long>().Create();
         Int128 leftBase = 300;
         Int128 rightBase = ((Int128)long.MinValue << 64) + 300;
         _ = index.Insert(leftBase, 3001);
@@ -10857,7 +10857,7 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        using LibraDexIndex<Int128, long> index = catalog.Indexes["generic-ss16-8-direct-rekey"]["ids"].Int128Keys<long>().Create();
+        using LibraDexIndex<Int128, long> index = catalog.Indexes.IndexSet("generic-ss16-8-direct-rekey").Define("ids").Int128Keys<long>().Create();
         Int128 leftBase = 700;
         Int128 rightBase = ((Int128)long.MinValue << 64) + 700;
         _ = index.Insert(leftBase, 7001);
@@ -10936,8 +10936,8 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        CatalogIdentityGroupIndexes group = catalog.Indexes["generic-ss16-8-criteria-delete"];
-        using LibraDexIndex<Int128, long> index = group["score"].Int128Keys<long>().Create();
+        CatalogIdentityGroupIndexes group = catalog.Indexes.IndexSet("generic-ss16-8-criteria-delete");
+        using LibraDexIndex<Int128, long> index = group.Define("score").Int128Keys<long>().Create();
         Int128 leftBase = 900;
         Int128 rightBase = ((Int128)long.MinValue << 64) + 900;
         _ = index.Insert(leftBase, 9001);
@@ -10957,7 +10957,7 @@ internal static partial class RawHarness
         {
             readyGate.Signal();
             startGate.Wait();
-            deleteA = group["score"].Delete(LibraDexCondition
+            deleteA = group.Define("score").Delete(LibraDexCondition
                 .ForGroup("generic-ss16-8-criteria-delete")
                 .Index("score").AsInt128.EqualTo(leftBase)
                 .EndCondition);
@@ -10967,7 +10967,7 @@ internal static partial class RawHarness
         {
             readyGate.Signal();
             startGate.Wait();
-            deleteB = group["score"].Delete(LibraDexCondition
+            deleteB = group.Define("score").Delete(LibraDexCondition
                 .ForGroup("generic-ss16-8-criteria-delete")
                 .Index("score").AsInt128.EqualTo(rightBase)
                 .EndCondition);
@@ -11015,8 +11015,8 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        CatalogIdentityGroupIndexes group = catalog.Indexes["generic-ss16-8-criteria-setkey"];
-        using LibraDexIndex<Int128, long> index = group["score"].Int128Keys<long>().Create();
+        CatalogIdentityGroupIndexes group = catalog.Indexes.IndexSet("generic-ss16-8-criteria-setkey");
+        using LibraDexIndex<Int128, long> index = group.Define("score").Int128Keys<long>().Create();
         Int128 leftBase = 1100;
         Int128 rightBase = ((Int128)long.MinValue << 64) + 1100;
         _ = index.Insert(leftBase, 11001);
@@ -11113,7 +11113,7 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        using LibraDexIndex<Int128, long> index = catalog.Indexes["generic-ss16-8-cold-route"]["ids"].Int128Keys<long>().Create();
+        using LibraDexIndex<Int128, long> index = catalog.Indexes.IndexSet("generic-ss16-8-cold-route").Define("ids").Int128Keys<long>().Create();
         _ = index.Insert(500, 5001);
         Int128 coldKey = ((Int128)long.MinValue << 64) + 500;
         LibraDexGenericInsertResult insert = index.Insert(coldKey, 6001);
@@ -11145,7 +11145,7 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        using LibraDexIndex<Int128, long> index = catalog.Indexes["generic-ss16-8-cold-root-owner"]["ids"].Int128Keys<long>().Create();
+        using LibraDexIndex<Int128, long> index = catalog.Indexes.IndexSet("generic-ss16-8-cold-root-owner").Define("ids").Int128Keys<long>().Create();
         Int128 firstKey = ((Int128)0x10 << 120) + 1;
         Int128 differentPrefixKey = ((Int128)0x20 << 120) + 1;
         Int128 samePrefixKey = ((Int128)0x10 << 120) + 2;
@@ -11262,7 +11262,7 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        using LibraDexIndex<Int128, long> index = catalog.Indexes["generic-ss16-8-full-shelf-topology"]["ids"].Int128Keys<long>().Create();
+        using LibraDexIndex<Int128, long> index = catalog.Indexes.IndexSet("generic-ss16-8-full-shelf-topology").Define("ids").Int128Keys<long>().Create();
         Scalar16Scalar8Profile profile = index.GetScalar16Scalar8Profile();
         Int128 baseKey = 0;
         for (int i = 0; i < profile.MaxItemCount; i++)
@@ -11295,7 +11295,7 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        using LibraDexIndex<Int128, long> index = catalog.Indexes["generic-ss16-8-stale-route-claim"]["ids"].Int128Keys<long>().Create();
+        using LibraDexIndex<Int128, long> index = catalog.Indexes.IndexSet("generic-ss16-8-stale-route-claim").Define("ids").Int128Keys<long>().Create();
         Scalar16Scalar8Profile profile = index.GetScalar16Scalar8Profile();
         const ulong keyHigh = 0x4400_0000_0000_0000UL;
         const ulong seedKeyLow = 1;
@@ -11401,7 +11401,7 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        using LibraDexIndex<Int128, long> index = catalog.Indexes["generic-ss16-8-post-split-delete"]["ids"].Int128Keys<long>().Create();
+        using LibraDexIndex<Int128, long> index = catalog.Indexes.IndexSet("generic-ss16-8-post-split-delete").Define("ids").Int128Keys<long>().Create();
         Scalar16Scalar8Profile profile = index.GetScalar16Scalar8Profile();
         CreateScalar16Scalar8TransformSplitVectors(
             profile,
@@ -11454,7 +11454,7 @@ internal static partial class RawHarness
         Guid identityA = Guid.Parse("20000000-0000-0000-0000-000000000001");
         Guid identityB = Guid.Parse("20000000-0000-0000-0000-000000000002");
         Guid identityC = Guid.Parse("20000000-0000-0000-0000-000000000003");
-        using LibraDexIndex<long, Guid> index = catalog.Indexes["generic-ss8-16-cursor"]["ids"].Int64Keys<Guid>().Create();
+        using LibraDexIndex<long, Guid> index = catalog.Indexes.IndexSet("generic-ss8-16-cursor").Define("ids").Int64Keys<Guid>().Create();
         _ = index.Insert(100, identityA);
         _ = index.Insert(101, identityB);
         _ = index.Insert(102, identityC);
@@ -11519,7 +11519,7 @@ internal static partial class RawHarness
 
         Guid identityA = Guid.Parse("2c000000-0000-0000-0000-000000000001");
         Guid identityB = Guid.Parse("2c000000-0000-0000-0000-000000000002");
-        using LibraDexIndex<long, Guid> index = catalog.Indexes["generic-ss8-16-queued-facade"]["ids"].Int64Keys<Guid>().Create();
+        using LibraDexIndex<long, Guid> index = catalog.Indexes.IndexSet("generic-ss8-16-queued-facade").Define("ids").Int64Keys<Guid>().Create();
         long baseKey = 1500;
         _ = index.Insert(baseKey, identityA);
         LibraDexQueuedWriter<long, Guid> writer = index.BeginQueuedWriter(LibraDexConcurrencyOptions.QueuedWriter);
@@ -11569,7 +11569,7 @@ internal static partial class RawHarness
         Guid leftIdentityB = Guid.Parse("21000000-0000-0000-0000-000000000002");
         Guid rightIdentityA = Guid.Parse("22000000-0000-0000-0000-000000000001");
         Guid rightIdentityB = Guid.Parse("22000000-0000-0000-0000-000000000002");
-        using LibraDexIndex<long, Guid> index = catalog.Indexes["generic-ss8-16-direct-insert"]["ids"].Int64Keys<Guid>().Create();
+        using LibraDexIndex<long, Guid> index = catalog.Indexes.IndexSet("generic-ss8-16-direct-insert").Define("ids").Int64Keys<Guid>().Create();
         long leftBase = 100;
         long rightBase = long.MinValue + 100;
         _ = index.Insert(leftBase, leftIdentityA);
@@ -11642,7 +11642,7 @@ internal static partial class RawHarness
         Guid identityA = Guid.Parse("27000000-0000-0000-0000-000000000001");
         Guid identityB = Guid.Parse("27000000-0000-0000-0000-000000000002");
         Guid identityC = Guid.Parse("27000000-0000-0000-0000-000000000003");
-        using LibraDexIndex<long, Guid> index = catalog.Indexes["generic-ss8-16-same-shelf"]["ids"].Int64Keys<Guid>().Create();
+        using LibraDexIndex<long, Guid> index = catalog.Indexes.IndexSet("generic-ss8-16-same-shelf").Define("ids").Int64Keys<Guid>().Create();
         long baseKey = 1300;
         _ = index.Insert(baseKey, identityA);
         using ManualResetEventSlim startGate = new(false);
@@ -11706,7 +11706,7 @@ internal static partial class RawHarness
         Guid leftIdentityB = Guid.Parse("23000000-0000-0000-0000-000000000002");
         Guid rightIdentityA = Guid.Parse("24000000-0000-0000-0000-000000000001");
         Guid rightIdentityB = Guid.Parse("24000000-0000-0000-0000-000000000002");
-        using LibraDexIndex<long, Guid> index = catalog.Indexes["generic-ss8-16-direct-delete"]["ids"].Int64Keys<Guid>().Create();
+        using LibraDexIndex<long, Guid> index = catalog.Indexes.IndexSet("generic-ss8-16-direct-delete").Define("ids").Int64Keys<Guid>().Create();
         long leftBase = 300;
         long rightBase = long.MinValue + 300;
         _ = index.Insert(leftBase, leftIdentityA);
@@ -11776,7 +11776,7 @@ internal static partial class RawHarness
 
         Guid leftIdentity = Guid.Parse("25000000-0000-0000-0000-000000000001");
         Guid rightIdentity = Guid.Parse("26000000-0000-0000-0000-000000000001");
-        using LibraDexIndex<long, Guid> index = catalog.Indexes["generic-ss8-16-direct-rekey"]["ids"].Int64Keys<Guid>().Create();
+        using LibraDexIndex<long, Guid> index = catalog.Indexes.IndexSet("generic-ss8-16-direct-rekey").Define("ids").Int64Keys<Guid>().Create();
         long leftBase = 700;
         long rightBase = long.MinValue + 700;
         _ = index.Insert(leftBase, leftIdentity);
@@ -11855,8 +11855,8 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        CatalogIdentityGroupIndexes group = catalog.Indexes["generic-ss8-16-criteria-delete"];
-        using LibraDexIndex<long, Guid> index = group["score"].Int64Keys<Guid>().Create();
+        CatalogIdentityGroupIndexes group = catalog.Indexes.IndexSet("generic-ss8-16-criteria-delete");
+        using LibraDexIndex<long, Guid> index = group.Define("score").Int64Keys<Guid>().Create();
         Guid leftIdentityA = Guid.Parse("28000000-0000-0000-0000-000000000001");
         Guid leftIdentityB = Guid.Parse("28000000-0000-0000-0000-000000000002");
         Guid rightIdentityA = Guid.Parse("29000000-0000-0000-0000-000000000001");
@@ -11880,7 +11880,7 @@ internal static partial class RawHarness
         {
             readyGate.Signal();
             startGate.Wait();
-            deleteA = group["score"].Delete(LibraDexCondition
+            deleteA = group.Define("score").Delete(LibraDexCondition
                 .ForGroup("generic-ss8-16-criteria-delete")
                 .Index("score").AsInt64.EqualTo(leftBase)
                 .EndCondition);
@@ -11890,7 +11890,7 @@ internal static partial class RawHarness
         {
             readyGate.Signal();
             startGate.Wait();
-            deleteB = group["score"].Delete(LibraDexCondition
+            deleteB = group.Define("score").Delete(LibraDexCondition
                 .ForGroup("generic-ss8-16-criteria-delete")
                 .Index("score").AsInt64.EqualTo(rightBase)
                 .EndCondition);
@@ -11938,8 +11938,8 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        CatalogIdentityGroupIndexes group = catalog.Indexes["generic-ss8-16-criteria-setkey"];
-        using LibraDexIndex<long, Guid> index = group["score"].Int64Keys<Guid>().Create();
+        CatalogIdentityGroupIndexes group = catalog.Indexes.IndexSet("generic-ss8-16-criteria-setkey");
+        using LibraDexIndex<long, Guid> index = group.Define("score").Int64Keys<Guid>().Create();
         Guid leftIdentity = Guid.Parse("2a000000-0000-0000-0000-000000000001");
         Guid rightIdentity = Guid.Parse("2b000000-0000-0000-0000-000000000001");
         long leftBase = 1100;
@@ -12040,7 +12040,7 @@ internal static partial class RawHarness
 
         Guid identityA = Guid.Parse("2d000000-0000-0000-0000-000000000001");
         Guid identityB = Guid.Parse("2d000000-0000-0000-0000-000000000002");
-        using LibraDexIndex<long, Guid> index = catalog.Indexes["generic-ss8-16-cold-route"]["ids"].Int64Keys<Guid>().Create();
+        using LibraDexIndex<long, Guid> index = catalog.Indexes.IndexSet("generic-ss8-16-cold-route").Define("ids").Int64Keys<Guid>().Create();
         _ = index.Insert(500, identityA);
         long coldKey = long.MinValue + 500;
         LibraDexGenericInsertResult insert = index.Insert(coldKey, identityB);
@@ -12071,7 +12071,7 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        using LibraDexIndex<long, Guid> index = catalog.Indexes["generic-ss8-16-full-shelf-topology"]["ids"].Int64Keys<Guid>().Create();
+        using LibraDexIndex<long, Guid> index = catalog.Indexes.IndexSet("generic-ss8-16-full-shelf-topology").Define("ids").Int64Keys<Guid>().Create();
         Scalar8Scalar16Profile profile = index.GetScalar8Scalar16Profile();
         long baseKey = 1700;
         for (int i = 0; i < profile.MaxItemCount; i++)
@@ -12104,7 +12104,7 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        using LibraDexIndex<long, Guid> index = catalog.Indexes["generic-ss8-16-stale-route-claim"]["ids"].Int64Keys<Guid>().Create();
+        using LibraDexIndex<long, Guid> index = catalog.Indexes.IndexSet("generic-ss8-16-stale-route-claim").Define("ids").Int64Keys<Guid>().Create();
         Scalar8Scalar16Profile profile = index.GetScalar8Scalar16Profile();
         const ulong encodedKeyBase = 0x5600_0000_0000_0000UL;
         const ulong stagedKey = encodedKeyBase + 0x7FFF;
@@ -12218,7 +12218,7 @@ internal static partial class RawHarness
         Guid identityA = Guid.Parse("40000000-0000-0000-0000-000000000001");
         Guid identityB = Guid.Parse("40000000-0000-0000-0000-000000000002");
         Guid identityC = Guid.Parse("40000000-0000-0000-0000-000000000003");
-        using LibraDexIndex<Guid, Guid> index = catalog.Indexes["generic-ss16-16-cursor"]["ids"].GuidKeys<Guid>().Create();
+        using LibraDexIndex<Guid, Guid> index = catalog.Indexes.IndexSet("generic-ss16-16-cursor").Define("ids").GuidKeys<Guid>().Create();
         _ = index.Insert(keyA, identityA);
         _ = index.Insert(keyB, identityB);
         _ = index.Insert(keyC, identityC);
@@ -12277,7 +12277,7 @@ internal static partial class RawHarness
     private static void RunInternalGenericScalar16Scalar16QueuedWriterBoundaryProbe()
     {
         using Catalog catalog = Catalog.CreateMemory(new CatalogOptions { DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed });
-        using LibraDexIndex<Guid, Guid> index = catalog.Indexes["generic-ss16-16-queued-facade"]["ids"].GuidKeys<Guid>().Create();
+        using LibraDexIndex<Guid, Guid> index = catalog.Indexes.IndexSet("generic-ss16-16-queued-facade").Define("ids").GuidKeys<Guid>().Create();
         Guid keyA = Guid.Parse("37000000-0000-0000-0000-000000000001");
         Guid keyB = Guid.Parse("37000000-0000-0000-0000-000000000002");
         Guid keyC = Guid.Parse("37000000-0000-0000-0000-000000000003");
@@ -12309,7 +12309,7 @@ internal static partial class RawHarness
     private static void RunInternalGenericScalar16Scalar16DirectConcurrentInsertProbe()
     {
         using Catalog catalog = Catalog.CreateMemory(new CatalogOptions { DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed });
-        using LibraDexIndex<Guid, Guid> index = catalog.Indexes["generic-ss16-16-direct-insert"]["ids"].GuidKeys<Guid>().Create();
+        using LibraDexIndex<Guid, Guid> index = catalog.Indexes.IndexSet("generic-ss16-16-direct-insert").Define("ids").GuidKeys<Guid>().Create();
         Guid leftKey = Guid.Parse("31000000-0000-0000-0000-000000000001");
         Guid rightKey = Guid.Parse("b1000000-0000-0000-0000-000000000001");
         Guid leftA = Guid.Parse("41000000-0000-0000-0000-000000000001");
@@ -12336,7 +12336,7 @@ internal static partial class RawHarness
     private static void RunInternalGenericScalar16Scalar16SameShelfContentionProbe()
     {
         using Catalog catalog = Catalog.CreateMemory(new CatalogOptions { DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed });
-        using LibraDexIndex<Guid, Guid> index = catalog.Indexes["generic-ss16-16-same-shelf"]["ids"].GuidKeys<Guid>().Create();
+        using LibraDexIndex<Guid, Guid> index = catalog.Indexes.IndexSet("generic-ss16-16-same-shelf").Define("ids").GuidKeys<Guid>().Create();
         Guid keyA = Guid.Parse("32000000-0000-0000-0000-000000000001");
         Guid keyB = Guid.Parse("32000000-0000-0000-0000-000000000002");
         Guid keyC = Guid.Parse("32000000-0000-0000-0000-000000000003");
@@ -12362,7 +12362,7 @@ internal static partial class RawHarness
     private static void RunInternalGenericScalar16Scalar16DirectConcurrentDeleteProbe()
     {
         using Catalog catalog = Catalog.CreateMemory(new CatalogOptions { DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed });
-        using LibraDexIndex<Guid, Guid> index = catalog.Indexes["generic-ss16-16-direct-delete"]["ids"].GuidKeys<Guid>().Create();
+        using LibraDexIndex<Guid, Guid> index = catalog.Indexes.IndexSet("generic-ss16-16-direct-delete").Define("ids").GuidKeys<Guid>().Create();
         Guid leftKey = Guid.Parse("33000000-0000-0000-0000-000000000001");
         Guid rightKey = Guid.Parse("b3000000-0000-0000-0000-000000000001");
         Guid leftIdentity = Guid.Parse("44000000-0000-0000-0000-000000000001");
@@ -12385,7 +12385,7 @@ internal static partial class RawHarness
     private static void RunInternalGenericScalar16Scalar16DirectConcurrentRekeyProbe()
     {
         using Catalog catalog = Catalog.CreateMemory(new CatalogOptions { DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed });
-        using LibraDexIndex<Guid, Guid> index = catalog.Indexes["generic-ss16-16-direct-rekey"]["ids"].GuidKeys<Guid>().Create();
+        using LibraDexIndex<Guid, Guid> index = catalog.Indexes.IndexSet("generic-ss16-16-direct-rekey").Define("ids").GuidKeys<Guid>().Create();
         Guid leftKey = Guid.Parse("34000000-0000-0000-0000-000000000001");
         Guid rightKey = Guid.Parse("b4000000-0000-0000-0000-000000000001");
         Guid leftNew = Guid.Parse("34000000-0000-0000-0000-000000000002");
@@ -12410,13 +12410,13 @@ internal static partial class RawHarness
     private static void RunInternalGenericScalar16Scalar16CriteriaDeleteBridgeProbe()
     {
         using Catalog catalog = Catalog.CreateMemory(new CatalogOptions { DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed });
-        CatalogIdentityGroupIndexes group = catalog.Indexes["generic-ss16-16-criteria-delete"];
-        using LibraDexIndex<Guid, Guid> index = group["score"].GuidKeys<Guid>().Create();
+        CatalogIdentityGroupIndexes group = catalog.Indexes.IndexSet("generic-ss16-16-criteria-delete");
+        using LibraDexIndex<Guid, Guid> index = group.Define("score").GuidKeys<Guid>().Create();
         Guid key = Guid.Parse("35000000-0000-0000-0000-000000000001");
         Guid identity = Guid.Parse("48000000-0000-0000-0000-000000000001");
         _ = index.Insert(key, identity);
         Func<string, IIndex> resolver = name => string.Equals(name, "score", StringComparison.Ordinal) ? index : throw new InvalidDataException($"Unexpected SS16-16 criteria delete index '{name}'.");
-        LibraDexIdentityMutationResult delete = group["score"].Delete(
+        LibraDexIdentityMutationResult delete = group.Define("score").Delete(
             LibraDexCondition.ForGroup("generic-ss16-16-criteria-delete").Index("score").AsGuid.EqualTo(key).EndCondition);
         if (delete.ChangedCount != 1) throw new InvalidDataException($"Generic SS16-16 criteria delete expected one changed tuple but saw {delete.ChangedCount}.");
     }
@@ -12424,8 +12424,8 @@ internal static partial class RawHarness
     private static void RunInternalGenericScalar16Scalar16CriteriaSetKeyBridgeProbe()
     {
         using Catalog catalog = Catalog.CreateMemory(new CatalogOptions { DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed });
-        CatalogIdentityGroupIndexes group = catalog.Indexes["generic-ss16-16-criteria-setkey"];
-        using LibraDexIndex<Guid, Guid> index = group["score"].GuidKeys<Guid>().Create();
+        CatalogIdentityGroupIndexes group = catalog.Indexes.IndexSet("generic-ss16-16-criteria-setkey");
+        using LibraDexIndex<Guid, Guid> index = group.Define("score").GuidKeys<Guid>().Create();
         Guid key = Guid.Parse("36000000-0000-0000-0000-000000000001");
         Guid newKey = Guid.Parse("36000000-0000-0000-0000-000000000002");
         Guid identity = Guid.Parse("49000000-0000-0000-0000-000000000001");
@@ -12438,7 +12438,7 @@ internal static partial class RawHarness
     private static void RunInternalGenericScalar16Scalar16ColdRouteFallbackProbe()
     {
         using Catalog catalog = Catalog.CreateMemory(new CatalogOptions { DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed });
-        using LibraDexIndex<Int128, Guid> index = catalog.Indexes["generic-ss16-16-cold-route"]["ids"].Int128Keys<Guid>().Create();
+        using LibraDexIndex<Int128, Guid> index = catalog.Indexes.IndexSet("generic-ss16-16-cold-route").Define("ids").Int128Keys<Guid>().Create();
         Guid identityA = Guid.Parse("4b000000-0000-0000-0000-000000000001");
         Guid identityB = Guid.Parse("4b000000-0000-0000-0000-000000000002");
         _ = index.Insert(500, identityA);
@@ -12453,7 +12453,7 @@ internal static partial class RawHarness
     private static void RunInternalGenericScalar16Scalar16FullShelfSerializedTopologyProbe()
     {
         using Catalog catalog = Catalog.CreateMemory(new CatalogOptions { DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed });
-        using LibraDexIndex<Int128, Guid> index = catalog.Indexes["generic-ss16-16-full-shelf-topology"]["ids"].Int128Keys<Guid>().Create();
+        using LibraDexIndex<Int128, Guid> index = catalog.Indexes.IndexSet("generic-ss16-16-full-shelf-topology").Define("ids").Int128Keys<Guid>().Create();
         Scalar16Scalar16Profile profile = index.GetScalar16Scalar16Profile();
         Int128 baseKey = 1700;
         for (int i = 0; i < profile.MaxItemCount; i++)
@@ -12483,7 +12483,7 @@ internal static partial class RawHarness
     private static void RunInternalGenericScalar16Scalar16StaleRouteClaimProbe()
     {
         using Catalog catalog = Catalog.CreateMemory(new CatalogOptions { DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed });
-        using LibraDexIndex<Int128, Guid> index = catalog.Indexes["generic-ss16-16-stale-route-claim"]["ids"].Int128Keys<Guid>().Create();
+        using LibraDexIndex<Int128, Guid> index = catalog.Indexes.IndexSet("generic-ss16-16-stale-route-claim").Define("ids").Int128Keys<Guid>().Create();
         Scalar16Scalar16Profile profile = index.GetScalar16Scalar16Profile();
         const ulong keyHigh = 0x5700_0000_0000_0000UL;
         const ulong seedKeyLow = 1;
@@ -12590,7 +12590,7 @@ internal static partial class RawHarness
     private static void RunInternalGenericFixed32Scalar8StaleRouteClaimProbe()
     {
         using Catalog catalog = Catalog.CreateMemory(new CatalogOptions { DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed });
-        using LibraDexIndex<byte[], long> index = catalog.Indexes["generic-fs32-8-stale-route-claim"]["ids"].Blob.Scalar<long>(LibraDexScalarWidth.Bytes32).Create();
+        using LibraDexIndex<byte[], long> index = catalog.Indexes.IndexSet("generic-fs32-8-stale-route-claim").Define("ids").Blob.Scalar<long>(LibraDexScalarWidth.Bytes32).Create();
         Fixed32Scalar8Profile profile = index.GetFixed32Scalar8Profile();
         const ulong key0 = 0x5800_0000_0000_0000UL;
         const ulong key1 = 0;
@@ -12700,7 +12700,7 @@ internal static partial class RawHarness
     private static void RunInternalGenericFixed32Scalar16StaleRouteClaimProbe()
     {
         using Catalog catalog = Catalog.CreateMemory(new CatalogOptions { DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed });
-        using LibraDexIndex<byte[], Guid> index = catalog.Indexes["generic-fs32-16-stale-route-claim"]["ids"].Blob.Scalar<Guid>(LibraDexScalarWidth.Bytes32).Create();
+        using LibraDexIndex<byte[], Guid> index = catalog.Indexes.IndexSet("generic-fs32-16-stale-route-claim").Define("ids").Blob.Scalar<Guid>(LibraDexScalarWidth.Bytes32).Create();
         Fixed32Scalar16Profile profile = index.GetFixed32Scalar16Profile();
         const ulong key0 = 0x5900_0000_0000_0000UL;
         const ulong key1 = 0;
@@ -13001,9 +13001,9 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        CatalogIdentityGroupIndexes group = catalog.Indexes["generic-queued-index-isolation"];
-        using LibraDexIndex<long, long> value = group["value"].Int64Keys<long>().Create();
-        using LibraDexIndex<long, long> status = group["status"].Int64Keys<long>().Create();
+        CatalogIdentityGroupIndexes group = catalog.Indexes.IndexSet("generic-queued-index-isolation");
+        using LibraDexIndex<long, long> value = group.Define("value").Int64Keys<long>().Create();
+        using LibraDexIndex<long, long> status = group.Define("status").Int64Keys<long>().Create();
         _ = value.Insert(10, 1000);
         _ = status.Insert(20, 2000);
 
@@ -13074,9 +13074,9 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        CatalogIdentityGroupIndexes group = catalog.Indexes["generic-queued-index-fallback-isolation"];
-        using LibraDexIndex<long, long> routed = group["routed"].Int64Keys<long>().Create();
-        using LibraDexIndex<long, long> fallback = group["fallback"].Int64Keys<long>().Create();
+        CatalogIdentityGroupIndexes group = catalog.Indexes.IndexSet("generic-queued-index-fallback-isolation");
+        using LibraDexIndex<long, long> routed = group.Define("routed").Int64Keys<long>().Create();
+        using LibraDexIndex<long, long> fallback = group.Define("fallback").Int64Keys<long>().Create();
         _ = routed.Insert(100, 1000);
         _ = fallback.Insert(200, 2000);
 
@@ -13150,8 +13150,8 @@ internal static partial class RawHarness
         {
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
-        CatalogIdentityGroupIndexes group = catalog.Indexes["abraxas-write"];
-        using LibraDexIndex<long, long> index = group["score"].Int64Keys<long>().Create();
+        CatalogIdentityGroupIndexes group = catalog.Indexes.IndexSet("abraxas-write");
+        using LibraDexIndex<long, long> index = group.Define("score").Int64Keys<long>().Create();
         _ = index.Insert(100, 1001);
         AbraxasIdentityWriteAdapter<long> adapter = group.AbraxasIdentityWrite<long>();
         if (adapter.Group != "abraxas-write")
@@ -13271,8 +13271,8 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        CatalogIdentityGroupIndexes group = catalog.Indexes["abraxas-delete"];
-        using LibraDexIndex<long, long> index = group["score"].Int64Keys<long>().Create();
+        CatalogIdentityGroupIndexes group = catalog.Indexes.IndexSet("abraxas-delete");
+        using LibraDexIndex<long, long> index = group.Define("score").Int64Keys<long>().Create();
         _ = index.Insert(100, 1001);
         _ = index.Insert(101, 1002);
         _ = index.Insert(102, 1003);
@@ -13333,8 +13333,8 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        CatalogIdentityGroupIndexes group = catalog.Indexes["abraxas-rekey"];
-        using LibraDexIndex<long, long> index = group["score"].Int64Keys<long>().Create();
+        CatalogIdentityGroupIndexes group = catalog.Indexes.IndexSet("abraxas-rekey");
+        using LibraDexIndex<long, long> index = group.Define("score").Int64Keys<long>().Create();
         _ = index.Insert(100, 1001);
         _ = index.Insert(101, 1002);
 
@@ -13413,7 +13413,7 @@ internal static partial class RawHarness
         try
         {
             using (Catalog catalog = Catalog.Create(path, CatalogOptions.UInt64Identities))
-            using (LibraDexStringScalar8Index index = catalog.Indexes["proof"]["path"].String.Create(StringKeys.Exact))
+            using (LibraDexStringScalar8Index index = catalog.Indexes.IndexSet("proof").Define("path").String.Create(StringKeys.Exact))
             {
                 using ManualResetEventSlim startGate = new(false);
                 using CountdownEvent readyGate = new(threadCount);
@@ -13471,7 +13471,7 @@ internal static partial class RawHarness
             }
 
             using (Catalog reopened = Catalog.Open(path, CatalogOptions.UInt64Identities))
-            using (LibraDexStringScalar8Index index = reopened.Indexes["proof"]["path"].String.Open())
+            using (LibraDexStringScalar8Index index = reopened.Indexes.IndexSet("proof").Define("path").String.Open())
             {
                 ValidateStringConcurrentBatchPublicationParity(index, threadCount, itemsPerThread, useWherzitDistribution, "reopened");
             }
@@ -13609,7 +13609,7 @@ internal static partial class RawHarness
         try
         {
             using (Catalog catalog = Catalog.Create(path))
-            using (LibraDexIndex<long, long> index = catalog.Indexes["proof"]["value"].Int64Keys<long>().Create(
+            using (LibraDexIndex<long, long> index = catalog.Indexes.IndexSet("proof").Define("value").Int64Keys<long>().Create(
                 options: new IndexOptions
                 {
                     IdentityKeyMultiplicity = IdentityKeyMultiplicity.SingleKeyPerIdentity
@@ -13660,7 +13660,7 @@ internal static partial class RawHarness
             }
 
             using (Catalog reopened = Catalog.Open(path))
-            using (LibraDexIndex<long, long> index = reopened.Indexes["proof"]["value"].Int64Keys<long>().Open())
+            using (LibraDexIndex<long, long> index = reopened.Indexes.IndexSet("proof").Define("value").Int64Keys<long>().Open())
             {
                 ValidateScalar8ConcurrentBatchPublicationParity(index, threadCount, itemsPerThread, "reopened");
             }
@@ -13707,7 +13707,7 @@ internal static partial class RawHarness
             LibraDexIndexShapeSpec shape;
             using (Catalog catalog = Catalog.Create(path, CatalogOptions.UInt64Identities))
             {
-                shape = catalog.Indexes["proof"]["value"].Shape.Date<DateTime, ulong>(
+                shape = catalog.Indexes.IndexSet("proof").Define("value").Shape.Date<DateTime, ulong>(
                     DateKeys.ExactAndStructured,
                     DateTimeKeyEncoding.PrecisionSdt,
                     IndexKeys.NonUnique);
@@ -13982,7 +13982,7 @@ internal static partial class RawHarness
         {
             long acceptedKey;
             using (Catalog catalog = Catalog.Create(path))
-            using (LibraDexIndex<long, long> index = catalog.Indexes["proof"]["value"].Int64Keys<long>().Create(
+            using (LibraDexIndex<long, long> index = catalog.Indexes.IndexSet("proof").Define("value").Int64Keys<long>().Create(
                 options: new IndexOptions
                 {
                     Keys = IndexKeys.NonUnique,
@@ -14044,7 +14044,7 @@ internal static partial class RawHarness
             }
 
             using (Catalog reopened = Catalog.Open(path))
-            using (LibraDexIndex<long, long> index = reopened.Indexes["proof"]["value"].Int64Keys<long>().Open())
+            using (LibraDexIndex<long, long> index = reopened.Indexes.IndexSet("proof").Define("value").Int64Keys<long>().Open())
             {
                 ValidateSingleKeyCrossBatchReservationResult(index, contestedIdentity, acceptedKey, "reopened");
             }

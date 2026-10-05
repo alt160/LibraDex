@@ -53,8 +53,8 @@ internal static partial class RawHarness
         }
 
         using Catalog catalog = Catalog.CreateMemory();
-        CatalogIdentityGroupIndexes group = catalog.Indexes["string-prefix-count-proof"];
-        using LibraDexStringScalar8Index pathIndex = group["path"].String.Create(StringKeys.Exact);
+        CatalogIdentityGroupIndexes group = catalog.Indexes.IndexSet("string-prefix-count-proof");
+        using LibraDexStringScalar8Index pathIndex = group.Define("path").String.Create(StringKeys.Exact);
 
         string targetPrefix = CreateStringPrefixCountProofPrefix(rootPrefix, targetGroup);
         long expectedCount = 0;

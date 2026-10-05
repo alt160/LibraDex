@@ -25,12 +25,12 @@ internal static partial class RawHarness
         {
             using (Catalog catalog = Catalog.Create(path, CatalogOptions.UInt64Identities))
             {
-                using LibraDexIndex<int, ulong> age = catalog.Indexes["people"]["age"].Int32Keys<ulong>().Create();
-                using LibraDexStringScalar8Index name = catalog.Indexes["people"]["name"].String.Create(
+                using LibraDexIndex<int, ulong> age = catalog.Indexes.IndexSet("people").Define("age").Int32Keys<ulong>().Create();
+                using LibraDexStringScalar8Index name = catalog.Indexes.IndexSet("people").Define("name").String.Create(
                     stringKeys: StringKeys.ExactFoldedAndSortKey,
                     directions: LibraDexProjectionDirectionSet.ForwardAndReversed,
                     sortKeyCulture: "en-US");
-                using LibraDexIndex<int, ulong> retained = catalog.Indexes["orders"]["number"].Int32Keys<ulong>().Create();
+                using LibraDexIndex<int, ulong> retained = catalog.Indexes.IndexSet("orders").Define("number").Int32Keys<ulong>().Create();
                 ValidateGenericInsert(age.Insert(42, 1UL), "index-set drop age insert");
                 ValidateGenericInsert(name.Insert("Eric", 1UL), "index-set drop name insert");
                 ValidateGenericInsert(retained.Insert(100, 2UL), "index-set drop retained insert");
@@ -71,7 +71,7 @@ internal static partial class RawHarness
 
             using (Catalog reopened = Catalog.Open(path, CatalogOptions.UInt64Identities))
             {
-                using LibraDexIndex<int, ulong> retained = reopened.Indexes["orders"]["number"].Int32Keys<ulong>().Open();
+                using LibraDexIndex<int, ulong> retained = reopened.Indexes.IndexSet("orders").Define("number").Int32Keys<ulong>().Open();
                 if (reopened.Indexes.IndexSetNames().Contains("people", StringComparer.Ordinal) ||
                     reopened.Indexes.TryGetInfo("people", "age", out _) ||
                     reopened.Indexes.TryGetInfo("people", "name", out _) ||
@@ -112,8 +112,8 @@ internal static partial class RawHarness
         try
         {
             using Catalog catalog = Catalog.Create(path);
-            using LibraDexStringScalar8Index text = catalog.Indexes["items"]["text"].String.Create(StringKeys.Exact);
-            using LibraDexUInt64VarIdentityIndex raw = catalog.Indexes["items"]["raw"].UInt64VarIdentityKeys(256).Create();
+            using LibraDexStringScalar8Index text = catalog.Indexes.IndexSet("items").Define("text").String.Create(StringKeys.Exact);
+            using LibraDexUInt64VarIdentityIndex raw = catalog.Indexes.IndexSet("items").Define("raw").UInt64VarIdentityKeys(256).Create();
             List<string> keys = new();
             for (int i = 0; i < 96; i++)
             {
@@ -129,7 +129,7 @@ internal static partial class RawHarness
 
             for (int i = 0; i < keys.Count; i += 10)
             {
-                LibraDexIdentityMutationResult deleted = catalog.Indexes["items"]["text"].Delete(
+                LibraDexIdentityMutationResult deleted = catalog.Indexes.IndexSet("items").Define("text").Delete(
                     LibraDexCondition.ForGroup("items").Index("text").AsString.EqualTo(keys[i]).EndCondition);
                 if (deleted.ChangedCount != 1)
                     throw new InvalidDataException($"Repack fixture delete {i} changed {deleted.ChangedCount:n0} tuples.");
@@ -208,11 +208,11 @@ internal static partial class RawHarness
         {
             using (Catalog catalog = Catalog.Create(path, catalogOptions))
             {
-                LibraDexIndex<int, ulong> age = catalog.Indexes["people"]["age"].Int32Keys<ulong>().Create();
+                LibraDexIndex<int, ulong> age = catalog.Indexes.IndexSet("people").Define("age").Int32Keys<ulong>().Create();
                 for (int i = 0; i < 500; i++)
                     ValidateGenericInsert(age.Insert(20 + (i % 60), (ulong)(10_000 + i)), $"compaction age insert {i}");
 
-                using LibraDexStringScalar8Index name = catalog.Indexes["people"]["name"].String.Create(
+                using LibraDexStringScalar8Index name = catalog.Indexes.IndexSet("people").Define("name").String.Create(
                     stringKeys: StringKeys.ExactFoldedAndSortKey,
                     directions: LibraDexProjectionDirectionSet.ForwardAndReversed,
                     sortKeyCulture: "en-US");
@@ -220,18 +220,18 @@ internal static partial class RawHarness
                 ValidateGenericInsert(name.Insert("ALICE", 10_002UL), "compaction name ALICE insert");
                 ValidateGenericInsert(name.Insert("Zoë", 10_003UL), "compaction name Zoë insert");
 
-                using LibraDexVariableBlobScalar8Index<ulong> liveBlob = catalog.Indexes["live"]["blob"].Blob
+                using LibraDexVariableBlobScalar8Index<ulong> liveBlob = catalog.Indexes.IndexSet("live").Define("blob").Blob
                     .Variable<ulong>(maxKeyBytes: 128)
                     .Create();
                 ValidateGenericInsert(liveBlob.Insert(new byte[] { 1, 2, 3 }, 20_001UL), "compaction live blob 1 insert");
                 ValidateGenericInsert(liveBlob.Insert(new byte[] { 9, 8, 7, 6 }, 20_002UL), "compaction live blob 2 insert");
 
-                using LibraDexUInt64VarIdentityIndex rawIdentity = catalog.Indexes["live"]["rawIdentity"]
+                using LibraDexUInt64VarIdentityIndex rawIdentity = catalog.Indexes.IndexSet("live").Define("rawIdentity")
                     .UInt64VarIdentityKeys(maxIdentityBytes: 64)
                     .Create();
                 ValidateGenericInsert(rawIdentity.Insert(42UL, new byte[] { 4, 2 }), "compaction live raw identity insert");
 
-                using LibraDexBigIntScalar8Index<long> bigFixed8 = catalog.Indexes["live"]["bigFixed8"]
+                using LibraDexBigIntScalar8Index<long> bigFixed8 = catalog.Indexes.IndexSet("live").Define("bigFixed8")
                     .BigIntKeys<long>(maxBytes: 32)
                     .Create();
                 BigInteger bigBoundary = (BigInteger.One << 255) - BigInteger.One;
@@ -250,7 +250,7 @@ internal static partial class RawHarness
                         $"compaction routed fixed BigInt scalar-8 insert {i}");
                 }
 
-                using LibraDexBigIntScalar8Index<Guid> bigFixed16 = catalog.Indexes["live"]["bigFixed16"]
+                using LibraDexBigIntScalar8Index<Guid> bigFixed16 = catalog.Indexes.IndexSet("live").Define("bigFixed16")
                     .BigIntKeys<Guid>(maxBytes: 32)
                     .Create();
                 Guid bigGuid1 = new("11111111-1111-1111-1111-111111111111");
@@ -270,7 +270,7 @@ internal static partial class RawHarness
                         $"compaction routed fixed BigInt scalar-16 insert {i}");
                 }
 
-                using LibraDexBigIntScalar8Index<long> bigVariable = catalog.Indexes["live"]["bigVariable"]
+                using LibraDexBigIntScalar8Index<long> bigVariable = catalog.Indexes.IndexSet("live").Define("bigVariable")
                     .BigIntVarLenKeys<long>(maxBytes: 32)
                     .Create();
                 ValidateGenericInsert(bigVariable.Insert(new BigInteger(-1000), 31_001L), "compaction variable BigInt negative insert");
@@ -278,7 +278,7 @@ internal static partial class RawHarness
                 ValidateGenericInsert(bigVariable.Insert(new BigInteger(1000), 31_003L), "compaction variable BigInt positive insert");
                 ValidateGenericInsert(bigVariable.Insert(bigBoundary, 31_004L), "compaction variable BigInt boundary insert");
 
-                using LibraDexBigIntVarIdentityIndex bigVarIdentity = catalog.Indexes["live"]["bigVarIdentity"]
+                using LibraDexBigIntVarIdentityIndex bigVarIdentity = catalog.Indexes.IndexSet("live").Define("bigVarIdentity")
                     .BigIntVarIdentityKeys(maxBytes: 32, maxIdentityBytes: 64)
                     .Create();
                 ValidateGenericInsert(bigVarIdentity.Insert(new BigInteger(-9), new byte[] { 9, 1 }), "compaction BigInt variable identity negative insert");
@@ -292,7 +292,7 @@ internal static partial class RawHarness
                         $"compaction routed BigInt variable identity insert {i}");
                 }
 
-                using LibraDexVariableBlobScalar8Index<ulong> discarded = catalog.Indexes["discarded"]["payload"].Blob
+                using LibraDexVariableBlobScalar8Index<ulong> discarded = catalog.Indexes.IndexSet("discarded").Define("payload").Blob
                     .Variable<ulong>(maxKeyBytes: 1023)
                     .Create();
                 byte[] payload = new byte[900];
@@ -325,14 +325,14 @@ internal static partial class RawHarness
 
             using (Catalog reopened = Catalog.Open(path, catalogOptions))
             {
-                using LibraDexIndex<int, ulong> age = reopened.Indexes["people"]["age"].Int32Keys<ulong>().Open();
-                using LibraDexStringScalar8Index name = reopened.Indexes["people"]["name"].String.Open();
-                using LibraDexVariableBlobScalar8Index<ulong> liveBlob = reopened.Indexes["live"]["blob"].Blob.Variable<ulong>(128).Open();
-                using LibraDexUInt64VarIdentityIndex rawIdentity = reopened.Indexes["live"]["rawIdentity"].UInt64VarIdentityKeys(64).Open();
-                using LibraDexBigIntScalar8Index<long> bigFixed8 = reopened.Indexes["live"]["bigFixed8"].BigIntKeys<long>(32).Open();
-                using LibraDexBigIntScalar8Index<Guid> bigFixed16 = reopened.Indexes["live"]["bigFixed16"].BigIntKeys<Guid>(32).Open();
-                using LibraDexBigIntScalar8Index<long> bigVariable = reopened.Indexes["live"]["bigVariable"].BigIntVarLenKeys<long>(32).Open();
-                using LibraDexBigIntVarIdentityIndex bigVarIdentity = reopened.Indexes["live"]["bigVarIdentity"].BigIntVarIdentityKeys(32, 64).Open();
+                using LibraDexIndex<int, ulong> age = reopened.Indexes.IndexSet("people").Define("age").Int32Keys<ulong>().Open();
+                using LibraDexStringScalar8Index name = reopened.Indexes.IndexSet("people").Define("name").String.Open();
+                using LibraDexVariableBlobScalar8Index<ulong> liveBlob = reopened.Indexes.IndexSet("live").Define("blob").Blob.Variable<ulong>(128).Open();
+                using LibraDexUInt64VarIdentityIndex rawIdentity = reopened.Indexes.IndexSet("live").Define("rawIdentity").UInt64VarIdentityKeys(64).Open();
+                using LibraDexBigIntScalar8Index<long> bigFixed8 = reopened.Indexes.IndexSet("live").Define("bigFixed8").BigIntKeys<long>(32).Open();
+                using LibraDexBigIntScalar8Index<Guid> bigFixed16 = reopened.Indexes.IndexSet("live").Define("bigFixed16").BigIntKeys<Guid>(32).Open();
+                using LibraDexBigIntScalar8Index<long> bigVariable = reopened.Indexes.IndexSet("live").Define("bigVariable").BigIntVarLenKeys<long>(32).Open();
+                using LibraDexBigIntVarIdentityIndex bigVarIdentity = reopened.Indexes.IndexSet("live").Define("bigVarIdentity").BigIntVarIdentityKeys(32, 64).Open();
                 Func<string, IIndex> resolver = indexName => indexName switch
                 {
                     "age" => age,
@@ -430,7 +430,7 @@ internal static partial class RawHarness
         try
         {
             using (Catalog catalog = Catalog.Create(modePath))
-            using (LibraDexStringScalar8Index index = catalog.Indexes["mode"]["text"].String.Create(StringKeys.Exact))
+            using (LibraDexStringScalar8Index index = catalog.Indexes.IndexSet("mode").Define("text").String.Create(StringKeys.Exact))
             {
                 for (int i = 0; i < 300; i++)
                     ValidateGenericInsert(index.Insert($"key-{i:D4}", (ulong)i), $"maintenance mode insert {i}");
@@ -474,9 +474,9 @@ internal static partial class RawHarness
             }
 
             using (Catalog catalog = Catalog.Create(exactPath))
-            using (LibraDexStringScalar8Index first = catalog.Indexes["exact"]["first"].String.Create(StringKeys.Exact))
-            using (LibraDexStringScalar8Index second = catalog.Indexes["exact"]["second"].String.Create(StringKeys.Exact))
-            using (LibraDexStringScalar8Index projected = catalog.Indexes["exact"]["projected"].String.Create(StringKeys.ExactAndFolded))
+            using (LibraDexStringScalar8Index first = catalog.Indexes.IndexSet("exact").Define("first").String.Create(StringKeys.Exact))
+            using (LibraDexStringScalar8Index second = catalog.Indexes.IndexSet("exact").Define("second").String.Create(StringKeys.Exact))
+            using (LibraDexStringScalar8Index projected = catalog.Indexes.IndexSet("exact").Define("projected").String.Create(StringKeys.ExactAndFolded))
             {
                 ValidateGenericInsert(first.Insert("first", 1UL), "maintenance exact first insert");
                 ValidateGenericInsert(second.Insert("second", 2UL), "maintenance exact second insert");
@@ -505,7 +505,7 @@ internal static partial class RawHarness
             }
 
             using (Catalog catalog = Catalog.Create(unsupportedPath))
-            using (LibraDexUInt64VarIdentityIndex index = catalog.Indexes["unsupported"]["identity"]
+            using (LibraDexUInt64VarIdentityIndex index = catalog.Indexes.IndexSet("unsupported").Define("identity")
                 .UInt64VarIdentityKeys(32)
                 .Create())
             {
@@ -634,7 +634,7 @@ internal static partial class RawHarness
             }
 
             using (Catalog catalog = Catalog.Create(vvPath))
-            using (VarKeyVarIdentityIndex index = catalog.Indexes["vv"]["raw"]
+            using (VarKeyVarIdentityIndex index = catalog.Indexes.IndexSet("vv").Define("raw")
                 .VarKeyVarIdentityKeys(maxKeyBytes: 64, maxIdentityBytes: 32)
                 .Create())
             {
@@ -709,7 +709,7 @@ internal static partial class RawHarness
         try
         {
             using (Catalog catalog = Catalog.Create(path))
-            using (LibraDexIndex<int, ulong> index = catalog.Indexes["proof"]["value"].Int32Keys<ulong>().Create())
+            using (LibraDexIndex<int, ulong> index = catalog.Indexes.IndexSet("proof").Define("value").Int32Keys<ulong>().Create())
             {
                 for (int i = 0; i < 64; i++)
                     ValidateGenericInsert(index.Insert(i, (ulong)(10_000 + i)), $"compaction failure insert {i}");
@@ -738,7 +738,7 @@ internal static partial class RawHarness
                     throw new InvalidDataException($"Compaction fault {faultPoint} did not restore the exact original catalog bytes.");
 
                 using Catalog reopened = Catalog.Open(path);
-                using LibraDexIndex<int, ulong> index = reopened.Indexes["proof"]["value"].Int32Keys<ulong>().Open();
+                using LibraDexIndex<int, ulong> index = reopened.Indexes.IndexSet("proof").Define("value").Int32Keys<ulong>().Open();
                 LibraDexConditionEndCondition exact = LibraDexCondition.ForGroup("proof").Index("value")
                     .AsInt32.EqualTo(63).EndCondition;
                 if (((IIndex)index).Count() != 64 || !index.GetIdentities(exact).SequenceEqual(new[] { 10_063UL }))
@@ -787,11 +787,11 @@ internal static partial class RawHarness
         try
         {
             using Catalog catalog = Catalog.Create(sourcePath);
-            using LibraDexIndex<long, long> index = catalog.Indexes["proof"]["value"].Int64Keys<long>().Create();
+            using LibraDexIndex<long, long> index = catalog.Indexes.IndexSet("proof").Define("value").Int64Keys<long>().Create();
             for (int i = 0; i < 64; i++)
                 ValidateGenericInsert(index.Insert(i, 10_000L + i), $"live backup initial insert {i}");
 
-            using LibraDexVariableBlobScalar8Index<long> payloadIndex = catalog.Indexes["proof"]["payload"]
+            using LibraDexVariableBlobScalar8Index<long> payloadIndex = catalog.Indexes.IndexSet("proof").Define("payload")
                 .Blob.Variable<long>(maxKeyBytes: 1023)
                 .Create();
             byte[] payload = new byte[1023];
@@ -830,7 +830,7 @@ internal static partial class RawHarness
 
             ValidateGenericInsert(index.Insert(64, 10_064L), "live backup post-snapshot source insert");
             using (Catalog firstBackup = Catalog.Open(firstBackupPath))
-            using (LibraDexIndex<long, long> backupIndex = firstBackup.Indexes["proof"]["value"].Int64Keys<long>().Open())
+            using (LibraDexIndex<long, long> backupIndex = firstBackup.Indexes.IndexSet("proof").Define("value").Int64Keys<long>().Open())
             {
                 LibraDexConditionEndCondition key64 = LibraDexCondition.ForGroup("proof")
                     .Index("value").AsInt64.EqualTo(64L).EndCondition;
@@ -891,7 +891,7 @@ internal static partial class RawHarness
             }
 
             using (Catalog concurrentBackup = Catalog.Open(concurrentBackupPath))
-            using (LibraDexIndex<long, long> backupIndex = concurrentBackup.Indexes["proof"]["value"].Int64Keys<long>().Open())
+            using (LibraDexIndex<long, long> backupIndex = concurrentBackup.Indexes.IndexSet("proof").Define("value").Int64Keys<long>().Open())
             {
                 LibraDexConditionEndCondition key64 = LibraDexCondition.ForGroup("proof")
                     .Index("value").AsInt64.EqualTo(64L).EndCondition;

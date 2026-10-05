@@ -17,7 +17,7 @@ internal static partial class RawHarness
         {
             using (Catalog catalog = Catalog.Create(path))
             {
-                LibraDexVariableBlobScalar8Index<ulong> index = catalog.Indexes["rows"]["payload"]
+                LibraDexVariableBlobScalar8Index<ulong> index = catalog.Indexes.IndexSet("rows").Define("payload")
                     .Blob.Variable<ulong>(maxKeyBytes: 7)
                     .Create();
                 _ = index.Insert(null, 1UL);
@@ -25,19 +25,19 @@ internal static partial class RawHarness
                 _ = index.Insert(one, 3UL);
                 _ = index.Insert(three, 4UL);
 
-                IReadOnlyList<ulong> exact = catalog["rows"].GetIdentities<ulong>(
+                IReadOnlyList<ulong> exact = catalog.Indexes.IndexSet("rows").GetIdentities<ulong>(
                     LibraDexCondition.ForGroup("rows").Index("payload").AsBinary.EqualTo(three).EndCondition,
                     deduplication: IdentityDeduplication.Preserve);
-                IReadOnlyList<ulong> notExact = catalog["rows"].GetIdentities<ulong>(
+                IReadOnlyList<ulong> notExact = catalog.Indexes.IndexSet("rows").GetIdentities<ulong>(
                     LibraDexCondition.ForGroup("rows").Index("payload").AsBinary.NotEqualTo(three).EndCondition);
-                IReadOnlyList<ulong> nulls = catalog["rows"].GetIdentities<ulong>(
+                IReadOnlyList<ulong> nulls = catalog.Indexes.IndexSet("rows").GetIdentities<ulong>(
                     LibraDexCondition.ForGroup("rows").Index("payload").AsBinary.EqualTo(NullKey.Null).EndCondition);
-                IReadOnlyList<ulong> empties = catalog["rows"].GetIdentities<ulong>(
+                IReadOnlyList<ulong> empties = catalog.Indexes.IndexSet("rows").GetIdentities<ulong>(
                     LibraDexCondition.ForGroup("rows").Index("payload").AsBinary.EqualTo(Array.Empty<byte>()).EndCondition);
                 IReadOnlyList<LibraDexIndexEntry<byte[], ulong>> exactEntries = index.Entries.GetByKey(three);
-                IReadOnlyList<ulong> slicedBytes = catalog["rows"].GetIdentities<ulong>(
+                IReadOnlyList<ulong> slicedBytes = catalog.Indexes.IndexSet("rows").GetIdentities<ulong>(
                     LibraDexCondition.ForGroup("rows").Index("payload").AsBinary.SliceEqual(1, new byte[] { 0x20, 0x30 }).EndCondition);
-                IReadOnlyList<ulong> slicedInt16 = catalog["rows"].GetIdentities<ulong>(
+                IReadOnlyList<ulong> slicedInt16 = catalog.Indexes.IndexSet("rows").GetIdentities<ulong>(
                     LibraDexCondition.ForGroup("rows").Index("payload").AsBinary.SlicedAsInt16(1).EqualTo(0x3020).EndCondition);
 
                 if (!exact.SequenceEqual(new[] { 4UL }) ||
@@ -71,10 +71,10 @@ internal static partial class RawHarness
 
             using (Catalog reopened = Catalog.Open(path))
             {
-                LibraDexVariableBlobScalar8Index<ulong> index = reopened.Indexes["rows"]["payload"]
+                LibraDexVariableBlobScalar8Index<ulong> index = reopened.Indexes.IndexSet("rows").Define("payload")
                     .Blob.Variable<ulong>(maxKeyBytes: 7)
                     .Open();
-                IIndex metadataOpened = reopened.Indexes["rows"]["payload"].Open();
+                IIndex metadataOpened = reopened.Indexes.IndexSet("rows").Define("payload").Open();
                 IReadOnlyList<ulong> reopenedExact = reopened["rows"].GetIdentities<ulong>(
                     LibraDexCondition.ForGroup("rows").Index("payload").AsBinary.EqualTo(one).EndCondition);
                 if (!reopenedExact.SequenceEqual(new[] { 3UL }) ||

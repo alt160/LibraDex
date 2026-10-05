@@ -32,7 +32,7 @@ internal static partial class RawHarness
         var nativeWall = Stopwatch.StartNew();
         using (Catalog catalog = Catalog.Create(path, CatalogOptions.UInt64Identities))
         {
-            LibraDexIndex<ulong, ulong> index = catalog.Indexes["native"]["value"].Create<ulong, ulong>(
+            LibraDexIndex<ulong, ulong> index = catalog.Indexes.IndexSet("native").Define("value").Create<ulong, ulong>(
                 IndexKeys.NonUnique,
                 new IndexOptions { IdentityKeyMultiplicity = IdentityKeyMultiplicity.SingleKeyPerIdentity });
             native = index.BuildFromSorted(tuples);
@@ -42,7 +42,7 @@ internal static partial class RawHarness
 
         using (Catalog reopened = Catalog.Open(path, CatalogOptions.UInt64Identities))
         {
-            LibraDexIndex<ulong, ulong> index = reopened.Indexes["native"]["value"].Open<ulong, ulong>();
+            LibraDexIndex<ulong, ulong> index = reopened.Indexes.IndexSet("native").Define("value").Open<ulong, ulong>();
             ValidateScalar8Scalar8SortedBuildReader(index, tuples, "native reopen");
         }
 
@@ -53,14 +53,14 @@ internal static partial class RawHarness
             CancellationToken.None);
         using (Catalog reopened = Catalog.Open(path, CatalogOptions.UInt64Identities))
         {
-            LibraDexIndex<ulong, ulong> index = reopened.Indexes["native"]["value"].Open<ulong, ulong>();
+            LibraDexIndex<ulong, ulong> index = reopened.Indexes.IndexSet("native").Define("value").Open<ulong, ulong>();
             ValidateScalar8Scalar8SortedBuildReader(index, tuples, "native compacted reopen");
         }
 
         var controlWall = Stopwatch.StartNew();
         using (Catalog catalog = Catalog.Create(controlPath, CatalogOptions.UInt64Identities))
         {
-            LibraDexIndex<ulong, ulong> index = catalog.Indexes["control"]["value"].Create<ulong, ulong>(
+            LibraDexIndex<ulong, ulong> index = catalog.Indexes.IndexSet("control").Define("value").Create<ulong, ulong>(
                 IndexKeys.NonUnique,
                 new IndexOptions { IdentityKeyMultiplicity = IdentityKeyMultiplicity.SingleKeyPerIdentity });
             for (int i = 0; i < tuples.Length; i++)
@@ -76,7 +76,7 @@ internal static partial class RawHarness
 
         using (Catalog reopened = Catalog.Open(controlPath, CatalogOptions.UInt64Identities))
         {
-            LibraDexIndex<ulong, ulong> index = reopened.Indexes["control"]["value"].Open<ulong, ulong>();
+            LibraDexIndex<ulong, ulong> index = reopened.Indexes.IndexSet("control").Define("value").Open<ulong, ulong>();
             ValidateScalar8Scalar8SortedBuildReader(index, tuples, "mutation reopen");
         }
 
@@ -132,7 +132,7 @@ internal static partial class RawHarness
         }
 
         using Catalog catalog = Catalog.CreateMemory(CatalogOptions.UInt64Identities);
-        LibraDexIndex<ulong, ulong> index = catalog.Indexes["recovery"]["unordered"].Create<ulong, ulong>(
+        LibraDexIndex<ulong, ulong> index = catalog.Indexes.IndexSet("recovery").Define("unordered").Create<ulong, ulong>(
             IndexKeys.NonUnique,
             new IndexOptions { IdentityKeyMultiplicity = IdentityKeyMultiplicity.SingleKeyPerIdentity });
         ILibraDexNativeSortedBuild recovery = index;
@@ -180,8 +180,8 @@ internal static partial class RawHarness
         try
         {
             using Catalog catalog = Catalog.Create(path, CatalogOptions.UInt64Identities);
-            using LibraDexIndex<long, ulong> length = catalog.Indexes["mixed"]["length"].Int64Keys<ulong>().Create();
-            using LibraDexStringScalar8Index name = catalog.Indexes["mixed"]["name"].String.Create(StringKeys.Exact);
+            using LibraDexIndex<long, ulong> length = catalog.Indexes.IndexSet("mixed").Define("length").Int64Keys<ulong>().Create();
+            using LibraDexStringScalar8Index name = catalog.Indexes.IndexSet("mixed").Define("name").String.Create(StringKeys.Exact);
             LibraDexSortedTuple<long, ulong>[] lengths =
             [
                 new LibraDexSortedTuple<long, ulong>(10, 1),
@@ -208,7 +208,7 @@ internal static partial class RawHarness
                     $"Mixed fixed/text storage assessment mismatch: complete={storage.IsComplete}, unsupported={storage.UnsupportedIndexCount}, fixed={storage.FixedTopologyComponents.Count}, text={storage.VariableTextTopologyComponents.Count}, physical={storage.PhysicalBytes}, reachable={storage.KnownReachableBytes}, unreachable={storage.UnreachableBytes}, amplification={storage.AmplificationRatio}.");
             }
 
-            using LibraDexIndex<Guid, ulong> supportedWide = catalog.Indexes["mixed"]["wide"].GuidKeys<ulong>().Create();
+            using LibraDexIndex<Guid, ulong> supportedWide = catalog.Indexes.IndexSet("mixed").Define("wide").GuidKeys<ulong>().Create();
             ValidateGenericInsert(supportedWide.Insert(Guid.NewGuid(), 99), "mixed storage assessment supported wide insert");
             LibraDexCatalogStorageAssessment completeWide = catalog.Maintenance.Assess().Storage;
             if (!completeWide.IsComplete || completeWide.UnsupportedIndexCount != 0 ||
@@ -216,7 +216,7 @@ internal static partial class RawHarness
                 completeWide.UnreachableBytes is not >= 0 || completeWide.AmplificationRatio is not >= 1)
                 throw new InvalidDataException("Mixed fixed/text/wide storage assessment did not remain complete.");
 
-            using LibraDexVariableBlobScalar8Index<ulong> unsupported = catalog.Indexes["mixed"]["variableBlob"].Blob.Variable<ulong>(maxKeyBytes: 16).Create();
+            using LibraDexVariableBlobScalar8Index<ulong> unsupported = catalog.Indexes.IndexSet("mixed").Define("variableBlob").Blob.Variable<ulong>(maxKeyBytes: 16).Create();
             ValidateGenericInsert(unsupported.Insert(new byte[] { 1 }, 100), "mixed storage assessment unsupported variable-blob insert");
             LibraDexCatalogStorageAssessment partial = catalog.Maintenance.Assess().Storage;
             if (partial.IsComplete ||
@@ -300,7 +300,7 @@ internal static partial class RawHarness
         LibraDexSortedTuple<ulong, ulong>[] fullTuples)
     {
         using Catalog catalog = Catalog.Create(path, CatalogOptions.UInt64Identities);
-        LibraDexIndex<ulong, ulong> retry = catalog.Indexes["failure"]["retry"].Create<ulong, ulong>();
+        LibraDexIndex<ulong, ulong> retry = catalog.Indexes.IndexSet("failure").Define("retry").Create<ulong, ulong>();
         LibraDexSortedTuple<ulong, ulong>[] valid = fullTuples.AsSpan(0, 10_000).ToArray();
         LibraDexSortedTuple<ulong, ulong>[] inverted = valid.ToArray();
         (inverted[0], inverted[1]) = (inverted[1], inverted[0]);
@@ -313,7 +313,7 @@ internal static partial class RawHarness
             () => retry.BuildFromSorted(valid),
             "non-empty root reuse");
 
-        LibraDexIndex<ulong, ulong> unique = catalog.Indexes["failure"]["unique"].Create<ulong, ulong>(IndexKeys.Unique);
+        LibraDexIndex<ulong, ulong> unique = catalog.Indexes.IndexSet("failure").Define("unique").Create<ulong, ulong>(IndexKeys.Unique);
         ExpectScalar8Scalar8SortedBuildFailure(
             () => unique.BuildFromSorted(
             [
@@ -322,7 +322,7 @@ internal static partial class RawHarness
             ]),
             "unique-key conflict");
 
-        LibraDexIndex<ulong, ulong> oneKey = catalog.Indexes["failure"]["oneKey"].Create<ulong, ulong>(
+        LibraDexIndex<ulong, ulong> oneKey = catalog.Indexes.IndexSet("failure").Define("oneKey").Create<ulong, ulong>(
             options: new IndexOptions { IdentityKeyMultiplicity = IdentityKeyMultiplicity.SingleKeyPerIdentity });
         ExpectScalar8Scalar8SortedBuildFailure(
             () => oneKey.BuildFromSorted(
@@ -357,7 +357,7 @@ internal static partial class RawHarness
             });
 
             using Catalog catalog = Catalog.CreateMemory(CatalogOptions.UInt64Identities);
-            LibraDexIndex<ulong, ulong> index = catalog.Indexes["random"]["value"].Create<ulong, ulong>(
+            LibraDexIndex<ulong, ulong> index = catalog.Indexes.IndexSet("random").Define("value").Create<ulong, ulong>(
                 options: new IndexOptions { IdentityKeyMultiplicity = IdentityKeyMultiplicity.SingleKeyPerIdentity });
             LibraDexSortedBuildDiagnostics diagnostics = index.BuildFromSorted(tuples);
             ValidateScalar8Scalar8SortedBuildReader(index, tuples, $"randomized boundary {count:N0}");
@@ -418,8 +418,8 @@ internal static partial class RawHarness
         long replacementRightRoot;
         using (Catalog catalog = Catalog.Create(path, CatalogOptions.UInt64Identities))
         {
-            LibraDexIndex<ulong, ulong> left = catalog.Indexes["replace"]["left"].Create<ulong, ulong>();
-            LibraDexIndex<ulong, ulong> right = catalog.Indexes["replace"]["right"].Create<ulong, ulong>();
+            LibraDexIndex<ulong, ulong> left = catalog.Indexes.IndexSet("replace").Define("left").Create<ulong, ulong>();
+            LibraDexIndex<ulong, ulong> right = catalog.Indexes.IndexSet("replace").Define("right").Create<ulong, ulong>();
             _ = left.BuildFromSorted(oldLeft);
             _ = right.BuildFromSorted(oldRight);
             priorLeftRoot = left.RootRouterOffset;
@@ -440,8 +440,8 @@ internal static partial class RawHarness
 
             ValidateScalar8Scalar8SortedBuildReader(left, oldLeft, "detached old left handle");
             ValidateScalar8Scalar8SortedBuildReader(right, oldRight, "detached old right handle");
-            LibraDexIndex<ulong, ulong> currentLeft = catalog.Indexes["replace"]["left"].Open<ulong, ulong>();
-            LibraDexIndex<ulong, ulong> currentRight = catalog.Indexes["replace"]["right"].Open<ulong, ulong>();
+            LibraDexIndex<ulong, ulong> currentLeft = catalog.Indexes.IndexSet("replace").Define("left").Open<ulong, ulong>();
+            LibraDexIndex<ulong, ulong> currentRight = catalog.Indexes.IndexSet("replace").Define("right").Open<ulong, ulong>();
             if (currentLeft.RootRouterOffset != replacementLeftRoot || currentRight.RootRouterOffset != replacementRightRoot)
                 throw new InvalidDataException("New handles did not resolve both replacement directory roots.");
             ValidateScalar8Scalar8SortedBuildReader(currentLeft, newLeft, "detached current left");
@@ -467,8 +467,8 @@ internal static partial class RawHarness
             if (!failed)
                 throw new InvalidDataException("The detached replacement proof did not reject the later sibling's inverted source.");
 
-            LibraDexIndex<ulong, ulong> afterFailureLeft = catalog.Indexes["replace"]["left"].Open<ulong, ulong>();
-            LibraDexIndex<ulong, ulong> afterFailureRight = catalog.Indexes["replace"]["right"].Open<ulong, ulong>();
+            LibraDexIndex<ulong, ulong> afterFailureLeft = catalog.Indexes.IndexSet("replace").Define("left").Open<ulong, ulong>();
+            LibraDexIndex<ulong, ulong> afterFailureRight = catalog.Indexes.IndexSet("replace").Define("right").Open<ulong, ulong>();
             if (afterFailureLeft.RootRouterOffset != replacementLeftRoot || afterFailureRight.RootRouterOffset != replacementRightRoot)
                 throw new InvalidDataException("A failed sibling preparation changed one or more live directory roots.");
             ValidateScalar8Scalar8SortedBuildReader(afterFailureLeft, newLeft, "detached failure-isolated left");
@@ -492,8 +492,8 @@ internal static partial class RawHarness
 
         using (Catalog reopened = Catalog.Open(path, CatalogOptions.UInt64Identities))
         {
-            LibraDexIndex<ulong, ulong> left = reopened.Indexes["replace"]["left"].Open<ulong, ulong>();
-            LibraDexIndex<ulong, ulong> right = reopened.Indexes["replace"]["right"].Open<ulong, ulong>();
+            LibraDexIndex<ulong, ulong> left = reopened.Indexes.IndexSet("replace").Define("left").Open<ulong, ulong>();
+            LibraDexIndex<ulong, ulong> right = reopened.Indexes.IndexSet("replace").Define("right").Open<ulong, ulong>();
             if (left.RootRouterOffset != replacementLeftRoot || right.RootRouterOffset != replacementRightRoot)
                 throw new InvalidDataException("Reopen did not retain both detached replacement roots.");
             ValidateScalar8Scalar8SortedBuildReader(left, newLeft, "detached reopened left");
@@ -508,11 +508,11 @@ internal static partial class RawHarness
         using (Catalog reopened = Catalog.Open(path, CatalogOptions.UInt64Identities))
         {
             ValidateScalar8Scalar8SortedBuildReader(
-                reopened.Indexes["replace"]["left"].Open<ulong, ulong>(),
+                reopened.Indexes.IndexSet("replace").Define("left").Open<ulong, ulong>(),
                 newLeft,
                 "detached compacted left");
             ValidateScalar8Scalar8SortedBuildReader(
-                reopened.Indexes["replace"]["right"].Open<ulong, ulong>(),
+                reopened.Indexes.IndexSet("replace").Define("right").Open<ulong, ulong>(),
                 newRight,
                 "detached compacted right");
             compactedStorage = reopened.Maintenance.Assess().Storage;
@@ -589,9 +589,9 @@ internal static partial class RawHarness
 
         using (Catalog catalog = Catalog.Create(path, CatalogOptions.UInt64Identities))
         {
-            LibraDexIndex<ulong, ulong> scalar = catalog.Indexes["mixed"]["length"].Create<ulong, ulong>();
-            LibraDexStringScalar8Index pathIndex = catalog.Indexes["mixed"]["path"].StringKeys().CreateOrOpen(StringKeys.Exact);
-            LibraDexStringScalar8Index nameIndex = catalog.Indexes["mixed"]["name"].StringKeys().CreateOrOpen(StringKeys.Exact);
+            LibraDexIndex<ulong, ulong> scalar = catalog.Indexes.IndexSet("mixed").Define("length").Create<ulong, ulong>();
+            LibraDexStringScalar8Index pathIndex = catalog.Indexes.IndexSet("mixed").Define("path").StringKeys().CreateOrOpen(StringKeys.Exact);
+            LibraDexStringScalar8Index nameIndex = catalog.Indexes.IndexSet("mixed").Define("name").StringKeys().CreateOrOpen(StringKeys.Exact);
             _ = scalar.BuildFromSorted(oldScalar);
             oldPath = CreateVarKeyScalar8ReplacementTuples(pathIndex, count + 17, "old-path", 2_000_001);
             oldName = CreateVarKeyScalar8ReplacementTuples(nameIndex, count + 29, "old-name", 3_000_001);
@@ -613,9 +613,9 @@ internal static partial class RawHarness
             ValidateVarKeyScalar8ReplacementReader(pathIndex, oldPath, "mixed detached old path handle");
             ValidateVarKeyScalar8ReplacementReader(nameIndex, oldName, "mixed detached old name handle");
 
-            LibraDexIndex<ulong, ulong> currentScalar = catalog.Indexes["mixed"]["length"].Open<ulong, ulong>();
-            LibraDexStringScalar8Index currentPath = catalog.Indexes["mixed"]["path"].StringKeys().CreateOrOpen(StringKeys.Exact);
-            LibraDexStringScalar8Index currentName = catalog.Indexes["mixed"]["name"].StringKeys().CreateOrOpen(StringKeys.Exact);
+            LibraDexIndex<ulong, ulong> currentScalar = catalog.Indexes.IndexSet("mixed").Define("length").Open<ulong, ulong>();
+            LibraDexStringScalar8Index currentPath = catalog.Indexes.IndexSet("mixed").Define("path").StringKeys().CreateOrOpen(StringKeys.Exact);
+            LibraDexStringScalar8Index currentName = catalog.Indexes.IndexSet("mixed").Define("name").StringKeys().CreateOrOpen(StringKeys.Exact);
             ValidateScalar8Scalar8SortedBuildReader(currentScalar, newScalar, "mixed detached current scalar");
             ValidateVarKeyScalar8ReplacementReader(currentPath, newPath, "mixed detached current path");
             ValidateVarKeyScalar8ReplacementReader(currentName, newName, "mixed detached current name");
@@ -657,9 +657,9 @@ internal static partial class RawHarness
             if (!cancellationFailed)
                 throw new InvalidDataException("Mixed detached replacement ignored pre-publication cancellation.");
 
-            LibraDexIndex<ulong, ulong> afterFailureScalar = catalog.Indexes["mixed"]["length"].Open<ulong, ulong>();
-            LibraDexStringScalar8Index afterFailurePath = catalog.Indexes["mixed"]["path"].StringKeys().CreateOrOpen(StringKeys.Exact);
-            LibraDexStringScalar8Index afterFailureName = catalog.Indexes["mixed"]["name"].StringKeys().CreateOrOpen(StringKeys.Exact);
+            LibraDexIndex<ulong, ulong> afterFailureScalar = catalog.Indexes.IndexSet("mixed").Define("length").Open<ulong, ulong>();
+            LibraDexStringScalar8Index afterFailurePath = catalog.Indexes.IndexSet("mixed").Define("path").StringKeys().CreateOrOpen(StringKeys.Exact);
+            LibraDexStringScalar8Index afterFailureName = catalog.Indexes.IndexSet("mixed").Define("name").StringKeys().CreateOrOpen(StringKeys.Exact);
             ValidateScalar8Scalar8SortedBuildReader(afterFailureScalar, newScalar, "mixed detached failure-isolated scalar");
             ValidateVarKeyScalar8ReplacementReader(afterFailurePath, newPath, "mixed detached failure-isolated path");
             ValidateVarKeyScalar8ReplacementReader(afterFailureName, newName, "mixed detached failure-isolated name");
@@ -667,9 +667,9 @@ internal static partial class RawHarness
 
         using (Catalog reopened = Catalog.Open(path, CatalogOptions.UInt64Identities))
         {
-            LibraDexIndex<ulong, ulong> scalar = reopened.Indexes["mixed"]["length"].Open<ulong, ulong>();
-            LibraDexStringScalar8Index pathIndex = reopened.Indexes["mixed"]["path"].StringKeys().CreateOrOpen(StringKeys.Exact);
-            LibraDexStringScalar8Index nameIndex = reopened.Indexes["mixed"]["name"].StringKeys().CreateOrOpen(StringKeys.Exact);
+            LibraDexIndex<ulong, ulong> scalar = reopened.Indexes.IndexSet("mixed").Define("length").Open<ulong, ulong>();
+            LibraDexStringScalar8Index pathIndex = reopened.Indexes.IndexSet("mixed").Define("path").StringKeys().CreateOrOpen(StringKeys.Exact);
+            LibraDexStringScalar8Index nameIndex = reopened.Indexes.IndexSet("mixed").Define("name").StringKeys().CreateOrOpen(StringKeys.Exact);
             ValidateScalar8Scalar8SortedBuildReader(scalar, newScalar, "mixed detached reopened scalar");
             ValidateVarKeyScalar8ReplacementReader(pathIndex, newPath, "mixed detached reopened path");
             ValidateVarKeyScalar8ReplacementReader(nameIndex, newName, "mixed detached reopened name");

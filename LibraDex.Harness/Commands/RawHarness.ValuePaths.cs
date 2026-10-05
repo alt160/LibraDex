@@ -58,7 +58,7 @@ internal static partial class RawHarness
             throw new InvalidDataException("Identity-to-object projection did not feed the cached CLR member path.");
 
         using Catalog catalog = Catalog.CreateMemory(CatalogOptions.UInt64Identities);
-        using LibraDexIndex<int, ulong> index = catalog.Indexes["customers"]["name-length"].Int32Keys<ulong>().Create();
+        using LibraDexIndex<int, ulong> index = catalog.Indexes.IndexSet("customers").Define("name-length").Int32Keys<ulong>().Create();
         if (!index.AddFrom(length, alpha, 101UL).Inserted ||
             !index.AddFrom(identityLength, 102UL, 102UL).Inserted)
         {

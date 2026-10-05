@@ -5,6 +5,7 @@ var catalogDirectory = Path.Combine(AppContext.BaseDirectory, "package-smoke", G
 CreateAndWrite();
 ReopenAndRead();
 ValidateLifetimeContracts();
+ValidateIndexLifecycle();
 Directory.Delete(catalogDirectory, recursive: true);
 
 Console.WriteLine("LibraDex package smoke test passed.");
@@ -15,9 +16,9 @@ void CreateAndWrite()
     if (catalog.Name != "products" || catalog.DirectoryPath != Path.GetFullPath(catalogDirectory) ||
         catalog.Path != Catalog.GetFilePath("products", catalogDirectory))
         throw new InvalidOperationException("Named catalog metadata did not match its resolved path.");
-    using LibraDexIndex<long, long> sku = catalog.Indexes["products"]["sku"]
-        .Int64Keys<long>()
-        .CreateOrOpen(keys: IndexKeys.NonUnique);
+    Expect<KeyNotFoundException>(() => { _ = catalog.Indexes["products"]; });
+    using LibraDexIndex<long, long> sku = catalog.Indexes.CreateOrOpen<long, long>(
+        "sku", indexSet: "products", keys: IndexKeys.NonUnique);
 
     sku.Insert(100_042, 501);
     sku.Insert(100_042, 502);
@@ -26,9 +27,7 @@ void CreateAndWrite()
 void ReopenAndRead()
 {
     using Catalog catalog = Catalog.Open("products", directory: catalogDirectory);
-    using LibraDexIndex<long, long> sku = catalog.Indexes["products"]["sku"]
-        .Int64Keys<long>()
-        .Open();
+    using LibraDexIndex<long, long> sku = catalog.Indexes["products"].Open<long, long>("sku");
     using LibraDexRangeReader<long, long> reader = sku.OpenReader();
 
     if (!reader.MoveNext() || reader.CurrentKey != 100_042 || reader.CurrentIdentity != 501)
@@ -55,7 +54,7 @@ void ValidateLifetimeContracts()
         throw new InvalidOperationException("Open created a missing catalog.");
     if (Catalog.GetFilePath("products.lbdx", catalogDirectory) != Catalog.GetFilePath("products", catalogDirectory))
         throw new InvalidOperationException("Catalog extension normalization changed the resolved file.");
-    using (var exact = Catalog.Open(Catalog.GetFilePath("products", catalogDirectory), null))
+    using (var exact = Catalog.Open(Catalog.GetFilePath("products", catalogDirectory), options: null))
     {
         if (exact.Location is not { IsNamed: false }) throw new InvalidOperationException("Exact-path compatibility metadata changed.");
     }
@@ -93,4 +92,41 @@ void Expect<T>(Action operation) where T : Exception
     try { operation(); }
     catch (T) { return; }
     throw new InvalidOperationException($"Expected {typeof(T).Name} was not thrown.");
+}
+
+/// <summary>
+/// Verifies explicit typed lifecycle methods and existing-only indexers across independent index sets.<br/>
+/// Missing lookups must leave catalog metadata unchanged; existing handles must expose persisted names and types.<br/>
+/// The memory catalog isolates this fixture without creating additional files.<br/>
+/// </summary>
+void ValidateIndexLifecycle()
+{
+    using var catalog = Catalog.CreateMemory();
+    Expect<KeyNotFoundException>(() => { _ = catalog.Indexes["products"]; });
+    Expect<KeyNotFoundException>(() => { _ = catalog["products"]; });
+    if (catalog.Indexes.List().Length != 0)
+        throw new InvalidOperationException("A missing-set lookup changed catalog metadata.");
+
+    using var sku = catalog.Indexes.Create<long, long>("sku", indexSet: "products");
+    sku.Insert(42, 501);
+    using var customer = catalog.Indexes.CreateOrOpen<long, long>("number", indexSet: "customers");
+    customer.Insert(42, 902);
+    using var price = catalog.Indexes["products"].CreateOrOpen<long, long>("price");
+    price.Insert(12, 501);
+
+    IIndex existing = catalog.Indexes["products"]["sku"];
+    if (existing.Name != "sku" || existing.Group != "products" || existing.KeyType != typeof(long))
+        throw new InvalidOperationException("Indexer did not retrieve the expected existing index.");
+    Expect<KeyNotFoundException>(() => { _ = catalog.Indexes["products"]["missing"]; });
+    Expect<InvalidOperationException>(() => { using var duplicate = catalog.Indexes.Create<long, long>("sku", indexSet: "products"); });
+    Expect<InvalidDataException>(() => { using var missing = catalog.Indexes.Open<long, long>("missing", indexSet: "products"); });
+    Expect<InvalidDataException>(() => { using var wrong = catalog.Indexes["products"].Open<int, long>("sku"); });
+
+    using var reopened = catalog.Indexes.Open<long, long>("sku", indexSet: "products");
+    using var same = catalog.Indexes["products"].CreateOrOpen<long, long>("sku");
+    using var reader = reopened.OpenReader();
+    if (!reader.MoveNext() || reader.CurrentKey != 42 || reader.CurrentIdentity != 501 || reader.MoveNext())
+        throw new InvalidOperationException("Existing index lifecycle lost or duplicated entries.");
+    if (catalog.Indexes.IndexSetNames().Length != 2 || catalog.Indexes.List().Length != 3)
+        throw new InvalidOperationException("Missing-name operations created storage or index sets leaked into one another.");
 }

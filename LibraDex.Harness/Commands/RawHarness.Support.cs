@@ -45,8 +45,8 @@ internal static partial class RawHarness
 
         using Catalog catalog = Catalog.CreateMemory();
 
-        LibraDexIndex<int, ulong> age = catalog.Indexes["users"]["age"].Int32Keys<ulong>().Create();
-        LibraDexIndex<int, ulong> status = catalog.Indexes["users"]["status"].Int32Keys<ulong>().Create();
+        LibraDexIndex<int, ulong> age = catalog.Indexes.IndexSet("users").Define("age").Int32Keys<ulong>().Create();
+        LibraDexIndex<int, ulong> status = catalog.Indexes.IndexSet("users").Define("status").Int32Keys<ulong>().Create();
         ValidateGenericInsert(age.Insert(20, 1UL), "composition age 20 insert");
         ValidateGenericInsert(age.Insert(17, 2UL), "composition age 17 insert");
         ValidateGenericInsert(age.Insert(30, 3UL), "composition age 30 insert");
@@ -73,7 +73,7 @@ internal static partial class RawHarness
             LibraDexCondition.ForGroup("users").Index("status").AsInt32.EqualTo(1).EndCondition.ToList<ulong>(userResolver, deduplication: IdentityDeduplication.Preserve, take: 1),
             new[] { 1UL },
             "proof row 199 take terminal");
-        using LibraDexStringScalar8Index pagingLastName = catalog.Indexes["paging"]["lastName"].String.Create(stringKeys: StringKeys.Exact);
+        using LibraDexStringScalar8Index pagingLastName = catalog.Indexes.IndexSet("paging").Define("lastName").String.Create(stringKeys: StringKeys.Exact);
         ValidateGenericInsert(pagingLastName.Insert("Smith", 2001UL), "composition paging Smith insert");
         ValidateGenericInsert(pagingLastName.Insert("Stone", 2002UL), "composition paging Stone insert");
         ValidateGenericInsert(pagingLastName.Insert("Swan", 2003UL), "composition paging Swan insert");
@@ -94,8 +94,8 @@ internal static partial class RawHarness
             throw new InvalidDataException("Proof rows 203-204 Exists/Count terminals did not return expected results.");
         }
 
-        LibraDexIndex<int, ulong> deferredPrimary = catalog.Indexes["deferred"]["primary"].Int32Keys<ulong>().Create();
-        LibraDexIndex<int, ulong> deferredAlternate = catalog.Indexes["deferred"]["alternate"].Int32Keys<ulong>().Create();
+        LibraDexIndex<int, ulong> deferredPrimary = catalog.Indexes.IndexSet("deferred").Define("primary").Int32Keys<ulong>().Create();
+        LibraDexIndex<int, ulong> deferredAlternate = catalog.Indexes.IndexSet("deferred").Define("alternate").Int32Keys<ulong>().Create();
         ValidateGenericInsert(deferredPrimary.Insert(9, 1761UL), "composition deferred primary 9 insert");
         ValidateGenericInsert(deferredPrimary.Insert(12, 1762UL), "composition deferred primary 12 insert");
         ValidateGenericInsert(deferredAlternate.Insert(15, 1763UL), "composition deferred alternate 15 insert");
@@ -116,10 +116,10 @@ internal static partial class RawHarness
             UIDs(deferredIndexCondition, deferredResolver),
             new[] { 1763UL },
             "proof row 176 deferred selector alternate");
-        LibraDexIndexShapeSpec selectedCreatedShape = catalog.Indexes["deferredDate"]["created"].Shape.Date<DateTime, ulong>(
+        LibraDexIndexShapeSpec selectedCreatedShape = catalog.Indexes.IndexSet("deferredDate").Define("created").Shape.Date<DateTime, ulong>(
             DateKeys.ExactAndStructured,
             keys: IndexKeys.NonUnique);
-        LibraDexIndexShapeSpec selectedUpdatedShape = catalog.Indexes["deferredDate"]["updated"].Shape.Date<DateTime, ulong>(
+        LibraDexIndexShapeSpec selectedUpdatedShape = catalog.Indexes.IndexSet("deferredDate").Define("updated").Shape.Date<DateTime, ulong>(
             DateKeys.ExactAndStructured,
             keys: IndexKeys.NonUnique);
         IIndex selectedCreated = catalog.Indexes.Create(selectedCreatedShape);
@@ -145,8 +145,8 @@ internal static partial class RawHarness
             new[] { 1773UL },
             "proof row 177 deferred date selector updated");
 
-        using LibraDexStringScalar8Index email = catalog.Indexes["contacts"]["email"].String.Create(stringKeys: StringKeys.Exact);
-        using LibraDexStringScalar8Index phone = catalog.Indexes["contacts"]["phone"].String.Create(stringKeys: StringKeys.Exact);
+        using LibraDexStringScalar8Index email = catalog.Indexes.IndexSet("contacts").Define("email").String.Create(stringKeys: StringKeys.Exact);
+        using LibraDexStringScalar8Index phone = catalog.Indexes.IndexSet("contacts").Define("phone").String.Create(stringKeys: StringKeys.Exact);
         ValidateGenericInsert(email.Insert("support@example.com", 21UL), "composition email support insert");
         ValidateGenericInsert(email.Insert("info@example.com", 22UL), "composition email info insert");
         ValidateGenericInsert(phone.Insert("800-555-0100", 23UL), "composition phone 800 insert");
@@ -162,8 +162,8 @@ internal static partial class RawHarness
             new[] { 21UL, 23UL },
             "proof row 169 cross-index OR");
 
-        using LibraDexStringScalar8Index geohash = catalog.Indexes["places"]["geohash"].String.Create(stringKeys: StringKeys.Exact);
-        using LibraDexStringScalar8Index phoneNormalized = catalog.Indexes["people"]["phoneNormalized"].String.Create(stringKeys: StringKeys.Exact);
+        using LibraDexStringScalar8Index geohash = catalog.Indexes.IndexSet("places").Define("geohash").String.Create(stringKeys: StringKeys.Exact);
+        using LibraDexStringScalar8Index phoneNormalized = catalog.Indexes.IndexSet("people").Define("phoneNormalized").String.Create(stringKeys: StringKeys.Exact);
         ValidateGenericInsert(geohash.Insert("9tbqzn", 1911UL), "composition geohash Phoenix insert");
         ValidateGenericInsert(geohash.Insert("9q5ctr", 1912UL), "composition geohash Bay Area insert");
         static string NormalizePhone(string value)
@@ -187,8 +187,8 @@ internal static partial class RawHarness
             new[] { 1921UL },
             "proof row 192 normalized phone custom codec");
 
-        using LibraDexStringScalar8Index role = catalog.Indexes["roles"]["role"].String.Create(stringKeys: StringKeys.Exact);
-        LibraDexIndex<int, ulong> roleStatus = catalog.Indexes["roles"]["status"].Int32Keys<ulong>().Create();
+        using LibraDexStringScalar8Index role = catalog.Indexes.IndexSet("roles").Define("role").String.Create(stringKeys: StringKeys.Exact);
+        LibraDexIndex<int, ulong> roleStatus = catalog.Indexes.IndexSet("roles").Define("status").Int32Keys<ulong>().Create();
         ValidateGenericInsert(role.Insert("admin", 31UL), "composition role admin insert");
         ValidateGenericInsert(role.Insert("owner", 32UL), "composition role owner insert");
         ValidateGenericInsert(role.Insert("user", 33UL), "composition role user insert");
@@ -207,8 +207,8 @@ internal static partial class RawHarness
             new[] { 31UL, 32UL },
             "proof row 170 grouped role logic");
 
-        IIndex lastFirst = catalog.Indexes["people"]["lastFirst"].Composite<ulong>(C.Text("lastName"), C.Text("firstName")).Create();
-        using LibraDexStringScalar8Index peopleEmail = catalog.Indexes["people"]["email"].String.Create(stringKeys: StringKeys.Exact);
+        IIndex lastFirst = catalog.Indexes.IndexSet("people").Define("lastFirst").Composite<ulong>(C.Text("lastName"), C.Text("firstName")).Create();
+        using LibraDexStringScalar8Index peopleEmail = catalog.Indexes.IndexSet("people").Define("email").String.Create(stringKeys: StringKeys.Exact);
         ValidateGenericInsert(lastFirst.Insert(Key.Of("Smith", "Jane"), 41UL), "composition composite Smith Jane insert");
         ValidateGenericInsert(lastFirst.Insert(Key.Of("Smith", "Bob"), 42UL), "composition composite Smith Bob insert");
         ValidateGenericInsert(lastFirst.Insert(Key.Of("Stone", "Jill"), 43UL), "composition composite Stone Jill insert");
@@ -231,7 +231,7 @@ internal static partial class RawHarness
             new[] { 41UL, 43UL, 44UL },
             "proof row 174 grouped composite OR");
 
-        IIndex tenantUser = catalog.Indexes["people"]["tenantUser"].Composite<ulong>(C.Text("tenantId"), C.Text("username")).Create();
+        IIndex tenantUser = catalog.Indexes.IndexSet("people").Define("tenantUser").Composite<ulong>(C.Text("tenantId"), C.Text("username")).Create();
         ValidateGenericInsert(tenantUser.Insert(Key.Of("tenant-a", "admin"), 1611UL), "composition tenant/admin insert");
         ValidateGenericInsert(tenantUser.Insert(Key.Of("tenant-b", "reader"), 1612UL), "composition tenant/reader insert");
         ValidateGenericInsert(tenantUser.Insert(Key.Of("tenant-a", "auditor"), 1613UL), "composition tenant/auditor insert");
@@ -247,7 +247,7 @@ internal static partial class RawHarness
             new[] { 1611UL },
             "proof row 163 composite excluding full-key contains");
 
-        IIndex accountOrder = catalog.Indexes["orders"]["accountOrder"].Composite<ulong>(C.Int64("accountId"), C.Int32("orderNumber")).Create();
+        IIndex accountOrder = catalog.Indexes.IndexSet("orders").Define("accountOrder").Composite<ulong>(C.Int64("accountId"), C.Int32("orderNumber")).Create();
         ValidateGenericInsert(accountOrder.Insert(Key.Of(10L, 1001), 51UL), "composition account order 1001 insert");
         ValidateGenericInsert(accountOrder.Insert(Key.Of(10L, 2001), 52UL), "composition account order 2001 insert");
         ValidateGenericInsert(accountOrder.Insert(Key.Of(11L, 1500), 53UL), "composition account order 1500 insert");
@@ -259,7 +259,7 @@ internal static partial class RawHarness
             new[] { 51UL },
             "proof row 155 composite scalar range");
 
-        IIndex currencyAmount = catalog.Indexes["prices"]["currencyAmount"].Composite<ulong>(C.Text("currency"), C.Int64("amountMinor")).Create();
+        IIndex currencyAmount = catalog.Indexes.IndexSet("prices").Define("currencyAmount").Composite<ulong>(C.Text("currency"), C.Int64("amountMinor")).Create();
         ValidateGenericInsert(currencyAmount.Insert(Key.Of("USD", 1001L), 1931UL), "composition USD amount over threshold insert");
         ValidateGenericInsert(currencyAmount.Insert(Key.Of("USD", 999L), 1932UL), "composition USD amount under threshold insert");
         ValidateGenericInsert(currencyAmount.Insert(Key.Of("EUR", 2000L), 1933UL), "composition EUR amount insert");
@@ -271,7 +271,7 @@ internal static partial class RawHarness
             new[] { 1931UL },
             "proof row 193 composite caller-owned currency amount codec");
 
-        IIndex countryStateCity = catalog.Indexes["places"]["countryStateCity"].Composite<ulong>(C.Text("country"), C.Text("state"), C.Text("city")).Create();
+        IIndex countryStateCity = catalog.Indexes.IndexSet("places").Define("countryStateCity").Composite<ulong>(C.Text("country"), C.Text("state"), C.Text("city")).Create();
         ValidateGenericInsert(countryStateCity.Insert(Key.Of("US", "WA", "Seattle"), 54UL), "composition place US WA Seattle insert");
         ValidateGenericInsert(countryStateCity.Insert(Key.Of("US", "OR", "Salem"), 55UL), "composition place US OR Salem insert");
         ValidateGenericInsert(countryStateCity.Insert(Key.Of("CA", "BC", "Vancouver"), 56UL), "composition place CA BC Vancouver insert");
@@ -289,8 +289,8 @@ internal static partial class RawHarness
             new[] { 54UL },
             "proof row 157 composite missing lead");
 
-        using LibraDexStringScalar8Index country = catalog.Indexes["demographics"]["country"].String.Create(stringKeys: StringKeys.Exact);
-        LibraDexIndex<int, ulong> demographicAge = catalog.Indexes["demographics"]["age"].Int32Keys<ulong>().Create();
+        using LibraDexStringScalar8Index country = catalog.Indexes.IndexSet("demographics").Define("country").String.Create(stringKeys: StringKeys.Exact);
+        LibraDexIndex<int, ulong> demographicAge = catalog.Indexes.IndexSet("demographics").Define("age").Int32Keys<ulong>().Create();
         ValidateGenericInsert(country.Insert("US", 71UL), "composition demographics country US insert");
         ValidateGenericInsert(country.Insert("CA", 72UL), "composition demographics country CA insert");
         ValidateGenericInsert(country.Insert("MX", 73UL), "composition demographics country MX insert");
@@ -309,15 +309,15 @@ internal static partial class RawHarness
             new[] { 71UL, 72UL },
             "proof row 171 grouped country plus age");
 
-        LibraDexIndexShapeSpec rowCreatedShape = catalog.Indexes["rows"]["created"].Shape.Date<DateTime, ulong>(
+        LibraDexIndexShapeSpec rowCreatedShape = catalog.Indexes.IndexSet("rows").Define("created").Shape.Date<DateTime, ulong>(
             DateKeys.ExactAndStructured,
             keys: IndexKeys.NonUnique);
-        LibraDexIndexShapeSpec rowUpdatedShape = catalog.Indexes["rows"]["updated"].Shape.Date<DateTime, ulong>(
+        LibraDexIndexShapeSpec rowUpdatedShape = catalog.Indexes.IndexSet("rows").Define("updated").Shape.Date<DateTime, ulong>(
             DateKeys.ExactAndStructured,
             keys: IndexKeys.NonUnique);
         IIndex rowCreated = catalog.Indexes.Create(rowCreatedShape);
         IIndex rowUpdated = catalog.Indexes.Create(rowUpdatedShape);
-        LibraDexIndex<bool, ulong> rowDeleted = catalog.Indexes["rows"]["deleted"].Create<bool, ulong>();
+        LibraDexIndex<bool, ulong> rowDeleted = catalog.Indexes.IndexSet("rows").Define("deleted").Create<bool, ulong>();
         DateTime today = DateTime.UtcNow.Date;
         ValidateGenericInsert(rowDeleted.Insert(false, 1721UL), "composition row deleted false 1721 insert");
         ValidateGenericInsert(rowDeleted.Insert(false, 1722UL), "composition row deleted false 1722 insert");
@@ -340,9 +340,9 @@ internal static partial class RawHarness
             new[] { 1721UL, 1722UL },
             "proof row 172 grouped deleted plus created/updated today");
 
-        using LibraDexStringScalar8Index invoiceType = catalog.Indexes["invoices"]["type"].String.Create(stringKeys: StringKeys.Exact);
-        LibraDexIndex<long, ulong> amountCents = catalog.Indexes["invoices"]["amountCents"].Int64Keys<ulong>().Create();
-        LibraDexIndex<int, ulong> overdue = catalog.Indexes["invoices"]["overdue"].Int32Keys<ulong>().Create();
+        using LibraDexStringScalar8Index invoiceType = catalog.Indexes.IndexSet("invoices").Define("type").String.Create(stringKeys: StringKeys.Exact);
+        LibraDexIndex<long, ulong> amountCents = catalog.Indexes.IndexSet("invoices").Define("amountCents").Int64Keys<ulong>().Create();
+        LibraDexIndex<int, ulong> overdue = catalog.Indexes.IndexSet("invoices").Define("overdue").Int32Keys<ulong>().Create();
         ValidateGenericInsert(invoiceType.Insert("invoice", 81UL), "composition invoice type invoice 81 insert");
         ValidateGenericInsert(invoiceType.Insert("invoice", 82UL), "composition invoice type invoice 82 insert");
         ValidateGenericInsert(invoiceType.Insert("receipt", 83UL), "composition invoice type receipt 83 insert");
@@ -365,9 +365,9 @@ internal static partial class RawHarness
             new[] { 81UL, 82UL },
             "proof row 173 grouped invoice logic");
 
-        using LibraDexStringScalar8Index tenant = catalog.Indexes["security"]["tenant"].String.Create(stringKeys: StringKeys.Exact);
-        LibraDexIndex<int, ulong> failedLoginCount = catalog.Indexes["security"]["failedLoginCount"].Int32Keys<ulong>().Create();
-        LibraDexIndex<int, ulong> locked = catalog.Indexes["security"]["locked"].Int32Keys<ulong>().Create();
+        using LibraDexStringScalar8Index tenant = catalog.Indexes.IndexSet("security").Define("tenant").String.Create(stringKeys: StringKeys.Exact);
+        LibraDexIndex<int, ulong> failedLoginCount = catalog.Indexes.IndexSet("security").Define("failedLoginCount").Int32Keys<ulong>().Create();
+        LibraDexIndex<int, ulong> locked = catalog.Indexes.IndexSet("security").Define("locked").Int32Keys<ulong>().Create();
         ValidateGenericInsert(tenant.Insert("T1", 61UL), "composition security tenant 61 insert");
         ValidateGenericInsert(tenant.Insert("T1", 62UL), "composition security tenant 62 insert");
         ValidateGenericInsert(tenant.Insert("T2", 63UL), "composition security tenant 63 insert");
@@ -390,10 +390,10 @@ internal static partial class RawHarness
             new[] { 61UL, 62UL },
             "proof row 175 grouped security logic");
 
-        LibraDexIndex<int, long> groupStatus = catalog.Indexes["grouping"]["status"].Int32Keys<long>().Create();
-        LibraDexIndex<int, long> groupTenant = catalog.Indexes["grouping"]["tenant"].Int32Keys<long>().Create();
-        LibraDexIndex<int, long> groupEmail = catalog.Indexes["grouping"]["email"].Int32Keys<long>().Create();
-        LibraDexIndex<int, long> groupCategory = catalog.Indexes["grouping"]["category"].Int32Keys<long>().Create();
+        LibraDexIndex<int, long> groupStatus = catalog.Indexes.IndexSet("grouping").Define("status").Int32Keys<long>().Create();
+        LibraDexIndex<int, long> groupTenant = catalog.Indexes.IndexSet("grouping").Define("tenant").Int32Keys<long>().Create();
+        LibraDexIndex<int, long> groupEmail = catalog.Indexes.IndexSet("grouping").Define("email").Int32Keys<long>().Create();
+        LibraDexIndex<int, long> groupCategory = catalog.Indexes.IndexSet("grouping").Define("category").Int32Keys<long>().Create();
         for (long id = 1; id <= 6; id++)
         {
             ValidateGenericInsert(groupStatus.Insert(1, id), $"composition grouping status {id} insert");

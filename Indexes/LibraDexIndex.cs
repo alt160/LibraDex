@@ -1702,7 +1702,7 @@ public sealed class LibraDexIndex<TKey, TIdentity> : IIndex, IFixedBinaryKeyInde
         }
 
         HashSet<TIdentity> seen = new(LibraDexKeyEquality<TIdentity>.Comparer);
-        CatalogIndexInfo[] indexes = catalog.Indexes[Group].List();
+        CatalogIndexInfo[] indexes = catalog.Indexes.IndexSet(Group).List();
         for (int i = 0; i < indexes.Length; i++)
         {
             IIndex openedIndex = indexes[i].SlotIndex == SlotIndex

@@ -31,12 +31,12 @@ internal static partial class RawHarness
         {
             using (Catalog created = Catalog.Create(path, CatalogOptions.UInt64Identities))
             {
-                IIndex raw = created.Indexes["people"]["nameAgePayload"]
+                IIndex raw = created.Indexes.IndexSet("people").Define("nameAgePayload")
                     .Composite<ulong>(C.Text("name"), C.Int32("age"), C.Binary("payload"))
                     .Create();
                 LibraDexRoutedCompositeIndex index = raw as LibraDexRoutedCompositeIndex
                     ?? throw new InvalidDataException("Composite native reader fixture did not create a routed composite index.");
-                LibraDexRoutedCompositeIndex maxDepthIndex = created.Indexes["people"]["depth16"]
+                LibraDexRoutedCompositeIndex maxDepthIndex = created.Indexes.IndexSet("people").Define("depth16")
                     .Composite<ulong>(
                         C.Int32("part1"), C.Int32("part2"), C.Int32("part3"), C.Int32("part4"),
                         C.Int32("part5"), C.Int32("part6"), C.Int32("part7"), C.Int32("part8"),
@@ -72,7 +72,7 @@ internal static partial class RawHarness
             }
 
             using Catalog reopened = Catalog.Open(path, CatalogOptions.UInt64Identities);
-            CatalogIdentityGroupIndexes indexes = reopened.Indexes["people"];
+            CatalogIdentityGroupIndexes indexes = reopened.Indexes.IndexSet("people");
             ValidateCompositeNativeReaderRows(indexes, expected, itemCount);
             ValidateCompositeNativeReaderMaxDepth(indexes, maxDepthItemCount);
             ValidateCompositeNativeReaderAllocation(indexes, itemCount);

@@ -22,7 +22,7 @@ internal static class CatalogIndexFactoryOptions
 /// Provides index factories under a catalog.<br/>
 /// The shape is intentionally IntelliSense-friendly: callers choose an index set or key class, then the identity class, then the terminal verb `Create`, `Open`, or `CreateOrOpen`.<br/>
 /// </summary>
-public sealed class CatalogIndexFactories
+public sealed partial class CatalogIndexFactories
 {
     private readonly Catalog catalog;
 
@@ -37,12 +37,22 @@ public sealed class CatalogIndexFactories
     }
 
     /// <summary>
-    /// Gets the index-set index-set surface for the supplied identity universe name.<br/>
-    /// This is shorthand for `IndexSet(name)` and is the preferred low-friction entry point for catalog-backed condition code.<br/>
+    /// Gets an existing index set by its identity universe name; a missing set throws.<br/>
+    /// Use lifecycle methods to create the first index in a new set.<br/>
     /// </summary>
     /// <param name="name">The index-set name.</param>
     /// <returns>An index-set index-set surface.</returns>
-    public CatalogIdentityGroupIndexes this[string name] => IndexSet(name);
+    public CatalogIdentityGroupIndexes this[string name]
+    {
+        get
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(name);
+            foreach (CatalogIndexInfo info in List())
+                if (StringComparer.Ordinal.Equals(info.Group, name))
+                    return IndexSet(name);
+            throw new KeyNotFoundException($"Index set '{name}' does not exist.");
+        }
+    }
 
     /// <summary>
     /// Gets the index-set index-set surface for the supplied identity universe name.<br/>
@@ -153,7 +163,7 @@ public sealed class CatalogIndexFactories
 
     /// <summary>
     /// Tries to get public metadata for an active index by index-set name and index name.<br/>
-    /// This is the durable lookup shape behind `catalog.Indexes[indexSet][name]`; it uses rich metadata when present and does not rely on parsing fixed slot names.<br/>
+    /// This is the durable lookup shape behind `catalog.Indexes.IndexSet(indexSet).Define(name)`; it uses rich metadata when present and does not rely on parsing fixed slot names.<br/>
     /// </summary>
     /// <param name="indexSet">The index-set name to inspect.</param>
     /// <param name="name">The public index name inside the index set.</param>
@@ -655,7 +665,7 @@ public sealed partial class CatalogIdentityGroupIndexes
     public IIndex Index(string indexName)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(indexName);
-        return this[indexName].Open();
+        return Define(indexName).Open();
     }
 
     /// <summary>
@@ -674,7 +684,7 @@ public sealed partial class CatalogIdentityGroupIndexes
         IndexOptions? options = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(indexName);
-        return this[indexName].Open<TKey, TIdentity>(keys, options);
+        return Define(indexName).Open<TKey, TIdentity>(keys, options);
     }
 
     /// <summary>
@@ -715,7 +725,7 @@ public sealed partial class CatalogIdentityGroupIndexes
 
     /// <summary>
     /// Starts a low-friction condition builder from a generic typed index instance and selects the index key type automatically.<br/>
-    /// This enables `catalog.Indexes["users"].Where(age).GreaterOrEqual(18)` for typed scalar handles while preserving the existing `.Where(index).As...` form when callers need a richer projection family.<br/>
+    /// This enables `catalog.Indexes.IndexSet("users").Where(age).GreaterOrEqual(18)` for typed scalar handles while preserving the existing `.Where(index).As...` form when callers need a richer projection family.<br/>
     /// </summary>
     /// <typeparam name="TKey">The key type carried by the opened index handle.</typeparam>
     /// <typeparam name="TIdentity">The identity type carried by the opened index handle.</typeparam>
@@ -726,7 +736,7 @@ public sealed partial class CatalogIdentityGroupIndexes
 
     /// <summary>
     /// Starts a low-friction condition builder from a string index facade and selects string operators automatically.<br/>
-    /// This enables `catalog.Indexes["users"].Where(name).StartsWith("A")` without requiring `.AsString` when the handle itself is already string-typed.<br/>
+    /// This enables `catalog.Indexes.IndexSet("users").Where(name).StartsWith("A")` without requiring `.AsString` when the handle itself is already string-typed.<br/>
     /// </summary>
     /// <param name="index">The opened string index instance to select.</param>
     /// <returns>String operators for the selected index.</returns>
@@ -781,16 +791,18 @@ public sealed partial class CatalogIdentityGroupIndexes
         => new(OpenTypedCompositeIndex(name, typeof(TIdentity), typeof(TPart1), typeof(TPart2), typeof(TPart3)));
 
     /// <summary>
-    /// Gets a name-first builder for an index inside this index set.<br/>
+    /// Opens an existing index inside this index set; a missing name throws without creating storage.<br/>
     /// </summary>
     /// <param name="name">The index name inside this index set.</param>
-    /// <returns>A name-first index builder.</returns>
-    public CatalogNamedIndexBuilder this[string name]
+    /// <returns>An existing index handle owned by the catalog lifetime.</returns>
+    public IIndex this[string name]
     {
         get
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(name);
-            return new CatalogNamedIndexBuilder(catalog, owner, Name, name);
+            if (!owner.TryGetInfo(Name, name, out CatalogIndexInfo info))
+                throw new KeyNotFoundException($"Index '{name}' in index set '{Name}' does not exist.");
+            return catalog.OpenIndex(info);
         }
     }
 
@@ -887,7 +899,7 @@ public sealed partial class CatalogIdentityGroupIndexes
             throw new InvalidOperationException("The supplied condition belongs to a different LibraDex index set.");
 
         IIdentityCriterion criterion = condition.MaterializeWithProjectionBridge(
-            name => this[name].Open(),
+            name => Define(name).Open(),
             ResolveProjectionIndex,
             TryResolveConditionIndex);
         return LibraDexIdentityExecutionPlanner.Exists(criterion, IdentityDeduplication.Distinct);
@@ -920,7 +932,7 @@ public sealed partial class CatalogIdentityGroupIndexes
         }
 
         IIdentityCriterion criterion = condition.MaterializeWithProjectionBridge(
-            name => this[name].Open(),
+            name => Define(name).Open(),
             ResolveProjectionIndex,
             TryResolveConditionIndex);
         return criterion.IDsWith(ordering, deduplication, skip, take, bookmark).ToList<TIdentity>();
@@ -953,7 +965,7 @@ public sealed partial class CatalogIdentityGroupIndexes
         }
 
         IIdentityCriterion criterion = condition.MaterializeWithProjectionBridge(
-            name => this[name].Open(),
+            name => Define(name).Open(),
             ResolveProjectionIndex,
             TryResolveConditionIndex);
         return new LibraDexIdentityCursor<TIdentity>(
@@ -1039,7 +1051,7 @@ public sealed partial class CatalogIdentityGroupIndexes
         }
 
         IIdentityCriterion criterion = condition.MaterializeWithProjectionBridge(
-            name => this[name].Open(),
+            name => Define(name).Open(),
             ResolveProjectionIndex,
             TryResolveConditionIndex);
         if (TryReadDirectTargetLeafTuples(targetIndex, criterion, skip, take, direction, out IReadOnlyList<LibraDexRuntimeTuple>? leafRows))
@@ -1106,7 +1118,7 @@ public sealed partial class CatalogIdentityGroupIndexes
         }
 
         IIdentityCriterion criterion = condition.MaterializeWithProjectionBridge(
-            name => this[name].Open(),
+            name => Define(name).Open(),
             ResolveProjectionIndex,
             TryResolveConditionIndex);
         foreach (LibraDexObjectTuple tuple in LibraDexConditionCursorExecutor.IterateTargetIndexTuples(criterion, targetIndex, skip: 0, take: null, direction))
@@ -1181,7 +1193,7 @@ public sealed partial class CatalogIdentityGroupIndexes
             throw new InvalidOperationException("The target index belongs to a different LibraDex index set.");
 
         IIdentityCriterion filterCriterion = condition.MaterializeWithProjectionBridge(
-            name => this[name].Open(),
+            name => Define(name).Open(),
             ResolveProjectionIndex,
             TryResolveConditionIndex);
         LibraDexCriteriaKind boundaryKind = direction == QueryDirection.Ascending
@@ -1383,7 +1395,7 @@ public sealed partial class CatalogIdentityGroupIndexes
         }
 
         IIdentityCriterion criterion = condition.MaterializeWithProjectionBridge(
-            name => this[name].Open(),
+            name => Define(name).Open(),
             ResolveProjectionIndex,
             TryResolveConditionIndex);
         _ = LibraDexConditionCursorExecutor.TryCreateDirectPrimitiveDeletePlan(
@@ -1434,7 +1446,7 @@ public sealed partial class CatalogIdentityGroupIndexes
             info.KeyFamily == CatalogIndexKeyFamily.String &&
             info.IdentityFamily == CatalogIndexIdentityFamily.Scalar)
         {
-            return this[descriptor.IndexName].String.Open().ResolveProjection(descriptor, classification);
+            return Define(descriptor.IndexName).String.Open().ResolveProjection(descriptor, classification);
         }
 
         if (classification.ProjectionKind != LibraDexIndexProjectionKind.Exact ||
@@ -2339,7 +2351,7 @@ public sealed class CatalogNamedIndexBuilder
 
     /// <summary>
     /// Opens this named grouped index using explicit generic type arguments and validates those type arguments against persisted catalog metadata.<br/>
-    /// This supports compact call sites such as <c>catalog.Indexes["people"]["age"].Open&lt;int, long&gt;()</c> while preserving the safety of metadata-driven reopen.<br/>
+    /// This supports compact call sites such as <c>catalog.Indexes.IndexSet("people").Define("age").Open&lt;int, long&gt;()</c> while preserving the safety of metadata-driven reopen.<br/>
     /// </summary>
     /// <typeparam name="TKey">The expected public key type.</typeparam>
     /// <typeparam name="TIdentity">The expected public identity type.</typeparam>

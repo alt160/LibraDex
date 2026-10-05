@@ -89,7 +89,7 @@ public sealed class Catalog : IDisposable
 
     /// <summary>
     /// Gets the grouped index factory surface for the supplied identity group.<br/>
-    /// This is the compact counterpart to `catalog.Indexes[group]`, keeping catalog-first code short without adding another index resolution path.<br/>
+    /// This is the compact counterpart to `catalog.Indexes.IndexSet(group)`, keeping catalog-first code short without adding another index resolution path.<br/>
     /// </summary>
     /// <param name="group">The identity group name.</param>
     /// <returns>The grouped index factory surface for the supplied identity group.</returns>
@@ -2331,10 +2331,15 @@ public sealed class Catalog : IDisposable
     /// The standard .lbdx filename is resolved centrally; an existing file is never overwritten.<br/>
     /// </summary>
     /// <param name="name">One logical catalog basename, without a directory.<br/></param>
-    /// <param name="directory">The containing directory; null or blank uses the current directory.<br/></param>
+    /// <param name="directory">
+    /// The containing directory; accepts absolute or relative paths. Null or blank uses the process's current working directory.<br/>
+    /// Relative paths resolve against that working directory at the time of the call, not necessarily the executable's directory.<br/>
+    /// UNC and network-backed paths are accepted where the filesystem supports the required file operations; network latency and filesystem behavior can reduce performance compared with local SSD storage.<br/>
+    /// Path acceptance does not guarantee compatibility or performance on every network filesystem.<br/>
+    /// </param>
     /// <param name="options">Optional creation and runtime policy.<br/></param>
     /// <returns>The newly created disposable catalog.<br/></returns>
-    public static Catalog Create(string name, CatalogOptions? options = null, string? directory = null) =>
+    public static Catalog Create(string name, string? directory, CatalogOptions? options = null) =>
         CreateFile(GetFilePath(name, directory), options, isNamed: true);
 
     /// <summary>
@@ -2342,10 +2347,15 @@ public sealed class Catalog : IDisposable
     /// A missing catalog throws rather than silently creating a new store.<br/>
     /// </summary>
     /// <param name="name">One logical catalog basename, without a directory.<br/></param>
-    /// <param name="directory">The containing directory; null or blank uses the current directory.<br/></param>
+    /// <param name="directory">
+    /// The containing directory; accepts absolute or relative paths. Null or blank uses the process's current working directory.<br/>
+    /// Relative paths resolve against that working directory at the time of the call, not necessarily the executable's directory.<br/>
+    /// UNC and network-backed paths are accepted where the filesystem supports the required file operations; network latency and filesystem behavior can reduce performance compared with local SSD storage.<br/>
+    /// Path acceptance does not guarantee compatibility or performance on every network filesystem.<br/>
+    /// </param>
     /// <param name="options">Optional runtime policy; existing format is never upgraded on open.<br/></param>
     /// <returns>The opened disposable catalog.<br/></returns>
-    public static Catalog Open(string name, CatalogOptions? options = null, string? directory = null) =>
+    public static Catalog Open(string name, string? directory, CatalogOptions? options = null) =>
         OpenFile(GetFilePath(name, directory), options, isNamed: true);
 
     /// <summary>
@@ -2353,10 +2363,15 @@ public sealed class Catalog : IDisposable
     /// Named creation and reopening resolve the same standard .lbdx file.<br/>
     /// </summary>
     /// <param name="name">One logical catalog basename, without a directory.<br/></param>
-    /// <param name="directory">The containing directory; null or blank uses the current directory.<br/></param>
+    /// <param name="directory">
+    /// The containing directory; accepts absolute or relative paths. Null or blank uses the process's current working directory.<br/>
+    /// Relative paths resolve against that working directory at the time of the call, not necessarily the executable's directory.<br/>
+    /// UNC and network-backed paths are accepted where the filesystem supports the required file operations; network latency and filesystem behavior can reduce performance compared with local SSD storage.<br/>
+    /// Path acceptance does not guarantee compatibility or performance on every network filesystem.<br/>
+    /// </param>
     /// <param name="options">Optional creation and runtime policy.<br/></param>
     /// <returns>The opened or newly created disposable catalog.<br/></returns>
-    public static Catalog CreateOrOpen(string name, CatalogOptions? options = null, string? directory = null)
+    public static Catalog CreateOrOpen(string name, string? directory, CatalogOptions? options = null)
     {
         string filePath = GetFilePath(name, directory);
         return File.Exists(filePath) ? OpenFile(filePath, options, isNamed: true) : CreateFile(filePath, options, isNamed: true);
@@ -2367,12 +2382,17 @@ public sealed class Catalog : IDisposable
     /// Callers must close active owners and serialize maintenance before invoking this operation.<br/>
     /// </summary>
     /// <param name="name">One logical catalog basename.<br/></param>
-    /// <param name="directory">The containing directory; null or blank uses the current directory.<br/></param>
+    /// <param name="directory">
+    /// The containing directory; accepts absolute or relative paths. Null or blank uses the process's current working directory.<br/>
+    /// Relative paths resolve against that working directory at the time of the call, not necessarily the executable's directory.<br/>
+    /// UNC and network-backed paths are accepted where the filesystem supports the required file operations; network latency and filesystem behavior can reduce performance compared with local SSD storage.<br/>
+    /// Path acceptance does not guarantee compatibility or performance on every network filesystem.<br/>
+    /// </param>
     /// <param name="options">Optional compaction policy.<br/></param>
     /// <param name="cancellationToken">Cancellation observed by the existing compactor.<br/></param>
     /// <returns>The validated compaction result.<br/></returns>
-    public static LibraDexCompactionResult Compact(string name, LibraDexCompactionOptions? options = null,
-        CancellationToken cancellationToken = default, string? directory = null) =>
+    public static LibraDexCompactionResult Compact(string name, string? directory, LibraDexCompactionOptions? options = null,
+        CancellationToken cancellationToken = default) =>
         LibraDexCatalogCompactor.Compact(GetFilePath(name, directory), options, cancellationToken);
 
     /// <summary>
@@ -2381,7 +2401,12 @@ public sealed class Catalog : IDisposable
     /// Applications needing a sidecar path can use this helper without constructing a separate type.<br/>
     /// </summary>
     /// <param name="name">The logical catalog basename.<br/></param>
-    /// <param name="directory">The optional containing directory; null or blank uses the current directory.<br/></param>
+    /// <param name="directory">
+    /// The containing directory; accepts absolute or relative paths. Null or blank uses the process's current working directory.<br/>
+    /// Relative paths resolve against that working directory at the time of the call, not necessarily the executable's directory.<br/>
+    /// UNC and network-backed paths are accepted where the filesystem supports the required file operations; network latency and filesystem behavior can reduce performance compared with local SSD storage.<br/>
+    /// Path acceptance does not guarantee compatibility or performance on every network filesystem.<br/>
+    /// </param>
     /// <returns>The absolute primary catalog file path.<br/></returns>
     public static string GetFilePath(string name, string? directory = null)
     {

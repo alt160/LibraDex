@@ -15,7 +15,7 @@ internal static class ScalarAllStreamingSanity
         foreach (bool oneKey in new[] { false, true })
         {
             using var catalog = Catalog.CreateMemory();
-            using var index = catalog.Indexes["stream"]["values"].Create<long, ulong>();
+            using var index = catalog.Indexes.IndexSet("stream").Define("values").Create<long, ulong>();
             var tuples = new LibraDexSortedTuple<long, ulong>[count];
             for (int i = 0; i < count; i++) tuples[i] = new(oneKey ? 0 : i / 2, (ulong)i + 1);
             index.BuildFromSorted(tuples);
@@ -75,8 +75,8 @@ internal static class ScalarAllStreamingSanity
     private static void CheckPromotedNullRoutes()
     {
         using var catalog = Catalog.CreateMemory();
-        using var scalar8 = catalog.Indexes["nulls"]["scalar8"].Create<int, ulong>();
-        using var scalar16 = catalog.Indexes["nulls"]["scalar16"].Create<int, Guid>();
+        using var scalar8 = catalog.Indexes.IndexSet("nulls").Define("scalar8").Create<int, ulong>();
+        using var scalar16 = catalog.Indexes.IndexSet("nulls").Define("scalar16").Create<int, Guid>();
         for (int i = 1; i <= 4000; i++)
         {
             scalar8.Insert(ScalarNull.Null, (ulong)i);
@@ -104,7 +104,7 @@ internal static class ScalarAllStreamingSanity
     private static void CheckReadyMapAndBinaryRoutes()
     {
         using var catalog = Catalog.CreateMemory();
-        using var index = catalog.Indexes["ready"]["values"].Int64Keys<ulong>().Create(
+        using var index = catalog.Indexes.IndexSet("ready").Define("values").Int64Keys<ulong>().Create(
             options: new IndexOptions { IdentityKeyMultiplicity = IdentityKeyMultiplicity.SingleKeyPerIdentity });
         index.Insert(3, 1);
         index.Insert(7, 2);
@@ -120,7 +120,7 @@ internal static class ScalarAllStreamingSanity
         if (!LibraDexTupleEqualityComparer<byte[]>.Instance.Equals(new byte[] { 1, 2 }, new byte[] { 1, 2 }) ||
             LibraDexTupleEqualityComparer<ulong>.Instance.Equals(1, 2)) throw new Exception("Typed comparer semantics.");
 
-        using var binary = catalog.Indexes["binary"]["values"].Blob.Scalar<ulong>(LibraDexScalarWidth.Bytes32).Create();
+        using var binary = catalog.Indexes.IndexSet("binary").Define("values").Blob.Scalar<ulong>(LibraDexScalarWidth.Bytes32).Create();
         for (ulong i = 1; i <= 1024; i++)
         {
             binary.Insert(NullKey.Null, i);
@@ -148,8 +148,8 @@ internal static class ScalarAllStreamingSanity
     {
         const int perRoute = 4000;
         using var catalog = Catalog.CreateMemory();
-        using var scalar = catalog.Indexes["null-stream"]["scalar"].Create<int, ulong>();
-        using var binary = catalog.Indexes["null-stream"]["binary"].Blob.Scalar<ulong>(LibraDexScalarWidth.Bytes32).Create();
+        using var scalar = catalog.Indexes.IndexSet("null-stream").Define("scalar").Create<int, ulong>();
+        using var binary = catalog.Indexes.IndexSet("null-stream").Define("binary").Blob.Scalar<ulong>(LibraDexScalarWidth.Bytes32).Create();
         for (int i = 1; i <= perRoute; i++)
         {
             scalar.Insert(ScalarNull.Null, (ulong)i);
@@ -188,8 +188,8 @@ internal static class ScalarAllStreamingSanity
     {
         const int count = 4000;
         using var catalog = Catalog.CreateMemory();
-        using var flags = catalog.Indexes["predicate-stream"]["flags"].Create<long, ulong>();
-        using var numbers = catalog.Indexes["predicate-stream"]["numbers"].Create<double, ulong>();
+        using var flags = catalog.Indexes.IndexSet("predicate-stream").Define("flags").Create<long, ulong>();
+        using var numbers = catalog.Indexes.IndexSet("predicate-stream").Define("numbers").Create<double, ulong>();
         flags.BuildFromSorted(Enumerable.Range(0, count).Select(i => new LibraDexSortedTuple<long, ulong>(i, (ulong)i + 1)).ToArray());
         numbers.BuildFromSorted(Enumerable.Range(0, count).Select(i => new LibraDexSortedTuple<double, ulong>(i + 0.25, (ulong)i + 1)).ToArray());
 

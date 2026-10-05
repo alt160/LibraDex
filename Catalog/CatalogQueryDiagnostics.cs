@@ -232,7 +232,7 @@ public sealed partial class CatalogIdentityGroupIndexes
     }
 
     private IIndex? ResolveOptionalIndex(string indexName)
-        => TryGetInfo(indexName, out _) ? this[indexName].Open() : null;
+        => TryGetInfo(indexName, out _) ? this[indexName] : null;
 
     private static LibraDexQueryDiagnostics CreateMeasuredDiagnostics(
         LibraDexQueryExplanation explanation,

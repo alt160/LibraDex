@@ -89,8 +89,8 @@ internal static partial class RawHarness
         LibraDexGenericScalarCodec<Guid>.Encode16(scalar16NullB, out ulong scalar16NullBHigh, out ulong scalar16NullBLow);
         using (Catalog catalog = Catalog.Create(path))
         {
-            LibraDexIndex<long, long> index = catalog.Indexes["routes"]["value"].Int64Keys<long>().Create();
-            LibraDexIndex<long, Guid> scalar16Index = catalog.Indexes["routes"]["guidValue"].Int64Keys<Guid>().Create();
+            LibraDexIndex<long, long> index = catalog.Indexes.IndexSet("routes").Define("value").Int64Keys<long>().Create();
+            LibraDexIndex<long, Guid> scalar16Index = catalog.Indexes.IndexSet("routes").Define("guidValue").Int64Keys<Guid>().Create();
             ValidateGenericInsert(index.Insert(10, 444L), "key-state non-null scalar insert");
             if (!catalog.Indexes.TryGetInfo("routes", "value", out CatalogIndexInfo info))
             {
@@ -195,14 +195,14 @@ internal static partial class RawHarness
                 throw new InvalidDataException("ScalarNull condition materialization did not route through expected null/non-null identities.");
             }
 
-            LibraDexIndex<long, long> deleteIndex = catalog.Indexes["routes"]["deleteValue"].Int64Keys<long>().Create();
+            LibraDexIndex<long, long> deleteIndex = catalog.Indexes.IndexSet("routes").Define("deleteValue").Int64Keys<long>().Create();
             ValidateGenericInsert(deleteIndex.Insert(10, 610L), "key-state delete proof non-null insert");
             ValidateGenericInsert(deleteIndex.Insert(ScalarNull.Null, 611L), "key-state delete proof null 611 insert");
             ValidateGenericInsert(deleteIndex.Insert(ScalarNull.Null, 612L), "key-state delete proof null 612 insert");
             Func<string, IIndex> deleteResolver = indexName => string.Equals(indexName, "deleteValue", StringComparison.Ordinal)
                 ? deleteIndex
                 : throw new KeyNotFoundException(indexName);
-            LibraDexIdentityMutationResult deleteNullResult = catalog["routes"]["deleteValue"].Delete(LibraDexCondition
+            LibraDexIdentityMutationResult deleteNullResult = catalog.Indexes.IndexSet("routes").Define("deleteValue").Delete(LibraDexCondition
                 .ForGroup("routes")
                 .Index("deleteValue").AsInt64.IsNull()
                 .EndCondition);
@@ -218,14 +218,14 @@ internal static partial class RawHarness
             }
 
             ValidateGenericInsert(deleteIndex.Insert(ScalarNull.Null, 613L), "key-state all delete proof null insert");
-            LibraDexIdentityMutationResult deleteAllResult = catalog["routes"]["deleteValue"].DeleteAll();
+            LibraDexIdentityMutationResult deleteAllResult = catalog.Indexes.IndexSet("routes").Define("deleteValue").DeleteAll();
             if (deleteAllResult.ChangedCount != 2 ||
                 LibraDexCondition.ForGroup("routes").Index("deleteValue").AsInt64.All().EndCondition.Count(deleteResolver, deduplication: IdentityDeduplication.Preserve) != 0)
             {
                 throw new InvalidDataException("Scalar all-condition delete did not remove null-route and ordinary identities.");
             }
 
-            LibraDexIndex<long, long> rekeyIndex = catalog.Indexes["routes"]["rekeyValue"].Int64Keys<long>().Create();
+            LibraDexIndex<long, long> rekeyIndex = catalog.Indexes.IndexSet("routes").Define("rekeyValue").Int64Keys<long>().Create();
             ValidateGenericInsert(rekeyIndex.Insert(ScalarNull.Null, 701L), "key-state rekey proof null 701 insert");
             ValidateGenericInsert(rekeyIndex.Insert(20, 702L), "key-state rekey proof non-null 702 insert");
             ValidateGenericInsert(rekeyIndex.Insert(ScalarNull.Null, 703L), "key-state rekey proof null 703 insert");
@@ -262,17 +262,17 @@ internal static partial class RawHarness
                 throw new InvalidDataException("Scalar-null rekey paths did not leave expected null-first all-scan identities.");
             }
 
-            LibraDexIndex<long, long> setKeyIndex = catalog.Indexes["routes"]["setKeyValue"].Int64Keys<long>().Create();
+            LibraDexIndex<long, long> setKeyIndex = catalog.Indexes.IndexSet("routes").Define("setKeyValue").Int64Keys<long>().Create();
             ValidateGenericInsert(setKeyIndex.Insert(60, 801L), "key-state SetKey proof non-null 801 insert");
             ValidateGenericInsert(setKeyIndex.Insert(ScalarNull.Null, 802L), "key-state SetKey proof null 802 insert");
             Func<string, IIndex> setKeyResolver = indexName => string.Equals(indexName, "setKeyValue", StringComparison.Ordinal)
                 ? setKeyIndex
                 : throw new KeyNotFoundException(indexName);
-            LibraDexIdentityMutationResult setKeyToNullResult = catalog["routes"]["setKeyValue"].SetKey(LibraDexCondition
+            LibraDexIdentityMutationResult setKeyToNullResult = catalog.Indexes.IndexSet("routes").Define("setKeyValue").SetKey(LibraDexCondition
                 .ForGroup("routes")
                 .Index("setKeyValue").AsInt64.EqualTo(60)
                 .EndCondition, null);
-            LibraDexIdentityMutationResult setKeyFromNullResult = catalog["routes"]["setKeyValue"].SetKey(LibraDexCondition
+            LibraDexIdentityMutationResult setKeyFromNullResult = catalog.Indexes.IndexSet("routes").Define("setKeyValue").SetKey(LibraDexCondition
                 .ForGroup("routes")
                 .Index("setKeyValue").AsInt64.IsNull()
                 .EndCondition, 70L);
@@ -294,7 +294,7 @@ internal static partial class RawHarness
                 throw new InvalidDataException($"Scalar-null SetKey did not move identities between null and ordinary routes. toNull={setKeyToNullResult.ChangedCount} fromNull={setKeyFromNullResult.ChangedCount} nullIds={string.Join(",", setKeyNullIds)} allIds={string.Join(",", setKeyAllIds)}");
             }
 
-            LibraDexStringScalar8Index stringRouteIndex = catalog.Indexes["routes"]["code"].String.Create(stringKeys: StringKeys.Exact);
+            LibraDexStringScalar8Index stringRouteIndex = catalog.Indexes.IndexSet("routes").Define("code").String.Create(stringKeys: StringKeys.Exact);
             ValidateGenericInsert(stringRouteIndex.Insert(null, 901UL), "string key-state null insert");
             ValidateGenericInsert(stringRouteIndex.Insert(string.Empty, 902UL), "string key-state empty insert");
             ValidateGenericInsert(stringRouteIndex.Insert("A", 903UL), "string key-state normal insert");
@@ -321,7 +321,7 @@ internal static partial class RawHarness
                 .Index("code").AsString.All()
                 .EndCondition
                 .ToList<ulong>(stringRouteResolver, deduplication: IdentityDeduplication.Preserve);
-            LibraDexIdentityMutationResult deleteStringEmptyResult = catalog["routes"]["code"].Delete(LibraDexCondition
+            LibraDexIdentityMutationResult deleteStringEmptyResult = catalog.Indexes.IndexSet("routes").Define("code").Delete(LibraDexCondition
                 .ForGroup("routes")
                 .Index("code").AsString.IsEmpty()
                 .EndCondition);
@@ -335,7 +335,7 @@ internal static partial class RawHarness
                 throw new InvalidDataException("String NullKey route reads, all-scan ordering, or condition deletes did not match expected route semantics.");
             }
 
-            LibraDexIndex<byte[], long> binaryRouteIndex = catalog.Indexes["routes"]["fingerprint"].Blob.Scalar<long>(LibraDexScalarWidth.Bytes32).Create();
+            LibraDexIndex<byte[], long> binaryRouteIndex = catalog.Indexes.IndexSet("routes").Define("fingerprint").Blob.Scalar<long>(LibraDexScalarWidth.Bytes32).Create();
             ValidateGenericInsert(((IIndex)binaryRouteIndex).Insert(null, 911L), "binary key-state null insert");
             ValidateGenericInsert(binaryRouteIndex.Insert(Array.Empty<byte>(), 912L), "binary key-state empty insert");
             ValidateGenericInsert(binaryRouteIndex.Insert(Convert.FromHexString("000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F"), 913L), "binary key-state normal insert");
@@ -372,7 +372,7 @@ internal static partial class RawHarness
                 throw new InvalidDataException("Binary NullKey route reads, all-scan ordering, or exact deletes did not match expected route semantics.");
             }
 
-            LibraDexStringScalar8Index stringRekeyIndex = catalog.Indexes["routes"]["codeRekey"].String.Create(stringKeys: StringKeys.Exact);
+            LibraDexStringScalar8Index stringRekeyIndex = catalog.Indexes.IndexSet("routes").Define("codeRekey").String.Create(stringKeys: StringKeys.Exact);
             ValidateGenericInsert(stringRekeyIndex.Insert(null, 921UL), "string key-state rekey null insert");
             ValidateGenericInsert(stringRekeyIndex.Insert(string.Empty, 922UL), "string key-state rekey empty insert");
             ValidateGenericInsert(stringRekeyIndex.Insert("A", 923UL), "string key-state rekey normal insert");
@@ -395,11 +395,11 @@ internal static partial class RawHarness
                 throw new InvalidDataException("String NullKey direct rekey paths did not leave expected null-first route ordering.");
             }
 
-            LibraDexIdentityMutationResult stringSetKeyToEmpty = catalog["routes"]["codeRekey"].SetKey(LibraDexCondition
+            LibraDexIdentityMutationResult stringSetKeyToEmpty = catalog.Indexes.IndexSet("routes").Define("codeRekey").SetKey(LibraDexCondition
                 .ForGroup("routes")
                 .Index("codeRekey").AsString.EqualTo("B")
                 .EndCondition, string.Empty);
-            LibraDexIdentityMutationResult stringSetKeyToNull = catalog["routes"]["codeRekey"].SetKey(LibraDexCondition
+            LibraDexIdentityMutationResult stringSetKeyToNull = catalog.Indexes.IndexSet("routes").Define("codeRekey").SetKey(LibraDexCondition
                 .ForGroup("routes")
                 .Index("codeRekey").AsString.EqualTo(NullKey.Empty)
                 .EndCondition, null);
@@ -415,7 +415,7 @@ internal static partial class RawHarness
                 throw new InvalidDataException("String NullKey condition SetKey did not move identities through null and empty routes.");
             }
 
-            LibraDexIndex<byte[], long> binaryRekeyIndex = catalog.Indexes["routes"]["fingerprintRekey"].Blob.Scalar<long>(LibraDexScalarWidth.Bytes32).Create();
+            LibraDexIndex<byte[], long> binaryRekeyIndex = catalog.Indexes.IndexSet("routes").Define("fingerprintRekey").Blob.Scalar<long>(LibraDexScalarWidth.Bytes32).Create();
             byte[] binaryRekeyA = Convert.FromHexString("100102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F");
             byte[] binaryRekeyB = Convert.FromHexString("200102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F");
             ValidateGenericInsert(binaryRekeyIndex.Insert(NullKey.Null, 931L), "binary key-state rekey null insert");
@@ -440,11 +440,11 @@ internal static partial class RawHarness
                 throw new InvalidDataException("Binary NullKey direct rekey paths did not leave expected null-first route ordering.");
             }
 
-            LibraDexIdentityMutationResult binarySetKeyToEmpty = catalog["routes"]["fingerprintRekey"].SetKey(LibraDexCondition
+            LibraDexIdentityMutationResult binarySetKeyToEmpty = catalog.Indexes.IndexSet("routes").Define("fingerprintRekey").SetKey(LibraDexCondition
                 .ForGroup("routes")
                 .Index("fingerprintRekey").AsBinary.EqualTo(binaryRekeyB)
                 .EndCondition, Array.Empty<byte>());
-            LibraDexIdentityMutationResult binarySetKeyToNull = catalog["routes"]["fingerprintRekey"].SetKey(LibraDexCondition
+            LibraDexIdentityMutationResult binarySetKeyToNull = catalog.Indexes.IndexSet("routes").Define("fingerprintRekey").SetKey(LibraDexCondition
                 .ForGroup("routes")
                 .Index("fingerprintRekey").AsBinary.EqualTo(NullKey.Empty)
                 .EndCondition, null);
@@ -460,7 +460,7 @@ internal static partial class RawHarness
                 throw new InvalidDataException("Binary NullKey condition SetKey did not move identities through null and empty routes.");
             }
 
-            LibraDexStringScalar8Index stringMembershipIndex = catalog.Indexes["routes"]["codeMembership"].String.Create(stringKeys: StringKeys.Exact);
+            LibraDexStringScalar8Index stringMembershipIndex = catalog.Indexes.IndexSet("routes").Define("codeMembership").String.Create(stringKeys: StringKeys.Exact);
             ValidateGenericInsert(stringMembershipIndex.Insert(null, 941UL), "string key-state membership null insert");
             ValidateGenericInsert(stringMembershipIndex.Insert(string.Empty, 942UL), "string key-state membership empty insert");
             ValidateGenericInsert(stringMembershipIndex.Insert("A", 943UL), "string key-state membership normal A insert");
@@ -478,11 +478,11 @@ internal static partial class RawHarness
                 .Index("codeMembership").AsString.NotInSet(new[] { null!, string.Empty, "B" })
                 .EndCondition
                 .ToList<ulong>(stringMembershipResolver, deduplication: IdentityDeduplication.Preserve);
-            LibraDexIdentityMutationResult stringMembershipDelete = catalog["routes"]["codeMembership"].Delete(LibraDexCondition
+            LibraDexIdentityMutationResult stringMembershipDelete = catalog.Indexes.IndexSet("routes").Define("codeMembership").Delete(LibraDexCondition
                 .ForGroup("routes")
                 .Index("codeMembership").AsString.InSet(new[] { string.Empty, "B" })
                 .EndCondition);
-            LibraDexIdentityMutationResult stringMembershipSetKey = catalog["routes"]["codeMembership"].SetKey(LibraDexCondition
+            LibraDexIdentityMutationResult stringMembershipSetKey = catalog.Indexes.IndexSet("routes").Define("codeMembership").SetKey(LibraDexCondition
                 .ForGroup("routes")
                 .Index("codeMembership").AsString.InSet(new[] { null!, "A" })
                 .EndCondition, string.Empty);
@@ -500,7 +500,7 @@ internal static partial class RawHarness
                 throw new InvalidDataException("String NullKey membership, NotInSet, delete, or SetKey did not route null and empty members correctly.");
             }
 
-            LibraDexIndex<byte[], long> binaryMembershipIndex = catalog.Indexes["routes"]["fingerprintMembership"].Blob.Scalar<long>(LibraDexScalarWidth.Bytes32).Create();
+            LibraDexIndex<byte[], long> binaryMembershipIndex = catalog.Indexes.IndexSet("routes").Define("fingerprintMembership").Blob.Scalar<long>(LibraDexScalarWidth.Bytes32).Create();
             byte[] binaryMembershipA = Convert.FromHexString("300102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F");
             byte[] binaryMembershipB = Convert.FromHexString("400102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F");
             ValidateGenericInsert(binaryMembershipIndex.Insert(NullKey.Null, 951L), "binary key-state membership null insert");
@@ -523,11 +523,11 @@ internal static partial class RawHarness
             LibraDexPreparedObjectSet binaryPreparedMembership = ((IIndex)binaryMembershipIndex).PrepareInSet(new object[] { null!, Array.Empty<byte>(), binaryMembershipB });
             IReadOnlyList<object> binaryPreparedIds = ((IIdentityPrimitiveExecutor)binaryMembershipIndex).ExecuteIdentityPrimitive(
                 new LibraDexIdentityPrimitiveRequest(LibraDexCriteriaKind.InSet, new object?[] { binaryPreparedMembership }));
-            LibraDexIdentityMutationResult binaryMembershipDelete = catalog["routes"]["fingerprintMembership"].Delete(LibraDexCondition
+            LibraDexIdentityMutationResult binaryMembershipDelete = catalog.Indexes.IndexSet("routes").Define("fingerprintMembership").Delete(LibraDexCondition
                 .ForGroup("routes")
                 .Index("fingerprintMembership").AsBinary.InSet(new byte[][] { Array.Empty<byte>(), binaryMembershipB })
                 .EndCondition);
-            LibraDexIdentityMutationResult binaryMembershipSetKey = catalog["routes"]["fingerprintMembership"].SetKey(LibraDexCondition
+            LibraDexIdentityMutationResult binaryMembershipSetKey = catalog.Indexes.IndexSet("routes").Define("fingerprintMembership").SetKey(LibraDexCondition
                 .ForGroup("routes")
                 .Index("fingerprintMembership").AsBinary.InSet(new byte[][] { null!, binaryMembershipA })
                 .EndCondition, Array.Empty<byte>());
@@ -546,18 +546,18 @@ internal static partial class RawHarness
                 throw new InvalidDataException("Binary NullKey membership, prepared membership, NotInSet, delete, or SetKey did not route null and empty members correctly.");
             }
 
-            LibraDexStringScalar8Index reopenStringRouteIndex = catalog.Indexes["routes"]["reopenCode"].String.Create(stringKeys: StringKeys.Exact);
+            LibraDexStringScalar8Index reopenStringRouteIndex = catalog.Indexes.IndexSet("routes").Define("reopenCode").String.Create(stringKeys: StringKeys.Exact);
             ValidateGenericInsert(reopenStringRouteIndex.Insert(null, 961UL), "reopen string key-state null insert");
             ValidateGenericInsert(reopenStringRouteIndex.Insert(string.Empty, 962UL), "reopen string key-state empty insert");
             ValidateGenericInsert(reopenStringRouteIndex.Insert("A", 963UL), "reopen string key-state normal A insert");
             ValidateGenericInsert(reopenStringRouteIndex.Insert("B", 964UL), "reopen string key-state normal B insert");
 
-            LibraDexStringScalar8Index reopenStringMutationIndex = catalog.Indexes["routes"]["reopenCodeMutation"].String.Create(stringKeys: StringKeys.Exact);
+            LibraDexStringScalar8Index reopenStringMutationIndex = catalog.Indexes.IndexSet("routes").Define("reopenCodeMutation").String.Create(stringKeys: StringKeys.Exact);
             ValidateGenericInsert(reopenStringMutationIndex.Insert(null, 965UL), "reopen string mutation null insert");
             ValidateGenericInsert(reopenStringMutationIndex.Insert(string.Empty, 966UL), "reopen string mutation empty insert");
             ValidateGenericInsert(reopenStringMutationIndex.Insert("A", 967UL), "reopen string mutation normal insert");
 
-            LibraDexIndex<byte[], long> reopenBinaryRouteIndex = catalog.Indexes["routes"]["reopenFingerprint"].Blob.Scalar<long>(LibraDexScalarWidth.Bytes32).Create();
+            LibraDexIndex<byte[], long> reopenBinaryRouteIndex = catalog.Indexes.IndexSet("routes").Define("reopenFingerprint").Blob.Scalar<long>(LibraDexScalarWidth.Bytes32).Create();
             byte[] reopenBinaryA = Convert.FromHexString("500102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F");
             byte[] reopenBinaryB = Convert.FromHexString("600102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F");
             ValidateGenericInsert(reopenBinaryRouteIndex.Insert(NullKey.Null, 971L), "reopen binary key-state null insert");
@@ -565,7 +565,7 @@ internal static partial class RawHarness
             ValidateGenericInsert(reopenBinaryRouteIndex.Insert(reopenBinaryA, 973L), "reopen binary key-state normal A insert");
             ValidateGenericInsert(reopenBinaryRouteIndex.Insert(reopenBinaryB, 974L), "reopen binary key-state normal B insert");
 
-            LibraDexIndex<byte[], long> reopenBinaryMutationIndex = catalog.Indexes["routes"]["reopenFingerprintMutation"].Blob.Scalar<long>(LibraDexScalarWidth.Bytes32).Create();
+            LibraDexIndex<byte[], long> reopenBinaryMutationIndex = catalog.Indexes.IndexSet("routes").Define("reopenFingerprintMutation").Blob.Scalar<long>(LibraDexScalarWidth.Bytes32).Create();
             byte[] reopenBinaryMutationA = Convert.FromHexString("700102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F");
             ValidateGenericInsert(reopenBinaryMutationIndex.Insert(NullKey.Null, 975L), "reopen binary mutation null insert");
             ValidateGenericInsert(reopenBinaryMutationIndex.Insert(NullKey.Empty, 976L), "reopen binary mutation empty insert");
@@ -652,7 +652,7 @@ internal static partial class RawHarness
                 throw new InvalidDataException("ScalarNull condition route identities did not survive reopen.");
             }
 
-            LibraDexStringScalar8Index reopenedStringRouteIndex = reopened.Indexes["routes"]["reopenCode"].String.Open();
+            LibraDexStringScalar8Index reopenedStringRouteIndex = reopened.Indexes.IndexSet("routes").Define("reopenCode").String.Open();
             Func<string, IIndex> reopenedStringRouteResolver = indexName => string.Equals(indexName, "reopenCode", StringComparison.Ordinal)
                 ? reopenedStringRouteIndex
                 : throw new KeyNotFoundException(indexName);
@@ -684,15 +684,15 @@ internal static partial class RawHarness
                 throw new InvalidDataException("Reopened string NullKey route equality, membership, or all-scan did not use persisted route offsets.");
             }
 
-            LibraDexStringScalar8Index reopenedStringMutationIndex = reopened.Indexes["routes"]["reopenCodeMutation"].String.Open();
+            LibraDexStringScalar8Index reopenedStringMutationIndex = reopened.Indexes.IndexSet("routes").Define("reopenCodeMutation").String.Open();
             Func<string, IIndex> reopenedStringMutationResolver = indexName => string.Equals(indexName, "reopenCodeMutation", StringComparison.Ordinal)
                 ? reopenedStringMutationIndex
                 : throw new KeyNotFoundException(indexName);
-            LibraDexIdentityMutationResult reopenedStringDelete = reopened["routes"]["reopenCodeMutation"].Delete(LibraDexCondition
+            LibraDexIdentityMutationResult reopenedStringDelete = reopened.Indexes.IndexSet("routes").Define("reopenCodeMutation").Delete(LibraDexCondition
                 .ForGroup("routes")
                 .Index("reopenCodeMutation").AsString.EqualTo(NullKey.Empty)
                 .EndCondition);
-            LibraDexIdentityMutationResult reopenedStringSetKey = reopened["routes"]["reopenCodeMutation"].SetKey(LibraDexCondition
+            LibraDexIdentityMutationResult reopenedStringSetKey = reopened.Indexes.IndexSet("routes").Define("reopenCodeMutation").SetKey(LibraDexCondition
                 .ForGroup("routes")
                 .Index("reopenCodeMutation").AsString.EqualTo("A")
                 .EndCondition, null);
@@ -760,11 +760,11 @@ internal static partial class RawHarness
             Func<string, IIndex> reopenedBinaryMutationResolver = indexName => string.Equals(indexName, "reopenFingerprintMutation", StringComparison.Ordinal)
                 ? reopenedBinaryMutationIndex
                 : throw new KeyNotFoundException(indexName);
-            LibraDexIdentityMutationResult reopenedBinaryDelete = reopened["routes"]["reopenFingerprintMutation"].Delete(LibraDexCondition
+            LibraDexIdentityMutationResult reopenedBinaryDelete = reopened.Indexes.IndexSet("routes").Define("reopenFingerprintMutation").Delete(LibraDexCondition
                 .ForGroup("routes")
                 .Index("reopenFingerprintMutation").AsBinary.EqualTo(NullKey.Empty)
                 .EndCondition);
-            LibraDexIdentityMutationResult reopenedBinarySetKey = reopened["routes"]["reopenFingerprintMutation"].SetKey(LibraDexCondition
+            LibraDexIdentityMutationResult reopenedBinarySetKey = reopened.Indexes.IndexSet("routes").Define("reopenFingerprintMutation").SetKey(LibraDexCondition
                 .ForGroup("routes")
                 .Index("reopenFingerprintMutation").AsBinary.EqualTo(reopenedBinaryMutationA)
                 .EndCondition, null);

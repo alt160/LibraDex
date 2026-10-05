@@ -32,9 +32,9 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        CatalogIdentityGroupIndexes group = catalog.Indexes["group-proof"];
-        using LibraDexIndex<int, long> statusIndex = group["status"].Int32Keys<long>().Create();
-        using LibraDexIndex<int, long> tenantIndex = group["tenant"].Int32Keys<long>().Create();
+        CatalogIdentityGroupIndexes group = catalog.Indexes.IndexSet("group-proof");
+        using LibraDexIndex<int, long> statusIndex = group.Define("status").Int32Keys<long>().Create();
+        using LibraDexIndex<int, long> tenantIndex = group.Define("tenant").Int32Keys<long>().Create();
         SeedGroupByExecutionProofRows(statusIndex, tenantIndex, itemCount, tenantCount, activeModulo);
 
         LibraDexConditionEndCondition activeCondition = LibraDexCondition
@@ -123,9 +123,9 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        CatalogIdentityGroupIndexes group = catalog.Indexes["direct-target-group-proof"];
-        using LibraDexIndex<int, long> statusIndex = group["status"].Int32Keys<long>().Create();
-        using LibraDexIndex<int, long> tenantIndex = group["tenant"].Int32Keys<long>().Create();
+        CatalogIdentityGroupIndexes group = catalog.Indexes.IndexSet("direct-target-group-proof");
+        using LibraDexIndex<int, long> statusIndex = group.Define("status").Int32Keys<long>().Create();
+        using LibraDexIndex<int, long> tenantIndex = group.Define("tenant").Int32Keys<long>().Create();
         SeedGroupByExecutionProofRows(statusIndex, tenantIndex, itemCount, tenantCount, activeModulo);
 
         LibraDexConditionEndCondition tenantCondition = LibraDexCondition
@@ -178,9 +178,9 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        CatalogIdentityGroupIndexes group = catalog.Indexes["composite-group-proof"];
-        using LibraDexIndex<int, long> statusIndex = group["status"].Int32Keys<long>().Create();
-        IIndex compositeHandle = group["tenantUser"].Composite<long>(C.Text("tenant"), C.Text("user")).Create();
+        CatalogIdentityGroupIndexes group = catalog.Indexes.IndexSet("composite-group-proof");
+        using LibraDexIndex<int, long> statusIndex = group.Define("status").Int32Keys<long>().Create();
+        IIndex compositeHandle = group.Define("tenantUser").Composite<long>(C.Text("tenant"), C.Text("user")).Create();
         LibraDexRoutedCompositeIndex compositeIndex = (LibraDexRoutedCompositeIndex)compositeHandle;
         Dictionary<string, GroupByCompositeProofExpectedRow> expected = SeedGroupByCompositeProofRows(
             statusIndex,
@@ -311,9 +311,9 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        CatalogIdentityGroupIndexes group = catalog.Indexes["aggregate-group-proof"];
-        using LibraDexIndex<int, long> statusIndex = group["status"].Int32Keys<long>().Create();
-        using LibraDexIndex<int, long> tenantIndex = group["tenant"].Int32Keys<long>().Create();
+        CatalogIdentityGroupIndexes group = catalog.Indexes.IndexSet("aggregate-group-proof");
+        using LibraDexIndex<int, long> statusIndex = group.Define("status").Int32Keys<long>().Create();
+        using LibraDexIndex<int, long> tenantIndex = group.Define("tenant").Int32Keys<long>().Create();
         SeedGroupByExecutionProofRows(statusIndex, tenantIndex, itemCount, tenantCount, activeModulo);
 
         LibraDexConditionEndCondition activeCondition = LibraDexCondition
@@ -364,9 +364,9 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        CatalogIdentityGroupIndexes group = catalog.Indexes["row-reader-group-proof"];
-        using LibraDexIndex<int, long> statusIndex = group["status"].Int32Keys<long>().Create();
-        using LibraDexIndex<int, long> tenantIndex = group["tenant"].Int32Keys<long>().Create();
+        CatalogIdentityGroupIndexes group = catalog.Indexes.IndexSet("row-reader-group-proof");
+        using LibraDexIndex<int, long> statusIndex = group.Define("status").Int32Keys<long>().Create();
+        using LibraDexIndex<int, long> tenantIndex = group.Define("tenant").Int32Keys<long>().Create();
         SeedGroupByExecutionProofRows(statusIndex, tenantIndex, itemCount, tenantCount, activeModulo);
 
         LibraDexConditionEndCondition activeCondition = LibraDexCondition
@@ -417,9 +417,9 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        CatalogIdentityGroupIndexes group = catalog.Indexes["string-group-proof"];
-        using LibraDexIndex<int, ulong> statusIndex = group["status"].Int32Keys<ulong>().Create();
-        using LibraDexStringScalar8Index nameIndex = group["name"].String.Create(stringKeys: StringKeys.ExactFoldedAndSortKey);
+        CatalogIdentityGroupIndexes group = catalog.Indexes.IndexSet("string-group-proof");
+        using LibraDexIndex<int, ulong> statusIndex = group.Define("status").Int32Keys<ulong>().Create();
+        using LibraDexStringScalar8Index nameIndex = group.Define("name").String.Create(stringKeys: StringKeys.ExactFoldedAndSortKey);
         GroupByStringProofSeed seed = SeedGroupByStringProofRows(statusIndex, nameIndex, itemCount, nameCount, activeModulo, prefix);
 
         LibraDexConditionEndCondition activeCondition = LibraDexCondition
@@ -497,8 +497,8 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        CatalogIdentityGroupIndexes group = catalog.Indexes["string-key-state-promotion-proof"];
-        using LibraDexStringScalar8Index nameIndex = group["name"].String.Create(stringKeys: StringKeys.ExactFoldedAndSortKey);
+        CatalogIdentityGroupIndexes group = catalog.Indexes.IndexSet("string-key-state-promotion-proof");
+        using LibraDexStringScalar8Index nameIndex = group.Define("name").String.Create(stringKeys: StringKeys.ExactFoldedAndSortKey);
         Func<string, IIndex> resolver = name => name == "name" ? nameIndex : throw new KeyNotFoundException(name);
 
         for (int i = 0; i < perStateCount; i++)
@@ -559,8 +559,8 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        CatalogIdentityGroupIndexes group = catalog.Indexes["scalar16-key-state-promotion-proof"];
-        using LibraDexIndex<byte[], Guid> index = group["hash"].Blob.Scalar<Guid>(LibraDexScalarWidth.Bytes32).Create();
+        CatalogIdentityGroupIndexes group = catalog.Indexes.IndexSet("scalar16-key-state-promotion-proof");
+        using LibraDexIndex<byte[], Guid> index = group.Define("hash").Blob.Scalar<Guid>(LibraDexScalarWidth.Bytes32).Create();
         Func<string, IIndex> resolver = name => name == "hash" ? index : throw new KeyNotFoundException(name);
 
         for (int i = 0; i < perStateCount; i++)
@@ -624,9 +624,9 @@ internal static partial class RawHarness
             DiagnosticsLevel = LibraDexDiagnosticsLevel.Detailed
         });
 
-        CatalogIdentityGroupIndexes group = catalog.Indexes["fixedn-key-state-promotion-proof"];
-        using LibraDexBigIntScalar8Index<long> scalar8Index = group["score8"].BigIntKeys<long>(maxBytes: 32).Create();
-        using LibraDexBigIntScalar8Index<Guid> scalar16Index = group["score16"].BigIntKeys<Guid>(maxBytes: 32).Create();
+        CatalogIdentityGroupIndexes group = catalog.Indexes.IndexSet("fixedn-key-state-promotion-proof");
+        using LibraDexBigIntScalar8Index<long> scalar8Index = group.Define("score8").BigIntKeys<long>(maxBytes: 32).Create();
+        using LibraDexBigIntScalar8Index<Guid> scalar16Index = group.Define("score16").BigIntKeys<Guid>(maxBytes: 32).Create();
         Func<string, IIndex> resolver = name => name switch
         {
             "score8" => scalar8Index,
@@ -2754,20 +2754,20 @@ internal static partial class RawHarness
     {
         _ = args;
         using Catalog catalog = Catalog.CreateMemory();
-        CatalogIdentityGroupIndexes indexes = catalog.Indexes["events"];
-        using LibraDexIndex<int, ulong> statusIndex = indexes["status"].Int32Keys<ulong>().Create();
-        using LibraDexStringScalar8Index deviceIndex = indexes["deviceId"].StringKeys().Create(
+        CatalogIdentityGroupIndexes indexes = catalog.Indexes.IndexSet("events");
+        using LibraDexIndex<int, ulong> statusIndex = indexes.Define("status").Int32Keys<ulong>().Create();
+        using LibraDexStringScalar8Index deviceIndex = indexes.Define("deviceId").StringKeys().Create(
             StringKeys.ExactFoldedAndSortKey);
-        using LibraDexIndex<DateTime, ulong> timestampIndex = indexes["timeStamp"].Create<DateTime, ulong>();
-        using LibraDexStringScalar8Index categoryIndex = indexes["category"].StringKeys().Create();
-        using LibraDexIndex<int, ulong> deleteReturnedIndex = indexes["deleteReturned"].Int32Keys<ulong>().Create();
-        using LibraDexIndex<int, ulong> deleteKeysIndex = indexes["deleteKeys"].Int32Keys<ulong>().Create();
-        using LibraDexIndex<int, ulong> setIndex = indexes["setTarget"].Int32Keys<ulong>().Create();
-        using LibraDexIndex<int, ulong> transformIndex = indexes["transformTarget"].Int32Keys<ulong>().Create();
-        using LibraDexIndex<int, ulong> topWindowIndex = indexes["topWindowTarget"].Int32Keys<ulong>().Create();
-        using LibraDexIndex<int, ulong> ordinaryWindowIndex = indexes["ordinaryWindowTarget"].Int32Keys<ulong>().Create();
-        using LibraDexIndex<int, ulong> representativeTargetIndex = indexes["representativeTarget"].Int32Keys<ulong>().Create();
-        using LibraDexIndex<int, ulong> ambiguousOrderIndex = indexes["ambiguousOrder"].Int32Keys<ulong>().Create();
+        using LibraDexIndex<DateTime, ulong> timestampIndex = indexes.Define("timeStamp").Create<DateTime, ulong>();
+        using LibraDexStringScalar8Index categoryIndex = indexes.Define("category").StringKeys().Create();
+        using LibraDexIndex<int, ulong> deleteReturnedIndex = indexes.Define("deleteReturned").Int32Keys<ulong>().Create();
+        using LibraDexIndex<int, ulong> deleteKeysIndex = indexes.Define("deleteKeys").Int32Keys<ulong>().Create();
+        using LibraDexIndex<int, ulong> setIndex = indexes.Define("setTarget").Int32Keys<ulong>().Create();
+        using LibraDexIndex<int, ulong> transformIndex = indexes.Define("transformTarget").Int32Keys<ulong>().Create();
+        using LibraDexIndex<int, ulong> topWindowIndex = indexes.Define("topWindowTarget").Int32Keys<ulong>().Create();
+        using LibraDexIndex<int, ulong> ordinaryWindowIndex = indexes.Define("ordinaryWindowTarget").Int32Keys<ulong>().Create();
+        using LibraDexIndex<int, ulong> representativeTargetIndex = indexes.Define("representativeTarget").Int32Keys<ulong>().Create();
+        using LibraDexIndex<int, ulong> ambiguousOrderIndex = indexes.Define("ambiguousOrder").Int32Keys<ulong>().Create();
 
         DateTime t100 = new(2026, 1, 1, 0, 1, 0, DateTimeKind.Utc);
         DateTime t120 = new(2026, 1, 1, 0, 1, 20, DateTimeKind.Utc);
@@ -2871,7 +2871,7 @@ internal static partial class RawHarness
         }
 
         LibraDexIdentityMutationResult representativeMutation =
-            indexes["representativeTarget"].SetKey(firstActivePerFoldedDevice, 6000);
+            indexes.Define("representativeTarget").SetKey(firstActivePerFoldedDevice, 6000);
         if (representativeMutation.ChangedCount != 3 ||
             !GetEqual("representativeTarget", 6000).SequenceEqual(new ulong[] { 1, 4, 5 }))
         {
@@ -2974,15 +2974,15 @@ internal static partial class RawHarness
         ValidateRows(newestTwoDeviceRows, 0, 5, "device-c", t300);
         ValidateRows(newestTwoDeviceRows, 1, 2, "device-a", t200);
 
-        LibraDexIdentityMutationResult topWindowMutation = indexes["topWindowTarget"].SetKey(newestTwoDevices, 9000);
+        LibraDexIdentityMutationResult topWindowMutation = indexes.Define("topWindowTarget").SetKey(newestTwoDevices, 9000);
         if (topWindowMutation.ChangedCount != 2 ||
             !GetEqual("topWindowTarget", 9000).SequenceEqual(new ulong[] { 2, 5 }))
         {
             throw new InvalidOperationException("Mutation execution ignored the aggregate result's descending Top(2) selection window.");
         }
 
-        LibraDexIdentityMutationResult deleteReturned = indexes["deleteReturned"].Delete(condition);
-        LibraDexIdentityMutationResult deleteKeys = indexes["deleteKeys"].Delete(keysOnly);
+        LibraDexIdentityMutationResult deleteReturned = indexes.Define("deleteReturned").Delete(condition);
+        LibraDexIdentityMutationResult deleteKeys = indexes.Define("deleteKeys").Delete(keysOnly);
         ulong[] deleteReturnedRemaining = GetAll("deleteReturned");
         ulong[] deleteKeysRemaining = GetAll("deleteKeys");
         if (deleteReturned.ChangedCount != 3 ||
@@ -2993,12 +2993,12 @@ internal static partial class RawHarness
             throw new InvalidOperationException("Aggregate mutation selection changed when Return was replaced by ReturnKeys.");
         }
 
-        LibraDexIdentityMutationResult setResult = indexes["setTarget"].SetKey(condition, 700);
+        LibraDexIdentityMutationResult setResult = indexes.Define("setTarget").SetKey(condition, 700);
         ulong[] setIdentities = GetEqual("setTarget", 700);
         if (setResult.ChangedCount != 3 || !setIdentities.SequenceEqual(new ulong[] { 2, 4, 5 }))
             throw new InvalidOperationException("Target-owned SetKey did not re-key exactly the grouped aggregate winners.");
 
-        LibraDexIdentityMutationResult transformResult = indexes["transformTarget"].SetKeyUsing(
+        LibraDexIdentityMutationResult transformResult = indexes.Define("transformTarget").SetKeyUsing(
             keysOnly,
             oldKey => (int)oldKey + 1000);
         if (transformResult.ChangedCount != 3 ||
@@ -3009,7 +3009,7 @@ internal static partial class RawHarness
             throw new InvalidOperationException("Target-owned SetKeyUsing did not transform each selected tuple's old key.");
         }
 
-        LibraDexIdentityMutationResult deleteAll = indexes["deleteReturned"].DeleteAll();
+        LibraDexIdentityMutationResult deleteAll = indexes.Define("deleteReturned").DeleteAll();
         if (deleteAll.ChangedCount != 3 || GetAll("deleteReturned").Length != 0)
             throw new InvalidOperationException("Target-owned DeleteAll did not remove every remaining tuple while retaining the index.");
 
@@ -3155,7 +3155,7 @@ internal static partial class RawHarness
         if (rawActive.Length != 8 || BinaryPrimitives.ReadUInt64BigEndian(rawActive) != 1)
             throw new InvalidOperationException("Ordinary raw identity Return did not use the order index's identity encoding.");
 
-        LibraDexIdentityMutationResult ordinaryMutation = indexes["ordinaryWindowTarget"].SetKey(newestActiveIdentities, 8000);
+        LibraDexIdentityMutationResult ordinaryMutation = indexes.Define("ordinaryWindowTarget").SetKey(newestActiveIdentities, 8000);
         if (ordinaryMutation.ChangedCount != 3 ||
             !GetEqual("ordinaryWindowTarget", 8000).SequenceEqual(new ulong[] { 2, 5, 6 }))
         {
@@ -3326,7 +3326,7 @@ internal static partial class RawHarness
             throw new InvalidOperationException("A reusable parameterized condition did not observe values changed between executions.");
 
         using (Catalog otherCatalog = Catalog.CreateMemory())
-        using (LibraDexIndex<int, ulong> wrongGroupIndex = otherCatalog.Indexes["other-events"]["status"].Int32Keys<ulong>().Create())
+        using (LibraDexIndex<int, ulong> wrongGroupIndex = otherCatalog.Indexes.IndexSet("other-events").Define("status").Int32Keys<ulong>().Create())
         {
             LibraDexParameter<IIndex> wrongGroupParameter = LibraDexParameter.Create<IIndex>(wrongGroupIndex, "selectedIndex");
             LibraDexConditionEndCondition wrongGroupCondition = indexes.Where(wrongGroupParameter).AsInt32.EqualTo(1).EndCondition;
@@ -3533,9 +3533,9 @@ internal static partial class RawHarness
         {
             using (Catalog catalog = Catalog.Create(path))
             {
-                CatalogIdentityGroupIndexes group = catalog.Indexes["fixedn-key-state-promotion-proof"];
-                using LibraDexBigIntScalar8Index<long> scalar8 = group["score8"].BigIntKeys<long>(maxBytes: 32).Create();
-                using LibraDexBigIntScalar8Index<Guid> scalar16 = group["score16"].BigIntKeys<Guid>(maxBytes: 32).Create();
+                CatalogIdentityGroupIndexes group = catalog.Indexes.IndexSet("fixedn-key-state-promotion-proof");
+                using LibraDexBigIntScalar8Index<long> scalar8 = group.Define("score8").BigIntKeys<long>(maxBytes: 32).Create();
+                using LibraDexBigIntScalar8Index<Guid> scalar16 = group.Define("score16").BigIntKeys<Guid>(maxBytes: 32).Create();
                 for (int i = 0; i < scalar8Count; i++)
                 {
                     if (!scalar8.Add(ScalarNull.Null, i + 1L).Inserted)
@@ -3551,9 +3551,9 @@ internal static partial class RawHarness
 
             using (Catalog reopened = Catalog.Open(path))
             {
-                CatalogIdentityGroupIndexes group = reopened.Indexes["fixedn-key-state-promotion-proof"];
-                using LibraDexBigIntScalar8Index<long> scalar8 = group["score8"].BigIntKeys<long>(maxBytes: 32).Open();
-                using LibraDexBigIntScalar8Index<Guid> scalar16 = group["score16"].BigIntKeys<Guid>(maxBytes: 32).Open();
+                CatalogIdentityGroupIndexes group = reopened.Indexes.IndexSet("fixedn-key-state-promotion-proof");
+                using LibraDexBigIntScalar8Index<long> scalar8 = group.Define("score8").BigIntKeys<long>(maxBytes: 32).Open();
+                using LibraDexBigIntScalar8Index<Guid> scalar16 = group.Define("score16").BigIntKeys<Guid>(maxBytes: 32).Open();
                 Func<string, IIndex> resolver = name => name switch
                 {
                     "score8" => scalar8,

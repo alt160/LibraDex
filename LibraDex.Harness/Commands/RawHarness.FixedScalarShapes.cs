@@ -54,7 +54,7 @@ internal static partial class RawHarness
         }
 
         using Catalog catalog = Catalog.CreateMemory();
-        using LibraDexIndex<ulong, ulong> index = catalog.Indexes["generic-scalar8-between-count-proof"]["value"].Scalar.Scalar<ulong, ulong>().Create();
+        using LibraDexIndex<ulong, ulong> index = catalog.Indexes.IndexSet("generic-scalar8-between-count-proof").Define("value").Scalar.Scalar<ulong, ulong>().Create();
 
         ulong lowerKey = CreateGenericScalar8BetweenCountProofKey(lowerPrefix, 0);
         ulong upperKey = CreateGenericScalar8BetweenCountProofKey(upperPrefix, uint.MaxValue);
@@ -171,11 +171,11 @@ internal static partial class RawHarness
         }
 
         using Catalog catalog = Catalog.CreateMemory();
-        using LibraDexIndex<UInt128, ulong> ss168 = catalog.Indexes["generic-wide-between-count-proof"]["ss168"].Scalar.Scalar<UInt128, ulong>().Create();
-        using LibraDexIndex<ulong, UInt128> ss816 = catalog.Indexes["generic-wide-between-count-proof"]["ss816"].Scalar.Scalar<ulong, UInt128>().Create();
-        using LibraDexIndex<UInt128, UInt128> ss1616 = catalog.Indexes["generic-wide-between-count-proof"]["ss1616"].Scalar.Scalar<UInt128, UInt128>().Create();
-        using LibraDexIndex<byte[], ulong> fs328 = catalog.Indexes["generic-wide-between-count-proof"]["fs328"].Blob.Scalar<ulong>(LibraDexScalarWidth.Bytes32).Create();
-        using LibraDexIndex<byte[], Guid> fs3216 = catalog.Indexes["generic-wide-between-count-proof"]["fs3216"].Blob.Scalar<Guid>(LibraDexScalarWidth.Bytes32).Create();
+        using LibraDexIndex<UInt128, ulong> ss168 = catalog.Indexes.IndexSet("generic-wide-between-count-proof").Define("ss168").Scalar.Scalar<UInt128, ulong>().Create();
+        using LibraDexIndex<ulong, UInt128> ss816 = catalog.Indexes.IndexSet("generic-wide-between-count-proof").Define("ss816").Scalar.Scalar<ulong, UInt128>().Create();
+        using LibraDexIndex<UInt128, UInt128> ss1616 = catalog.Indexes.IndexSet("generic-wide-between-count-proof").Define("ss1616").Scalar.Scalar<UInt128, UInt128>().Create();
+        using LibraDexIndex<byte[], ulong> fs328 = catalog.Indexes.IndexSet("generic-wide-between-count-proof").Define("fs328").Blob.Scalar<ulong>(LibraDexScalarWidth.Bytes32).Create();
+        using LibraDexIndex<byte[], Guid> fs3216 = catalog.Indexes.IndexSet("generic-wide-between-count-proof").Define("fs3216").Blob.Scalar<Guid>(LibraDexScalarWidth.Bytes32).Create();
 
         UInt128 lowerKey16 = CreateGenericScalar16BetweenCountProofKey(lowerPrefix, 0);
         UInt128 upperKey16 = CreateGenericScalar16BetweenCountProofKey(upperPrefix, uint.MaxValue);
@@ -325,9 +325,9 @@ internal static partial class RawHarness
     {
         _ = args;
         using Catalog catalog = Catalog.CreateMemory();
-        using LibraDexIndex<ulong, ulong> membership = catalog.Indexes["generic-count-fanout-proof"]["membership"].Scalar.Scalar<ulong, ulong>().Create(keys: IndexKeys.NonUnique);
-        using LibraDexIndex<byte[], ulong> fixed32Membership = catalog.Indexes["generic-count-fanout-proof"]["fixed32Membership"].Blob.Scalar<ulong>(LibraDexScalarWidth.Bytes32).Create(keys: IndexKeys.NonUnique);
-        LibraDexIndexShapeSpec createdShape = catalog.Indexes["generic-count-fanout-proof"]["created"].Shape.Date<DateTime, long>(
+        using LibraDexIndex<ulong, ulong> membership = catalog.Indexes.IndexSet("generic-count-fanout-proof").Define("membership").Scalar.Scalar<ulong, ulong>().Create(keys: IndexKeys.NonUnique);
+        using LibraDexIndex<byte[], ulong> fixed32Membership = catalog.Indexes.IndexSet("generic-count-fanout-proof").Define("fixed32Membership").Blob.Scalar<ulong>(LibraDexScalarWidth.Bytes32).Create(keys: IndexKeys.NonUnique);
+        LibraDexIndexShapeSpec createdShape = catalog.Indexes.IndexSet("generic-count-fanout-proof").Define("created").Shape.Date<DateTime, long>(
             DateKeys.ExactAndStructured,
             keys: IndexKeys.NonUnique);
         IIndex created = catalog.Indexes.Create(createdShape);
@@ -410,10 +410,10 @@ internal static partial class RawHarness
     {
         _ = args;
         using Catalog catalog = Catalog.CreateMemory();
-        using LibraDexStringScalar8Index code = catalog.Indexes["non-generic-count-fanout-proof"]["code"].String.Create(StringKeys.Exact);
-        using LibraDexUInt64VarIdentityIndex size = catalog.Indexes["non-generic-count-fanout-proof"]["size"].UInt64VarIdentityKeys(maxIdentityBytes: 16).Create(keys: IndexKeys.NonUnique);
-        using LibraDexBigIntScalar8Index<long> score = catalog.Indexes["non-generic-count-fanout-proof"]["score"].BigIntKeys<long>(maxBytes: 32).Create(keys: IndexKeys.NonUnique);
-        using LibraDexBigIntVarIdentityIndex scoreVar = catalog.Indexes["non-generic-count-fanout-proof"]["scoreVar"].BigIntVarIdentityKeys(maxBytes: 32, maxIdentityBytes: 16).Create(keys: IndexKeys.NonUnique);
+        using LibraDexStringScalar8Index code = catalog.Indexes.IndexSet("non-generic-count-fanout-proof").Define("code").String.Create(StringKeys.Exact);
+        using LibraDexUInt64VarIdentityIndex size = catalog.Indexes.IndexSet("non-generic-count-fanout-proof").Define("size").UInt64VarIdentityKeys(maxIdentityBytes: 16).Create(keys: IndexKeys.NonUnique);
+        using LibraDexBigIntScalar8Index<long> score = catalog.Indexes.IndexSet("non-generic-count-fanout-proof").Define("score").BigIntKeys<long>(maxBytes: 32).Create(keys: IndexKeys.NonUnique);
+        using LibraDexBigIntVarIdentityIndex scoreVar = catalog.Indexes.IndexSet("non-generic-count-fanout-proof").Define("scoreVar").BigIntVarIdentityKeys(maxBytes: 32, maxIdentityBytes: 16).Create(keys: IndexKeys.NonUnique);
 
         ValidateGenericInsert(code.Insert("A", 101UL), "non-generic fanout string A first");
         ValidateGenericInsert(code.Insert("A", 102UL), "non-generic fanout string A second");
@@ -12358,9 +12358,9 @@ internal static partial class RawHarness
         AssertOrderedAndRoundTrips(randomValues, "deterministic-random");
 
         using (Catalog identityCatalog = Catalog.CreateMemory())
-        using (LibraDexIndex<long, decimal> identityIndex = identityCatalog.Indexes["decimal-identities"]["byOrdinal"].Int64Keys<decimal>().Create())
+        using (LibraDexIndex<long, decimal> identityIndex = identityCatalog.Indexes.IndexSet("decimal-identities").Define("byOrdinal").Int64Keys<decimal>().Create())
         {
-            _ = identityCatalog.Indexes["decimal-identities"].Identities.Decimal;
+            _ = identityCatalog.Indexes.IndexSet("decimal-identities").Identities.Decimal;
             ValidateGenericInsert(identityIndex.Insert(1L, -1.11m), "Decimal identity negative insert");
             ValidateGenericInsert(identityIndex.Insert(2L, 1.2m), "Decimal identity positive insert");
             IReadOnlyList<decimal> identities = LibraDexCondition
@@ -12420,7 +12420,7 @@ internal static partial class RawHarness
         {
             using (Catalog catalog = Catalog.Create(path))
             {
-                LibraDexIndex<decimal, long> index = catalog.Indexes["prices"]["price"].DecimalKeys<long>().Create(IndexKeys.NonUnique);
+                LibraDexIndex<decimal, long> index = catalog.Indexes.IndexSet("prices").Define("price").DecimalKeys<long>().Create(IndexKeys.NonUnique);
                 for (int i = 0; i < directed.Length; i++)
                     ValidateGenericInsert(index.Insert(directed[i], i + 1L), $"Decimal directed insert {i}");
 
@@ -12451,7 +12451,7 @@ internal static partial class RawHarness
             }
 
             using (Catalog reopened = Catalog.Open(path))
-            using (LibraDexIndex<decimal, long> index = reopened.Indexes["prices"]["price"].DecimalKeys<long>().Open(IndexKeys.NonUnique))
+            using (LibraDexIndex<decimal, long> index = reopened.Indexes.IndexSet("prices").Define("price").DecimalKeys<long>().Open(IndexKeys.NonUnique))
             {
                 IReadOnlyList<long> all = Query(
                     LibraDexCondition.ForGroup("prices").Index("price").AsDecimal.GreaterOrEqual(decimal.MinValue).EndCondition,
@@ -12632,11 +12632,11 @@ internal static partial class RawHarness
         }
 
         using (Catalog identityCatalog = Catalog.CreateMemory())
-        using (LibraDexIndex<long, float> singleIdentityIndex = identityCatalog.Indexes["floating-single-identities"]["ordinal"].Int64Keys<float>().Create())
-        using (LibraDexIndex<long, double> doubleIdentityIndex = identityCatalog.Indexes["floating-double-identities"]["ordinal"].Int64Keys<double>().Create())
+        using (LibraDexIndex<long, float> singleIdentityIndex = identityCatalog.Indexes.IndexSet("floating-single-identities").Define("ordinal").Int64Keys<float>().Create())
+        using (LibraDexIndex<long, double> doubleIdentityIndex = identityCatalog.Indexes.IndexSet("floating-double-identities").Define("ordinal").Int64Keys<double>().Create())
         {
-            _ = identityCatalog.Indexes["floating-single-identities"].Identities.Single;
-            _ = identityCatalog.Indexes["floating-double-identities"].Identities.Double;
+            _ = identityCatalog.Indexes.IndexSet("floating-single-identities").Identities.Single;
+            _ = identityCatalog.Indexes.IndexSet("floating-double-identities").Identities.Double;
             ValidateGenericInsert(singleIdentityIndex.Insert(1L, float.NaN), "Single identity NaN insert");
             ValidateGenericInsert(singleIdentityIndex.Insert(2L, -0f), "Single identity zero insert");
             ValidateGenericInsert(doubleIdentityIndex.Insert(1L, double.NegativeInfinity), "Double identity infinity insert");
@@ -12675,8 +12675,8 @@ internal static partial class RawHarness
         {
             using (Catalog catalog = Catalog.Create(path))
             {
-                LibraDexIndex<float, long> singleIndex = catalog.Indexes["floating"]["single"].SingleKeys<long>().Create(IndexKeys.NonUnique);
-                LibraDexIndex<double, long> doubleIndex = catalog.Indexes["floating"]["double"].DoubleKeys<long>().Create(IndexKeys.NonUnique);
+                LibraDexIndex<float, long> singleIndex = catalog.Indexes.IndexSet("floating").Define("single").SingleKeys<long>().Create(IndexKeys.NonUnique);
+                LibraDexIndex<double, long> doubleIndex = catalog.Indexes.IndexSet("floating").Define("double").DoubleKeys<long>().Create(IndexKeys.NonUnique);
                 for (int i = 0; i < singles.Length; i++)
                     ValidateGenericInsert(singleIndex.Insert(singles[i], i + 1L), $"Single directed insert {i}");
                 for (int i = 0; i < doubles.Length; i++)
@@ -12704,8 +12704,8 @@ internal static partial class RawHarness
             }
 
             using (Catalog reopened = Catalog.Open(path))
-            using (LibraDexIndex<float, long> singleIndex = reopened.Indexes["floating"]["single"].SingleKeys<long>().Open(IndexKeys.NonUnique))
-            using (LibraDexIndex<double, long> doubleIndex = reopened.Indexes["floating"]["double"].DoubleKeys<long>().Open(IndexKeys.NonUnique))
+            using (LibraDexIndex<float, long> singleIndex = reopened.Indexes.IndexSet("floating").Define("single").SingleKeys<long>().Open(IndexKeys.NonUnique))
+            using (LibraDexIndex<double, long> doubleIndex = reopened.Indexes.IndexSet("floating").Define("double").DoubleKeys<long>().Open(IndexKeys.NonUnique))
             {
                 IReadOnlyList<long> reopenedSingles = LibraDexCondition.ForGroup("floating").Index("single").AsSingle.Between(float.NegativeInfinity, float.PositiveInfinity).EndCondition
                     .ToList<long>(name => name == "single" ? singleIndex : throw new KeyNotFoundException(name));

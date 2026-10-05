@@ -26,7 +26,7 @@ public sealed partial class CatalogIdentityGroupIndexes
         }
 
         IIdentityCriterion criterion = condition.MaterializeWithProjectionBridge(
-            name => this[name].Open(),
+            name => this[name],
             ResolveProjectionIndex,
             TryResolveConditionIndex);
         if (criterion.NodeKind != LibraDexIdentityCriterionNodeKind.Leaf ||
@@ -83,7 +83,7 @@ public sealed partial class CatalogIdentityGroupIndexes
         }
 
         IIdentityCriterion criterion = condition.MaterializeWithProjectionBridge(
-            name => this[name].Open(),
+            name => this[name],
             ResolveProjectionIndex,
             TryResolveConditionIndex);
         if (criterion.NodeKind != LibraDexIdentityCriterionNodeKind.Leaf)
@@ -174,7 +174,7 @@ public sealed partial class CatalogIdentityGroupIndexes
         IIdentityCriterion criterion = condition.MaterializeWithProjectionBridge(
             name => string.Equals(name, targetIndex.Name, StringComparison.Ordinal)
                 ? targetIndex
-                : this[name].Open(),
+                : this[name],
             ResolveProjectionIndex,
             TryResolveConditionIndex);
         if (criterion.NodeKind != LibraDexIdentityCriterionNodeKind.Leaf ||

@@ -76,7 +76,7 @@ internal static partial class RawHarness
         {
             {
                 using Catalog catalog = Catalog.Create(path);
-                using LibraDexBigIntScalar8Index<long> index = catalog.Indexes["audit"]["fsn-8"].BigIntKeys<long>(32).Create(IndexKeys.NonUnique);
+                using LibraDexBigIntScalar8Index<long> index = catalog.Indexes.IndexSet("audit").Define("fsn-8").BigIntKeys<long>(32).Create(IndexKeys.NonUnique);
                 BigInteger key = new(42);
                 for (int i = 0; i < 20_000; i++)
                     ValidateGenericInsert(index.Insert(key, i + 1L), $"FSN-8 exhausted-key diagnostic insert {i}");
@@ -85,7 +85,7 @@ internal static partial class RawHarness
             }
 
             using Catalog reopened = Catalog.Open(path);
-            using LibraDexBigIntScalar8Index<long> reopenedIndex = reopened.Indexes["audit"]["fsn-8"].BigIntKeys<long>(32).Open();
+            using LibraDexBigIntScalar8Index<long> reopenedIndex = reopened.Indexes.IndexSet("audit").Define("fsn-8").BigIntKeys<long>(32).Open();
             long reopenedCount = reopenedIndex.Count();
             if (reopenedCount != 20_000)
                 throw new InvalidDataException($"FSN-8 terminal count after reopen was {reopenedCount:n0}, expected 20,000.");
@@ -112,7 +112,7 @@ internal static partial class RawHarness
         {
             {
                 using Catalog catalog = Catalog.Create(path);
-                using LibraDexBigIntScalar8Index<Guid> index = catalog.Indexes["audit"]["fsn-16"].BigIntKeys<Guid>(32).Create(IndexKeys.NonUnique);
+                using LibraDexBigIntScalar8Index<Guid> index = catalog.Indexes.IndexSet("audit").Define("fsn-16").BigIntKeys<Guid>(32).Create(IndexKeys.NonUnique);
                 BigInteger key = new(42);
                 for (int i = 0; i < 20_000; i++)
                     ValidateGenericInsert(index.Insert(key, CreateStableGuid(i + 1)), $"FSN-16 exhausted-key diagnostic insert {i}");
@@ -121,7 +121,7 @@ internal static partial class RawHarness
             }
 
             using Catalog reopened = Catalog.Open(path);
-            using LibraDexBigIntScalar8Index<Guid> reopenedIndex = reopened.Indexes["audit"]["fsn-16"].BigIntKeys<Guid>(32).Open();
+            using LibraDexBigIntScalar8Index<Guid> reopenedIndex = reopened.Indexes.IndexSet("audit").Define("fsn-16").BigIntKeys<Guid>(32).Open();
             long reopenedCount = reopenedIndex.Count();
             if (reopenedCount != 20_000)
                 throw new InvalidDataException($"FSN-16 terminal count after reopen was {reopenedCount:n0}, expected 20,000.");
@@ -148,7 +148,7 @@ internal static partial class RawHarness
         {
             {
                 using Catalog catalog = Catalog.Create(path);
-                using LibraDexBigIntVarIdentityIndex index = catalog.Indexes["audit"]["fsn-v"].BigIntVarIdentityKeys(32, 64).Create(IndexKeys.NonUnique);
+                using LibraDexBigIntVarIdentityIndex index = catalog.Indexes.IndexSet("audit").Define("fsn-v").BigIntVarIdentityKeys(32, 64).Create(IndexKeys.NonUnique);
                 BigInteger key = new(42);
                 for (int i = 0; i < 20_000; i++)
                 {
@@ -161,7 +161,7 @@ internal static partial class RawHarness
             }
 
             using Catalog reopened = Catalog.Open(path);
-            using LibraDexBigIntVarIdentityIndex reopenedIndex = reopened.Indexes["audit"]["fsn-v"].BigIntVarIdentityKeys(32, 64).Open();
+            using LibraDexBigIntVarIdentityIndex reopenedIndex = reopened.Indexes.IndexSet("audit").Define("fsn-v").BigIntVarIdentityKeys(32, 64).Open();
             long reopenedCount = reopenedIndex.Count();
             if (reopenedCount != 20_000)
                 throw new InvalidDataException($"FSN-V terminal count after reopen was {reopenedCount:n0}, expected 20,000.");

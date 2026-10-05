@@ -12,16 +12,16 @@ internal static partial class RawHarness
     {
         _ = args;
         using Catalog catalog = Catalog.CreateMemory();
-        _ = catalog.Indexes["decimal-numbers"].Identities.Int64;
-        _ = catalog.Indexes["single-numbers"].Identities.Int64;
-        _ = catalog.Indexes["double-numbers"].Identities.Int64;
+        _ = catalog.Indexes.IndexSet("decimal-numbers").Identities.Int64;
+        _ = catalog.Indexes.IndexSet("single-numbers").Identities.Int64;
+        _ = catalog.Indexes.IndexSet("double-numbers").Identities.Int64;
 
         using LibraDexIndex<decimal, long> decimals =
-            catalog.Indexes["decimal-numbers"]["value"].DecimalKeys<long>().Create(IndexKeys.NonUnique);
+            catalog.Indexes.IndexSet("decimal-numbers").Define("value").DecimalKeys<long>().Create(IndexKeys.NonUnique);
         using LibraDexIndex<float, long> singles =
-            catalog.Indexes["single-numbers"]["value"].SingleKeys<long>().Create(IndexKeys.NonUnique);
+            catalog.Indexes.IndexSet("single-numbers").Define("value").SingleKeys<long>().Create(IndexKeys.NonUnique);
         using LibraDexIndex<double, long> doubles =
-            catalog.Indexes["double-numbers"]["value"].DoubleKeys<long>().Create(IndexKeys.NonUnique);
+            catalog.Indexes.IndexSet("double-numbers").Define("value").DoubleKeys<long>().Create(IndexKeys.NonUnique);
 
         decimal[] decimalValues = [-2.6m, -2.5m, -2.4m, -1.1m, 1.1m, 2.4m, 2.5m, 2.6m];
         float[] singleValues = [-1.9f, -1.1f, 1.1f, 1.9f];

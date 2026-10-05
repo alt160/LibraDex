@@ -3,7 +3,7 @@
 # Review changes before updating this file.
 
 Assembly: LibraDex
-ExportedTypes: 380
+ExportedTypes: 381
 
 type class LibraDex.AbraxasIdentityQueryAdapter<TIdentity>
   property System.String Group {get;}
@@ -45,10 +45,13 @@ type static-class LibraDex.C
 type class LibraDex.Catalog
   property LibraDex.CatalogCompatibility Compatibility {get;}
   property LibraDex.CatalogDiagnostics Diagnostics {get;}
+  property System.String DirectoryPath {get;}
   property LibraDex.CatalogIndexSetInfo[] IndexSets {get;}
   property LibraDex.CatalogIndexFactories Indexes {get;}
   property LibraDex.CatalogIdentityGroupIndexes Item {get;}
+  property LibraDex.CatalogLocation? Location {get;}
   property LibraDex.CatalogMaintenance Maintenance {get;}
+  property System.String Name {get;}
   property LibraDex.CatalogOptions Options {get;}
   property System.String Path {get;}
   property LibraDex.CatalogStats Stats {get;}
@@ -59,11 +62,20 @@ type class LibraDex.Catalog
   method System.Boolean HasIndex(System.String group, System.String indexName)
   method System.Void Close()
   method System.Void Dispose()
+  method static LibraDex.Catalog Create(LibraDex.CatalogLocation location, LibraDex.CatalogOptions options = null)
+  method static LibraDex.Catalog Create(System.String name, System.String directory, LibraDex.CatalogOptions options = null)
   method static LibraDex.Catalog Create(System.String path, LibraDex.CatalogOptions options = null)
   method static LibraDex.Catalog CreateMemory(LibraDex.CatalogOptions options = null)
+  method static LibraDex.Catalog CreateOrOpen(LibraDex.CatalogLocation location, LibraDex.CatalogOptions options = null)
+  method static LibraDex.Catalog CreateOrOpen(System.String name, System.String directory, LibraDex.CatalogOptions options = null)
   method static LibraDex.Catalog CreateOrOpen(System.String path, LibraDex.CatalogOptions options = null)
+  method static LibraDex.Catalog Open(LibraDex.CatalogLocation location, LibraDex.CatalogOptions options = null)
+  method static LibraDex.Catalog Open(System.String name, System.String directory, LibraDex.CatalogOptions options = null)
   method static LibraDex.Catalog Open(System.String path, LibraDex.CatalogOptions options = null)
+  method static LibraDex.LibraDexCompactionResult Compact(LibraDex.CatalogLocation location, LibraDex.LibraDexCompactionOptions options = null, System.Threading.CancellationToken cancellationToken = null)
+  method static LibraDex.LibraDexCompactionResult Compact(System.String name, System.String directory, LibraDex.LibraDexCompactionOptions options = null, System.Threading.CancellationToken cancellationToken = null)
   method static LibraDex.LibraDexCompactionResult Compact(System.String path, LibraDex.LibraDexCompactionOptions options = null, System.Threading.CancellationToken cancellationToken = null)
+  method static System.String GetFilePath(System.String name, System.String directory = null)
 
 type class LibraDex.CatalogBlobKeyFactories
   property LibraDex.CatalogUnsupportedIndexFactory Blob {get;}
@@ -142,7 +154,7 @@ type class LibraDex.CatalogIdentityGroupIndexes
   property LibraDex.CatalogIdentityGroupBatchManager Batch {get;}
   property LibraDex.CatalogIdentityGroupIdentityTypeSelector Identities {get;}
   property LibraDex.CatalogIndexSetInverse Inverse {get;}
-  property LibraDex.CatalogNamedIndexBuilder Item {get;}
+  property LibraDex.IIndex Item {get;}
   property System.String Name {get;}
   property LibraDex.LibraDexConditionClause Not {get;}
   property System.Type RequiredIdentityType {get;}
@@ -151,6 +163,7 @@ type class LibraDex.CatalogIdentityGroupIndexes
   method LibraDex.AbraxasIdentityWriteAdapter<TIdentity> AbraxasIdentityWrite<TIdentity>()
   method LibraDex.CatalogCompositeIndexBuilder<TIdentity> Composite<TIdentity>(System.String name, LibraDex.LibraDexCompositeKeyPartSpec[] parts)
   method LibraDex.CatalogIndexInfo[] List()
+  method LibraDex.CatalogNamedIndexBuilder Define(System.String name)
   method LibraDex.IIndex CreateOrOpen(LibraDex.LibraDexIndexShapeSpec shape, LibraDex.IndexOptions options = null, LibraDex.IdentityLookupMode identityLookupMode = IdentityLookupMode.Explicit)
   method LibraDex.IIndex Index(System.String indexName)
   method LibraDex.LibraDexCompositeConditionWhere CompositeWhere(System.String indexName)
@@ -178,7 +191,10 @@ type class LibraDex.CatalogIdentityGroupIndexes
   method LibraDex.LibraDexExternalConditionOperator<TKey> External<TKey,TIdentity>(System.Func<System.Collections.Generic.IEnumerable<System.Collections.Generic.KeyValuePair<TKey,TIdentity>>> entryFactory)
   method LibraDex.LibraDexExternalConditionOperator<TKey> External<TKey>(System.Func<System.Object,System.Collections.Generic.IEnumerable<TKey>> candidateKeyFactory)
   method LibraDex.LibraDexIdentityCursor<TIdentity> GetCursor<TIdentity>(LibraDex.LibraDexConditionEndCondition condition, LibraDex.IdentityResultOrdering ordering = IdentityResultOrdering.PlanNatural, LibraDex.IdentityDeduplication deduplication = IdentityDeduplication.Distinct, System.Int32 skip = 0, System.Int32? take = null, LibraDex.LibraDexBookmark bookmark = null)
+  method LibraDex.LibraDexIndex<TKey,TIdentity> Create<TKey,TIdentity>(System.String name, LibraDex.IndexKeys keys = IndexKeys.NonUnique, LibraDex.IndexOptions options = null, LibraDex.IdentityLookupMode identityLookupMode = IdentityLookupMode.Explicit)
+  method LibraDex.LibraDexIndex<TKey,TIdentity> CreateOrOpen<TKey,TIdentity>(System.String name, LibraDex.IndexKeys keys = IndexKeys.NonUnique, LibraDex.IndexOptions options = null, LibraDex.IdentityLookupMode identityLookupMode = IdentityLookupMode.Explicit)
   method LibraDex.LibraDexIndex<TKey,TIdentity> Index<TKey,TIdentity>(System.String indexName, LibraDex.IndexKeys keys = IndexKeys.NonUnique, LibraDex.IndexOptions options = null)
+  method LibraDex.LibraDexIndex<TKey,TIdentity> Open<TKey,TIdentity>(System.String name, LibraDex.IndexKeys keys = IndexKeys.NonUnique, LibraDex.IndexOptions options = null, LibraDex.IdentityLookupMode identityLookupMode = IdentityLookupMode.Explicit)
   method LibraDex.LibraDexIndexCursor<System.String,System.UInt64> GetCursor(LibraDex.LibraDexStringScalar8Index targetIndex, LibraDex.LibraDexConditionEndCondition condition, System.Int32 skip = 0, System.Int32? take = null, LibraDex.QueryDirection direction = QueryDirection.Ascending)
   method LibraDex.LibraDexIndexCursor<TKey,TIdentity> GetCursor<TKey,TIdentity>(LibraDex.LibraDexIndex<TKey,TIdentity> targetIndex, LibraDex.LibraDexConditionEndCondition condition, System.Int32 skip = 0, System.Int32? take = null, LibraDex.QueryDirection direction = QueryDirection.Ascending)
   method LibraDex.LibraDexIndexWhere<TKey,TIdentity> Where<TKey,TIdentity>(System.String indexName, LibraDex.IndexKeys keys = IndexKeys.NonUnique, LibraDex.IndexOptions options = null)
@@ -241,6 +257,9 @@ type class LibraDex.CatalogIndexFactories
   method LibraDex.IIndex Create(LibraDex.LibraDexIndexShapeSpec shape, LibraDex.IndexOptions options = null, LibraDex.IdentityLookupMode identityLookupMode = IdentityLookupMode.Explicit)
   method LibraDex.IIndex CreateOrOpen(LibraDex.LibraDexIndexShapeSpec shape, LibraDex.IndexOptions options = null, LibraDex.IdentityLookupMode identityLookupMode = IdentityLookupMode.Explicit)
   method LibraDex.IIndex Open(LibraDex.LibraDexIndexShapeSpec shape, LibraDex.IdentityLookupMode identityLookupMode = IdentityLookupMode.Explicit)
+  method LibraDex.LibraDexIndex<TKey,TIdentity> Create<TKey,TIdentity>(System.String name, System.String indexSet, LibraDex.IndexKeys keys = IndexKeys.NonUnique, LibraDex.IndexOptions options = null, LibraDex.IdentityLookupMode identityLookupMode = IdentityLookupMode.Explicit)
+  method LibraDex.LibraDexIndex<TKey,TIdentity> CreateOrOpen<TKey,TIdentity>(System.String name, System.String indexSet, LibraDex.IndexKeys keys = IndexKeys.NonUnique, LibraDex.IndexOptions options = null, LibraDex.IdentityLookupMode identityLookupMode = IdentityLookupMode.Explicit)
+  method LibraDex.LibraDexIndex<TKey,TIdentity> Open<TKey,TIdentity>(System.String name, System.String indexSet, LibraDex.IndexKeys keys = IndexKeys.NonUnique, LibraDex.IndexOptions options = null, LibraDex.IdentityLookupMode identityLookupMode = IdentityLookupMode.Explicit)
   method System.Boolean Drop(System.String indexSet, System.String name)
   method System.Boolean DropIndexSet(System.String indexSet)
   method System.Boolean Exists(System.Int32 slotIndex)
@@ -403,6 +422,18 @@ type struct LibraDex.CatalogIndexSetInverseValidationResult
   method System.Int32 GetHashCode()
   method System.String ToString()
   method System.Void Deconstruct(out System.Int64 IdentityCount, out System.Int64 KeyTupleCount, out System.Int32 IncludedIndexCount, out System.TimeSpan BuildElapsed, out System.Int64 EstimatedMapBytes)
+
+type struct LibraDex.CatalogLocation
+  property System.String DirectoryPath {get;}
+  property System.String FilePath {get;}
+  property System.Boolean IsNamed {get;}
+  property System.String Name {get;}
+  method System.Boolean Equals(LibraDex.CatalogLocation other)
+  method System.Boolean Equals(System.Object obj)
+  method System.Int32 GetHashCode()
+  method System.String ToString()
+  method static LibraDex.CatalogLocation FromFilePath(System.String filePath)
+  method static LibraDex.CatalogLocation Named(System.String name, System.String directory = null)
 
 type class LibraDex.CatalogMaintenance
   property LibraDex.Catalog Catalog {get;}

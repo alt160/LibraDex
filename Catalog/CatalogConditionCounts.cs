@@ -14,7 +14,7 @@ public sealed partial class CatalogIdentityGroupIndexes
         count = 0;
         if (!multiplicityProven || condition.Group != Name) return false;
         IIdentityCriterion criterion = condition.MaterializeWithProjectionBridge(
-            name => this[name].Open(), ResolveProjectionIndex, TryResolveConditionIndex);
+            name => this[name], ResolveProjectionIndex, TryResolveConditionIndex);
         if (criterion.NodeKind != LibraDexIdentityCriterionNodeKind.Leaf || criterion.CriteriaKind is null ||
             !(PrimitiveVisitsEachTupleAtMostOnce(criterion.CriteriaKind.Value) ||
               criterion.CriteriaKind is LibraDexCriteriaKind.KeyState or LibraDexCriteriaKind.ScalarNull or LibraDexCriteriaKind.Bitmask) ||

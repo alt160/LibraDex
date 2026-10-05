@@ -6799,9 +6799,9 @@ internal static partial class RawHarness
 
         using (Catalog utf8Catalog = Catalog.CreateMemory())
         {
-            CatalogIdentityGroupIndexes utf8Group = utf8Catalog.Indexes["borrowed-utf8"];
-            using LibraDexStringScalar8Index exactUtf8 = utf8Group["exact"].String.Create(StringKeys.Exact);
-            using LibraDexStringScalar8Index projectedUtf8 = utf8Group["projected"].String.Create(
+            CatalogIdentityGroupIndexes utf8Group = utf8Catalog.Indexes.IndexSet("borrowed-utf8");
+            using LibraDexStringScalar8Index exactUtf8 = utf8Group.Define("exact").String.Create(StringKeys.Exact);
+            using LibraDexStringScalar8Index projectedUtf8 = utf8Group.Define("projected").String.Create(
                 StringKeys.All);
             byte[] resumeUtf8 = Encoding.UTF8.GetBytes("Résumé");
             byte[] upperResumeUtf8 = Encoding.UTF8.GetBytes("RÉSUMÉ");
@@ -6927,7 +6927,7 @@ internal static partial class RawHarness
                     throw new InvalidDataException("Named catalog creation did not preserve its resolved catalog location.");
                 }
 
-                _ = namedCatalog.Indexes["named"]["primary"].Int64Keys<long>().Create();
+                _ = namedCatalog.Indexes.IndexSet("named").Define("primary").Int64Keys<long>().Create();
             }
 
             using Catalog reopenedNamedCatalog = Catalog.Open(CatalogLocation.Named("catalog-api", namedCatalogDirectory));
@@ -7027,7 +7027,7 @@ internal static partial class RawHarness
 
         using (Catalog distinctScopeCatalog = Catalog.CreateMemory())
         {
-            LibraDexIndex<int, long> duplicateIndex = distinctScopeCatalog.Indexes["scope"]["dups"].Create<int, long>(
+            LibraDexIndex<int, long> duplicateIndex = distinctScopeCatalog.Indexes.IndexSet("scope").Define("dups").Create<int, long>(
                 keys: IndexKeys.NonUnique);
             ValidateGenericInsert(duplicateIndex.Insert(1, 100), "distinct scope insert 1/100");
             ValidateGenericInsert(duplicateIndex.Insert(1, 101), "distinct scope insert 1/101");
@@ -7224,42 +7224,42 @@ internal static partial class RawHarness
             _ = fileCatalog.Indexes.Scalar.Scalar.Create<long, long>(
                 "file-primary",
                 keys: IndexKeys.Unique);
-            LibraDexIndex<int, long> age = fileCatalog.Indexes["people"]["age"].Scalar.Scalar<int, long>().Create(
+            LibraDexIndex<int, long> age = fileCatalog.Indexes.IndexSet("people").Define("age").Scalar.Scalar<int, long>().Create(
                 keys: IndexKeys.NonUnique);
             ValidateGenericInsert(age.Insert(42, 4200), "grouped age insert");
-            LibraDexIndex<int, long> gender = fileCatalog.Indexes["people"]["gender"].Create<int, long>(
+            LibraDexIndex<int, long> gender = fileCatalog.Indexes.IndexSet("people").Define("gender").Create<int, long>(
                 keys: IndexKeys.NonUnique);
-            LibraDexIndex<long, long> priority = fileCatalog.Indexes["people"]["priority"].Int64Keys<long>().Create(
+            LibraDexIndex<long, long> priority = fileCatalog.Indexes.IndexSet("people").Define("priority").Int64Keys<long>().Create(
                 options: new IndexOptions { SortOrder = LibraDexIndexSortOrder.Descending });
-            LibraDexIndexShapeSpec scoreShape = fileCatalog.Indexes["people"]["score"].Shape.Scalar<long, long>(
+            LibraDexIndexShapeSpec scoreShape = fileCatalog.Indexes.IndexSet("people").Define("score").Shape.Scalar<long, long>(
                 keys: IndexKeys.NonUnique,
                 sortOrder: LibraDexIndexSortOrder.Descending,
                 directions: LibraDexProjectionDirectionSet.ForwardAndReversed);
             IIndex score = fileCatalog.Indexes.Create(scoreShape);
             _ = score.Insert(900L, 4200L);
-            LibraDexIndex<int, long> status = fileCatalog.Indexes["people"]["status"].Create<int, long>(
+            LibraDexIndex<int, long> status = fileCatalog.Indexes.IndexSet("people").Define("status").Create<int, long>(
                 keys: IndexKeys.NonUnique);
             ValidateGenericInsert(status.Insert(7, 9900), "grouped status insert for identity-universe complement");
-            using LibraDexStringScalar8Index displayName = fileCatalog.Indexes["people"]["displayName"].String.Create(
+            using LibraDexStringScalar8Index displayName = fileCatalog.Indexes.IndexSet("people").Define("displayName").String.Create(
                 stringKeys: StringKeys.All,
                 directions: LibraDexProjectionDirectionSet.ForwardAndReversed,
                 sortKeyCulture: "en-US");
             ValidateGenericInsert(displayName.Insert("Eric", 501UL), "grouped displayName insert Eric");
             ValidateGenericInsert(displayName.Insert("erin", 502UL), "grouped displayName insert erin");
             ValidateGenericInsert(displayName.Insert("Alice", 503UL), "grouped displayName insert Alice");
-            using LibraDexStringScalar8Index policyName = fileCatalog.Indexes["people"]["policyName"].String.Create(
+            using LibraDexStringScalar8Index policyName = fileCatalog.Indexes.IndexSet("people").Define("policyName").String.Create(
                 stringKeys: StringKeys.Exact,
                 stringComparisonPolicy: LibraDexStringComparisonPolicy.Custom(StringComparer.OrdinalIgnoreCase));
             ValidateGenericInsert(policyName.Insert("Casey", 901UL), "grouped policyName insert Casey");
-            using LibraDexStringScalar8Index persistedPolicyName = fileCatalog.Indexes["people"]["persistedPolicyName"].String.Create(
+            using LibraDexStringScalar8Index persistedPolicyName = fileCatalog.Indexes.IndexSet("people").Define("persistedPolicyName").String.Create(
                 stringKeys: StringKeys.Exact,
                 stringComparisonPolicy: LibraDexStringComparisonPolicy.OrdinalIgnoreCase);
             ValidateGenericInsert(persistedPolicyName.Insert("Jordan", 902UL), "grouped persistedPolicyName insert Jordan");
-            using LibraDexStringScalar8Index exactSuffixName = fileCatalog.Indexes["people"]["exactSuffixName"].String.Create(
+            using LibraDexStringScalar8Index exactSuffixName = fileCatalog.Indexes.IndexSet("people").Define("exactSuffixName").String.Create(
                 stringKeys: StringKeys.Exact,
                 directions: LibraDexProjectionDirectionSet.ForwardAndReversed);
             ValidateGenericInsert(exactSuffixName.Insert("Topic", 903UL), "grouped exactSuffixName insert Topic");
-            IIndex tenantUserCompositeMetadata = fileCatalog.Indexes["people"]["tenantUser"].Composite<long>(
+            IIndex tenantUserCompositeMetadata = fileCatalog.Indexes.IndexSet("people").Define("tenantUser").Composite<long>(
                 C.Guid("tenantId"),
                 C.Text("username", StringKeys.ExactFoldedAndSortKey))
                 .Create(C.Unique);
@@ -7272,7 +7272,7 @@ internal static partial class RawHarness
             Guid persistedTenant = Guid.Parse("cccccccc-cccc-cccc-cccc-cccccccccccc");
             ValidateGenericInsert(tenantUserCompositeMetadata.Insert(Key.Of(persistedTenant, "Cora"), 7301L), "persisted routed composite tenant/Cora insert");
             ValidateGenericInsert(tenantUserCompositeMetadata.Insert(Key.Of(persistedTenant, "Cole"), 7302L), "persisted routed composite tenant/Cole insert");
-            IIndex productKeyCompositeMetadata = fileCatalog.Indexes["people"]["productKey"].Composite<long>(
+            IIndex productKeyCompositeMetadata = fileCatalog.Indexes.IndexSet("people").Define("productKey").Composite<long>(
                 C.Guid("supplierId"),
                 C.Text("sku", StringKeys.Exact))
                 .Create(C.NonUnique);
@@ -7282,7 +7282,7 @@ internal static partial class RawHarness
             ValidateGenericInsert(productKeyCompositeMetadata.Insert(Key.Of(persistedSupplier, NullKey.Empty), 7403L), "persisted product key supplier/empty sku insert");
             ValidateGenericInsert(productKeyCompositeMetadata.Insert(Key.Of(null, "SKU-2"), 7404L), "persisted product key null supplier via null/SKU-2 insert");
 
-            CatalogIdentityGroupBatchManager peopleBatch = fileCatalog.Indexes["people"].Batch;
+            CatalogIdentityGroupBatchManager peopleBatch = fileCatalog.Indexes.IndexSet("people").Batch;
             peopleBatch.Enable(new LibraDexWriteIntent(
                 LibraDexWriteOrder.Sorted,
                 LibraDexWriteVolume.Thousands,
@@ -7325,14 +7325,14 @@ internal static partial class RawHarness
                 reopenedIndexSets[0].Name != "people" ||
                 reopenedIndexSets[0].Indexes.Length < 2 ||
                 !reopenedIndexSets[0].Indexes.Any(index => string.Equals(index.Name, "age", StringComparison.Ordinal)) ||
-                !reopened.Indexes["people"].TryGetInfo("age", out CatalogIndexInfo ageInfo) ||
+                !reopened.Indexes.IndexSet("people").TryGetInfo("age", out CatalogIndexInfo ageInfo) ||
                 ageInfo.Group != "people" ||
                 ageInfo.Name != "age" ||
                 ageInfo.SlotIndex != 1 ||
                 !ageInfo.IsDirectoryItemCountAuthoritative ||
-                !reopened.Indexes["people"].TryGetInfo("priority", out CatalogIndexInfo priorityInfo) ||
+                !reopened.Indexes.IndexSet("people").TryGetInfo("priority", out CatalogIndexInfo priorityInfo) ||
                 priorityInfo.SortOrder != LibraDexIndexSortOrder.Descending ||
-                !reopened.Indexes["people"].TryGetInfo("score", out CatalogIndexInfo scoreInfo) ||
+                !reopened.Indexes.IndexSet("people").TryGetInfo("score", out CatalogIndexInfo scoreInfo) ||
                 scoreInfo.Directions != LibraDexProjectionDirectionSet.ForwardAndReversed ||
                 scoreInfo.SortOrder != LibraDexIndexSortOrder.Descending ||
                 scoreInfo.Projections.Count != 2 ||
@@ -7340,7 +7340,7 @@ internal static partial class RawHarness
                 !scoreInfo.IsDirectoryItemCountAuthoritative ||
                 !scoreInfo.TryCreateShape(out LibraDexIndexShapeSpec? scoreInfoShape) ||
                 scoreInfoShape.SortOrder != LibraDexIndexSortOrder.Descending ||
-                !reopened.Indexes["people"].TryGetInfo("displayName", out CatalogIndexInfo displayNameInfo) ||
+                !reopened.Indexes.IndexSet("people").TryGetInfo("displayName", out CatalogIndexInfo displayNameInfo) ||
                 displayNameInfo.StringKeys != StringKeys.All ||
                 displayNameInfo.VarKeyMaxKeyLength != 1024 ||
                 displayNameInfo.ExactReversedProjectionSlotIndex < 0 ||
@@ -7353,15 +7353,15 @@ internal static partial class RawHarness
                 displayNameInfo.SortKeyCulture != "en-US" ||
                 displayNameInfo.Directions != LibraDexProjectionDirectionSet.ForwardAndReversed ||
                 displayNameInfo.Projections.Count != 7 ||
-                !reopened.Indexes["people"].TryGetInfo("policyName", out CatalogIndexInfo policyNameInfo) ||
+                !reopened.Indexes.IndexSet("people").TryGetInfo("policyName", out CatalogIndexInfo policyNameInfo) ||
                 policyNameInfo.StringComparisonPolicyKind != LibraDexStringComparisonPolicyKind.Custom ||
                 string.IsNullOrWhiteSpace(policyNameInfo.StringComparisonCustomComparerTypeName) ||
-                !reopened.Indexes["people"].TryGetInfo("persistedPolicyName", out CatalogIndexInfo persistedPolicyNameInfo) ||
+                !reopened.Indexes.IndexSet("people").TryGetInfo("persistedPolicyName", out CatalogIndexInfo persistedPolicyNameInfo) ||
                 persistedPolicyNameInfo.StringComparisonPolicyKind != LibraDexStringComparisonPolicyKind.OrdinalIgnoreCase ||
-                !reopened.Indexes["people"].TryGetInfo("exactSuffixName", out CatalogIndexInfo exactSuffixNameInfo) ||
+                !reopened.Indexes.IndexSet("people").TryGetInfo("exactSuffixName", out CatalogIndexInfo exactSuffixNameInfo) ||
                 exactSuffixNameInfo.ExactReversedProjectionSlotIndex < 0 ||
                 !exactSuffixNameInfo.Projections.Any(static projection => projection.Kind == LibraDexIndexProjectionKind.Exact && projection.Direction == LibraDexIndexByteDirection.Reversed) ||
-                !reopened.Indexes["people"].TryGetInfo("tenantUser", out CatalogIndexInfo tenantUserInfo) ||
+                !reopened.Indexes.IndexSet("people").TryGetInfo("tenantUser", out CatalogIndexInfo tenantUserInfo) ||
                 tenantUserInfo.KeyFamily != CatalogIndexKeyFamily.Composite ||
                 tenantUserInfo.IdentityFamily != CatalogIndexIdentityFamily.Scalar ||
                 tenantUserInfo.KeyContract != IndexKeys.Unique ||
@@ -7377,7 +7377,7 @@ internal static partial class RawHarness
                 throw new InvalidDataException("Reopened catalog did not preserve grouped index metadata.");
             }
 
-            LibraDexIndexShapeSpec reopenedScoreShape = reopened.Indexes["people"]["score"].Shape.Scalar<long, long>(
+            LibraDexIndexShapeSpec reopenedScoreShape = reopened.Indexes.IndexSet("people").Define("score").Shape.Scalar<long, long>(
                 keys: IndexKeys.NonUnique,
                 sortOrder: LibraDexIndexSortOrder.Descending,
                 directions: LibraDexProjectionDirectionSet.ForwardAndReversed);
@@ -7390,7 +7390,7 @@ internal static partial class RawHarness
                 throw new InvalidDataException("Reopened shape-driven index did not preserve logical shape metadata.");
             }
 
-            IIndex reopenedTenantUser = reopened.Indexes["people"]["tenantUser"].Composite<long>(
+            IIndex reopenedTenantUser = reopened.Indexes.IndexSet("people").Define("tenantUser").Composite<long>(
                 C.Guid("tenantId"),
                 C.Text("username", StringKeys.ExactFoldedAndSortKey))
                 .Open(C.Unique);
@@ -7602,7 +7602,7 @@ internal static partial class RawHarness
                 throw new InvalidDataException("Reopened composite index did not preserve logical shape metadata, durable contents, or page-native constrained traversal.");
             }
             ValidateGenericInsert(reopenedTenantUser.Insert(Key.Of(persistedTenant, "Cody"), 7303L), "reopened routed composite tenant/Cody insert");
-            IIndex reopenedProductKey = reopened.Indexes["people"]["productKey"].Composite<long>(
+            IIndex reopenedProductKey = reopened.Indexes.IndexSet("people").Define("productKey").Composite<long>(
                 C.Guid("supplierId"),
                 C.Text("sku", StringKeys.Exact))
                 .Open(C.NonUnique);
@@ -7667,7 +7667,7 @@ internal static partial class RawHarness
                     LibraDexCompositePart.Scalar<Guid>("tenantId").EqualTo(persistedTenant),
                     LibraDexCompositePart.String("username").EqualTo("Cody"))
                 .EndCondition;
-            LibraDexIdentityMutationResult reopenedTenantUserDeleteResult = reopened["people"]["tenantUser"].Delete(reopenedTenantUserDeleteCondition);
+            LibraDexIdentityMutationResult reopenedTenantUserDeleteResult = reopened.Indexes.IndexSet("people").Define("tenantUser").Delete(reopenedTenantUserDeleteCondition);
             IReadOnlyList<long> reopenedTenantUserDeletedIds = reopenedTenantUserDeleteCondition.ToList<long>(
                 indexName => string.Equals(indexName, "tenantUser", StringComparison.Ordinal)
                     ? reopenedTenantUser
@@ -7691,7 +7691,7 @@ internal static partial class RawHarness
                     LibraDexCompositePart.Scalar<Guid>("tenantId").EqualTo(persistedTenant),
                     LibraDexCompositePart.String("username").EqualTo("Cole"))
                 .EndCondition;
-            LibraDexIdentityMutationResult reopenedTenantUserSetKeyResult = reopened["people"]["tenantUser"].SetKey(
+            LibraDexIdentityMutationResult reopenedTenantUserSetKeyResult = reopened.Indexes.IndexSet("people").Define("tenantUser").SetKey(
                 reopenedTenantUserSetKeyCondition,
                 colinCompositeKey);
             IReadOnlyList<long> reopenedTenantUserOldSetKeyIds = LibraDexCondition
@@ -7750,14 +7750,14 @@ internal static partial class RawHarness
                 throw new InvalidDataException("Composite direct Rekey(identity, newKey) did not discover, move, and restore the tuple.");
             }
 
-            LibraDexIndex<int, long> reopenedAge = reopened.Indexes["people"]["age"].Scalar.Scalar<int, long>().Open();
+            LibraDexIndex<int, long> reopenedAge = reopened.Indexes.IndexSet("people").Define("age").Scalar.Scalar<int, long>().Open();
             long[] ageIdentities = new long[2];
             LibraDexGenericRangeReadResult ageRead = reopenedAge.ReadRange(42, 42, ageIdentities);
             ValidateGenericRead(ageRead, ageIdentities, new long[] { 4200 }, "grouped age reopened read");
             long[] groupBatchAgeIdentities = new long[4];
             LibraDexGenericRangeReadResult groupBatchAgeRead = reopenedAge.ReadRange(44, 44, groupBatchAgeIdentities);
             ValidateGenericRead(groupBatchAgeRead, groupBatchAgeIdentities, new long[] { 4400 }, "group batch age reopened read");
-            using LibraDexStringScalar8Index reopenedDisplayName = reopened.Indexes["people"]["displayName"].String.Open();
+            using LibraDexStringScalar8Index reopenedDisplayName = reopened.Indexes.IndexSet("people").Define("displayName").String.Open();
             LibraDexConditionEndCondition reopenedDisplayPrefixCondition = LibraDexCondition
                 .ForGroup("people")
                 .Index("displayName").AsString.StartsWith("er", ignoreCase: true)
@@ -7799,7 +7799,7 @@ internal static partial class RawHarness
                 .ForGroup("people")
                 .Index("displayName").AsString.Contains("ri")
                 .EndCondition;
-            LibraDexIdentityMutationResult reopenedDisplayDeleteResult = reopened["people"]["displayName"].Delete(reopenedDisplayDeleteCondition);
+            LibraDexIdentityMutationResult reopenedDisplayDeleteResult = reopened.Indexes.IndexSet("people").Define("displayName").Delete(reopenedDisplayDeleteCondition);
             IReadOnlyList<ulong> reopenedDisplayAfterDeleteIds = LibraDexCondition
                 .ForGroup("people")
                 .Index("displayName").AsString.All()
@@ -7905,7 +7905,7 @@ internal static partial class RawHarness
                 throw new InvalidDataException($"String direct Delete/Rekey did not maintain exact and projection tuples. directRekey={reopenedDisplayDirectRekey} scannedRekey={reopenedDisplayScannedRekey} directDelete={reopenedDisplayDirectDelete} exact={string.Join(",", reopenedDisplayAfterDirectMutationIds)} folded={string.Join(",", reopenedDisplayProjectionAfterDirectDeleteIds)}");
             }
 
-            using LibraDexStringScalar8Index reopenedPersistedPolicyName = reopened.Indexes["people"]["persistedPolicyName"].String.Open();
+            using LibraDexStringScalar8Index reopenedPersistedPolicyName = reopened.Indexes.IndexSet("people").Define("persistedPolicyName").String.Open();
             IReadOnlyList<ulong> reopenedPersistedPolicyIds = LibraDexCondition
                 .ForGroup("people")
                 .Index("persistedPolicyName").AsString.InSet(new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "JORDAN" })
@@ -7919,7 +7919,7 @@ internal static partial class RawHarness
                 throw new InvalidDataException("Reopened standard string comparison policy did not rehydrate for exact-only membership fallback.");
             }
 
-            using LibraDexStringScalar8Index reopenedExactSuffixName = reopened.Indexes["people"]["exactSuffixName"].String.Open();
+            using LibraDexStringScalar8Index reopenedExactSuffixName = reopened.Indexes.IndexSet("people").Define("exactSuffixName").String.Open();
             IIdentityCriterion reopenedExactSuffixCriterion = LibraDexCondition
                 .ForGroup("people")
                 .Index("exactSuffixName").AsString.EndsWith("ic")
@@ -7981,7 +7981,7 @@ internal static partial class RawHarness
             }
 
             using Catalog scalarDeleteCatalog = Catalog.CreateMemory();
-            LibraDexIndex<int, long> scalarDeleteAge = scalarDeleteCatalog.Indexes["people"]["deleteAge"].Create<int, long>();
+            LibraDexIndex<int, long> scalarDeleteAge = scalarDeleteCatalog.Indexes.IndexSet("people").Define("deleteAge").Create<int, long>();
             ValidateGenericInsert(scalarDeleteAge.Insert(10, 1000L), "scalar condition delete age 10 insert");
             ValidateGenericInsert(scalarDeleteAge.Insert(12, 1200L), "scalar condition delete age 12 insert");
             ValidateGenericInsert(scalarDeleteAge.Insert(14, 1400L), "scalar condition delete age 14 insert");
@@ -7989,7 +7989,7 @@ internal static partial class RawHarness
                 .ForGroup("people")
                 .Index("deleteAge").AsInt32.Between(11, 14)
                 .EndCondition;
-            LibraDexIdentityMutationResult scalarDeleteResult = scalarDeleteCatalog["people"]["deleteAge"].Delete(scalarDeleteCondition);
+            LibraDexIdentityMutationResult scalarDeleteResult = scalarDeleteCatalog.Indexes.IndexSet("people").Define("deleteAge").Delete(scalarDeleteCondition);
             IReadOnlyList<long> scalarDeleteRemainingIds = LibraDexCondition
                 .ForGroup("people")
                 .Index("deleteAge").AsInt32.All()
@@ -8008,7 +8008,7 @@ internal static partial class RawHarness
             }
 
             using Catalog scalarDeleteCompactionCatalog = Catalog.CreateMemory();
-            LibraDexIndex<int, long> scalarDeleteCompaction = scalarDeleteCompactionCatalog.Indexes["people"]["deleteCompaction"].Create<int, long>();
+            LibraDexIndex<int, long> scalarDeleteCompaction = scalarDeleteCompactionCatalog.Indexes.IndexSet("people").Define("deleteCompaction").Create<int, long>();
             ValidateGenericInsert(scalarDeleteCompaction.Insert(10, 1010L), "scalar delete compaction age 10 insert");
             ValidateGenericInsert(scalarDeleteCompaction.Insert(12, 1212L), "scalar delete compaction age 12 insert");
             ValidateGenericInsert(scalarDeleteCompaction.Insert(14, 1414L), "scalar delete compaction age 14 insert");
@@ -8017,7 +8017,7 @@ internal static partial class RawHarness
                 .ForGroup("people")
                 .Index("deleteCompaction").AsInt32.EqualTo(12)
                 .EndCondition;
-            LibraDexIdentityMutationResult scalarDeleteCompactionResult = scalarDeleteCompactionCatalog["people"]["deleteCompaction"].Delete(scalarDeleteCompactionCondition);
+            LibraDexIdentityMutationResult scalarDeleteCompactionResult = scalarDeleteCompactionCatalog.Indexes.IndexSet("people").Define("deleteCompaction").Delete(scalarDeleteCompactionCondition);
             LibraDexReclaimedPayloadStats scalarDeleteCompactionQueuedStats = scalarDeleteCompactionCatalog.Stats.ReclaimedPayload;
             long scalarDeleteCompactionQueuedOffsets = scalarDeleteCompactionQueuedStats.QueuedCellCount;
             string scalarDeleteCompactionQueuedOffsetText = string.Join(
@@ -8058,7 +8058,7 @@ internal static partial class RawHarness
                 throw new InvalidDataException($"Scalar SS8-8 tombstone-normalized delete did not preserve survivor visibility without using the reclaimed-offset ledger. changed={scalarDeleteCompactionResult.ChangedCount} queued={scalarDeleteCompactionQueuedOffsets} queuedOffsets={scalarDeleteCompactionQueuedOffsetText} remaining={scalarDeleteCompactionRemainingOffsets} remainingOffsets={scalarDeleteCompactionRemainingOffsetText} ids={string.Join(",", scalarDeleteCompactionIds)}");
             }
 
-            LibraDexIndex<int, long> scalarBatchDelete = scalarDeleteCompactionCatalog.Indexes["people"]["batchDelete"].Create<int, long>();
+            LibraDexIndex<int, long> scalarBatchDelete = scalarDeleteCompactionCatalog.Indexes.IndexSet("people").Define("batchDelete").Create<int, long>();
             ValidateGenericInsert(scalarBatchDelete.Insert(10, 1010L), "scalar batch delete age 10 insert");
             ValidateGenericInsert(scalarBatchDelete.Insert(12, 1212L), "scalar batch delete age 12 insert");
             ValidateGenericInsert(scalarBatchDelete.Insert(14, 1414L), "scalar batch delete age 14 insert");
@@ -8068,7 +8068,7 @@ internal static partial class RawHarness
             bool unrelatedDeleteRejected = false;
             try
             {
-                _ = scalarDeleteCompactionCatalog["people"]["deleteCompaction"].Delete(scalarDeleteCompactionCondition);
+                _ = scalarDeleteCompactionCatalog.Indexes.IndexSet("people").Define("deleteCompaction").Delete(scalarDeleteCompactionCondition);
             }
             catch (InvalidOperationException)
             {
@@ -8080,12 +8080,12 @@ internal static partial class RawHarness
                 .ForGroup("people")
                 .Index("batchDelete").AsInt32.Between(11, 13)
                 .EndCondition;
-            LibraDexIdentityMutationResult firstBatchDeleteResult = scalarDeleteCompactionCatalog["people"]["batchDelete"].Delete(firstBatchDeleteCondition);
+            LibraDexIdentityMutationResult firstBatchDeleteResult = scalarDeleteCompactionCatalog.Indexes.IndexSet("people").Define("batchDelete").Delete(firstBatchDeleteCondition);
             LibraDexConditionEndCondition secondBatchDeleteCondition = LibraDexCondition
                 .ForGroup("people")
                 .Index("batchDelete").AsInt32.Between(13, 15)
                 .EndCondition;
-            LibraDexIdentityMutationResult secondBatchDeleteResult = scalarDeleteCompactionCatalog["people"]["batchDelete"].Delete(secondBatchDeleteCondition);
+            LibraDexIdentityMutationResult secondBatchDeleteResult = scalarDeleteCompactionCatalog.Indexes.IndexSet("people").Define("batchDelete").Delete(secondBatchDeleteCondition);
             LibraDexGenericBatchCommitResult batchDeleteCommit = scalarBatchDelete.Batch.CommitAndDisable();
             IReadOnlyList<long> scalarBatchDeleteIds = LibraDexCondition
                 .ForGroup("people")
@@ -8110,7 +8110,7 @@ internal static partial class RawHarness
             Guid guidBatchDeleteB = Guid.Parse("22222222-2222-2222-2222-222222222222");
             Guid guidBatchDeleteC = Guid.Parse("33333333-3333-3333-3333-333333333333");
             Guid guidBatchDeleteD = Guid.Parse("44444444-4444-4444-4444-444444444444");
-            LibraDexIndex<Guid, long> guidBatchDelete = scalarDeleteCompactionCatalog.Indexes["people"]["guidBatchDelete"].Create<Guid, long>();
+            LibraDexIndex<Guid, long> guidBatchDelete = scalarDeleteCompactionCatalog.Indexes.IndexSet("people").Define("guidBatchDelete").Create<Guid, long>();
             ValidateGenericInsert(guidBatchDelete.Insert(guidBatchDeleteA, 2101L), "scalar batch delete Guid A insert");
             ValidateGenericInsert(guidBatchDelete.Insert(guidBatchDeleteB, 2202L), "scalar batch delete Guid B insert");
             ValidateGenericInsert(guidBatchDelete.Insert(guidBatchDeleteC, 2303L), "scalar batch delete Guid C insert");
@@ -8120,7 +8120,7 @@ internal static partial class RawHarness
                 .ForGroup("people")
                 .Index("guidBatchDelete").AsGuid.Between(guidBatchDeleteA, guidBatchDeleteB)
                 .EndCondition;
-            LibraDexIdentityMutationResult guidBatchDeleteResult = scalarDeleteCompactionCatalog["people"]["guidBatchDelete"].Delete(guidBatchDeleteCondition);
+            LibraDexIdentityMutationResult guidBatchDeleteResult = scalarDeleteCompactionCatalog.Indexes.IndexSet("people").Define("guidBatchDelete").Delete(guidBatchDeleteCondition);
             ValidateGenericInsert(guidBatchDelete.Insert(guidBatchDeleteD, 2404L), "scalar batch delete post-delete Guid insert");
             _ = guidBatchDelete.Batch.CommitAndDisable();
             IReadOnlyList<long> guidBatchDeleteIds = LibraDexCondition
@@ -8144,7 +8144,7 @@ internal static partial class RawHarness
             {
                 using (Catalog durableBatchCatalog = Catalog.Create(durableBatchDeletePath))
                 {
-                    LibraDexIndex<int, long> durableBatchIndex = durableBatchCatalog.Indexes["people"]["durableBatchDelete"].Create<int, long>();
+                    LibraDexIndex<int, long> durableBatchIndex = durableBatchCatalog.Indexes.IndexSet("people").Define("durableBatchDelete").Create<int, long>();
                     ValidateGenericInsert(durableBatchIndex.Insert(10, 5101L), "durable batch delete first insert");
                     ValidateGenericInsert(durableBatchIndex.Insert(16, 5161L), "durable batch delete survivor insert");
                     durableBatchIndex.Batch.Enable();
@@ -8153,7 +8153,7 @@ internal static partial class RawHarness
                         .ForGroup("people")
                         .Index("durableBatchDelete").AsInt32.Between(10, 12)
                         .EndCondition;
-                    LibraDexIdentityMutationResult durableBatchResult = durableBatchCatalog["people"]["durableBatchDelete"].Delete(durableBatchCondition);
+                    LibraDexIdentityMutationResult durableBatchResult = durableBatchCatalog.Indexes.IndexSet("people").Define("durableBatchDelete").Delete(durableBatchCondition);
                     ValidateGenericInsert(durableBatchIndex.Insert(14, 5141L), "durable batch delete post-delete insert");
                     LibraDexGenericBatchCommitResult durableBatchCommit = durableBatchIndex.Batch.CommitAndDisable();
                     if (durableBatchResult.ChangedCount != 2 || durableBatchCommit.DeferredCommitRequests == 0)
@@ -8162,7 +8162,7 @@ internal static partial class RawHarness
 
                 using (Catalog reopenedBatchCatalog = Catalog.Open(durableBatchDeletePath))
                 {
-                    LibraDexIndex<int, long> reopenedBatchIndex = reopenedBatchCatalog.Indexes["people"]["durableBatchDelete"].Open<int, long>();
+                    LibraDexIndex<int, long> reopenedBatchIndex = reopenedBatchCatalog.Indexes.IndexSet("people").Define("durableBatchDelete").Open<int, long>();
                     List<long> reopenedBatchIds = new();
                     using (LibraDexRangeReader<int, long> reopenedBatchReader = reopenedBatchIndex.OpenReader())
                     {
@@ -8179,7 +8179,7 @@ internal static partial class RawHarness
                     File.Delete(durableBatchDeletePath);
             }
 
-            LibraDexIndex<int, long> cursorDeleteAge = scalarDeleteCompactionCatalog.Indexes["people"]["cursorDeleteAge"].Create<int, long>();
+            LibraDexIndex<int, long> cursorDeleteAge = scalarDeleteCompactionCatalog.Indexes.IndexSet("people").Define("cursorDeleteAge").Create<int, long>();
             ValidateGenericInsert(cursorDeleteAge.Insert(10, 1010L), "cursor delete SS8-8 age 10 insert");
             ValidateGenericInsert(cursorDeleteAge.Insert(12, 1212L), "cursor delete SS8-8 age 12 insert");
             ValidateGenericInsert(cursorDeleteAge.Insert(14, 1414L), "cursor delete SS8-8 age 14 insert");
@@ -8238,7 +8238,7 @@ internal static partial class RawHarness
             Guid cursorDeleteIdentityB = Guid.Parse("b2b2b2b2-b2b2-b2b2-b2b2-b2b2b2b2b2b2");
             Guid cursorDeleteIdentityC = Guid.Parse("c3c3c3c3-c3c3-c3c3-c3c3-c3c3c3c3c3c3");
 
-            LibraDexIndex<Guid, long> cursorDeleteGuid = scalarDeleteCompactionCatalog.Indexes["people"]["cursorDeleteGuid"].Create<Guid, long>();
+            LibraDexIndex<Guid, long> cursorDeleteGuid = scalarDeleteCompactionCatalog.Indexes.IndexSet("people").Define("cursorDeleteGuid").Create<Guid, long>();
             ValidateGenericInsert(cursorDeleteGuid.Insert(cursorDeleteGuidA, 2101L), "cursor delete SS16-8 Guid A insert");
             ValidateGenericInsert(cursorDeleteGuid.Insert(cursorDeleteGuidB, 2202L), "cursor delete SS16-8 Guid B insert");
             ValidateGenericInsert(cursorDeleteGuid.Insert(cursorDeleteGuidC, 2303L), "cursor delete SS16-8 Guid C insert");
@@ -8255,7 +8255,7 @@ internal static partial class RawHarness
                 }
             }
 
-            LibraDexIndex<int, Guid> cursorDeleteAgeGuid = scalarDeleteCompactionCatalog.Indexes["people"]["cursorDeleteAgeGuid"].Create<int, Guid>();
+            LibraDexIndex<int, Guid> cursorDeleteAgeGuid = scalarDeleteCompactionCatalog.Indexes.IndexSet("people").Define("cursorDeleteAgeGuid").Create<int, Guid>();
             ValidateGenericInsert(cursorDeleteAgeGuid.Insert(10, cursorDeleteIdentityA), "cursor delete SS8-16 age 10 insert");
             ValidateGenericInsert(cursorDeleteAgeGuid.Insert(12, cursorDeleteIdentityB), "cursor delete SS8-16 age 12 insert");
             ValidateGenericInsert(cursorDeleteAgeGuid.Insert(14, cursorDeleteIdentityC), "cursor delete SS8-16 age 14 insert");
@@ -8272,7 +8272,7 @@ internal static partial class RawHarness
                 }
             }
 
-            LibraDexIndex<Guid, Guid> cursorDeleteGuidGuid = scalarDeleteCompactionCatalog.Indexes["people"]["cursorDeleteGuidGuid"].Create<Guid, Guid>();
+            LibraDexIndex<Guid, Guid> cursorDeleteGuidGuid = scalarDeleteCompactionCatalog.Indexes.IndexSet("people").Define("cursorDeleteGuidGuid").Create<Guid, Guid>();
             ValidateGenericInsert(cursorDeleteGuidGuid.Insert(cursorDeleteGuidA, cursorDeleteIdentityA), "cursor delete SS16-16 Guid A insert");
             ValidateGenericInsert(cursorDeleteGuidGuid.Insert(cursorDeleteGuidB, cursorDeleteIdentityB), "cursor delete SS16-16 Guid B insert");
             ValidateGenericInsert(cursorDeleteGuidGuid.Insert(cursorDeleteGuidC, cursorDeleteIdentityC), "cursor delete SS16-16 Guid C insert");
@@ -8292,7 +8292,7 @@ internal static partial class RawHarness
             byte[] cursorDeleteFingerprintA = Convert.FromHexString("00000000000000000000000000000000000000000000000000000000000000A1");
             byte[] cursorDeleteFingerprintB = Convert.FromHexString("00000000000000000000000000000000000000000000000000000000000000B2");
             byte[] cursorDeleteFingerprintC = Convert.FromHexString("00000000000000000000000000000000000000000000000000000000000000C3");
-            LibraDexIndex<byte[], long> cursorDeleteFingerprint = scalarDeleteCompactionCatalog.Indexes["people"]["cursorDeleteFingerprint"].Blob.Scalar<long>(LibraDexScalarWidth.Bytes32).Create();
+            LibraDexIndex<byte[], long> cursorDeleteFingerprint = scalarDeleteCompactionCatalog.Indexes.IndexSet("people").Define("cursorDeleteFingerprint").Blob.Scalar<long>(LibraDexScalarWidth.Bytes32).Create();
             ValidateGenericInsert(cursorDeleteFingerprint.Insert(cursorDeleteFingerprintA, 3101L), "cursor delete FS32-8 fingerprint A insert");
             ValidateGenericInsert(cursorDeleteFingerprint.Insert(cursorDeleteFingerprintB, 3202L), "cursor delete FS32-8 fingerprint B insert");
             ValidateGenericInsert(cursorDeleteFingerprint.Insert(cursorDeleteFingerprintC, 3303L), "cursor delete FS32-8 fingerprint C insert");
@@ -8309,7 +8309,7 @@ internal static partial class RawHarness
                 }
             }
 
-            LibraDexIndex<byte[], Guid> cursorDeleteFingerprintGuid = scalarDeleteCompactionCatalog.Indexes["people"]["cursorDeleteFingerprintGuid"].Blob.Scalar<Guid>(LibraDexScalarWidth.Bytes32).Create();
+            LibraDexIndex<byte[], Guid> cursorDeleteFingerprintGuid = scalarDeleteCompactionCatalog.Indexes.IndexSet("people").Define("cursorDeleteFingerprintGuid").Blob.Scalar<Guid>(LibraDexScalarWidth.Bytes32).Create();
             ValidateGenericInsert(cursorDeleteFingerprintGuid.Insert(cursorDeleteFingerprintA, cursorDeleteIdentityA), "cursor delete FS32-16 fingerprint A insert");
             ValidateGenericInsert(cursorDeleteFingerprintGuid.Insert(cursorDeleteFingerprintB, cursorDeleteIdentityB), "cursor delete FS32-16 fingerprint B insert");
             ValidateGenericInsert(cursorDeleteFingerprintGuid.Insert(cursorDeleteFingerprintC, cursorDeleteIdentityC), "cursor delete FS32-16 fingerprint C insert");
@@ -8427,7 +8427,7 @@ internal static partial class RawHarness
                 }
             }
 
-            LibraDexIndex<Guid, long> scalarDeleteGuid = scalarDeleteCatalog.Indexes["people"]["deleteGuid"].Create<Guid, long>();
+            LibraDexIndex<Guid, long> scalarDeleteGuid = scalarDeleteCatalog.Indexes.IndexSet("people").Define("deleteGuid").Create<Guid, long>();
             Guid deleteGuidA = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
             Guid deleteGuidB = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
             ValidateGenericInsert(scalarDeleteGuid.Insert(deleteGuidA, 2100L), "scalar condition delete Guid A insert");
@@ -8436,7 +8436,7 @@ internal static partial class RawHarness
                 .ForGroup("people")
                 .Index("deleteGuid").AsGuid.EqualTo(deleteGuidB)
                 .EndCondition;
-            LibraDexIdentityMutationResult scalarDeleteGuidResult = scalarDeleteCatalog["people"]["deleteGuid"].Delete(scalarDeleteGuidCondition);
+            LibraDexIdentityMutationResult scalarDeleteGuidResult = scalarDeleteCatalog.Indexes.IndexSet("people").Define("deleteGuid").Delete(scalarDeleteGuidCondition);
             IReadOnlyList<long> scalarDeleteGuidRemainingIds = LibraDexCondition
                 .ForGroup("people")
                 .Index("deleteGuid").AsGuid.EqualTo(deleteGuidA)
@@ -8450,7 +8450,7 @@ internal static partial class RawHarness
             {
                 throw new InvalidDataException("Scalar SS16-8 condition delete did not remove only the matched GUID tuple.");
             }
-            LibraDexIndex<byte[], long> scalarDeleteFingerprint = scalarDeleteCatalog.Indexes["people"]["deleteFingerprint"].Blob.Scalar<long>(LibraDexScalarWidth.Bytes32).Create();
+            LibraDexIndex<byte[], long> scalarDeleteFingerprint = scalarDeleteCatalog.Indexes.IndexSet("people").Define("deleteFingerprint").Blob.Scalar<long>(LibraDexScalarWidth.Bytes32).Create();
             byte[] deleteFingerprintA = Convert.FromHexString("000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F");
             byte[] deleteFingerprintB = Convert.FromHexString("202122232425262728292A2B2C2D2E2F303132333435363738393A3B3C3D3E3F");
             ValidateGenericInsert(scalarDeleteFingerprint.Insert(deleteFingerprintA, 3100L), "scalar condition delete fingerprint A insert");
@@ -8459,7 +8459,7 @@ internal static partial class RawHarness
                 .ForGroup("people")
                 .Index("deleteFingerprint").AsBinary.EqualTo(deleteFingerprintB)
                 .EndCondition;
-            LibraDexIdentityMutationResult scalarDeleteFingerprintResult = scalarDeleteCatalog["people"]["deleteFingerprint"].Delete(scalarDeleteFingerprintCondition);
+            LibraDexIdentityMutationResult scalarDeleteFingerprintResult = scalarDeleteCatalog.Indexes.IndexSet("people").Define("deleteFingerprint").Delete(scalarDeleteFingerprintCondition);
             IReadOnlyList<long> scalarDeleteFingerprintRemainingIds = LibraDexCondition
                 .ForGroup("people")
                 .Index("deleteFingerprint").AsBinary.EqualTo(deleteFingerprintA)
@@ -8473,7 +8473,7 @@ internal static partial class RawHarness
             {
                 throw new InvalidDataException("Scalar FS32-8 condition delete did not remove only the matched fixed binary tuple.");
             }
-            LibraDexIndex<int, Guid> scalarDeleteAgeGuid = scalarDeleteCatalog.Indexes["people"]["deleteAgeGuid"].Create<int, Guid>();
+            LibraDexIndex<int, Guid> scalarDeleteAgeGuid = scalarDeleteCatalog.Indexes.IndexSet("people").Define("deleteAgeGuid").Create<int, Guid>();
             Guid deleteIdentityA = Guid.Parse("11111111-1111-1111-1111-111111111111");
             Guid deleteIdentityB = Guid.Parse("22222222-2222-2222-2222-222222222222");
             ValidateGenericInsert(scalarDeleteAgeGuid.Insert(20, deleteIdentityA), "scalar condition delete SS8-16 age 20 insert");
@@ -8482,7 +8482,7 @@ internal static partial class RawHarness
                 .ForGroup("people")
                 .Index("deleteAgeGuid").AsInt32.GreaterOrEqual(22)
                 .EndCondition;
-            LibraDexIdentityMutationResult scalarDeleteAgeGuidResult = scalarDeleteCatalog["people"]["deleteAgeGuid"].Delete(scalarDeleteAgeGuidCondition);
+            LibraDexIdentityMutationResult scalarDeleteAgeGuidResult = scalarDeleteCatalog.Indexes.IndexSet("people").Define("deleteAgeGuid").Delete(scalarDeleteAgeGuidCondition);
             IReadOnlyList<Guid> scalarDeleteAgeGuidRemainingIds = LibraDexCondition
                 .ForGroup("people")
                 .Index("deleteAgeGuid").AsInt32.All()
@@ -8496,14 +8496,14 @@ internal static partial class RawHarness
             {
                 throw new InvalidDataException("Scalar SS8-16 condition delete did not remove only the matched widened-identity tuple.");
             }
-            LibraDexIndex<Guid, Guid> scalarDeleteGuidGuid = scalarDeleteCatalog.Indexes["people"]["deleteGuidGuid"].Create<Guid, Guid>();
+            LibraDexIndex<Guid, Guid> scalarDeleteGuidGuid = scalarDeleteCatalog.Indexes.IndexSet("people").Define("deleteGuidGuid").Create<Guid, Guid>();
             ValidateGenericInsert(scalarDeleteGuidGuid.Insert(deleteGuidA, deleteIdentityA), "scalar condition delete SS16-16 Guid A insert");
             ValidateGenericInsert(scalarDeleteGuidGuid.Insert(deleteGuidB, deleteIdentityB), "scalar condition delete SS16-16 Guid B insert");
             LibraDexConditionEndCondition scalarDeleteGuidGuidCondition = LibraDexCondition
                 .ForGroup("people")
                 .Index("deleteGuidGuid").AsGuid.EqualTo(deleteGuidA)
                 .EndCondition;
-            LibraDexIdentityMutationResult scalarDeleteGuidGuidResult = scalarDeleteCatalog["people"]["deleteGuidGuid"].Delete(scalarDeleteGuidGuidCondition);
+            LibraDexIdentityMutationResult scalarDeleteGuidGuidResult = scalarDeleteCatalog.Indexes.IndexSet("people").Define("deleteGuidGuid").Delete(scalarDeleteGuidGuidCondition);
             IReadOnlyList<Guid> scalarDeleteGuidGuidRemainingIds = LibraDexCondition
                 .ForGroup("people")
                 .Index("deleteGuidGuid").AsGuid.EqualTo(deleteGuidB)
@@ -8517,14 +8517,14 @@ internal static partial class RawHarness
             {
                 throw new InvalidDataException("Scalar SS16-16 condition delete did not remove only the matched widened-key widened-identity tuple.");
             }
-            LibraDexIndex<byte[], Guid> scalarDeleteFingerprintGuid = scalarDeleteCatalog.Indexes["people"]["deleteFingerprintGuid"].Blob.Scalar<Guid>(LibraDexScalarWidth.Bytes32).Create();
+            LibraDexIndex<byte[], Guid> scalarDeleteFingerprintGuid = scalarDeleteCatalog.Indexes.IndexSet("people").Define("deleteFingerprintGuid").Blob.Scalar<Guid>(LibraDexScalarWidth.Bytes32).Create();
             ValidateGenericInsert(scalarDeleteFingerprintGuid.Insert(deleteFingerprintA, deleteIdentityA), "scalar condition delete FS32-16 fingerprint A insert");
             ValidateGenericInsert(scalarDeleteFingerprintGuid.Insert(deleteFingerprintB, deleteIdentityB), "scalar condition delete FS32-16 fingerprint B insert");
             LibraDexConditionEndCondition scalarDeleteFingerprintGuidCondition = LibraDexCondition
                 .ForGroup("people")
                 .Index("deleteFingerprintGuid").AsBinary.EqualTo(deleteFingerprintA)
                 .EndCondition;
-            LibraDexIdentityMutationResult scalarDeleteFingerprintGuidResult = scalarDeleteCatalog["people"]["deleteFingerprintGuid"].Delete(scalarDeleteFingerprintGuidCondition);
+            LibraDexIdentityMutationResult scalarDeleteFingerprintGuidResult = scalarDeleteCatalog.Indexes.IndexSet("people").Define("deleteFingerprintGuid").Delete(scalarDeleteFingerprintGuidCondition);
             IReadOnlyList<Guid> scalarDeleteFingerprintGuidRemainingIds = LibraDexCondition
                 .ForGroup("people")
                 .Index("deleteFingerprintGuid").AsBinary.EqualTo(deleteFingerprintB)
@@ -8539,7 +8539,7 @@ internal static partial class RawHarness
                 throw new InvalidDataException("Scalar FS32-16 condition delete did not remove only the matched fixed binary widened-identity tuple.");
             }
 
-            LibraDexIndex<int, long> scalarSetKeyAge = scalarDeleteCatalog.Indexes["people"]["setKeyAge"].Create<int, long>();
+            LibraDexIndex<int, long> scalarSetKeyAge = scalarDeleteCatalog.Indexes.IndexSet("people").Define("setKeyAge").Create<int, long>();
             ValidateGenericInsert(scalarSetKeyAge.Insert(30, 3000L), "scalar condition SetKey age 30 identity 3000 insert");
             ValidateGenericInsert(scalarSetKeyAge.Insert(30, 3001L), "scalar condition SetKey age 30 identity 3001 insert");
             ValidateGenericInsert(scalarSetKeyAge.Insert(40, 4000L), "scalar condition SetKey age 40 identity 4000 insert");
@@ -8582,7 +8582,7 @@ internal static partial class RawHarness
                 .ForGroup("people")
                 .Index("setKeyAge").AsInt32.EqualTo(35)
                 .EndCondition;
-            LibraDexIdentityMutationResult scalarSetKeyUsingResult = scalarDeleteCatalog["people"]["setKeyAge"].SetKeyUsing(
+            LibraDexIdentityMutationResult scalarSetKeyUsingResult = scalarDeleteCatalog.Indexes.IndexSet("people").Define("setKeyAge").SetKeyUsing(
                 scalarSetKeyUsingCondition,
                 oldKey => (int)oldKey + 1);
             IReadOnlyList<long> scalarSetKeyUsingFirstIds = LibraDexCondition
@@ -8601,7 +8601,7 @@ internal static partial class RawHarness
                 throw new InvalidDataException("Scalar SS8-8 target-owned SetKeyUsing did not transform the matched tuples' old key.");
             }
 
-            LibraDexIndex<Guid, Guid> scalarSetKeyGuidGuid = scalarDeleteCatalog.Indexes["people"]["setKeyGuidGuid"].Create<Guid, Guid>();
+            LibraDexIndex<Guid, Guid> scalarSetKeyGuidGuid = scalarDeleteCatalog.Indexes.IndexSet("people").Define("setKeyGuidGuid").Create<Guid, Guid>();
             Guid setKeyGuidOld = Guid.Parse("cccccccc-cccc-cccc-cccc-cccccccccccc");
             Guid setKeyGuidNew = Guid.Parse("dddddddd-dddd-dddd-dddd-dddddddddddd");
             Guid setKeyIdentity = Guid.Parse("33333333-3333-3333-3333-333333333333");
@@ -8658,8 +8658,8 @@ internal static partial class RawHarness
             scalarSetKeyGuidGuid.Rekey(setKeyIdentity, setKeyGuidNew, setKeyGuidOld);
 
             using Catalog targetMutationCatalog = Catalog.CreateMemory();
-            LibraDexIndex<int, long> targetMutationAge = targetMutationCatalog.Indexes["people"]["targetAge"].Create<int, long>();
-            LibraDexIndex<int, long> targetMutationGender = targetMutationCatalog.Indexes["people"]["targetGender"].Create<int, long>();
+            LibraDexIndex<int, long> targetMutationAge = targetMutationCatalog.Indexes.IndexSet("people").Define("targetAge").Create<int, long>();
+            LibraDexIndex<int, long> targetMutationGender = targetMutationCatalog.Indexes.IndexSet("people").Define("targetGender").Create<int, long>();
             ValidateGenericInsert(targetMutationAge.Insert(42, 4200L), "targeted composed mutation age 42 insert");
             ValidateGenericInsert(targetMutationAge.Insert(44, 4400L), "targeted composed mutation age 44 insert");
             ValidateGenericInsert(targetMutationGender.Insert(1, 4200L), "targeted composed mutation gender 1 insert");
@@ -8678,7 +8678,7 @@ internal static partial class RawHarness
                 .Index("targetAge").AsInt32.InSet(new[] { 42, 44 })
                 .AND.Index("targetGender").AsInt32.InSet(new[] { 1, 2 })
                 .EndCondition;
-            LibraDexIdentityMutationResult targetDeleteResult = targetMutationCatalog["people"]["targetAge"].Delete(targetMutationCondition);
+            LibraDexIdentityMutationResult targetDeleteResult = targetMutationCatalog.Indexes.IndexSet("people").Define("targetAge").Delete(targetMutationCondition);
             IReadOnlyList<long> targetAgeAfterDeleteIds = LibraDexCondition
                 .ForGroup("people")
                 .Index("targetAge").AsInt32.All()
@@ -8701,7 +8701,7 @@ internal static partial class RawHarness
 
             ValidateGenericInsert(targetMutationAge.Insert(42, 4200L), "targeted composed mutation age 42 restore insert");
             ValidateGenericInsert(targetMutationAge.Insert(44, 4400L), "targeted composed mutation age 44 restore insert");
-            LibraDexIdentityMutationResult targetSetKeyResult = targetMutationCatalog["people"]["targetAge"].SetKey(targetMutationCondition, 99);
+            LibraDexIdentityMutationResult targetSetKeyResult = targetMutationCatalog.Indexes.IndexSet("people").Define("targetAge").SetKey(targetMutationCondition, 99);
             IReadOnlyList<long> targetAgeAfterSetKeyIds = LibraDexCondition
                 .ForGroup("people")
                 .Index("targetAge").AsInt32.EqualTo(99)
@@ -8725,7 +8725,7 @@ internal static partial class RawHarness
                 .ForGroup("people")
                 .Index("targetGender").AsInt32.InSet(new[] { 1, 2 })
                 .EndCondition;
-            LibraDexIdentityMutationResult targetSetKeyOnUsingResult = targetMutationCatalog["people"]["targetAge"].SetKeyUsing(
+            LibraDexIdentityMutationResult targetSetKeyOnUsingResult = targetMutationCatalog.Indexes.IndexSet("people").Define("targetAge").SetKeyUsing(
                 targetMutationByGenderCondition,
                 oldKey => (int)oldKey + 43);
             IReadOnlyList<long> targetAgeUsingFirstIds = LibraDexCondition
@@ -8750,13 +8750,13 @@ internal static partial class RawHarness
                 throw new InvalidDataException("Target-owned composed SetKeyUsing did not transform old target keys while preserving the selector index.");
             }
 
-            LibraDexIndex<int, long> reopenedGender = reopened.Indexes["people"]["gender"].Open<int, long>();
+            LibraDexIndex<int, long> reopenedGender = reopened.Indexes.IndexSet("people").Define("gender").Open<int, long>();
             long[] genderIdentities = new long[4];
             LibraDexGenericRangeReadResult genderRead = reopenedGender.ReadRange(1, 2, genderIdentities);
             ValidateGenericRead(genderRead, genderIdentities, new long[] { 4200, 4400 }, "group batch gender reopened read");
 
-            IIndex criteriaAge = reopened.Indexes["people"]["age"].Open();
-            IIndex criteriaGender = reopened.Indexes["people"]["gender"].Open();
+            IIndex criteriaAge = reopened.Indexes.IndexSet("people").Define("age").Open();
+            IIndex criteriaGender = reopened.Indexes.IndexSet("people").Define("gender").Open();
             Func<string, IIndex> criteriaResolver = indexName => indexName switch
             {
                 "age" => criteriaAge,
@@ -8877,21 +8877,21 @@ internal static partial class RawHarness
                 throw new InvalidDataException("Adopted condition terminals did not preserve the expected execution shape.");
             }
 
-            LibraDexIndex<int, long> shortOpenedAge = reopened.Indexes["people"]["age"].Open<int, long>();
+            LibraDexIndex<int, long> shortOpenedAge = reopened.Indexes.IndexSet("people").Define("age").Open<int, long>();
             long[] shortOpenedIdentities = new long[2];
             LibraDexGenericRangeReadResult shortOpenedRead = shortOpenedAge.ReadRange(42, 42, shortOpenedIdentities);
             ValidateGenericRead(shortOpenedRead, shortOpenedIdentities, new long[] { 4200 }, "short generic grouped age reopened read");
 
             try
             {
-                _ = reopened.Indexes["people"]["age"].Open<long, long>();
+                _ = reopened.Indexes.IndexSet("people").Define("age").Open<long, long>();
                 throw new InvalidDataException("Short generic grouped open accepted a key type that conflicts with persisted metadata.");
             }
             catch (InvalidDataException)
             {
             }
 
-            IIndex metadataOpenedAge = reopened.Indexes["people"]["age"].Open();
+            IIndex metadataOpenedAge = reopened.Indexes.IndexSet("people").Define("age").Open();
             LibraDexGenericInsertResult metadataInsert = metadataOpenedAge.Insert(43, 4300L);
             LibraDexPreparedObjectSet metadataPreparedSet = metadataOpenedAge.PrepareInSet(new object[] { 42, 43 });
             Func<string, IIndex> metadataResolver = indexName => string.Equals(indexName, "age", StringComparison.Ordinal)
@@ -9013,7 +9013,7 @@ internal static partial class RawHarness
 
         using (Catalog reopenedAfterCompositePathCopy = Catalog.Open(path))
         {
-            IIndex reopenedTenantUser = reopenedAfterCompositePathCopy.Indexes["people"]["tenantUser"].Composite<long>(
+            IIndex reopenedTenantUser = reopenedAfterCompositePathCopy.Indexes.IndexSet("people").Define("tenantUser").Composite<long>(
                 C.Guid("tenantId"),
                 C.Text("username", StringKeys.ExactFoldedAndSortKey))
                 .Open(C.Unique);
@@ -9039,8 +9039,8 @@ internal static partial class RawHarness
 
         using (Catalog mismatchCatalog = Catalog.CreateMemory())
         {
-            LibraDexIndex<int, long> peopleAge = mismatchCatalog.Indexes["people"]["age"].Create<int, long>();
-            LibraDexIndex<int, long> ordersTotal = mismatchCatalog.Indexes["orders"]["total"].Create<int, long>();
+            LibraDexIndex<int, long> peopleAge = mismatchCatalog.Indexes.IndexSet("people").Define("age").Create<int, long>();
+            LibraDexIndex<int, long> ordersTotal = mismatchCatalog.Indexes.IndexSet("orders").Define("total").Create<int, long>();
             try
             {
                 _ = LibraDexCondition
@@ -9133,7 +9133,7 @@ internal static partial class RawHarness
 
         using (Catalog policyCatalog = Catalog.CreateMemory(new CatalogOptions { StringComparisonPolicy = LibraDexStringComparisonPolicy.OrdinalIgnoreCase }))
         {
-            using LibraDexStringScalar8Index policyDefaultIndex = policyCatalog.Indexes["policy"]["alias"].String.Create(
+            using LibraDexStringScalar8Index policyDefaultIndex = policyCatalog.Indexes.IndexSet("policy").Define("alias").String.Create(
                 stringKeys: StringKeys.Exact);
             ValidateGenericInsert(policyDefaultIndex.Add("Eric", 9001UL), "catalog policy alias string add Eric");
             LibraDexConditionEndCondition catalogPolicyInSetCondition = LibraDexCondition
@@ -9141,10 +9141,10 @@ internal static partial class RawHarness
                 .Index("alias").AsString.InSet(new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "ERIC" })
                 .EndCondition;
             IReadOnlyList<ulong> catalogPolicyInSetIds = catalogPolicyInSetCondition.Materialize(policyDefaultIndex.ResolveIndex).IDs.ToList<ulong>();
-            LibraDexConditionEndCondition stringHandleCondition = policyCatalog.Indexes["policy"]
+            LibraDexConditionEndCondition stringHandleCondition = policyCatalog.Indexes.IndexSet("policy")
                 .Where(policyDefaultIndex).StartsWith("Er")
                 .EndCondition;
-            IReadOnlyList<ulong> stringHandleIds = policyCatalog.Indexes["policy"].GetIdentities<ulong>(
+            IReadOnlyList<ulong> stringHandleIds = policyCatalog.Indexes.IndexSet("policy").GetIdentities<ulong>(
                 stringHandleCondition,
                 deduplication: IdentityDeduplication.Preserve);
             if (catalogPolicyInSetIds.Count != 1 ||
@@ -9156,7 +9156,7 @@ internal static partial class RawHarness
             }
         }
 
-        LibraDexIndex<long, long> index = catalog.Indexes["surface"]["public-surface"].Int64Keys<long>().Create(
+        LibraDexIndex<long, long> index = catalog.Indexes.IndexSet("surface").Define("public-surface").Int64Keys<long>().Create(
             keys: IndexKeys.NonUnique);
 
         LibraDexStatsMarker indexMarker = index.Stats.Mark();
@@ -9171,21 +9171,21 @@ internal static partial class RawHarness
             throw new InvalidDataException("Public surface catalog discovery did not return expected index metadata.");
         }
 
-        LibraDexIndex<long, long> alternateIndex = catalog.Indexes["surface"]["alternate"].Int64Keys<long>().Create(
+        LibraDexIndex<long, long> alternateIndex = catalog.Indexes.IndexSet("surface").Define("alternate").Int64Keys<long>().Create(
             keys: IndexKeys.NonUnique);
 
-        LibraDexIndexShapeSpec firstNameShape = catalog.Indexes["people"]["firstName"].Shape.String<long>(
+        LibraDexIndexShapeSpec firstNameShape = catalog.Indexes.IndexSet("people").Define("firstName").Shape.String<long>(
             StringKeys.ExactFoldedAndSortKey,
             keys: IndexKeys.NonUnique,
             directions: LibraDexProjectionDirectionSet.ForwardAndReversed);
-        LibraDexIndexShapeSpec createdShape = catalog.Indexes["people"]["created"].Shape.Date<DateTime, long>(
+        LibraDexIndexShapeSpec createdShape = catalog.Indexes.IndexSet("people").Define("created").Shape.Date<DateTime, long>(
             DateKeys.ExactAndStructured,
             keys: IndexKeys.NonUnique);
-        LibraDexIndexShapeSpec idShape = catalog.Indexes["people"]["externalId"].Shape.Guid<long>(
+        LibraDexIndexShapeSpec idShape = catalog.Indexes.IndexSet("people").Define("externalId").Shape.Guid<long>(
             GuidKeys.ExactSegmentsAndText,
             keys: IndexKeys.Unique,
             sortOrder: LibraDexIndexSortOrder.Descending);
-        CatalogCompositeIndexBuilder<long> compositeBuilder = catalog.Indexes["people"]["tenantUser"].Composite<long>(
+        CatalogCompositeIndexBuilder<long> compositeBuilder = catalog.Indexes.IndexSet("people").Define("tenantUser").Composite<long>(
             C.Guid("tenantId"),
             C.Text("username", StringKeys.ExactFoldedAndSortKey));
         CatalogCompositeIndexBuilder<long> groupedCompositeBuilder = catalog.Indexes.IndexSet("people").Composite<long>(
@@ -9241,22 +9241,22 @@ internal static partial class RawHarness
         {
         }
 
-        LibraDexIndexShapeSpec peopleAgeShape = catalog.Indexes["people"]["age"].Shape.Scalar<long, long>();
-        LibraDexIndexShapeSpec peopleGenderShape = catalog.Indexes["people"]["gender"].Shape.Scalar<long, long>();
-        LibraDexIndexShapeSpec peopleCreatedDateShape = catalog.Indexes["people"]["createdDate"].Shape.Date<DateOnly, long>(
+        LibraDexIndexShapeSpec peopleAgeShape = catalog.Indexes.IndexSet("people").Define("age").Shape.Scalar<long, long>();
+        LibraDexIndexShapeSpec peopleGenderShape = catalog.Indexes.IndexSet("people").Define("gender").Shape.Scalar<long, long>();
+        LibraDexIndexShapeSpec peopleCreatedDateShape = catalog.Indexes.IndexSet("people").Define("createdDate").Shape.Date<DateOnly, long>(
             DateKeys.ExactAndStructured,
             keys: IndexKeys.NonUnique);
-        LibraDexIndexShapeSpec peopleCreatedOffsetShape = catalog.Indexes["people"]["createdOffset"].Shape.Date<DateTimeOffset, long>(
+        LibraDexIndexShapeSpec peopleCreatedOffsetShape = catalog.Indexes.IndexSet("people").Define("createdOffset").Shape.Date<DateTimeOffset, long>(
             DateKeys.ExactAndStructured,
             keys: IndexKeys.NonUnique);
-        LibraDexIndexShapeSpec peopleCreatedTimeShape = catalog.Indexes["people"]["createdTime"].Shape.Date<TimeOnly, long>(
+        LibraDexIndexShapeSpec peopleCreatedTimeShape = catalog.Indexes.IndexSet("people").Define("createdTime").Shape.Date<TimeOnly, long>(
             DateKeys.ExactAndStructured,
             keys: IndexKeys.NonUnique);
-        LibraDexIndexShapeSpec peopleDurationShape = catalog.Indexes["people"]["duration"].Shape.Date<TimeSpan, long>(
+        LibraDexIndexShapeSpec peopleDurationShape = catalog.Indexes.IndexSet("people").Define("duration").Shape.Date<TimeSpan, long>(
             DateKeys.Exact,
             keys: IndexKeys.NonUnique);
-        LibraDexIndexShapeSpec peopleScoreShape = catalog.Indexes["people"]["score"].Shape.Scalar<uint, long>();
-        LibraDexIndexShapeSpec peopleActiveShape = catalog.Indexes["people"]["active"].Shape.Scalar<bool, long>();
+        LibraDexIndexShapeSpec peopleScoreShape = catalog.Indexes.IndexSet("people").Define("score").Shape.Scalar<uint, long>();
+        LibraDexIndexShapeSpec peopleActiveShape = catalog.Indexes.IndexSet("people").Define("active").Shape.Scalar<bool, long>();
         IIndex peopleAge = catalog.Indexes.Create(peopleAgeShape);
         IIndex peopleGender = catalog.Indexes.Create(peopleGenderShape);
         IIndex peopleCreated = catalog.Indexes.Create(createdShape);
@@ -9267,12 +9267,12 @@ internal static partial class RawHarness
         IIndex peopleDuration = catalog.Indexes.Create(peopleDurationShape);
         IIndex peopleScore = catalog.Indexes.Create(peopleScoreShape);
         IIndex peopleActive = catalog.Indexes.Create(peopleActiveShape);
-        LibraDexIndex<byte[], long> peopleFingerprint = catalog.Indexes["people"]["fingerprint"].Blob.Scalar<long>(LibraDexScalarWidth.Bytes16).Create();
-        LibraDexIndex<byte[], long> peopleFingerprintReversed = catalog.Indexes["people"]["fingerprintReversed"].Blob.Scalar<long>(
+        LibraDexIndex<byte[], long> peopleFingerprint = catalog.Indexes.IndexSet("people").Define("fingerprint").Blob.Scalar<long>(LibraDexScalarWidth.Bytes16).Create();
+        LibraDexIndex<byte[], long> peopleFingerprintReversed = catalog.Indexes.IndexSet("people").Define("fingerprintReversed").Blob.Scalar<long>(
             LibraDexScalarWidth.Bytes16,
             directions: LibraDexProjectionDirectionSet.ForwardAndReversed).Create();
-        LibraDexIndex<byte[], long> peopleTypedFingerprint = catalog.Indexes["people"]["typedFingerprint"].Blob.Scalar<long>(LibraDexScalarWidth.Bytes16).Create();
-        CatalogIndexInfo[] peopleIndexesAfterBinaryProjection = catalog.Indexes["people"].List();
+        LibraDexIndex<byte[], long> peopleTypedFingerprint = catalog.Indexes.IndexSet("people").Define("typedFingerprint").Blob.Scalar<long>(LibraDexScalarWidth.Bytes16).Create();
+        CatalogIndexInfo[] peopleIndexesAfterBinaryProjection = catalog.Indexes.IndexSet("people").List();
         if (!catalog.Indexes.TryGetInfo("people", "fingerprintReversed", out CatalogIndexInfo fingerprintReversedInfo) ||
             fingerprintReversedInfo.ExactReversedProjectionSlotIndex < 0 ||
             !fingerprintReversedInfo.Projections.Any(static projection =>
@@ -9283,24 +9283,24 @@ internal static partial class RawHarness
             throw new InvalidDataException("Binary reversed projection metadata did not stay hidden behind the owning grouped index.");
         }
 
-        using LibraDexStringScalar8Index peopleDisplayName = catalog.Indexes["people"]["displayName"].String.Create(
+        using LibraDexStringScalar8Index peopleDisplayName = catalog.Indexes.IndexSet("people").Define("displayName").String.Create(
             stringKeys: StringKeys.ExactFoldedAndSortKey,
             directions: LibraDexProjectionDirectionSet.ForwardAndReversed,
             sortKeyCulture: "en-US");
         ValidateGenericInsert(peopleDisplayName.Insert("Eric", 501UL), "displayName string insert Eric");
         ValidateGenericInsert(peopleDisplayName.Insert("erin", 502UL), "displayName string insert erin");
         ValidateGenericInsert(peopleDisplayName.Insert("Alice", 503UL), "displayName string insert Alice");
-        using LibraDexStringScalar8Index peopleAlias = catalog.Indexes["people"]["alias"].String.Create(
+        using LibraDexStringScalar8Index peopleAlias = catalog.Indexes.IndexSet("people").Define("alias").String.Create(
             stringKeys: StringKeys.Exact);
         ValidateGenericInsert(peopleAlias.Insert("Eric", 601UL), "alias string insert Eric");
         ValidateGenericInsert(peopleAlias.Insert("erin", 602UL), "alias string insert erin");
         ValidateGenericInsert(peopleAlias.Insert("Alice", 603UL), "alias string insert Alice");
         ValidateGenericInsert(peopleAlias.Insert("Maverick", 604UL), "alias string insert Maverick");
-        using LibraDexStringScalar8Index peopleAliasExactSuffix = catalog.Indexes["people"]["aliasExactSuffix"].String.Create(
+        using LibraDexStringScalar8Index peopleAliasExactSuffix = catalog.Indexes.IndexSet("people").Define("aliasExactSuffix").String.Create(
             stringKeys: StringKeys.Exact,
             directions: LibraDexProjectionDirectionSet.ForwardAndReversed);
         ValidateGenericInsert(peopleAliasExactSuffix.Insert("Topic", 605UL), "alias exact suffix string insert Topic");
-        using LibraDexStringScalar8Index peoplePolicyAlias = catalog.Indexes["people"]["policyAlias"].String.Create(
+        using LibraDexStringScalar8Index peoplePolicyAlias = catalog.Indexes.IndexSet("people").Define("policyAlias").String.Create(
             stringKeys: StringKeys.Exact,
             stringComparisonPolicy: LibraDexStringComparisonPolicy.OrdinalIgnoreCase);
         ValidateGenericInsert(peoplePolicyAlias.Insert("Eric", 701UL), "policy alias string insert Eric");
@@ -9380,7 +9380,7 @@ internal static partial class RawHarness
             {
                 ["firstName"] = firstNameClassificationIndex
             });
-        IIndex firstNameFoldedProjectionIndex = new ClassificationOnlyIndex(catalog, catalog.Indexes["people"]["firstNameFolded"].Shape.String<long>());
+        IIndex firstNameFoldedProjectionIndex = new ClassificationOnlyIndex(catalog, catalog.Indexes.IndexSet("people").Define("firstNameFolded").Shape.String<long>());
         IIdentityCriterion adoptedTextFoldedProjectionCriterion = adoptedTextCondition.MaterializeWithProjectionBridge(
             indexName => string.Equals(indexName, "firstName", StringComparison.Ordinal)
                 ? firstNameClassificationIndex
@@ -9390,7 +9390,7 @@ internal static partial class RawHarness
             .ForGroup("people")
             .Index("firstName").AsString.Between("Alice", "zoe", ignoreCase: true, culture: "en-US")
             .EndCondition;
-        IIndex firstNameSortKeyProjectionIndex = new ClassificationOnlyIndex(catalog, catalog.Indexes["people"]["firstNameSortKey"].Shape.Scalar<byte[], long>());
+        IIndex firstNameSortKeyProjectionIndex = new ClassificationOnlyIndex(catalog, catalog.Indexes.IndexSet("people").Define("firstNameSortKey").Shape.Scalar<byte[], long>());
         IReadOnlyList<LibraDexConditionLeafClassification> adoptedTextSortKeyClassifications = adoptedTextSortKeyCondition.Classify(
             new Dictionary<string, IIndex>(StringComparer.Ordinal)
             {
@@ -10335,28 +10335,28 @@ internal static partial class RawHarness
         {
             adoptedGuidQuestionWildcardRejected = true;
         }
-        LibraDexConditionEndCondition groupGuidExactCondition = catalog.Indexes["people"]
+        LibraDexConditionEndCondition groupGuidExactCondition = catalog.Indexes.IndexSet("people")
             .Where("externalId").AsGuid.EqualTo(adoptedGuidFirst)
             .EndCondition;
-        IReadOnlyList<long> groupGuidExactIds = catalog.Indexes["people"].GetIdentities<long>(
+        IReadOnlyList<long> groupGuidExactIds = catalog.Indexes.IndexSet("people").GetIdentities<long>(
             groupGuidExactCondition,
             deduplication: IdentityDeduplication.Preserve);
-        LibraDexConditionEndCondition groupGuidTextExactCondition = catalog.Indexes["people"]
+        LibraDexConditionEndCondition groupGuidTextExactCondition = catalog.Indexes.IndexSet("people")
             .Where("externalId").AsGuid.EqualTo("00112233-4455-6677-8899-aabbccddeeff")
             .EndCondition;
-        IReadOnlyList<long> groupGuidTextExactIds = catalog.Indexes["people"].GetIdentities<long>(
+        IReadOnlyList<long> groupGuidTextExactIds = catalog.Indexes.IndexSet("people").GetIdentities<long>(
             groupGuidTextExactCondition,
             deduplication: IdentityDeduplication.Preserve);
-        LibraDexConditionEndCondition groupGuidWildcardCondition = catalog.Indexes["people"]
+        LibraDexConditionEndCondition groupGuidWildcardCondition = catalog.Indexes.IndexSet("people")
             .Where("externalId").AsGuid.Matches("00112233-XXXX-XXXX-XXXX-XXXXXXXXXXXX")
             .EndCondition;
-        IReadOnlyList<long> groupGuidWildcardIds = catalog.Indexes["people"].GetIdentities<long>(
+        IReadOnlyList<long> groupGuidWildcardIds = catalog.Indexes.IndexSet("people").GetIdentities<long>(
             groupGuidWildcardCondition,
             deduplication: IdentityDeduplication.Preserve);
-        LibraDexConditionEndCondition groupGuidBytePrefixCondition = catalog.Indexes["people"]
+        LibraDexConditionEndCondition groupGuidBytePrefixCondition = catalog.Indexes.IndexSet("people")
             .Where("externalId").AsGuid.StartsWith(adoptedGuidFirstBytes[..4])
             .EndCondition;
-        IReadOnlyList<long> groupGuidBytePrefixIds = catalog.Indexes["people"].GetIdentities<long>(
+        IReadOnlyList<long> groupGuidBytePrefixIds = catalog.Indexes.IndexSet("people").GetIdentities<long>(
             groupGuidBytePrefixCondition,
             deduplication: IdentityDeduplication.Preserve);
         LibraDexConditionEndCondition adoptedBinaryCondition = LibraDexCondition
@@ -10379,76 +10379,76 @@ internal static partial class RawHarness
             .ForGroup("people")
             .Index("fingerprint").AsBinary.SliceEqual(4, Convert.FromHexString("44556677"))
             .EndCondition;
-        LibraDexConditionEndCondition groupBinaryExactCondition = catalog.Indexes["people"]
+        LibraDexConditionEndCondition groupBinaryExactCondition = catalog.Indexes.IndexSet("people")
             .Where("fingerprint").AsBinary.EqualTo(adoptedBinaryFirst)
             .EndCondition;
-        IReadOnlyList<long> groupBinaryExactIds = catalog.Indexes["people"].GetIdentities<long>(
+        IReadOnlyList<long> groupBinaryExactIds = catalog.Indexes.IndexSet("people").GetIdentities<long>(
             groupBinaryExactCondition,
             deduplication: IdentityDeduplication.Preserve);
-        LibraDexConditionEndCondition groupBinaryPrefixCondition = catalog.Indexes["people"]
+        LibraDexConditionEndCondition groupBinaryPrefixCondition = catalog.Indexes.IndexSet("people")
             .Where("fingerprint").AsBinary.StartsWith(Convert.FromHexString("00112233"))
             .EndCondition;
-        IReadOnlyList<long> groupBinaryPrefixIds = catalog.Indexes["people"].GetIdentities<long>(
+        IReadOnlyList<long> groupBinaryPrefixIds = catalog.Indexes.IndexSet("people").GetIdentities<long>(
             groupBinaryPrefixCondition,
             deduplication: IdentityDeduplication.Preserve);
-        LibraDexConditionEndCondition groupBinarySuffixCondition = catalog.Indexes["people"]
+        LibraDexConditionEndCondition groupBinarySuffixCondition = catalog.Indexes.IndexSet("people")
             .Where("fingerprint").AsBinary.EndsWith(Convert.FromHexString("CCDDEEFF"))
             .EndCondition;
-        IReadOnlyList<long> groupBinarySuffixIds = catalog.Indexes["people"].GetIdentities<long>(
+        IReadOnlyList<long> groupBinarySuffixIds = catalog.Indexes.IndexSet("people").GetIdentities<long>(
             groupBinarySuffixCondition,
             deduplication: IdentityDeduplication.Preserve);
-        LibraDexConditionEndCondition groupBinaryContainsCondition = catalog.Indexes["people"]
+        LibraDexConditionEndCondition groupBinaryContainsCondition = catalog.Indexes.IndexSet("people")
             .Where("fingerprint").AsBinary.Contains(Convert.FromHexString("44556677"))
             .EndCondition;
-        IReadOnlyList<long> groupBinaryContainsIds = catalog.Indexes["people"].GetIdentities<long>(
+        IReadOnlyList<long> groupBinaryContainsIds = catalog.Indexes.IndexSet("people").GetIdentities<long>(
             groupBinaryContainsCondition,
             deduplication: IdentityDeduplication.Preserve);
-        LibraDexConditionEndCondition groupBinarySliceCondition = catalog.Indexes["people"]
+        LibraDexConditionEndCondition groupBinarySliceCondition = catalog.Indexes.IndexSet("people")
             .Where("fingerprint").AsBinary.SliceEqual(4, Convert.FromHexString("44556677"))
             .EndCondition;
-        IReadOnlyList<long> groupBinarySliceIds = catalog.Indexes["people"].GetIdentities<long>(
+        IReadOnlyList<long> groupBinarySliceIds = catalog.Indexes.IndexSet("people").GetIdentities<long>(
             groupBinarySliceCondition,
             deduplication: IdentityDeduplication.Preserve);
-        LibraDexConditionEndCondition groupBinaryHexPrefixCondition = catalog.Indexes["people"]
+        LibraDexConditionEndCondition groupBinaryHexPrefixCondition = catalog.Indexes.IndexSet("people")
             .Where("fingerprint").AsBinary.StartsWithHex("00-11-22-33")
             .EndCondition;
-        IReadOnlyList<long> groupBinaryHexPrefixIds = catalog.Indexes["people"].GetIdentities<long>(
+        IReadOnlyList<long> groupBinaryHexPrefixIds = catalog.Indexes.IndexSet("people").GetIdentities<long>(
             groupBinaryHexPrefixCondition,
             deduplication: IdentityDeduplication.Preserve);
-        LibraDexConditionEndCondition groupBinaryHexSuffixCondition = catalog.Indexes["people"]
+        LibraDexConditionEndCondition groupBinaryHexSuffixCondition = catalog.Indexes.IndexSet("people")
             .Where("fingerprint").AsBinary.EndsWithHex("CCxxEEFF")
             .EndCondition;
-        IReadOnlyList<long> groupBinaryHexSuffixIds = catalog.Indexes["people"].GetIdentities<long>(
+        IReadOnlyList<long> groupBinaryHexSuffixIds = catalog.Indexes.IndexSet("people").GetIdentities<long>(
             groupBinaryHexSuffixCondition,
             deduplication: IdentityDeduplication.Preserve);
-        LibraDexConditionEndCondition groupBinaryHexContainsCondition = catalog.Indexes["people"]
+        LibraDexConditionEndCondition groupBinaryHexContainsCondition = catalog.Indexes.IndexSet("people")
             .Where("fingerprint").AsBinary.ContainsHex("44 XX 66 77")
             .EndCondition;
-        IReadOnlyList<long> groupBinaryHexContainsIds = catalog.Indexes["people"].GetIdentities<long>(
+        IReadOnlyList<long> groupBinaryHexContainsIds = catalog.Indexes.IndexSet("people").GetIdentities<long>(
             groupBinaryHexContainsCondition,
             deduplication: IdentityDeduplication.Preserve);
-        LibraDexConditionEndCondition groupBinaryHexSliceCondition = catalog.Indexes["people"]
+        LibraDexConditionEndCondition groupBinaryHexSliceCondition = catalog.Indexes.IndexSet("people")
             .Where("fingerprint").AsBinary.SliceMatchesHex(4, "44xx6677")
             .EndCondition;
-        IReadOnlyList<long> groupBinaryHexSliceIds = catalog.Indexes["people"].GetIdentities<long>(
+        IReadOnlyList<long> groupBinaryHexSliceIds = catalog.Indexes.IndexSet("people").GetIdentities<long>(
             groupBinaryHexSliceCondition,
             deduplication: IdentityDeduplication.Preserve);
-        LibraDexConditionEndCondition groupBinaryHexPatternCondition = catalog.Indexes["people"]
+        LibraDexConditionEndCondition groupBinaryHexPatternCondition = catalog.Indexes.IndexSet("people")
             .Where("fingerprint").AsBinary.MatchesHexPattern("00112233xxxxxxxx8899AABBCCDDEEFF")
             .EndCondition;
-        IReadOnlyList<long> groupBinaryHexPatternIds = catalog.Indexes["people"].GetIdentities<long>(
+        IReadOnlyList<long> groupBinaryHexPatternIds = catalog.Indexes.IndexSet("people").GetIdentities<long>(
             groupBinaryHexPatternCondition,
             deduplication: IdentityDeduplication.Preserve);
-        LibraDexConditionEndCondition groupBinaryReversedSuffixCondition = catalog.Indexes["people"]
+        LibraDexConditionEndCondition groupBinaryReversedSuffixCondition = catalog.Indexes.IndexSet("people")
             .Where("fingerprintReversed").AsBinary.EndsWith(Convert.FromHexString("CCDDEEFF"))
             .EndCondition;
-        IReadOnlyList<long> groupBinaryReversedSuffixIds = catalog.Indexes["people"].GetIdentities<long>(
+        IReadOnlyList<long> groupBinaryReversedSuffixIds = catalog.Indexes.IndexSet("people").GetIdentities<long>(
             groupBinaryReversedSuffixCondition,
             deduplication: IdentityDeduplication.Preserve);
-        LibraDexConditionEndCondition groupBinaryReversedHexSuffixCondition = catalog.Indexes["people"]
+        LibraDexConditionEndCondition groupBinaryReversedHexSuffixCondition = catalog.Indexes.IndexSet("people")
             .Where("fingerprintReversed").AsBinary.EndsWithHex("CCxxEEFF")
             .EndCondition;
-        IReadOnlyList<long> groupBinaryReversedHexSuffixIds = catalog.Indexes["people"].GetIdentities<long>(
+        IReadOnlyList<long> groupBinaryReversedHexSuffixIds = catalog.Indexes.IndexSet("people").GetIdentities<long>(
             groupBinaryReversedHexSuffixCondition,
             deduplication: IdentityDeduplication.Preserve);
         LibraDexConditionEndCondition adoptedBinaryInt32SliceCondition = LibraDexCondition
@@ -10522,8 +10522,8 @@ internal static partial class RawHarness
             .AND.Index("typedFingerprint").AsBinary.SlicedAsDouble(4).EqualTo(9.25d)
             .EndCondition;
         using Catalog patternMutationCatalog = Catalog.CreateMemory();
-        LibraDexIndex<Guid, long> patternMutationGuid = patternMutationCatalog.Indexes["patternMutation"]["guidTarget"].Create<Guid, long>();
-        LibraDexIndex<byte[], long> patternMutationBinary = patternMutationCatalog.Indexes["patternMutation"]["binaryTarget"].Blob.Scalar<long>(LibraDexScalarWidth.Bytes16).Create();
+        LibraDexIndex<Guid, long> patternMutationGuid = patternMutationCatalog.Indexes.IndexSet("patternMutation").Define("guidTarget").Create<Guid, long>();
+        LibraDexIndex<byte[], long> patternMutationBinary = patternMutationCatalog.Indexes.IndexSet("patternMutation").Define("binaryTarget").Blob.Scalar<long>(LibraDexScalarWidth.Bytes16).Create();
         Guid patternGuidFirst = Guid.Parse("00112233-4455-6677-8899-aabbccddeeff");
         Guid patternGuidSecond = Guid.Parse("00112233-9999-aaaa-bbbb-cccccccccccc");
         Guid patternGuidThird = Guid.Parse("ffeeddcc-4455-6677-8899-aabbccddeeff");
@@ -10549,7 +10549,7 @@ internal static partial class RawHarness
             .ForGroup("patternMutation")
             .Index("guidTarget").AsGuid.StartsWith("00112233")
             .EndCondition;
-        LibraDexIdentityMutationResult guidPatternDeleteFromResult = patternMutationCatalog["patternMutation"]["guidTarget"].Delete(guidPatternDeleteCondition);
+        LibraDexIdentityMutationResult guidPatternDeleteFromResult = patternMutationCatalog.Indexes.IndexSet("patternMutation").Define("guidTarget").Delete(guidPatternDeleteCondition);
         IReadOnlyList<long> guidPatternDeletedIds = LibraDexCondition
             .ForGroup("patternMutation")
             .Index("guidTarget").AsGuid.StartsWith("00112233")
@@ -10564,7 +10564,7 @@ internal static partial class RawHarness
             .ForGroup("patternMutation")
             .Index("binaryTarget").AsBinary.Contains(Convert.FromHexString("44556677"))
             .EndCondition;
-        LibraDexIdentityMutationResult binaryPatternSetKeyOnResult = patternMutationCatalog["patternMutation"]["binaryTarget"].SetKey(
+        LibraDexIdentityMutationResult binaryPatternSetKeyOnResult = patternMutationCatalog.Indexes.IndexSet("patternMutation").Define("binaryTarget").SetKey(
             binaryPatternSetKeyCondition,
             patternBinaryReplacement);
         IReadOnlyList<long> binaryPatternOldIds = LibraDexCondition
@@ -10791,7 +10791,7 @@ internal static partial class RawHarness
         {
             throw new InvalidDataException("Composite identity-return ordering and range LXL diverged from condition-plan order.");
         }
-        IIndex routedCompositeFlagsIndex = catalog.Indexes["people"]["tenantFlags"].Composite<long>(
+        IIndex routedCompositeFlagsIndex = catalog.Indexes.IndexSet("people").Define("tenantFlags").Composite<long>(
             C.Guid("tenantId"),
             C.Scalar<uint>("flags"))
             .Create(C.NonUnique);
@@ -10849,7 +10849,7 @@ internal static partial class RawHarness
             .KeyPart("flags").AsUInt32.InSet(new[] { 3U, 5U })
             .EndCondition
             .ToList<long>(routedCompositeFlagsResolver, deduplication: IdentityDeduplication.Preserve);
-        IIndex routedCompositeGuidIndex = catalog.Indexes["people"]["tenantGuidUser"].Composite<long>(
+        IIndex routedCompositeGuidIndex = catalog.Indexes.IndexSet("people").Define("tenantGuidUser").Composite<long>(
             C.Guid("tenantId"),
             C.Guid("userId", GuidKeys.Exact))
             .Create(C.NonUnique);
@@ -10891,7 +10891,7 @@ internal static partial class RawHarness
             .KeyPart("userId").AsGuid.NotInSet(new[] { userC })
             .EndCondition
             .ToList<long>(routedCompositeGuidResolver, deduplication: IdentityDeduplication.Preserve);
-        IIndex routedCompositeDateIndex = catalog.Indexes["people"]["tenantCreated"].Composite<long>(
+        IIndex routedCompositeDateIndex = catalog.Indexes.IndexSet("people").Define("tenantCreated").Composite<long>(
             C.Guid("tenantId"),
             C.Date<DateTime>("created", DateKeys.ExactAndStructured))
             .Create(C.NonUnique);
@@ -10979,7 +10979,7 @@ internal static partial class RawHarness
                 LibraDexCompositePart.Date("created").HourRange(12, 12))
             .EndCondition
             .ToList<long>(routedCompositeDateResolver, deduplication: IdentityDeduplication.Preserve);
-        IIndex routedCompositeBinaryIndex = catalog.Indexes["people"]["tenantPayload"].Composite<long>(
+        IIndex routedCompositeBinaryIndex = catalog.Indexes.IndexSet("people").Define("tenantPayload").Composite<long>(
             C.Guid("tenantId"),
             C.Binary("marker"))
             .Create(C.NonUnique);
@@ -10997,7 +10997,7 @@ internal static partial class RawHarness
             .KeyPart("marker").AsBinary.StartsWith(new byte[] { 0xCA, 0xFE })
             .EndCondition
             .ToList<long>(routedCompositeBinaryResolver, deduplication: IdentityDeduplication.Preserve);
-        IIndex routedCompositePartComparisonIndex = catalog.Indexes["people"]["labelOrder"].Composite<long>(
+        IIndex routedCompositePartComparisonIndex = catalog.Indexes.IndexSet("people").Define("labelOrder").Composite<long>(
             C.Text("leftLabel"),
             C.Text("rightLabel"))
             .Create(C.NonUnique);
@@ -11554,14 +11554,14 @@ internal static partial class RawHarness
 
         using (Catalog scalarSelectorCatalog = Catalog.CreateMemory())
         {
-            LibraDexIndex<byte, long> byteIndex = scalarSelectorCatalog.Indexes["scalar"]["byte"].Create<byte, long>();
-            LibraDexIndex<sbyte, long> sbyteIndex = scalarSelectorCatalog.Indexes["scalar"]["sbyte"].Create<sbyte, long>();
-            LibraDexIndex<short, long> shortIndex = scalarSelectorCatalog.Indexes["scalar"]["short"].Create<short, long>();
-            LibraDexIndex<ushort, long> ushortIndex = scalarSelectorCatalog.Indexes["scalar"]["ushort"].Create<ushort, long>();
-            LibraDexIndex<char, long> charIndex = scalarSelectorCatalog.Indexes["scalar"]["char"].Create<char, long>();
-            LibraDexIndex<ulong, long> ulongIndex = scalarSelectorCatalog.Indexes["scalar"]["ulong"].Create<ulong, long>();
-            LibraDexIndex<Int128, long> int128Index = scalarSelectorCatalog.Indexes["scalar"]["int128"].Int128Keys<long>().Create();
-            LibraDexIndex<UInt128, long> uint128Index = scalarSelectorCatalog.Indexes["scalar"]["uint128"].UInt128Keys<long>().Create();
+            LibraDexIndex<byte, long> byteIndex = scalarSelectorCatalog.Indexes.IndexSet("scalar").Define("byte").Create<byte, long>();
+            LibraDexIndex<sbyte, long> sbyteIndex = scalarSelectorCatalog.Indexes.IndexSet("scalar").Define("sbyte").Create<sbyte, long>();
+            LibraDexIndex<short, long> shortIndex = scalarSelectorCatalog.Indexes.IndexSet("scalar").Define("short").Create<short, long>();
+            LibraDexIndex<ushort, long> ushortIndex = scalarSelectorCatalog.Indexes.IndexSet("scalar").Define("ushort").Create<ushort, long>();
+            LibraDexIndex<char, long> charIndex = scalarSelectorCatalog.Indexes.IndexSet("scalar").Define("char").Create<char, long>();
+            LibraDexIndex<ulong, long> ulongIndex = scalarSelectorCatalog.Indexes.IndexSet("scalar").Define("ulong").Create<ulong, long>();
+            LibraDexIndex<Int128, long> int128Index = scalarSelectorCatalog.Indexes.IndexSet("scalar").Define("int128").Int128Keys<long>().Create();
+            LibraDexIndex<UInt128, long> uint128Index = scalarSelectorCatalog.Indexes.IndexSet("scalar").Define("uint128").UInt128Keys<long>().Create();
             Int128 int128NegativeHuge = -(Int128.One << 100);
             Int128 int128PositiveHuge = Int128.One << 100;
             UInt128 uint128High = UInt128.One << 100;
@@ -11698,13 +11698,13 @@ internal static partial class RawHarness
         adoptedDeferredMembershipSet = new HashSet<long> { 11L };
         IReadOnlyList<long> updatedAdoptedDeferredMembershipIds = adoptedDeferredMembershipCondition.ToList<long>(surfaceResolver, deduplication: IdentityDeduplication.Preserve);
         IReadOnlyList<long> indexWhereIds = index.GetIdentities(index.Where.GreaterOrEqual(10).And.Not.EqualTo(11).EndCondition, deduplication: IdentityDeduplication.Preserve);
-        IReadOnlyList<long> catalogIndexerIds = catalog["surface"].GetIdentities<long>(
+        IReadOnlyList<long> catalogIndexerIds = catalog.Indexes.IndexSet("surface").GetIdentities<long>(
             index.Where.GreaterOrEqual(10).EndCondition.AndAlso(index.Where.LessOrEqual(11).EndCondition),
             deduplication: IdentityDeduplication.Preserve);
-        IReadOnlyList<long> groupWhereIds = catalog.Indexes["surface"].GetIdentities<long>(
+        IReadOnlyList<long> groupWhereIds = catalog.Indexes.IndexSet("surface").GetIdentities<long>(
             index.Where.GreaterOrEqual(10).EndCondition.AndAlso(index.Where.LessOrEqual(11).EndCondition),
             deduplication: IdentityDeduplication.Preserve);
-        AbraxasIdentityQueryAdapter<long> abraxasIdentityQuery = catalog.Indexes["surface"].AbraxasIdentityQuery<long>();
+        AbraxasIdentityQueryAdapter<long> abraxasIdentityQuery = catalog.Indexes.IndexSet("surface").AbraxasIdentityQuery<long>();
         IReadOnlyList<long> abraxasIdentityIds = abraxasIdentityQuery.Get(
             index.Where.GreaterOrEqual(10).EndCondition.AndAlso(index.Where.LessOrEqual(11).EndCondition),
             deduplication: IdentityDeduplication.Preserve);
@@ -11718,11 +11718,11 @@ internal static partial class RawHarness
             .ForGroup("surface")
             .Index(() => selectedIndexName, "selected").AsInt64.EqualTo(12L)
             .EndCondition;
-        IReadOnlyList<long> deferredIndexValueIds = catalog.Indexes["surface"].GetIdentities<long>(
+        IReadOnlyList<long> deferredIndexValueIds = catalog.Indexes.IndexSet("surface").GetIdentities<long>(
             deferredIndexCondition,
             deduplication: IdentityDeduplication.Preserve);
         selectedIndexName = "alternate";
-        IReadOnlyList<long> updatedDeferredIndexIds = catalog.Indexes["surface"].GetIdentities<long>(
+        IReadOnlyList<long> updatedDeferredIndexIds = catalog.Indexes.IndexSet("surface").GetIdentities<long>(
             deferredIndexCondition,
             deduplication: IdentityDeduplication.Preserve);
         LibraDexConditionEndCondition lowOrHighFragment = LibraDexConditionEndCondition.Grouped(index.Where.EqualTo(10).Or.EqualTo(12).EndCondition);
@@ -11736,91 +11736,91 @@ internal static partial class RawHarness
         IReadOnlyList<long> continuedOrFragmentIds = index.GetIdentities(
             index.Where.ContinueOr(index.Where.EqualTo(10)).EqualTo(12).EndCondition,
             deduplication: IdentityDeduplication.Preserve);
-        LibraDexConditionEndCondition namedMultiKeyCondition = catalog.Indexes["surface"]
+        LibraDexConditionEndCondition namedMultiKeyCondition = catalog.Indexes.IndexSet("surface")
             .Where("public-surface").AsInt64.GreaterOrEqual(10L)
             .AndAlso("public-surface").AsInt64.LessOrEqual(11L)
             .EndCondition;
-        IReadOnlyList<long> namedMultiKeyIds = catalog.Indexes["surface"].GetIdentities<long>(
+        IReadOnlyList<long> namedMultiKeyIds = catalog.Indexes.IndexSet("surface").GetIdentities<long>(
             namedMultiKeyCondition,
             deduplication: IdentityDeduplication.Preserve);
-        LibraDexConditionEndCondition handleMultiKeyCondition = catalog.Indexes["surface"]
+        LibraDexConditionEndCondition handleMultiKeyCondition = catalog.Indexes.IndexSet("surface")
             .Where((IIndex)index).AsInt64.GreaterOrEqual(10L)
             .AndAlso((IIndex)index).AsInt64.LessOrEqual(11L)
             .EndCondition;
-        IReadOnlyList<long> handleMultiKeyIds = catalog.Indexes["surface"].GetIdentities<long>(
+        IReadOnlyList<long> handleMultiKeyIds = catalog.Indexes.IndexSet("surface").GetIdentities<long>(
             handleMultiKeyCondition,
             deduplication: IdentityDeduplication.Preserve);
-        LibraDexConditionEndCondition typedHandleCondition = catalog.Indexes["surface"]
+        LibraDexConditionEndCondition typedHandleCondition = catalog.Indexes.IndexSet("surface")
             .Where(index).GreaterOrEqual(10L)
             .AndAlso(index).LessOrEqual(11L)
             .EndCondition;
-        IReadOnlyList<long> typedHandleIds = catalog.Indexes["surface"].GetIdentities<long>(
+        IReadOnlyList<long> typedHandleIds = catalog.Indexes.IndexSet("surface").GetIdentities<long>(
             typedHandleCondition,
             deduplication: IdentityDeduplication.Preserve);
-        LibraDexConditionEndCondition catalogNotCondition = catalog.Indexes["surface"]
+        LibraDexConditionEndCondition catalogNotCondition = catalog.Indexes.IndexSet("surface")
             .Where((IIndex)index).Not.AsInt64.EqualTo(11L)
             .EndCondition;
-        IReadOnlyList<long> catalogNotIds = catalog.Indexes["surface"].GetIdentities<long>(
+        IReadOnlyList<long> catalogNotIds = catalog.Indexes.IndexSet("surface").GetIdentities<long>(
             catalogNotCondition,
             deduplication: IdentityDeduplication.Preserve);
-        LibraDexConditionEndCondition crossIndexNotCondition = catalog.Indexes["surface"]
+        LibraDexConditionEndCondition crossIndexNotCondition = catalog.Indexes.IndexSet("surface")
             .Where(index).GreaterOrEqual(10L)
             .AndAlso(index).Not.EqualTo(12L)
             .EndCondition;
-        IReadOnlyList<long> crossIndexNotIds = catalog.Indexes["surface"].GetIdentities<long>(
+        IReadOnlyList<long> crossIndexNotIds = catalog.Indexes.IndexSet("surface").GetIdentities<long>(
             crossIndexNotCondition,
             deduplication: IdentityDeduplication.Preserve);
-        LibraDexConditionEndCondition orderedMultiKeyCondition = catalog.Indexes["surface"]
+        LibraDexConditionEndCondition orderedMultiKeyCondition = catalog.Indexes.IndexSet("surface")
             .MultiKey((IIndex)index, (IIndex)index)
             .Where(0).AsInt64.GreaterOrEqual(10L)
             .AndAlso(1).AsInt64.LessOrEqual(11L)
             .EndCondition;
-        IReadOnlyList<long> orderedMultiKeyIds = catalog.Indexes["surface"].GetIdentities<long>(
+        IReadOnlyList<long> orderedMultiKeyIds = catalog.Indexes.IndexSet("surface").GetIdentities<long>(
             orderedMultiKeyCondition,
             deduplication: IdentityDeduplication.Preserve);
-        LibraDexConditionEndCondition orderedMultiKeyNotCondition = catalog.Indexes["surface"]
+        LibraDexConditionEndCondition orderedMultiKeyNotCondition = catalog.Indexes.IndexSet("surface")
             .MultiKey((IIndex)index, (IIndex)index)
             .Where(0).AsInt64.GreaterOrEqual(10L)
             .AndAlso(1).Not.AsInt64.EqualTo(12L)
             .EndCondition;
-        IReadOnlyList<long> orderedMultiKeyNotIds = catalog.Indexes["surface"].GetIdentities<long>(
+        IReadOnlyList<long> orderedMultiKeyNotIds = catalog.Indexes.IndexSet("surface").GetIdentities<long>(
             orderedMultiKeyNotCondition,
             deduplication: IdentityDeduplication.Preserve);
-        LibraDexConditionEndCondition twelveFragment = catalog.Indexes["surface"]
+        LibraDexConditionEndCondition twelveFragment = catalog.Indexes.IndexSet("surface")
             .Where(index).EqualTo(12L)
             .EndCondition;
-        LibraDexConditionEndCondition clauseNotIndexCondition = catalog.Indexes["surface"]
+        LibraDexConditionEndCondition clauseNotIndexCondition = catalog.Indexes.IndexSet("surface")
             .Where(index).GreaterOrEqual(10L)
             .And.Not.Index("public-surface").AsInt64.EqualTo(12L)
             .EndCondition;
-        IReadOnlyList<long> clauseNotIndexIds = catalog.Indexes["surface"].GetIdentities<long>(
+        IReadOnlyList<long> clauseNotIndexIds = catalog.Indexes.IndexSet("surface").GetIdentities<long>(
             clauseNotIndexCondition,
             deduplication: IdentityDeduplication.Preserve);
-        LibraDexConditionEndCondition clauseGroupCondition = catalog.Indexes["surface"]
+        LibraDexConditionEndCondition clauseGroupCondition = catalog.Indexes.IndexSet("surface")
             .Where(index).GreaterOrEqual(10L)
             .And.Group(twelveFragment)
             .EndCondition;
-        IReadOnlyList<long> clauseGroupIds = catalog.Indexes["surface"].GetIdentities<long>(
+        IReadOnlyList<long> clauseGroupIds = catalog.Indexes.IndexSet("surface").GetIdentities<long>(
             clauseGroupCondition,
             deduplication: IdentityDeduplication.Preserve);
-        LibraDexConditionEndCondition clauseNotGroupCondition = catalog.Indexes["surface"]
+        LibraDexConditionEndCondition clauseNotGroupCondition = catalog.Indexes.IndexSet("surface")
             .Where(index).GreaterOrEqual(10L)
             .And.Not.Group(twelveFragment)
             .EndCondition;
-        IReadOnlyList<long> clauseNotGroupIds = catalog.Indexes["surface"].GetIdentities<long>(
+        IReadOnlyList<long> clauseNotGroupIds = catalog.Indexes.IndexSet("surface").GetIdentities<long>(
             clauseNotGroupCondition,
             deduplication: IdentityDeduplication.Preserve);
         LibraDexConditionEndCondition rootNotGroupCondition = LibraDexCondition
             .ForGroup("surface")
             .Not.Group(twelveFragment)
             .EndCondition;
-        IReadOnlyList<long> rootNotGroupIds = catalog.Indexes["surface"].GetIdentities<long>(
+        IReadOnlyList<long> rootNotGroupIds = catalog.Indexes.IndexSet("surface").GetIdentities<long>(
             rootNotGroupCondition,
             deduplication: IdentityDeduplication.Preserve);
         LibraDexConditionEndCondition composedPreserveOrCountCondition = index.Where.EqualTo(10L).Or.Between(10L, 11L).EndCondition;
         LibraDexConditionEndCondition composedEmptyAndCountCondition = index.Where.EqualTo(99L).And.GreaterOrEqual(10L).EndCondition;
         LibraDexConditionEndCondition composedEmptyExceptCountCondition = index.Where.Between(10L, 12L).And.Not.EqualTo(99L).EndCondition;
-        LibraDexConditionEndCondition composedEmptyComplementCountCondition = catalog.Indexes["surface"]
+        LibraDexConditionEndCondition composedEmptyComplementCountCondition = catalog.Indexes.IndexSet("surface")
             .Where(index).Not.EqualTo(99L)
             .EndCondition;
         long composedPreserveOrCount = composedPreserveOrCountCondition.Count(surfaceResolver, IdentityDeduplication.Preserve);
@@ -11850,7 +11850,7 @@ internal static partial class RawHarness
                 return externalAges[(long)identity] > 18;
             })
             .EndCondition;
-        IReadOnlyList<long> externalIdentityIds = catalog.Indexes["surface"].GetIdentities<long>(
+        IReadOnlyList<long> externalIdentityIds = catalog.Indexes.IndexSet("surface").GetIdentities<long>(
             externalIdentityCondition,
             deduplication: IdentityDeduplication.Preserve);
         LibraDexIdentityExecutionPlan externalIdentityPlan = externalIdentityCondition
@@ -11862,7 +11862,7 @@ internal static partial class RawHarness
             .Index(index.Name).AsInt64.Between(10L, 12L)
             .And.Not.External(identity => externalAges[(long)identity] <= 18)
             .EndCondition;
-        IReadOnlyList<long> externalNotIds = catalog.Indexes["surface"].GetIdentities<long>(
+        IReadOnlyList<long> externalNotIds = catalog.Indexes.IndexSet("surface").GetIdentities<long>(
             externalNotCondition,
             deduplication: IdentityDeduplication.Preserve);
         List<LibraDexCursorEntry<long, long>> externalCursorEntries = new();
@@ -11876,7 +11876,7 @@ internal static partial class RawHarness
                 return externalAges[(long)context.Identity] >= 18;
             })
             .EndCondition;
-        using (LibraDexIndexCursor<long, long> externalCursor = catalog.Indexes["surface"].GetCursor(index, externalCursorCondition))
+        using (LibraDexIndexCursor<long, long> externalCursor = catalog.Indexes.IndexSet("surface").GetCursor(index, externalCursorCondition))
         {
             while (externalCursor.Next())
             {
@@ -11904,7 +11904,7 @@ internal static partial class RawHarness
             .Index(index.Name).AsInt64.EqualTo(10L)
             .Or.External(new[] { 1200L })
             .EndCondition;
-        IReadOnlyList<long> externalSourceOrIds = catalog.Indexes["surface"].GetIdentities<long>(
+        IReadOnlyList<long> externalSourceOrIds = catalog.Indexes.IndexSet("surface").GetIdentities<long>(
             externalSourceOrCondition,
             deduplication: IdentityDeduplication.Preserve);
         LibraDexConditionEndCondition externalSourceAndCondition = LibraDexCondition
@@ -11912,11 +11912,11 @@ internal static partial class RawHarness
             .Index(index.Name).AsInt64.Between(10L, 12L)
             .And.External(new[] { 1100L, 9999L })
             .EndCondition;
-        IReadOnlyList<long> externalSourceAndIds = catalog.Indexes["surface"].GetIdentities<long>(
+        IReadOnlyList<long> externalSourceAndIds = catalog.Indexes.IndexSet("surface").GetIdentities<long>(
             externalSourceAndCondition,
             deduplication: IdentityDeduplication.Preserve);
         List<LibraDexCursorEntry<long, long>> externalSourceCursorEntries = new();
-        using (LibraDexIndexCursor<long, long> externalSourceCursor = catalog.Indexes["surface"].GetCursor(index, externalSourceAndCondition))
+        using (LibraDexIndexCursor<long, long> externalSourceCursor = catalog.Indexes.IndexSet("surface").GetCursor(index, externalSourceAndCondition))
         {
             while (externalSourceCursor.Next())
             {
@@ -11935,7 +11935,7 @@ internal static partial class RawHarness
             .Index(index.Name).AsInt64.Between(10L, 12L)
             .And.External<int, long>(() => externalAgeEntries).Between(18, 25)
             .EndCondition;
-        IReadOnlyList<long> externalEntryIds = catalog.Indexes["surface"].GetIdentities<long>(
+        IReadOnlyList<long> externalEntryIds = catalog.Indexes.IndexSet("surface").GetIdentities<long>(
             externalEntryCondition,
             deduplication: IdentityDeduplication.Preserve);
         LibraDexConditionEndCondition externalCorrelatedCondition = LibraDexCondition
@@ -11943,53 +11943,53 @@ internal static partial class RawHarness
             .Index(index.Name).AsInt64.Between(10L, 12L)
             .And.External<int>(identity => new[] { externalAges[(long)identity] }).Between(18, 25)
             .EndCondition;
-        IReadOnlyList<long> externalCorrelatedIds = catalog.Indexes["surface"].GetIdentities<long>(
+        IReadOnlyList<long> externalCorrelatedIds = catalog.Indexes.IndexSet("surface").GetIdentities<long>(
             externalCorrelatedCondition,
             deduplication: IdentityDeduplication.Preserve);
-        LibraDexConditionEndCondition catalogExternalFilterCondition = catalog.Indexes["surface"]
+        LibraDexConditionEndCondition catalogExternalFilterCondition = catalog.Indexes.IndexSet("surface")
             .External(identity => externalAges[(long)identity] > 18)
             .And.Index(index.Name).AsInt64.Between(10L, 12L)
             .EndCondition;
-        IReadOnlyList<long> catalogExternalFilterIds = catalog.Indexes["surface"].GetIdentities<long>(
+        IReadOnlyList<long> catalogExternalFilterIds = catalog.Indexes.IndexSet("surface").GetIdentities<long>(
             catalogExternalFilterCondition,
             deduplication: IdentityDeduplication.Preserve);
-        LibraDexConditionEndCondition catalogExternalSourceCondition = catalog.Indexes["surface"]
+        LibraDexConditionEndCondition catalogExternalSourceCondition = catalog.Indexes.IndexSet("surface")
             .External(new[] { 1100L, 1200L })
             .And.Index(index.Name).AsInt64.Between(10L, 11L)
             .EndCondition;
-        IReadOnlyList<long> catalogExternalSourceIds = catalog.Indexes["surface"].GetIdentities<long>(
+        IReadOnlyList<long> catalogExternalSourceIds = catalog.Indexes.IndexSet("surface").GetIdentities<long>(
             catalogExternalSourceCondition,
             deduplication: IdentityDeduplication.Preserve);
-        LibraDexConditionEndCondition catalogExternalEntryCondition = catalog.Indexes["surface"]
+        LibraDexConditionEndCondition catalogExternalEntryCondition = catalog.Indexes.IndexSet("surface")
             .External<int, long>(() => externalAgeEntries).Between(18, 25)
             .EndCondition;
-        IReadOnlyList<long> catalogExternalEntryIds = catalog.Indexes["surface"].GetIdentities<long>(
+        IReadOnlyList<long> catalogExternalEntryIds = catalog.Indexes.IndexSet("surface").GetIdentities<long>(
             catalogExternalEntryCondition,
             deduplication: IdentityDeduplication.Preserve);
-        LibraDexConditionEndCondition catalogExternalCorrelatedCondition = catalog.Indexes["surface"]
+        LibraDexConditionEndCondition catalogExternalCorrelatedCondition = catalog.Indexes.IndexSet("surface")
             .External<int>(identity => new[] { externalAges[(long)identity] }).Between(18, 25)
             .And.Index(index.Name).AsInt64.Between(10L, 12L)
             .EndCondition;
-        IReadOnlyList<long> catalogExternalCorrelatedIds = catalog.Indexes["surface"].GetIdentities<long>(
+        IReadOnlyList<long> catalogExternalCorrelatedIds = catalog.Indexes.IndexSet("surface").GetIdentities<long>(
             catalogExternalCorrelatedCondition,
             deduplication: IdentityDeduplication.Preserve);
-        CatalogIdentityGroupIndexes<long> typedSurface = catalog.Indexes["surface"].Identities.Int64;
+        CatalogIdentityGroupIndexes<long> typedSurface = catalog.Indexes.IndexSet("surface").Identities.Int64;
         LibraDexConditionEndCondition typedCatalogExternalEntryCondition = typedSurface
             .External<int>(() => externalAgeEntries).Between(18, 25)
             .EndCondition;
-        IReadOnlyList<long> typedCatalogExternalEntryIds = catalog.Indexes["surface"].GetIdentities<long>(
+        IReadOnlyList<long> typedCatalogExternalEntryIds = catalog.Indexes.IndexSet("surface").GetIdentities<long>(
             typedCatalogExternalEntryCondition,
             deduplication: IdentityDeduplication.Preserve);
         LibraDexConditionEndCondition typedCatalogExternalCorrelatedCondition = typedSurface
             .External<int>(identity => new[] { externalAges[identity] }).Between(18, 25)
             .And.Index(index.Name).AsInt64.Between(10L, 12L)
             .EndCondition;
-        IReadOnlyList<long> typedCatalogExternalCorrelatedIds = catalog.Indexes["surface"].GetIdentities<long>(
+        IReadOnlyList<long> typedCatalogExternalCorrelatedIds = catalog.Indexes.IndexSet("surface").GetIdentities<long>(
             typedCatalogExternalCorrelatedCondition,
             deduplication: IdentityDeduplication.Preserve);
         using Catalog externalMutationCatalog = Catalog.CreateMemory();
-        LibraDexIndex<int, long> externalMutationTarget = externalMutationCatalog.Indexes["externalMutation"]["target"].Create<int, long>();
-        LibraDexIndex<int, long> externalMutationGuard = externalMutationCatalog.Indexes["externalMutation"]["guard"].Create<int, long>();
+        LibraDexIndex<int, long> externalMutationTarget = externalMutationCatalog.Indexes.IndexSet("externalMutation").Define("target").Create<int, long>();
+        LibraDexIndex<int, long> externalMutationGuard = externalMutationCatalog.Indexes.IndexSet("externalMutation").Define("guard").Create<int, long>();
         ValidateGenericInsert(externalMutationTarget.Insert(10, 1L), "external targeted mutation target 10/1 insert");
         ValidateGenericInsert(externalMutationTarget.Insert(20, 2L), "external targeted mutation target 20/2 insert");
         ValidateGenericInsert(externalMutationTarget.Insert(30, 3L), "external targeted mutation target 30/3 insert");
@@ -12010,7 +12010,7 @@ internal static partial class RawHarness
             .ForGroup("externalMutation")
             .External(new[] { 1L, 3L })
             .EndCondition;
-        LibraDexIdentityMutationResult externalSourceDeleteResult = externalMutationCatalog["externalMutation"]["target"].Delete(externalSourceDeleteCondition);
+        LibraDexIdentityMutationResult externalSourceDeleteResult = externalMutationCatalog.Indexes.IndexSet("externalMutation").Define("target").Delete(externalSourceDeleteCondition);
         IReadOnlyList<long> externalDeleteRemovedIds = LibraDexCondition
             .ForGroup("externalMutation")
             .Index("target").AsInt32.InSet(new[] { 10, 30 })
@@ -12026,7 +12026,7 @@ internal static partial class RawHarness
             .Index("guard").AsInt32.EqualTo(1)
             .And.External(identity => (long)identity == 2L)
             .EndCondition;
-        LibraDexIdentityMutationResult externalFilterSetKeyResult = externalMutationCatalog["externalMutation"]["target"].SetKey(
+        LibraDexIdentityMutationResult externalFilterSetKeyResult = externalMutationCatalog.Indexes.IndexSet("externalMutation").Define("target").SetKey(
             externalFilterSetKeyCondition,
             22);
         IReadOnlyList<long> externalFilterOldKeyIds = LibraDexCondition
@@ -12039,7 +12039,7 @@ internal static partial class RawHarness
             .Index("target").AsInt32.EqualTo(22)
             .EndCondition
             .ToList<long>(externalMutationResolver, deduplication: IdentityDeduplication.Preserve);
-        using LibraDexIdentityCursor<long> surfaceIdentityCursor = catalog.Indexes["surface"].GetCursor<long>(
+        using LibraDexIdentityCursor<long> surfaceIdentityCursor = catalog.Indexes.IndexSet("surface").GetCursor<long>(
             namedMultiKeyCondition,
             deduplication: IdentityDeduplication.Preserve,
             skip: 1,
@@ -12081,7 +12081,7 @@ internal static partial class RawHarness
             }
         }
 
-        using LibraDexIndexCursor<long, long> descendingPagedTargetCursor = catalog.Indexes["surface"].GetCursor(
+        using LibraDexIndexCursor<long, long> descendingPagedTargetCursor = catalog.Indexes.IndexSet("surface").GetCursor(
             index,
             index.Where.Between(10L, 12L).EndCondition,
             skip: 1,
@@ -12095,7 +12095,7 @@ internal static partial class RawHarness
         List<LibraDexCursorEntry<string, ulong>> descendingStringTargetEntries = new();
         using (Catalog descendingStringCatalog = Catalog.CreateMemory())
         {
-            LibraDexStringScalar8Index descendingName = descendingStringCatalog.Indexes["string-desc"]["name"].String.Create(stringKeys: StringKeys.Exact);
+            LibraDexStringScalar8Index descendingName = descendingStringCatalog.Indexes.IndexSet("string-desc").Define("name").String.Create(stringKeys: StringKeys.Exact);
             ValidateGenericInsert(descendingName.Insert("Alice", 7001UL), "descending string Alice insert");
             ValidateGenericInsert(descendingName.Insert("Bob", 7002UL), "descending string Bob insert");
             ValidateGenericInsert(descendingName.Insert("Cora", 7003UL), "descending string Cora insert");
@@ -12103,7 +12103,7 @@ internal static partial class RawHarness
                 .ForGroup("string-desc")
                 .Index("name").AsString.Between("A", "Z")
                 .EndCondition;
-            using LibraDexIndexCursor<string, ulong> descendingStringCursor = descendingStringCatalog.Indexes["string-desc"].GetCursor(
+            using LibraDexIndexCursor<string, ulong> descendingStringCursor = descendingStringCatalog.Indexes.IndexSet("string-desc").GetCursor(
                 descendingName,
                 descendingStringCondition,
                 direction: QueryDirection.Descending);
@@ -12116,7 +12116,7 @@ internal static partial class RawHarness
         ValidateNativeDescendingRangeShapes();
         ValidateSingleKeyPerIdentityContract();
 
-        using LibraDexIndexCursor<long, long> groupedTargetCursor = catalog.Indexes["surface"].GetCursor(index, clauseNotGroupCondition);
+        using LibraDexIndexCursor<long, long> groupedTargetCursor = catalog.Indexes.IndexSet("surface").GetCursor(index, clauseNotGroupCondition);
         List<LibraDexCursorEntry<long, long>> groupedTargetEntries = new();
         while (groupedTargetCursor.Next())
         {
@@ -12126,20 +12126,20 @@ internal static partial class RawHarness
         List<LibraDexCursorEntry<long, long>> rightTargetComposedEntries;
         using (Catalog rightTargetComposedCatalog = Catalog.CreateMemory())
         {
-            LibraDexIndex<long, long> rightTargetValueIndex = rightTargetComposedCatalog.Indexes["right-target-composed"]["value"].Int64Keys<long>().Create(
+            LibraDexIndex<long, long> rightTargetValueIndex = rightTargetComposedCatalog.Indexes.IndexSet("right-target-composed").Define("value").Int64Keys<long>().Create(
                 keys: IndexKeys.NonUnique);
-            LibraDexIndex<long, long> rightTargetFlagIndex = rightTargetComposedCatalog.Indexes["right-target-composed"]["flag"].Int64Keys<long>().Create(
+            LibraDexIndex<long, long> rightTargetFlagIndex = rightTargetComposedCatalog.Indexes.IndexSet("right-target-composed").Define("flag").Int64Keys<long>().Create(
                 keys: IndexKeys.NonUnique);
             ValidateGenericInsert(rightTargetValueIndex.Insert(10L, 1010L), "condition cursor right-target value 10 insert");
             ValidateGenericInsert(rightTargetValueIndex.Insert(11L, 1111L), "condition cursor right-target value 11 insert");
             ValidateGenericInsert(rightTargetValueIndex.Insert(12L, 1212L), "condition cursor right-target value 12 insert");
             ValidateGenericInsert(rightTargetFlagIndex.Insert(1L, 1111L), "condition cursor right-target flag 1111 insert");
             ValidateGenericInsert(rightTargetFlagIndex.Insert(1L, 1212L), "condition cursor right-target flag 1212 insert");
-            LibraDexConditionEndCondition rightTargetComposedCondition = rightTargetComposedCatalog.Indexes["right-target-composed"]
+            LibraDexConditionEndCondition rightTargetComposedCondition = rightTargetComposedCatalog.Indexes.IndexSet("right-target-composed")
                 .Where(rightTargetFlagIndex).EqualTo(1L)
                 .AndAlso(rightTargetValueIndex).Between(10L, 12L)
                 .EndCondition;
-            using LibraDexIndexCursor<long, long> rightTargetComposedCursor = rightTargetComposedCatalog.Indexes["right-target-composed"].GetCursor(
+            using LibraDexIndexCursor<long, long> rightTargetComposedCursor = rightTargetComposedCatalog.Indexes.IndexSet("right-target-composed").GetCursor(
                 rightTargetValueIndex,
                 rightTargetComposedCondition);
             rightTargetComposedEntries = new List<LibraDexCursorEntry<long, long>>();
@@ -12170,7 +12170,7 @@ internal static partial class RawHarness
         IReadOnlyList<long> cursorDeleteAllAfterIds;
         using (Catalog cursorDeleteCatalog = Catalog.CreateMemory())
         {
-            LibraDexIndex<long, long> cursorDeleteIndex = cursorDeleteCatalog.Indexes["cursor-delete"]["value"].Int64Keys<long>().Create(
+            LibraDexIndex<long, long> cursorDeleteIndex = cursorDeleteCatalog.Indexes.IndexSet("cursor-delete").Define("value").Int64Keys<long>().Create(
                 keys: IndexKeys.NonUnique);
             ValidateGenericInsert(cursorDeleteIndex.Insert(10L, 1010L), "condition cursor delete 10 insert");
             ValidateGenericInsert(cursorDeleteIndex.Insert(11L, 1111L), "condition cursor delete 11 insert");
@@ -12200,7 +12200,7 @@ internal static partial class RawHarness
 
         using (Catalog cursorSetKeyCatalog = Catalog.CreateMemory())
         {
-            LibraDexIndex<long, long> cursorSetKeyIndex = cursorSetKeyCatalog.Indexes["cursor-set-key"]["value"].Int64Keys<long>().Create(
+            LibraDexIndex<long, long> cursorSetKeyIndex = cursorSetKeyCatalog.Indexes.IndexSet("cursor-set-key").Define("value").Int64Keys<long>().Create(
                 keys: IndexKeys.NonUnique);
             ValidateGenericInsert(cursorSetKeyIndex.Insert(10L, 1010L), "condition cursor set-key 10 insert");
             ValidateGenericInsert(cursorSetKeyIndex.Insert(11L, 1111L), "condition cursor set-key 11 insert");
@@ -12233,7 +12233,7 @@ internal static partial class RawHarness
 
         using (Catalog cursorDeleteRemainingCatalog = Catalog.CreateMemory())
         {
-            LibraDexIndex<long, long> cursorDeleteRemainingIndex = cursorDeleteRemainingCatalog.Indexes["cursor-delete-remaining"]["value"].Int64Keys<long>().Create(
+            LibraDexIndex<long, long> cursorDeleteRemainingIndex = cursorDeleteRemainingCatalog.Indexes.IndexSet("cursor-delete-remaining").Define("value").Int64Keys<long>().Create(
                 keys: IndexKeys.NonUnique);
             ValidateGenericInsert(cursorDeleteRemainingIndex.Insert(10L, 1010L), "condition cursor delete-remaining 10 insert");
             ValidateGenericInsert(cursorDeleteRemainingIndex.Insert(11L, 1111L), "condition cursor delete-remaining 11 insert");
@@ -12249,7 +12249,7 @@ internal static partial class RawHarness
 
         using (Catalog cursorDeleteRemainingAdvancedCatalog = Catalog.CreateMemory())
         {
-            LibraDexIndex<long, long> cursorDeleteRemainingAdvancedIndex = cursorDeleteRemainingAdvancedCatalog.Indexes["cursor-delete-remaining-advanced"]["value"].Int64Keys<long>().Create(
+            LibraDexIndex<long, long> cursorDeleteRemainingAdvancedIndex = cursorDeleteRemainingAdvancedCatalog.Indexes.IndexSet("cursor-delete-remaining-advanced").Define("value").Int64Keys<long>().Create(
                 keys: IndexKeys.NonUnique);
             ValidateGenericInsert(cursorDeleteRemainingAdvancedIndex.Insert(10L, 1010L), "condition cursor delete-remaining advanced 10 insert");
             ValidateGenericInsert(cursorDeleteRemainingAdvancedIndex.Insert(11L, 1111L), "condition cursor delete-remaining advanced 11 insert");
@@ -12266,7 +12266,7 @@ internal static partial class RawHarness
 
         using (Catalog cursorDeleteAllCatalog = Catalog.CreateMemory())
         {
-            LibraDexIndex<long, long> cursorDeleteAllIndex = cursorDeleteAllCatalog.Indexes["cursor-delete-all"]["value"].Int64Keys<long>().Create(
+            LibraDexIndex<long, long> cursorDeleteAllIndex = cursorDeleteAllCatalog.Indexes.IndexSet("cursor-delete-all").Define("value").Int64Keys<long>().Create(
                 keys: IndexKeys.NonUnique);
             ValidateGenericInsert(cursorDeleteAllIndex.Insert(10L, 1010L), "condition cursor delete-all 10 insert");
             ValidateGenericInsert(cursorDeleteAllIndex.Insert(11L, 1111L), "condition cursor delete-all 11 insert");
@@ -12788,12 +12788,12 @@ internal static partial class RawHarness
     {
         using Catalog catalog = Catalog.CreateMemory();
         CatalogIdentityGroupIndexes users = catalog.CreateIndexSet("inverseUsers", createInverseIndex: true);
-        using LibraDexStringScalar8Index firstName = users["firstName"].String.Create(StringKeys.Exact);
-        using LibraDexStringScalar8Index lastName = users["lastName"].String.Create(StringKeys.Exact);
-        LibraDexIndex<int, ulong> age = users["age"].Create<int, ulong>();
-        LibraDexIndex<ulong, ulong> effectiveMask = users["effectiveMask"].Create<ulong, ulong>();
-        LibraDexIndex<ulong, ulong> inheritedMask = users["inheritedMask"].Create<ulong, ulong>();
-        LibraDexIndex<int, ulong> role = users["role"].Create<int, ulong>();
+        using LibraDexStringScalar8Index firstName = users.Define("firstName").String.Create(StringKeys.Exact);
+        using LibraDexStringScalar8Index lastName = users.Define("lastName").String.Create(StringKeys.Exact);
+        LibraDexIndex<int, ulong> age = users.Define("age").Create<int, ulong>();
+        LibraDexIndex<ulong, ulong> effectiveMask = users.Define("effectiveMask").Create<ulong, ulong>();
+        LibraDexIndex<ulong, ulong> inheritedMask = users.Define("inheritedMask").Create<ulong, ulong>();
+        LibraDexIndex<int, ulong> role = users.Define("role").Create<int, ulong>();
 
         ValidateGenericInsert(firstName.Insert("Joe", 101UL), "inverse firstName Joe insert");
         ValidateGenericInsert(firstName.Insert("Joseph", 102UL), "inverse firstName Joseph insert");
@@ -12898,7 +12898,7 @@ internal static partial class RawHarness
         Func<string, IIndex> inverseMutationResolver = indexName => inverseMutationIndexes.TryGetValue(indexName, out IIndex? resolvedIndex)
             ? resolvedIndex
             : throw new KeyNotFoundException(indexName);
-        LibraDexIdentityMutationResult inverseDeleteFromResult = catalog["inverseUsers"]["age"].Delete(inverseSelfRelative);
+        LibraDexIdentityMutationResult inverseDeleteFromResult = catalog.Indexes.IndexSet("inverseUsers").Define("age").Delete(inverseSelfRelative);
         IReadOnlyList<ulong> inverseDeleteOldAgeIds = users.GetIdentities<ulong>(
             users.Where("age").AsInt32.EqualTo(30).EndCondition,
             IdentityResultOrdering.IdentityAscending,
@@ -12908,7 +12908,7 @@ internal static partial class RawHarness
             IdentityResultOrdering.IdentityAscending,
             IdentityDeduplication.Preserve);
         ValidateGenericInsert(age.Insert(30, 102UL), "inverse targeted mutation restored age 30/102 insert");
-        LibraDexIdentityMutationResult inverseSetKeyOnUsingResult = catalog["inverseUsers"]["age"].SetKeyUsing(
+        LibraDexIdentityMutationResult inverseSetKeyOnUsingResult = catalog.Indexes.IndexSet("inverseUsers").Define("age").SetKeyUsing(
             inverseSelfRelative,
             _ => 50);
         IReadOnlyList<ulong> inverseSetKeyOldAgeIds = users.GetIdentities<ulong>(
@@ -12936,9 +12936,9 @@ internal static partial class RawHarness
         }
 
         CatalogIdentityGroupIndexes explicitSet = catalog.CreateIndexSet("explicitInverseUsers");
-        LibraDexIndex<int, ulong> explicitAge = explicitSet["age"].Create<int, ulong>();
-        using LibraDexStringScalar8Index explicitFirstName = explicitSet["firstName"].String.Create(StringKeys.Exact);
-        using LibraDexStringScalar8Index explicitLastName = explicitSet["lastName"].String.Create(StringKeys.Exact);
+        LibraDexIndex<int, ulong> explicitAge = explicitSet.Define("age").Create<int, ulong>();
+        using LibraDexStringScalar8Index explicitFirstName = explicitSet.Define("firstName").String.Create(StringKeys.Exact);
+        using LibraDexStringScalar8Index explicitLastName = explicitSet.Define("lastName").String.Create(StringKeys.Exact);
         explicitSet.Inverse.Create("age", "firstName", "lastName");
         ValidateGenericInsert(explicitAge.Insert(41, 201UL), "explicit inverse age insert");
         ValidateGenericInsert(explicitFirstName.Insert("Mira", 201UL), "explicit inverse firstName insert");
@@ -12999,10 +12999,10 @@ internal static partial class RawHarness
     {
         using Catalog catalog = Catalog.CreateMemory();
         CatalogIdentityGroupIndexes users = catalog.CreateIndexSet("inversePerf", createInverseIndex: true);
-        LibraDexIndex<int, ulong> firstNameCode = users["firstNameCode"].Create<int, ulong>();
-        LibraDexIndex<int, ulong> lastNameCode = users["lastNameCode"].Create<int, ulong>();
-        LibraDexIndex<ulong, ulong> effectiveMask = users["effectiveMask"].Create<ulong, ulong>();
-        LibraDexIndex<ulong, ulong> inheritedMask = users["inheritedMask"].Create<ulong, ulong>();
+        LibraDexIndex<int, ulong> firstNameCode = users.Define("firstNameCode").Create<int, ulong>();
+        LibraDexIndex<int, ulong> lastNameCode = users.Define("lastNameCode").Create<int, ulong>();
+        LibraDexIndex<ulong, ulong> effectiveMask = users.Define("effectiveMask").Create<ulong, ulong>();
+        LibraDexIndex<ulong, ulong> inheritedMask = users.Define("inheritedMask").Create<ulong, ulong>();
 
         for (int i = 0; i < itemCount; i++)
         {
@@ -13156,8 +13156,8 @@ internal static partial class RawHarness
 
         static IReadOnlyList<long> SuffixIds(Catalog catalog, string group, string indexName, string suffixHex)
         {
-            return catalog.Indexes[group].GetIdentities<long>(
-                catalog.Indexes[group].Where(indexName).AsBinary.EndsWith(Hex(suffixHex)).EndCondition,
+            return catalog.Indexes.IndexSet(group).GetIdentities<long>(
+                catalog.Indexes.IndexSet(group).Where(indexName).AsBinary.EndsWith(Hex(suffixHex)).EndCondition,
                 deduplication: IdentityDeduplication.Preserve);
         }
 
@@ -13171,7 +13171,7 @@ internal static partial class RawHarness
 
         using (Catalog mutationCatalog = Catalog.CreateMemory())
         {
-            LibraDexIndex<byte[], long> mutationIndex = mutationCatalog.Indexes["binary"]["fingerprint"].Blob.Scalar<long>(
+            LibraDexIndex<byte[], long> mutationIndex = mutationCatalog.Indexes.IndexSet("binary").Define("fingerprint").Blob.Scalar<long>(
                 LibraDexScalarWidth.Bytes16,
                 directions: LibraDexProjectionDirectionSet.ForwardAndReversed).Create();
             byte[] deleteKey = Hex("00112233445566778899AABBCCDDEEFF");
@@ -13191,7 +13191,7 @@ internal static partial class RawHarness
 
         using (Catalog batchCatalog = Catalog.CreateMemory())
         {
-            LibraDexIndex<byte[], long> indexBatchIndex = batchCatalog.Indexes["binary"]["indexBatch"].Blob.Scalar<long>(
+            LibraDexIndex<byte[], long> indexBatchIndex = batchCatalog.Indexes.IndexSet("binary").Define("indexBatch").Blob.Scalar<long>(
                 LibraDexScalarWidth.Bytes16,
                 directions: LibraDexProjectionDirectionSet.ForwardAndReversed).Create();
             indexBatchIndex.Batch.Enable();
@@ -13200,10 +13200,10 @@ internal static partial class RawHarness
             _ = indexBatchIndex.Batch.CommitAndDisable();
             AssertSequence(SuffixIds(batchCatalog, "binary", "indexBatch", "CCDDEEFF"), new[] { 9201L, 9202L }, "binary reversed projection after index batch");
 
-            LibraDexIndex<byte[], long> groupBatchIndex = batchCatalog.Indexes["binary"]["groupBatch"].Blob.Scalar<long>(
+            LibraDexIndex<byte[], long> groupBatchIndex = batchCatalog.Indexes.IndexSet("binary").Define("groupBatch").Blob.Scalar<long>(
                 LibraDexScalarWidth.Bytes16,
                 directions: LibraDexProjectionDirectionSet.ForwardAndReversed).Create();
-            CatalogIdentityGroupBatchManager groupBatch = batchCatalog.Indexes["binary"].Batch;
+            CatalogIdentityGroupBatchManager groupBatch = batchCatalog.Indexes.IndexSet("binary").Batch;
             groupBatch.Enable();
             ValidateGenericInsert(groupBatchIndex.Insert(Hex("50112233445566778899AABBCCDDEEFF"), 9301L), "binary reversed group batch insert A");
             ValidateGenericInsert(groupBatchIndex.Insert(Hex("51112233445566778899AABBCCDDEEFF"), 9302L), "binary reversed group batch insert B");
@@ -13216,7 +13216,7 @@ internal static partial class RawHarness
         File.Delete(path);
         using (Catalog fileCatalog = Catalog.Create(path))
         {
-            LibraDexIndex<byte[], long> fileIndex = fileCatalog.Indexes["binary"]["fingerprint"].Blob.Scalar<long>(
+            LibraDexIndex<byte[], long> fileIndex = fileCatalog.Indexes.IndexSet("binary").Define("fingerprint").Blob.Scalar<long>(
                 LibraDexScalarWidth.Bytes16,
                 directions: LibraDexProjectionDirectionSet.ForwardAndReversed).Create();
             ValidateGenericInsert(fileIndex.Insert(Hex("60112233445566778899AABBCCDDEEFF"), 9401L), "binary reversed file insert A");
@@ -13236,8 +13236,8 @@ internal static partial class RawHarness
             AssertSequence(SuffixIds(reopened, "binary", "fingerprint", "CCDDEEFF"), new[] { 9401L }, "binary reversed projection after reopen");
             AssertSequence(SuffixIds(reopened, "binary", "fingerprint", "CCDDBEEF"), new[] { 9402L }, "binary reversed projection alternate suffix after reopen");
             AssertSequence(
-                reopened.Indexes["binary"].GetIdentities<long>(
-                    reopened.Indexes["binary"].Where("fingerprint").AsBinary.EndsWithHex("CCxxEEFF").EndCondition,
+                reopened.Indexes.IndexSet("binary").GetIdentities<long>(
+                    reopened.Indexes.IndexSet("binary").Where("fingerprint").AsBinary.EndsWithHex("CCxxEEFF").EndCondition,
                     deduplication: IdentityDeduplication.Preserve),
                 new[] { 9401L },
                 "binary reversed masked hex suffix after reopen");
@@ -13262,35 +13262,35 @@ internal static partial class RawHarness
         }
 
         using Catalog catalog = Catalog.CreateMemory();
-        LibraDexIndexShapeSpec createdShape = catalog.Indexes["records"]["created"].Shape.Date<DateTime, long>(
+        LibraDexIndexShapeSpec createdShape = catalog.Indexes.IndexSet("records").Define("created").Shape.Date<DateTime, long>(
             DateKeys.ExactAndStructured,
             keys: IndexKeys.NonUnique);
-        LibraDexIndexShapeSpec precisionCreatedShape = catalog.Indexes["records"]["precisionCreated"].Shape.Date<DateTime, long>(
+        LibraDexIndexShapeSpec precisionCreatedShape = catalog.Indexes.IndexSet("records").Define("precisionCreated").Shape.Date<DateTime, long>(
             DateKeys.ExactAndStructured,
             DateTimeKeyEncoding.PrecisionSdt,
             keys: IndexKeys.NonUnique);
-        LibraDexIndexShapeSpec timeShape = catalog.Indexes["events"]["time"].Shape.Date<TimeOnly, long>(
+        LibraDexIndexShapeSpec timeShape = catalog.Indexes.IndexSet("events").Define("time").Shape.Date<TimeOnly, long>(
             DateKeys.ExactAndStructured,
             keys: IndexKeys.NonUnique);
-        LibraDexIndexShapeSpec durationShape = catalog.Indexes["jobs"]["duration"].Shape.Date<TimeSpan, long>(
+        LibraDexIndexShapeSpec durationShape = catalog.Indexes.IndexSet("jobs").Define("duration").Shape.Date<TimeSpan, long>(
             DateKeys.Exact,
             keys: IndexKeys.NonUnique);
-        LibraDexIndexShapeSpec birthdayShape = catalog.Indexes["people"]["birthday"].Shape.Date<DateOnly, long>(
+        LibraDexIndexShapeSpec birthdayShape = catalog.Indexes.IndexSet("people").Define("birthday").Shape.Date<DateOnly, long>(
             DateKeys.ExactAndStructured,
             keys: IndexKeys.NonUnique);
-        LibraDexIndexShapeSpec createdOffsetShape = catalog.Indexes["records"]["createdOffset"].Shape.Date<DateTimeOffset, long>(
+        LibraDexIndexShapeSpec createdOffsetShape = catalog.Indexes.IndexSet("records").Define("createdOffset").Shape.Date<DateTimeOffset, long>(
             DateKeys.ExactAndStructured,
             keys: IndexKeys.NonUnique);
-        LibraDexIndexShapeSpec relativeCreatedShape = catalog.Indexes["records"]["relativeCreated"].Shape.Date<DateTime, long>(
+        LibraDexIndexShapeSpec relativeCreatedShape = catalog.Indexes.IndexSet("records").Define("relativeCreated").Shape.Date<DateTime, long>(
             DateKeys.ExactAndStructured,
             keys: IndexKeys.NonUnique);
-        LibraDexIndexShapeSpec relativeUpdatedShape = catalog.Indexes["records"]["relativeUpdated"].Shape.Date<DateTime, long>(
+        LibraDexIndexShapeSpec relativeUpdatedShape = catalog.Indexes.IndexSet("records").Define("relativeUpdated").Shape.Date<DateTime, long>(
             DateKeys.ExactAndStructured,
             keys: IndexKeys.NonUnique);
-        LibraDexIndexShapeSpec occurredShape = catalog.Indexes["events"]["occurred"].Shape.Date<DateTime, long>(
+        LibraDexIndexShapeSpec occurredShape = catalog.Indexes.IndexSet("events").Define("occurred").Shape.Date<DateTime, long>(
             DateKeys.ExactAndStructured,
             keys: IndexKeys.NonUnique);
-        LibraDexIndexShapeSpec deletedDateShape = catalog.Indexes["rows"]["deletedDate"].Shape.Date<DateTime, long>(
+        LibraDexIndexShapeSpec deletedDateShape = catalog.Indexes.IndexSet("rows").Define("deletedDate").Shape.Date<DateTime, long>(
             DateKeys.ExactAndStructured,
             keys: IndexKeys.NonUnique);
         IIndex created = catalog.Indexes.Create(createdShape);
@@ -13664,7 +13664,7 @@ internal static partial class RawHarness
 
         IIndex CreateScalarIndex<TKey>(string name, params (TKey Key, long Identity)[] entries)
         {
-            LibraDexIndexShapeSpec shape = catalog.Indexes["proof"][name].Shape.Scalar<TKey, long>(IndexKeys.NonUnique);
+            LibraDexIndexShapeSpec shape = catalog.Indexes.IndexSet("proof").Define(name).Shape.Scalar<TKey, long>(IndexKeys.NonUnique);
             IIndex index = catalog.Indexes.Create(shape);
             for (int i = 0; i < entries.Length; i++)
             {
@@ -13833,13 +13833,13 @@ internal static partial class RawHarness
             (-1, 2701L),
             (0, 2702L),
             (5, 2703L));
-        LibraDexIndexShapeSpec flagsShape = catalog.Indexes["proof"]["flags"].Shape.Scalar<uint, ulong>(IndexKeys.NonUnique);
+        LibraDexIndexShapeSpec flagsShape = catalog.Indexes.IndexSet("proof").Define("flags").Shape.Scalar<uint, ulong>(IndexKeys.NonUnique);
         IIndex flags = catalog.Indexes.Create(flagsShape);
         ValidateGenericInsert(flags.Insert(0x00U, 2300UL), "deterministic scalar flags insert 0");
         ValidateGenericInsert(flags.Insert(0x01U, 2301UL), "deterministic scalar flags insert beta");
         ValidateGenericInsert(flags.Insert(0x02U, 2302UL), "deterministic scalar flags insert alternate");
         indexes["flags"] = flags;
-        using LibraDexStringScalar8Index displayName = catalog.Indexes["proof"]["displayName"].String.Create(stringKeys: StringKeys.Exact);
+        using LibraDexStringScalar8Index displayName = catalog.Indexes.IndexSet("proof").Define("displayName").String.Create(stringKeys: StringKeys.Exact);
         ValidateGenericInsert(displayName.Insert("Alpha", 2301UL), "deterministic scalar displayName Alpha insert");
         ValidateGenericInsert(displayName.Insert("Beta", 2302UL), "deterministic scalar displayName Beta insert");
         indexes["displayName"] = displayName;
@@ -13992,31 +13992,31 @@ internal static partial class RawHarness
         }
 
         using Catalog catalog = Catalog.CreateMemory();
-        using LibraDexStringScalar8Index username = catalog.Indexes["strings"]["username"].String.Create(
+        using LibraDexStringScalar8Index username = catalog.Indexes.IndexSet("strings").Define("username").String.Create(
             stringKeys: StringKeys.ExactAndFolded,
             directions: LibraDexProjectionDirectionSet.Forward);
-        using LibraDexStringScalar8Index lastName = catalog.Indexes["strings"]["lastName"].String.Create(
+        using LibraDexStringScalar8Index lastName = catalog.Indexes.IndexSet("strings").Define("lastName").String.Create(
             stringKeys: StringKeys.ExactAndFolded,
             directions: LibraDexProjectionDirectionSet.Forward);
-        using LibraDexStringScalar8Index email = catalog.Indexes["strings"]["email"].String.Create(
+        using LibraDexStringScalar8Index email = catalog.Indexes.IndexSet("strings").Define("email").String.Create(
             stringKeys: StringKeys.ExactAndFolded,
             directions: LibraDexProjectionDirectionSet.ForwardAndReversed);
-        using LibraDexStringScalar8Index description = catalog.Indexes["strings"]["description"].String.Create(
+        using LibraDexStringScalar8Index description = catalog.Indexes.IndexSet("strings").Define("description").String.Create(
             stringKeys: StringKeys.Exact);
-        using LibraDexStringScalar8Index country = catalog.Indexes["strings"]["country"].String.Create(
+        using LibraDexStringScalar8Index country = catalog.Indexes.IndexSet("strings").Define("country").String.Create(
             stringKeys: StringKeys.Exact);
-        using LibraDexStringScalar8Index tag = catalog.Indexes["strings"]["tag"].String.Create(
+        using LibraDexStringScalar8Index tag = catalog.Indexes.IndexSet("strings").Define("tag").String.Create(
             stringKeys: StringKeys.Exact,
             stringComparisonPolicy: LibraDexStringComparisonPolicy.OrdinalIgnoreCase);
-        using LibraDexStringScalar8Index code = catalog.Indexes["strings"]["code"].String.Create(
+        using LibraDexStringScalar8Index code = catalog.Indexes.IndexSet("strings").Define("code").String.Create(
             stringKeys: StringKeys.Exact);
-        using LibraDexStringScalar8Index foldedText = catalog.Indexes["strings"]["foldedText"].String.Create(
+        using LibraDexStringScalar8Index foldedText = catalog.Indexes.IndexSet("strings").Define("foldedText").String.Create(
             stringKeys: StringKeys.ExactAndFolded);
-        using LibraDexStringScalar8Index reversedText = catalog.Indexes["strings"]["reversedText"].String.Create(
+        using LibraDexStringScalar8Index reversedText = catalog.Indexes.IndexSet("strings").Define("reversedText").String.Create(
             stringKeys: StringKeys.Exact,
             directions: LibraDexProjectionDirectionSet.ForwardAndReversed);
-        using LibraDexIndex<byte[], ulong> payload = catalog.Indexes["strings"]["payload"].Blob.Scalar<ulong>(LibraDexScalarWidth.Bytes32).Create();
-        using LibraDexIndex<int, ulong> rank = catalog.Indexes["strings"]["rank"].Create<int, ulong>();
+        using LibraDexIndex<byte[], ulong> payload = catalog.Indexes.IndexSet("strings").Define("payload").Blob.Scalar<ulong>(LibraDexScalarWidth.Bytes32).Create();
+        using LibraDexIndex<int, ulong> rank = catalog.Indexes.IndexSet("strings").Define("rank").Create<int, ulong>();
 
         ValidateGenericInsert(username.Insert("bob", 1361UL), "deterministic string username bob insert");
         ValidateGenericInsert(username.Insert("BOB", 1371UL), "deterministic string username BOB insert");
@@ -14555,7 +14555,7 @@ internal static partial class RawHarness
         byte[] bytes2 = CreateDescendingShapeBytes32(2);
         byte[] bytes3 = CreateDescendingShapeBytes32(3);
 
-        using LibraDexIndex<long, long> ss88 = catalog.Indexes["descending-shapes"]["ss88"].Int64Keys<long>().Create();
+        using LibraDexIndex<long, long> ss88 = catalog.Indexes.IndexSet("descending-shapes").Define("ss88").Int64Keys<long>().Create();
         ValidateGenericInsert(ss88.Insert(1, 101), "descending SS8-8 insert 1");
         ValidateGenericInsert(ss88.Insert(2, 102), "descending SS8-8 insert 2");
         ValidateGenericInsert(ss88.Insert(3, 103), "descending SS8-8 insert 3");
@@ -14577,7 +14577,7 @@ internal static partial class RawHarness
 
         ValidateFixedShapePhysicalCountAfterDelete(ss88, 2, 102, LibraDexCondition.ForGroup("descending-shapes").Index("ss88").AsInt64.EqualTo(2).EndCondition, 2, "SS8-8");
 
-        using LibraDexIndex<Guid, long> ss168 = catalog.Indexes["descending-shapes"]["ss168"].GuidKeys<long>().Create();
+        using LibraDexIndex<Guid, long> ss168 = catalog.Indexes.IndexSet("descending-shapes").Define("ss168").GuidKeys<long>().Create();
         ValidateGenericInsert(ss168.Insert(guid1, 201), "descending SS16-8 insert 1");
         ValidateGenericInsert(ss168.Insert(guid2, 202), "descending SS16-8 insert 2");
         ValidateGenericInsert(ss168.Insert(guid3, 203), "descending SS16-8 insert 3");
@@ -14599,7 +14599,7 @@ internal static partial class RawHarness
 
         ValidateFixedShapePhysicalCountAfterDelete(ss168, guid2, 202, LibraDexCondition.ForGroup("descending-shapes").Index("ss168").AsGuid.EqualTo(guid2).EndCondition, 2, "SS16-8");
 
-        using LibraDexIndex<long, Guid> ss816 = catalog.Indexes["descending-shapes"]["ss816"].Int64Keys<Guid>().Create();
+        using LibraDexIndex<long, Guid> ss816 = catalog.Indexes.IndexSet("descending-shapes").Define("ss816").Int64Keys<Guid>().Create();
         ValidateGenericInsert(ss816.Insert(1, guid1), "descending SS8-16 insert 1");
         ValidateGenericInsert(ss816.Insert(2, guid2), "descending SS8-16 insert 2");
         ValidateGenericInsert(ss816.Insert(3, guid3), "descending SS8-16 insert 3");
@@ -14621,7 +14621,7 @@ internal static partial class RawHarness
 
         ValidateFixedShapePhysicalCountAfterDelete(ss816, 2, guid2, LibraDexCondition.ForGroup("descending-shapes").Index("ss816").AsInt64.EqualTo(2).EndCondition, 2, "SS8-16");
 
-        using LibraDexIndex<Guid, Guid> ss1616 = catalog.Indexes["descending-shapes"]["ss1616"].GuidKeys<Guid>().Create();
+        using LibraDexIndex<Guid, Guid> ss1616 = catalog.Indexes.IndexSet("descending-shapes").Define("ss1616").GuidKeys<Guid>().Create();
         ValidateGenericInsert(ss1616.Insert(guid1, guid1), "descending SS16-16 insert 1");
         ValidateGenericInsert(ss1616.Insert(guid2, guid2), "descending SS16-16 insert 2");
         ValidateGenericInsert(ss1616.Insert(guid3, guid3), "descending SS16-16 insert 3");
@@ -14643,7 +14643,7 @@ internal static partial class RawHarness
 
         ValidateFixedShapePhysicalCountAfterDelete(ss1616, guid2, guid2, LibraDexCondition.ForGroup("descending-shapes").Index("ss1616").AsGuid.EqualTo(guid2).EndCondition, 2, "SS16-16");
 
-        using LibraDexIndex<byte[], long> fs328 = catalog.Indexes["descending-shapes"]["fs328"].Blob.Scalar<long>(LibraDexScalarWidth.Bytes32).Create();
+        using LibraDexIndex<byte[], long> fs328 = catalog.Indexes.IndexSet("descending-shapes").Define("fs328").Blob.Scalar<long>(LibraDexScalarWidth.Bytes32).Create();
         ValidateGenericInsert(fs328.Insert(bytes1, 501), "descending FS32-8 insert 1");
         ValidateGenericInsert(fs328.Insert(bytes2, 502), "descending FS32-8 insert 2");
         ValidateGenericInsert(fs328.Insert(bytes3, 503), "descending FS32-8 insert 3");
@@ -14665,7 +14665,7 @@ internal static partial class RawHarness
 
         ValidateFixedShapePhysicalCountAfterDelete(fs328, bytes2, 502, LibraDexCondition.ForGroup("descending-shapes").Index("fs328").AsBinary.EqualTo(bytes2).EndCondition, 2, "FS32-8");
 
-        using LibraDexIndex<byte[], Guid> fs3216 = catalog.Indexes["descending-shapes"]["fs3216"].Blob.Scalar<Guid>(LibraDexScalarWidth.Bytes32).Create();
+        using LibraDexIndex<byte[], Guid> fs3216 = catalog.Indexes.IndexSet("descending-shapes").Define("fs3216").Blob.Scalar<Guid>(LibraDexScalarWidth.Bytes32).Create();
         ValidateGenericInsert(fs3216.Insert(bytes1, guid1), "descending FS32-16 insert 1");
         ValidateGenericInsert(fs3216.Insert(bytes2, guid2), "descending FS32-16 insert 2");
         ValidateGenericInsert(fs3216.Insert(bytes3, guid3), "descending FS32-16 insert 3");
@@ -14696,7 +14696,7 @@ internal static partial class RawHarness
     {
         using Catalog catalog = Catalog.CreateMemory();
         IndexOptions options = new() { IdentityKeyMultiplicity = IdentityKeyMultiplicity.SingleKeyPerIdentity };
-        using LibraDexIndex<long, long> index = catalog.Indexes["single-key"]["value"].Int64Keys<long>().Create(options: options);
+        using LibraDexIndex<long, long> index = catalog.Indexes.IndexSet("single-key").Define("value").Int64Keys<long>().Create(options: options);
         if (index.IdentityKeyMultiplicity != IdentityKeyMultiplicity.SingleKeyPerIdentity ||
             !catalog.Indexes.TryGetInfo("single-key", "value", out CatalogIndexInfo info) ||
             info.IdentityKeyMultiplicity != IdentityKeyMultiplicity.SingleKeyPerIdentity)
@@ -14795,8 +14795,8 @@ internal static partial class RawHarness
 
         using (Catalog groupCatalog = Catalog.CreateMemory())
         {
-            LibraDexIndex<long, long> groupIndex = groupCatalog.Indexes["single-key-group"]["value"].Int64Keys<long>().Create(options: options);
-            CatalogIdentityGroupBatchManager groupBatch = groupCatalog.Indexes["single-key-group"].Batch;
+            LibraDexIndex<long, long> groupIndex = groupCatalog.Indexes.IndexSet("single-key-group").Define("value").Int64Keys<long>().Create(options: options);
+            CatalogIdentityGroupBatchManager groupBatch = groupCatalog.Indexes.IndexSet("single-key-group").Batch;
             groupBatch.Enable();
             ValidateGenericInsert(groupIndex.Insert(40, 400), "single-key group batch first insert");
             if (groupIndex.Insert(41, 400).Inserted)
@@ -14848,7 +14848,7 @@ internal static partial class RawHarness
         File.Delete(path);
         using (Catalog persisted = Catalog.Create(path))
         {
-            using LibraDexIndex<long, long> persistedIndex = persisted.Indexes["single-key"]["value"].Int64Keys<long>().Create(options: options);
+            using LibraDexIndex<long, long> persistedIndex = persisted.Indexes.IndexSet("single-key").Define("value").Int64Keys<long>().Create(options: options);
             ValidateGenericInsert(persistedIndex.Insert(20, 200), "single-key persisted insert");
         }
 
@@ -14860,7 +14860,7 @@ internal static partial class RawHarness
                 throw new InvalidDataException("Single-key-per-identity metadata was not preserved across catalog reopen.");
             }
 
-            using LibraDexIndex<long, long> reopenedIndex = reopened.Indexes["single-key"]["value"].Int64Keys<long>().Open();
+            using LibraDexIndex<long, long> reopenedIndex = reopened.Indexes.IndexSet("single-key").Define("value").Int64Keys<long>().Open();
             if (reopenedIndex.IdentityKeyMultiplicity != IdentityKeyMultiplicity.SingleKeyPerIdentity ||
                 !reopenedIndex.TryGetSingleKey(200, out long reopenedKey) ||
                 reopenedKey != 20)
@@ -32412,7 +32412,7 @@ internal static partial class RawHarness
         using (Catalog catalog = Catalog.CreateOrOpen(path))
         {
             bool rejectedOversize = false;
-            LibraDexBigIntScalar8Index<long> fixedIndex = catalog.Indexes["people"]["score"].BigIntKeys<long>(maxBytes: 32).Create();
+            LibraDexBigIntScalar8Index<long> fixedIndex = catalog.Indexes.IndexSet("people").Define("score").BigIntKeys<long>(maxBytes: 32).Create();
             if (!fixedIndex.IsFixedWidth)
             {
                 throw new InvalidDataException("BigIntKeys should create a fixed-width BigInt index.");
@@ -32446,7 +32446,7 @@ internal static partial class RawHarness
             Guid guidLow = Guid.Parse("00000000-0000-0000-0000-000000000101");
             Guid guidMiddle = Guid.Parse("00000000-0000-0000-0000-000000000102");
             Guid guidHigh = Guid.Parse("00000000-0000-0000-0000-000000000103");
-            LibraDexBigIntScalar8Index<Guid> fixedGuidIndex = catalog.Indexes["people"]["scoreGuid"].BigIntKeys<Guid>(maxBytes: 32).Create();
+            LibraDexBigIntScalar8Index<Guid> fixedGuidIndex = catalog.Indexes.IndexSet("people").Define("scoreGuid").BigIntKeys<Guid>(maxBytes: 32).Create();
             ValidateGenericInsert(fixedGuidIndex.Add(new BigInteger(-1), guidLow), "fixed BigInt Guid -1 insert");
             ValidateGenericInsert(fixedGuidIndex.Add(BigInteger.Zero, guidMiddle), "fixed BigInt Guid zero insert");
             ValidateGenericInsert(fixedGuidIndex.Add(BigInteger.One, guidHigh), "fixed BigInt Guid 1 insert");
@@ -32463,7 +32463,7 @@ internal static partial class RawHarness
             }
 
             const int fixedGuidRoutedCount = 1500;
-            LibraDexBigIntScalar8Index<Guid> fixedGuidRouted = catalog.Indexes["people"]["scoreGuidRouted"].BigIntKeys<Guid>(maxBytes: 32).Create();
+            LibraDexBigIntScalar8Index<Guid> fixedGuidRouted = catalog.Indexes.IndexSet("people").Define("scoreGuidRouted").BigIntKeys<Guid>(maxBytes: 32).Create();
             for (int i = 0; i < fixedGuidRoutedCount; i++)
             {
                 ValidateGenericInsert(fixedGuidRouted.Add(new BigInteger(i), CreateStableGuid(i)), $"fixed routed BigInt Guid insert {i}");
@@ -32483,7 +32483,7 @@ internal static partial class RawHarness
                 throw new InvalidDataException("Fixed routed BigInt FSN-16 count did not return the expected routed shelf-header tuple count.");
             }
 
-            LibraDexBigIntScalar8Index<long> fixedRouted = catalog.Indexes["people"]["scoreRouted"].BigIntKeys<long>(maxBytes: 32).Create();
+            LibraDexBigIntScalar8Index<long> fixedRouted = catalog.Indexes.IndexSet("people").Define("scoreRouted").BigIntKeys<long>(maxBytes: 32).Create();
             const int fixedRoutedCount = 3000;
             for (int i = 0; i < fixedRoutedCount; i++)
             {
@@ -32505,7 +32505,7 @@ internal static partial class RawHarness
             }
 
             const int varIdentityCount = 1500;
-            LibraDexBigIntVarIdentityIndex varIdentityIndex = catalog.Indexes["people"]["scoreVarIdentity"].BigIntVarIdentityKeys(maxBytes: 32, maxIdentityBytes: 64).Create();
+            LibraDexBigIntVarIdentityIndex varIdentityIndex = catalog.Indexes.IndexSet("people").Define("scoreVarIdentity").BigIntVarIdentityKeys(maxBytes: 32, maxIdentityBytes: 64).Create();
             for (int i = 0; i < varIdentityCount; i++)
             {
                 ValidateGenericInsert(varIdentityIndex.Add(new BigInteger(i), CreateBigIntVarIdentityBytes(i)), $"fixed BigInt variable identity insert {i}");
@@ -32525,7 +32525,7 @@ internal static partial class RawHarness
                 throw new InvalidDataException("Fixed BigInt variable-identity count did not return the expected shelf-header tuple count.");
             }
 
-            LibraDexBigIntScalar8Index<long> varIndex = catalog.Indexes["people"]["scoreVar"].BigIntVarLenKeys<long>(maxBytes: 32).Create();
+            LibraDexBigIntScalar8Index<long> varIndex = catalog.Indexes.IndexSet("people").Define("scoreVar").BigIntVarLenKeys<long>(maxBytes: 32).Create();
             ValidateGenericInsert(varIndex.Add(new BigInteger(-100), 11L), "varlen BigInt -100 insert");
             ValidateGenericInsert(varIndex.Add(new BigInteger(-2), 12L), "varlen BigInt -2 insert");
             ValidateGenericInsert(varIndex.Add(BigInteger.Zero, 13L), "varlen BigInt zero insert");
@@ -32618,7 +32618,7 @@ internal static partial class RawHarness
 
         using (Catalog reopened = Catalog.CreateOrOpen(path))
         {
-            LibraDexBigIntScalar8Index<long> fixedIndex = reopened.Indexes["people"]["score"].BigIntKeys<long>(maxBytes: 32).Open();
+            LibraDexBigIntScalar8Index<long> fixedIndex = reopened.Indexes.IndexSet("people").Define("score").BigIntKeys<long>(maxBytes: 32).Open();
             long[] reopenedFixed = fixedIndex.GetIdentities(new BigInteger(-10), new BigInteger(10)).Order().ToArray();
             if (!reopenedFixed.SequenceEqual(new[] { 22L, 23L, 24L }))
             {
@@ -32633,14 +32633,14 @@ internal static partial class RawHarness
             Guid guidLow = Guid.Parse("00000000-0000-0000-0000-000000000101");
             Guid guidMiddle = Guid.Parse("00000000-0000-0000-0000-000000000102");
             Guid guidHigh = Guid.Parse("00000000-0000-0000-0000-000000000103");
-            LibraDexBigIntScalar8Index<Guid> fixedGuidIndex = reopened.Indexes["people"]["scoreGuid"].BigIntKeys<Guid>(maxBytes: 32).Open();
+            LibraDexBigIntScalar8Index<Guid> fixedGuidIndex = reopened.Indexes.IndexSet("people").Define("scoreGuid").BigIntKeys<Guid>(maxBytes: 32).Open();
             Guid[] reopenedFixedGuid = fixedGuidIndex.GetIdentities(new BigInteger(-1), BigInteger.One).Order().ToArray();
             if (!reopenedFixedGuid.SequenceEqual(new[] { guidLow, guidMiddle, guidHigh }.Order()))
             {
                 throw new InvalidDataException("Reopened fixed BigInt FSN-16 range did not return the expected Guid identities.");
             }
 
-            LibraDexBigIntScalar8Index<Guid> fixedGuidRouted = reopened.Indexes["people"]["scoreGuidRouted"].BigIntKeys<Guid>(maxBytes: 32).Open();
+            LibraDexBigIntScalar8Index<Guid> fixedGuidRouted = reopened.Indexes.IndexSet("people").Define("scoreGuidRouted").BigIntKeys<Guid>(maxBytes: 32).Open();
             Guid[] reopenedFixedGuidRouted = fixedGuidRouted.GetIdentities(BigInteger.Zero, new BigInteger(1499)).ToArray();
             if (reopenedFixedGuidRouted.Length != 1500 ||
                 !reopenedFixedGuidRouted.Contains(CreateStableGuid(0)) ||
@@ -32654,7 +32654,7 @@ internal static partial class RawHarness
                 throw new InvalidDataException("Reopened fixed routed BigInt FSN-16 count did not return the expected tuple count.");
             }
 
-            LibraDexBigIntScalar8Index<long> fixedRouted = reopened.Indexes["people"]["scoreRouted"].BigIntKeys<long>(maxBytes: 32).Open();
+            LibraDexBigIntScalar8Index<long> fixedRouted = reopened.Indexes.IndexSet("people").Define("scoreRouted").BigIntKeys<long>(maxBytes: 32).Open();
             long[] reopenedFixedRouted = fixedRouted.GetIdentities(BigInteger.Zero, new BigInteger(2999)).Order().ToArray();
             if (reopenedFixedRouted.Length != 3000 ||
                 reopenedFixedRouted[0] != 100_000L ||
@@ -32668,7 +32668,7 @@ internal static partial class RawHarness
                 throw new InvalidDataException("Reopened fixed routed BigInt count did not return the expected tuple count.");
             }
 
-            LibraDexBigIntVarIdentityIndex varIdentityIndex = reopened.Indexes["people"]["scoreVarIdentity"].BigIntVarIdentityKeys(maxBytes: 32, maxIdentityBytes: 64).Open();
+            LibraDexBigIntVarIdentityIndex varIdentityIndex = reopened.Indexes.IndexSet("people").Define("scoreVarIdentity").BigIntVarIdentityKeys(maxBytes: 32, maxIdentityBytes: 64).Open();
             IReadOnlyList<byte[]> reopenedVarIdentityRange = varIdentityIndex.GetIdentities(BigInteger.Zero, new BigInteger(1499));
             if (reopenedVarIdentityRange.Count != 1500 ||
                 Encoding.UTF8.GetString(reopenedVarIdentityRange[0]) != "varid-000000" ||
@@ -32728,7 +32728,7 @@ internal static partial class RawHarness
 
             (nonGenericVarIdentityIndex as IDisposable)?.Dispose();
 
-            LibraDexBigIntScalar8Index<long> varIndex = reopened.Indexes["people"]["scoreVar"].BigIntVarLenKeys<long>(maxBytes: 32).Open();
+            LibraDexBigIntScalar8Index<long> varIndex = reopened.Indexes.IndexSet("people").Define("scoreVar").BigIntVarLenKeys<long>(maxBytes: 32).Open();
             long[] reopenedVar = varIndex.GetIdentities(new BigInteger(-10), new BigInteger(10)).Order().ToArray();
             if (!reopenedVar.SequenceEqual(new[] { 12L, 13L, 14L }))
             {
@@ -34347,16 +34347,16 @@ internal static partial class RawHarness
     private static void ValidateBinarySliceRemainderAndDateGrammar()
     {
         using Catalog catalog = Catalog.CreateMemory();
-        LibraDexIndex<byte[], long> dateIndex = catalog.Indexes["binary-slice-grammar"]["date"].Blob.Scalar<long>(LibraDexScalarWidth.Bytes32).Create();
-        LibraDexIndex<byte[], long> dateOnlyIndex = catalog.Indexes["binary-slice-grammar"]["dateOnly"].Blob.Scalar<long>(LibraDexScalarWidth.Bytes32).Create();
-        LibraDexIndex<byte[], long> utf8Index = catalog.Indexes["binary-slice-grammar"]["utf8"].Blob.Scalar<long>(LibraDexScalarWidth.Bytes32).Create();
-        LibraDexIndex<byte[], long> utf16Index = catalog.Indexes["binary-slice-grammar"]["utf16"].Blob.Scalar<long>(LibraDexScalarWidth.Bytes32).Create();
-        LibraDexIndex<byte[], long> customIndex = catalog.Indexes["binary-slice-grammar"]["custom"].Blob.Scalar<long>(LibraDexScalarWidth.Bytes32).Create();
-        LibraDexIndex<byte[], long> dateVariantsIndex = catalog.Indexes["binary-slice-grammar"]["dateVariants"].Blob.Scalar<long>(LibraDexScalarWidth.Bytes32).Create();
-        LibraDexIndex<byte[], long> dateOnlyVariantsIndex = catalog.Indexes["binary-slice-grammar"]["dateOnlyVariants"].Blob.Scalar<long>(LibraDexScalarWidth.Bytes32).Create();
-        LibraDexIndex<byte[], long> timeOnlyVariantsIndex = catalog.Indexes["binary-slice-grammar"]["timeOnlyVariants"].Blob.Scalar<long>(LibraDexScalarWidth.Bytes32).Create();
-        LibraDexIndex<byte[], long> dateTimeOffsetVariantsIndex = catalog.Indexes["binary-slice-grammar"]["dateTimeOffsetVariants"].Blob.Scalar<long>(LibraDexScalarWidth.Bytes32).Create();
-        LibraDexIndex<byte[], long> timeSpanVariantsIndex = catalog.Indexes["binary-slice-grammar"]["timeSpanVariants"].Blob.Scalar<long>(LibraDexScalarWidth.Bytes16).Create();
+        LibraDexIndex<byte[], long> dateIndex = catalog.Indexes.IndexSet("binary-slice-grammar").Define("date").Blob.Scalar<long>(LibraDexScalarWidth.Bytes32).Create();
+        LibraDexIndex<byte[], long> dateOnlyIndex = catalog.Indexes.IndexSet("binary-slice-grammar").Define("dateOnly").Blob.Scalar<long>(LibraDexScalarWidth.Bytes32).Create();
+        LibraDexIndex<byte[], long> utf8Index = catalog.Indexes.IndexSet("binary-slice-grammar").Define("utf8").Blob.Scalar<long>(LibraDexScalarWidth.Bytes32).Create();
+        LibraDexIndex<byte[], long> utf16Index = catalog.Indexes.IndexSet("binary-slice-grammar").Define("utf16").Blob.Scalar<long>(LibraDexScalarWidth.Bytes32).Create();
+        LibraDexIndex<byte[], long> customIndex = catalog.Indexes.IndexSet("binary-slice-grammar").Define("custom").Blob.Scalar<long>(LibraDexScalarWidth.Bytes32).Create();
+        LibraDexIndex<byte[], long> dateVariantsIndex = catalog.Indexes.IndexSet("binary-slice-grammar").Define("dateVariants").Blob.Scalar<long>(LibraDexScalarWidth.Bytes32).Create();
+        LibraDexIndex<byte[], long> dateOnlyVariantsIndex = catalog.Indexes.IndexSet("binary-slice-grammar").Define("dateOnlyVariants").Blob.Scalar<long>(LibraDexScalarWidth.Bytes32).Create();
+        LibraDexIndex<byte[], long> timeOnlyVariantsIndex = catalog.Indexes.IndexSet("binary-slice-grammar").Define("timeOnlyVariants").Blob.Scalar<long>(LibraDexScalarWidth.Bytes32).Create();
+        LibraDexIndex<byte[], long> dateTimeOffsetVariantsIndex = catalog.Indexes.IndexSet("binary-slice-grammar").Define("dateTimeOffsetVariants").Blob.Scalar<long>(LibraDexScalarWidth.Bytes32).Create();
+        LibraDexIndex<byte[], long> timeSpanVariantsIndex = catalog.Indexes.IndexSet("binary-slice-grammar").Define("timeSpanVariants").Blob.Scalar<long>(LibraDexScalarWidth.Bytes16).Create();
 
         byte[] dateStart = new byte[32];
         byte[] dateEnd = new byte[32];
@@ -34609,8 +34609,8 @@ internal static partial class RawHarness
     {
         using Catalog catalog = Catalog.CreateMemory();
         CatalogIdentityGroupIndexes users = catalog.IndexSet("existence-users");
-        using LibraDexStringScalar8Index roles = users["roles"].String.Create(StringKeys.Exact);
-        using LibraDexStringScalar8Index createOnOpen = users["create-on-open"].String.Create(
+        using LibraDexStringScalar8Index roles = users.Define("roles").String.Create(StringKeys.Exact);
+        using LibraDexStringScalar8Index createOnOpen = users.Define("create-on-open").String.Create(
             StringKeys.Exact,
             identityLookupMode: IdentityLookupMode.CreateOnOpen);
         if (createOnOpen.IdentityLookup.Mode != IdentityLookupMode.CreateOnOpen ||
@@ -34619,9 +34619,9 @@ internal static partial class RawHarness
             throw new InvalidDataException("The create-time CreateOnOpen policy did not prepare a partial session-local inversion.");
         }
 
-        using LibraDexStringScalar8Index buildOnOpenSeed = users["build-on-open"].String.Create(StringKeys.Exact);
+        using LibraDexStringScalar8Index buildOnOpenSeed = users.Define("build-on-open").String.Create(StringKeys.Exact);
         ValidateGenericInsert(buildOnOpenSeed.Insert("seed", 91UL), "build-on-open seed insert");
-        using LibraDexStringScalar8Index buildOnOpen = users["build-on-open"].String.Open(
+        using LibraDexStringScalar8Index buildOnOpen = users.Define("build-on-open").String.Open(
             identityLookupMode: IdentityLookupMode.BuildOnOpen);
         if (buildOnOpen.IdentityLookup.Mode != IdentityLookupMode.BuildOnOpen ||
             buildOnOpen.IdentityLookup.State != IdentityLookupState.Complete ||
@@ -34637,7 +34637,7 @@ internal static partial class RawHarness
         if (roles.Insert("admin", 1UL).Inserted)
             throw new InvalidDataException("An exact repeated tuple was inserted and could distort duplicate/singleton cardinality.");
 
-        using LibraDexStringScalar8Index direct = users["direct-key"].String.Create(StringKeys.Exact);
+        using LibraDexStringScalar8Index direct = users.Define("direct-key").String.Create(StringKeys.Exact);
         ValidateGenericInsert(direct.Insert(null!, 10UL), "direct null/10 insert");
         ValidateGenericInsert(direct.Insert(string.Empty, 11UL), "direct empty/11 insert");
         ValidateGenericInsert(direct.Insert("beta", 12UL), "direct beta/12 insert");
@@ -34847,7 +34847,7 @@ internal static partial class RawHarness
             }
         }
 
-        using LibraDexStringScalar8Index foldedRoles = users["folded-roles"].String.Create(StringKeys.ExactAndFolded);
+        using LibraDexStringScalar8Index foldedRoles = users.Define("folded-roles").String.Create(StringKeys.ExactAndFolded);
         ValidateGenericInsert(foldedRoles.Insert("Admin", 10UL), "folded duplicate role Admin/10 insert");
         ValidateGenericInsert(foldedRoles.Insert("admin", 11UL), "folded duplicate role admin/11 insert");
         IIndex runtimeFoldedRoles = foldedRoles;
@@ -34864,7 +34864,7 @@ internal static partial class RawHarness
             throw new InvalidDataException("Projection position did not distinguish exact physical cardinality from folded-string cardinality.");
         }
 
-        LibraDexIndex<byte[], ulong> payload = users["payload"].Blob
+        LibraDexIndex<byte[], ulong> payload = users.Define("payload").Blob
             .Scalar<ulong>(LibraDexScalarWidth.Bytes32)
             .Create();
         byte[] payloadA = new byte[32];
@@ -34927,7 +34927,7 @@ internal static partial class RawHarness
             throw new InvalidDataException("Public canonical numeric helpers did not round-trip caller-owned storage.");
         }
 
-        LibraDexIndex<byte[], ulong> canonicalPayloadIndex = users["canonical-payload"].Blob
+        LibraDexIndex<byte[], ulong> canonicalPayloadIndex = users.Define("canonical-payload").Blob
             .Scalar<ulong>(LibraDexScalarWidth.Bytes32)
             .Create();
         ValidateGenericInsert(canonicalPayloadIndex.Insert(canonicalPayload, 24UL), "canonical projection payload/24 insert");
@@ -35169,8 +35169,8 @@ internal static partial class RawHarness
     private static void ValidateMaintenanceAndQueryDiagnostics()
     {
         using Catalog catalog = Catalog.CreateMemory();
-        CatalogIdentityGroupIndexes values = catalog.Indexes["diagnostics"];
-        LibraDexIndex<long, long> score = values["score"].Int64Keys<long>().Create(
+        CatalogIdentityGroupIndexes values = catalog.Indexes.IndexSet("diagnostics");
+        LibraDexIndex<long, long> score = values.Define("score").Int64Keys<long>().Create(
             keys: IndexKeys.NonUnique);
         ValidateGenericInsert(score.Insert(10L, 1L), "diagnostics score 10/1 insert");
         ValidateGenericInsert(score.Insert(20L, 2L), "diagnostics score 20/2 insert");
@@ -35282,7 +35282,7 @@ internal static partial class RawHarness
         {
             using (Catalog catalog = Catalog.Create(path))
             {
-                using LibraDexStringScalar8Index email = catalog.Indexes["maintenance-users"]["email"].String.Create(
+                using LibraDexStringScalar8Index email = catalog.Indexes.IndexSet("maintenance-users").Define("email").String.Create(
                     stringKeys: StringKeys.ExactAndFolded);
                 for (ulong identity = 1; identity <= 6; identity++)
                 {
@@ -35463,7 +35463,7 @@ internal static partial class RawHarness
 
             using (Catalog catalog = Catalog.Create(path))
             {
-                CatalogNamedStringKeyBuilder builder = catalog.Indexes["people"]["name"].String;
+                CatalogNamedStringKeyBuilder builder = catalog.Indexes.IndexSet("people").Define("name").String;
                 using (LibraDexStringScalar8Index exact = builder.Create(stringKeys: StringKeys.Exact))
                     ValidateGenericInsert(exact.Insert("Alice", 101), "pre-profile Alice insert");
                 using (LibraDexStringScalar8Index first = builder.AddSortKeyProfile(profiles[0])) { }
@@ -35473,7 +35473,7 @@ internal static partial class RawHarness
                 LibraDexStringScalar8Index.LibraDexStringScalar8PreparedKey prepared = names.PrepareKey("Ake");
                 ValidateGenericInsert(names.InsertPrepared(prepared, 102), "multi-culture prepared Ake insert");
 
-                if (!catalog.Indexes["people"].TryGetInfo("name", out CatalogIndexInfo info) ||
+                if (!catalog.Indexes.IndexSet("people").TryGetInfo("name", out CatalogIndexInfo info) ||
                     info.StringKeys != StringKeys.ExactAndSortKey ||
                     info.SortKeyProfiles is not { Count: 3 } persisted ||
                     persisted[0].CultureName != "en-US" ||
@@ -35535,7 +35535,7 @@ internal static partial class RawHarness
 
             using (Catalog memory = Catalog.CreateMemory())
             {
-                CatalogNamedStringKeyBuilder builder = memory.Indexes["people"]["name"].String;
+                CatalogNamedStringKeyBuilder builder = memory.Indexes.IndexSet("people").Define("name").String;
                 using (LibraDexStringScalar8Index exact = builder.Create(stringKeys: StringKeys.Exact))
                     ValidateGenericInsert(exact.Insert("Alice", 101), "memory pre-profile Alice insert");
                 using (LibraDexStringScalar8Index names = builder.AddSortKeyProfile(profiles[0]))
@@ -35561,9 +35561,9 @@ internal static partial class RawHarness
             }
 
             using (Catalog reopened = Catalog.Open(path))
-            using (LibraDexStringScalar8Index names = reopened.Indexes["people"]["name"].String.Open())
+            using (LibraDexStringScalar8Index names = reopened.Indexes.IndexSet("people").Define("name").String.Open())
             {
-                if (!reopened.Indexes["people"].TryGetInfo("name", out CatalogIndexInfo info) ||
+                if (!reopened.Indexes.IndexSet("people").TryGetInfo("name", out CatalogIndexInfo info) ||
                     info.SortKeyProfiles is not { Count: 3 })
                 {
                     throw new InvalidDataException("Reopen did not restore all persisted string culture profiles.");

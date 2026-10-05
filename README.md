@@ -31,10 +31,11 @@ Create a durable catalog and a typed index. Here, `products` is the shared ident
 ```csharp
 using LibraDex;
 
-using Catalog catalog = Catalog.CreateOrOpen("products", directory: "data");
-using LibraDexIndex<long, long> sku = catalog.Indexes["products"]["sku"]
-    .Int64Keys<long>()
-    .CreateOrOpen(keys: IndexKeys.NonUnique);
+using Catalog catalog = Catalog.CreateOrOpen("products", directory: @"C:\MyApp\Data");
+// One catalog can contain multiple index sets, such as "products" and "customers".
+// Each set groups indexes over its own shared identity universe.
+using LibraDexIndex<long, long> sku = catalog.Indexes.CreateOrOpen<long, long>(
+    "sku", indexSet: "products", keys: IndexKeys.NonUnique);
 
 sku.Insert(100_042, 501);
 sku.Insert(100_042, 502);
@@ -44,10 +45,9 @@ sku.Insert(100_043, 503);
 Open an existing catalog and index explicitly when creation is not part of the operation:
 
 ```csharp
-using Catalog catalog = Catalog.Open("products", directory: "data");
-using LibraDexIndex<long, long> sku = catalog.Indexes["products"]["sku"]
-    .Int64Keys<long>()
-    .Open();
+using Catalog catalog = Catalog.Open("products", directory: @"C:\MyApp\Data");
+// Indexers access existing sets/indexes; they never create missing ones.
+using LibraDexIndex<long, long> sku = catalog.Indexes["products"].Open<long, long>("sku");
 
 using LibraDexRangeReader<long, long> reader = sku.OpenReader();
 while (reader.MoveNext())
@@ -61,7 +61,21 @@ while (reader.MoveNext())
 
 For a process-local, non-durable catalog, use `Catalog.CreateMemory()`. It uses the same catalog and index API shape but has no reopen lifecycle.
 
-Named calls take the catalog basename and directory; LibraDex resolves the `.lbdx` filename. `catalog.Name`, `catalog.DirectoryPath`, and `catalog.Path` expose the resulting metadata. Use `Catalog.GetFilePath("products", "data")` when you need the resolved path without opening the catalog. The original single-string file-path calls and `CatalogLocation` overloads remain supported for compatibility. To supply options, use the named `options:` argument; use `directory:` to select named-catalog behavior unambiguously.
+Named calls take the catalog basename and directory; LibraDex resolves the `.lbdx` filename. Replace the example's `C:\MyApp\Data` with your application's storage directory (for example, `/var/lib/myapp/data` on Linux). `catalog.Name`, `catalog.DirectoryPath`, and `catalog.Path` expose the resulting metadata. Use `Catalog.GetFilePath("products", @"C:\MyApp\Data")` when you need the resolved path without opening the catalog. The original single-string file-path calls and `CatalogLocation` overloads remain supported for compatibility. To supply options, use the named `options:` argument; use `directory:` to select named-catalog behavior unambiguously.
+
+The `directory` argument accepts absolute or relative paths. Relative paths resolve against the process's current working directory at the time of the call, not necessarily the executable's directory. Null or blank also uses the current working directory. Prefer an absolute path when storage must remain predictable regardless of how the application is launched.
+
+UNC paths (such as `\\server\share\MyApp\Data`) and other network-backed directories are accepted where the underlying filesystem supports LibraDex's required file operations. Network latency, bandwidth, and remote filesystem behavior can make these substantially slower than local SSD storage, especially for frequent small reads and writes. Path acceptance is not a guarantee of compatibility or performance on every network filesystem.
+
+## Index lifecycle syntax
+
+Use `catalog.Indexes.Create<TKey, TIdentity>(name, indexSet: set)` to create a new index, `Open<TKey, TIdentity>` to open an existing one, and `CreateOrOpen<TKey, TIdentity>` for idempotent setup. Creating the first index establishes its index set; a single catalog can contain multiple sets.
+
+Within an existing set, use `catalog.Indexes["products"].CreateOrOpen<long, long>("sku")`. The two indexers in `catalog.Indexes["products"]["sku"]` retrieve an existing set and an existing index handle; a missing name throws `KeyNotFoundException` without creating storage. Use typed `Open<TKey, TIdentity>(name)` when compile-time types and persisted-type validation are wanted.
+
+For explicit widths or specialized key profiles, use `catalog.Indexes.IndexSet("products").Define("sku")` followed by the appropriate configuration and lifecycle method. `IndexSet` and `Define` explicitly configure intent; unlike indexers, they can name a set/index that does not exist yet.
+
+**1.2.0 launch correction:** builder-style indexers from 1.0/1.1 have been replaced with existing-only lookup indexers. This is an intentional source-breaking early-release correction despite the minor version number. Replace construction chains with the lifecycle methods above. Catalog files do not need conversion.
 
 ## Good fits
 

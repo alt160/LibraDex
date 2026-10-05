@@ -391,7 +391,7 @@ internal static class LibraDexCatalogCompactor
                 info.StringComparisonCulture,
                 info.StringComparisonCompareOptions,
                 info.StringComparisonCustomComparerTypeName);
-            return shadow.Indexes[info.Group][info.Name].String.Create(
+            return shadow.Indexes.IndexSet(info.Group).Define(info.Name).String.Create(
                 info.StringKeys,
                 info.Directions,
                 info.SortOrder,

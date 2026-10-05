@@ -30,10 +30,10 @@ internal static partial class RawHarness
             long retiredUnreachableBytes = 0;
             using (Catalog catalog = Catalog.Create(path, CatalogOptions.UInt64Identities))
             {
-                using LibraDexIndex<int, ulong> age = catalog.Indexes["people"]["age"].Int32Keys<ulong>().Create();
-                using LibraDexStringScalar8Index name = catalog.Indexes["people"]["name"].String.Create(StringKeys.ExactAndFolded);
-                using LibraDexIndex<long, ulong> scratch = catalog.Indexes["scratch"]["value"].Int64Keys<ulong>().Create();
-                using LibraDexIndex<int, ulong> retained = catalog.Indexes["orders"]["number"].Int32Keys<ulong>().Create();
+                using LibraDexIndex<int, ulong> age = catalog.Indexes.IndexSet("people").Define("age").Int32Keys<ulong>().Create();
+                using LibraDexStringScalar8Index name = catalog.Indexes.IndexSet("people").Define("name").String.Create(StringKeys.ExactAndFolded);
+                using LibraDexIndex<long, ulong> scratch = catalog.Indexes.IndexSet("scratch").Define("value").Int64Keys<ulong>().Create();
+                using LibraDexIndex<int, ulong> retained = catalog.Indexes.IndexSet("orders").Define("number").Int32Keys<ulong>().Create();
                 for (int itemIndex = 0; itemIndex < itemCount; itemIndex++)
                 {
                     ulong identity = checked((ulong)itemIndex + 1UL);
@@ -48,7 +48,7 @@ internal static partial class RawHarness
             long initialPopulatedLength = new FileInfo(path).Length;
             using (Catalog catalog = Catalog.Open(path, CatalogOptions.UInt64Identities))
             {
-                using LibraDexIndex<long, ulong> scratch = catalog.Indexes["scratch"]["value"].Int64Keys<ulong>().Open();
+                using LibraDexIndex<long, ulong> scratch = catalog.Indexes.IndexSet("scratch").Define("value").Int64Keys<ulong>().Open();
                 LibraDexRangeReader<long, ulong> retainedReader = scratch.OpenRangeReader(long.MinValue, long.MaxValue);
                 if (!retainedReader.MoveNext())
                     throw new InvalidDataException("The coherent-reader retirement fixture could not position on its first source row.");
@@ -91,9 +91,9 @@ internal static partial class RawHarness
                     throw new InvalidDataException("Reopen restored one or more retired catalog definitions.");
                 }
 
-                using LibraDexIndex<int, ulong> age = catalog.Indexes["people"]["age"].Int32Keys<ulong>().Create();
-                using LibraDexStringScalar8Index name = catalog.Indexes["people"]["name"].String.Create(StringKeys.ExactAndFolded);
-                using LibraDexIndex<long, ulong> scratch = catalog.Indexes["scratch"]["value"].Int64Keys<ulong>().Create();
+                using LibraDexIndex<int, ulong> age = catalog.Indexes.IndexSet("people").Define("age").Int32Keys<ulong>().Create();
+                using LibraDexStringScalar8Index name = catalog.Indexes.IndexSet("people").Define("name").String.Create(StringKeys.ExactAndFolded);
+                using LibraDexIndex<long, ulong> scratch = catalog.Indexes.IndexSet("scratch").Define("value").Int64Keys<ulong>().Create();
                 for (int itemIndex = 0; itemIndex < itemCount; itemIndex++)
                 {
                     ulong identity = checked((ulong)itemIndex + 1UL);
@@ -114,10 +114,10 @@ internal static partial class RawHarness
 
             using (Catalog reopened = Catalog.Open(path, CatalogOptions.UInt64Identities))
             {
-                using LibraDexIndex<int, ulong> age = reopened.Indexes["people"]["age"].Int32Keys<ulong>().Open();
-                using LibraDexStringScalar8Index name = reopened.Indexes["people"]["name"].String.Open();
-                using LibraDexIndex<long, ulong> scratch = reopened.Indexes["scratch"]["value"].Int64Keys<ulong>().Open();
-                using LibraDexIndex<int, ulong> retained = reopened.Indexes["orders"]["number"].Int32Keys<ulong>().Open();
+                using LibraDexIndex<int, ulong> age = reopened.Indexes.IndexSet("people").Define("age").Int32Keys<ulong>().Open();
+                using LibraDexStringScalar8Index name = reopened.Indexes.IndexSet("people").Define("name").String.Open();
+                using LibraDexIndex<long, ulong> scratch = reopened.Indexes.IndexSet("scratch").Define("value").Int64Keys<ulong>().Open();
+                using LibraDexIndex<int, ulong> retained = reopened.Indexes.IndexSet("orders").Define("number").Int32Keys<ulong>().Open();
                 int expectedAgeCount = Enumerable.Range(0, itemCount).Count(value => value % 100 == 42);
                 if (age.GetIdentities(age.Where.EqualTo(42).EndCondition).Count != expectedAgeCount ||
                     !name.Entries.Exists(CreateAllocatorReuseName(itemCount - 1), checked((ulong)itemCount)) ||

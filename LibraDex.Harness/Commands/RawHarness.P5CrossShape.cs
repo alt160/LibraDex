@@ -914,14 +914,14 @@ internal static partial class RawHarness
         {
             using (Catalog catalog = Catalog.Create(path))
             {
-                using LibraDexIndex<long, long> ss88 = catalog.Indexes["fixed-storage"]["ss8-8"].Int64Keys<long>().Create();
-                using LibraDexIndex<Int128, long> ss168 = catalog.Indexes["fixed-storage"]["ss16-8"].Int128Keys<long>().Create();
-                using LibraDexIndex<long, Guid> ss816 = catalog.Indexes["fixed-storage"]["ss8-16"].Int64Keys<Guid>().Create();
-                using LibraDexIndex<Int128, Guid> ss1616 = catalog.Indexes["fixed-storage"]["ss16-16"].Int128Keys<Guid>().Create();
-                using LibraDexIndex<byte[], long> fs328 = catalog.Indexes["fixed-storage"]["fs32-8"].Blob
+                using LibraDexIndex<long, long> ss88 = catalog.Indexes.IndexSet("fixed-storage").Define("ss8-8").Int64Keys<long>().Create();
+                using LibraDexIndex<Int128, long> ss168 = catalog.Indexes.IndexSet("fixed-storage").Define("ss16-8").Int128Keys<long>().Create();
+                using LibraDexIndex<long, Guid> ss816 = catalog.Indexes.IndexSet("fixed-storage").Define("ss8-16").Int64Keys<Guid>().Create();
+                using LibraDexIndex<Int128, Guid> ss1616 = catalog.Indexes.IndexSet("fixed-storage").Define("ss16-16").Int128Keys<Guid>().Create();
+                using LibraDexIndex<byte[], long> fs328 = catalog.Indexes.IndexSet("fixed-storage").Define("fs32-8").Blob
                     .Scalar<long>(LibraDexScalarWidth.Bytes32)
                     .Create();
-                using LibraDexIndex<byte[], Guid> fs3216 = catalog.Indexes["fixed-storage"]["fs32-16"].Blob
+                using LibraDexIndex<byte[], Guid> fs3216 = catalog.Indexes.IndexSet("fixed-storage").Define("fs32-16").Blob
                     .Scalar<Guid>(LibraDexScalarWidth.Bytes32)
                     .Create();
 
@@ -975,14 +975,14 @@ internal static partial class RawHarness
 
             using Catalog reopened = Catalog.Open(path);
             LibraDexCatalogStorageAssessment storage = reopened.Maintenance.Assess().Storage;
-            using LibraDexIndex<long, long> reopenedSS88 = reopened.Indexes["fixed-storage"]["ss8-8"].Int64Keys<long>().Open();
-            using LibraDexIndex<Int128, long> reopenedSS168 = reopened.Indexes["fixed-storage"]["ss16-8"].Int128Keys<long>().Open();
-            using LibraDexIndex<long, Guid> reopenedSS816 = reopened.Indexes["fixed-storage"]["ss8-16"].Int64Keys<Guid>().Open();
-            using LibraDexIndex<Int128, Guid> reopenedSS1616 = reopened.Indexes["fixed-storage"]["ss16-16"].Int128Keys<Guid>().Open();
-            using LibraDexIndex<byte[], long> reopenedFS328 = reopened.Indexes["fixed-storage"]["fs32-8"].Blob
+            using LibraDexIndex<long, long> reopenedSS88 = reopened.Indexes.IndexSet("fixed-storage").Define("ss8-8").Int64Keys<long>().Open();
+            using LibraDexIndex<Int128, long> reopenedSS168 = reopened.Indexes.IndexSet("fixed-storage").Define("ss16-8").Int128Keys<long>().Open();
+            using LibraDexIndex<long, Guid> reopenedSS816 = reopened.Indexes.IndexSet("fixed-storage").Define("ss8-16").Int64Keys<Guid>().Open();
+            using LibraDexIndex<Int128, Guid> reopenedSS1616 = reopened.Indexes.IndexSet("fixed-storage").Define("ss16-16").Int128Keys<Guid>().Open();
+            using LibraDexIndex<byte[], long> reopenedFS328 = reopened.Indexes.IndexSet("fixed-storage").Define("fs32-8").Blob
                 .Scalar<long>(LibraDexScalarWidth.Bytes32)
                 .Open();
-            using LibraDexIndex<byte[], Guid> reopenedFS3216 = reopened.Indexes["fixed-storage"]["fs32-16"].Blob
+            using LibraDexIndex<byte[], Guid> reopenedFS3216 = reopened.Indexes.IndexSet("fixed-storage").Define("fs32-16").Blob
                 .Scalar<Guid>(LibraDexScalarWidth.Bytes32)
                 .Open();
             Dictionary<string, long> reopenedCounts = new(StringComparer.Ordinal)
@@ -1103,14 +1103,14 @@ internal static partial class RawHarness
                 int[] order = CreateAdversarialOrdinalOrder(itemCount, pattern);
                 using (Catalog catalog = Catalog.Create(patternPath))
                 {
-                    using LibraDexIndex<long, long> ss88 = catalog.Indexes["fixed-adversarial"]["ss8-8"].Int64Keys<long>().Create(IndexKeys.NonUnique);
-                    using LibraDexIndex<Int128, long> ss168 = catalog.Indexes["fixed-adversarial"]["ss16-8"].Int128Keys<long>().Create(IndexKeys.NonUnique);
-                    using LibraDexIndex<long, Guid> ss816 = catalog.Indexes["fixed-adversarial"]["ss8-16"].Int64Keys<Guid>().Create(IndexKeys.NonUnique);
-                    using LibraDexIndex<Int128, Guid> ss1616 = catalog.Indexes["fixed-adversarial"]["ss16-16"].Int128Keys<Guid>().Create(IndexKeys.NonUnique);
-                    using LibraDexIndex<byte[], long> fs328 = catalog.Indexes["fixed-adversarial"]["fs32-8"].Blob
+                    using LibraDexIndex<long, long> ss88 = catalog.Indexes.IndexSet("fixed-adversarial").Define("ss8-8").Int64Keys<long>().Create(IndexKeys.NonUnique);
+                    using LibraDexIndex<Int128, long> ss168 = catalog.Indexes.IndexSet("fixed-adversarial").Define("ss16-8").Int128Keys<long>().Create(IndexKeys.NonUnique);
+                    using LibraDexIndex<long, Guid> ss816 = catalog.Indexes.IndexSet("fixed-adversarial").Define("ss8-16").Int64Keys<Guid>().Create(IndexKeys.NonUnique);
+                    using LibraDexIndex<Int128, Guid> ss1616 = catalog.Indexes.IndexSet("fixed-adversarial").Define("ss16-16").Int128Keys<Guid>().Create(IndexKeys.NonUnique);
+                    using LibraDexIndex<byte[], long> fs328 = catalog.Indexes.IndexSet("fixed-adversarial").Define("fs32-8").Blob
                         .Scalar<long>(LibraDexScalarWidth.Bytes32)
                         .Create(IndexKeys.NonUnique);
-                    using LibraDexIndex<byte[], Guid> fs3216 = catalog.Indexes["fixed-adversarial"]["fs32-16"].Blob
+                    using LibraDexIndex<byte[], Guid> fs3216 = catalog.Indexes.IndexSet("fixed-adversarial").Define("fs32-16").Blob
                         .Scalar<Guid>(LibraDexScalarWidth.Bytes32)
                         .Create(IndexKeys.NonUnique);
                     InsertFixedShapeAdversarialTuples(ss88, ss168, ss816, ss1616, fs328, fs3216, order, itemCount, pattern, shapeFilter);
@@ -1120,14 +1120,14 @@ internal static partial class RawHarness
                 LibraDexCatalogStorageAssessment storage;
                 {
                     using Catalog reopened = Catalog.Open(patternPath);
-                    using LibraDexIndex<long, long> reopenedSS88 = reopened.Indexes["fixed-adversarial"]["ss8-8"].Int64Keys<long>().Open(IndexKeys.NonUnique);
-                    using LibraDexIndex<Int128, long> reopenedSS168 = reopened.Indexes["fixed-adversarial"]["ss16-8"].Int128Keys<long>().Open(IndexKeys.NonUnique);
-                    using LibraDexIndex<long, Guid> reopenedSS816 = reopened.Indexes["fixed-adversarial"]["ss8-16"].Int64Keys<Guid>().Open(IndexKeys.NonUnique);
-                    using LibraDexIndex<Int128, Guid> reopenedSS1616 = reopened.Indexes["fixed-adversarial"]["ss16-16"].Int128Keys<Guid>().Open(IndexKeys.NonUnique);
-                    using LibraDexIndex<byte[], long> reopenedFS328 = reopened.Indexes["fixed-adversarial"]["fs32-8"].Blob
+                    using LibraDexIndex<long, long> reopenedSS88 = reopened.Indexes.IndexSet("fixed-adversarial").Define("ss8-8").Int64Keys<long>().Open(IndexKeys.NonUnique);
+                    using LibraDexIndex<Int128, long> reopenedSS168 = reopened.Indexes.IndexSet("fixed-adversarial").Define("ss16-8").Int128Keys<long>().Open(IndexKeys.NonUnique);
+                    using LibraDexIndex<long, Guid> reopenedSS816 = reopened.Indexes.IndexSet("fixed-adversarial").Define("ss8-16").Int64Keys<Guid>().Open(IndexKeys.NonUnique);
+                    using LibraDexIndex<Int128, Guid> reopenedSS1616 = reopened.Indexes.IndexSet("fixed-adversarial").Define("ss16-16").Int128Keys<Guid>().Open(IndexKeys.NonUnique);
+                    using LibraDexIndex<byte[], long> reopenedFS328 = reopened.Indexes.IndexSet("fixed-adversarial").Define("fs32-8").Blob
                         .Scalar<long>(LibraDexScalarWidth.Bytes32)
                         .Open(IndexKeys.NonUnique);
-                    using LibraDexIndex<byte[], Guid> reopenedFS3216 = reopened.Indexes["fixed-adversarial"]["fs32-16"].Blob
+                    using LibraDexIndex<byte[], Guid> reopenedFS3216 = reopened.Indexes.IndexSet("fixed-adversarial").Define("fs32-16").Blob
                         .Scalar<Guid>(LibraDexScalarWidth.Bytes32)
                         .Open(IndexKeys.NonUnique);
                     ValidateFixedShapeAdversarialReaders(
@@ -1522,9 +1522,9 @@ internal static partial class RawHarness
         {
             using (Catalog catalog = Catalog.Create(path))
             {
-                using LibraDexBigIntScalar8Index<long> fsn8 = catalog.Indexes["fixedn-storage"]["fsn-8"].BigIntKeys<long>(32).Create();
-                using LibraDexBigIntScalar8Index<Guid> fsn16 = catalog.Indexes["fixedn-storage"]["fsn-16"].BigIntKeys<Guid>(32).Create();
-                using LibraDexBigIntVarIdentityIndex fsnv = catalog.Indexes["fixedn-storage"]["fsn-v"].BigIntVarIdentityKeys(32, 64).Create();
+                using LibraDexBigIntScalar8Index<long> fsn8 = catalog.Indexes.IndexSet("fixedn-storage").Define("fsn-8").BigIntKeys<long>(32).Create();
+                using LibraDexBigIntScalar8Index<Guid> fsn16 = catalog.Indexes.IndexSet("fixedn-storage").Define("fsn-16").BigIntKeys<Guid>(32).Create();
+                using LibraDexBigIntVarIdentityIndex fsnv = catalog.Indexes.IndexSet("fixedn-storage").Define("fsn-v").BigIntVarIdentityKeys(32, 64).Create();
                 for (int i = 0; i < itemCount; i++)
                 {
                     BigInteger key = new(i + 1);
@@ -1539,9 +1539,9 @@ internal static partial class RawHarness
 
             using Catalog reopened = Catalog.Open(path);
             LibraDexCatalogStorageAssessment storage = reopened.Maintenance.Assess().Storage;
-            using LibraDexBigIntScalar8Index<long> reopened8 = reopened.Indexes["fixedn-storage"]["fsn-8"].BigIntKeys<long>(32).Open();
-            using LibraDexBigIntScalar8Index<Guid> reopened16 = reopened.Indexes["fixedn-storage"]["fsn-16"].BigIntKeys<Guid>(32).Open();
-            using LibraDexBigIntVarIdentityIndex reopenedV = reopened.Indexes["fixedn-storage"]["fsn-v"].BigIntVarIdentityKeys(32, 64).Open();
+            using LibraDexBigIntScalar8Index<long> reopened8 = reopened.Indexes.IndexSet("fixedn-storage").Define("fsn-8").BigIntKeys<long>(32).Open();
+            using LibraDexBigIntScalar8Index<Guid> reopened16 = reopened.Indexes.IndexSet("fixedn-storage").Define("fsn-16").BigIntKeys<Guid>(32).Open();
+            using LibraDexBigIntVarIdentityIndex reopenedV = reopened.Indexes.IndexSet("fixedn-storage").Define("fsn-v").BigIntVarIdentityKeys(32, 64).Open();
             Dictionary<string, long> counts = new(StringComparer.Ordinal)
             {
                 ["fsn-8"] = reopened8.Count(),

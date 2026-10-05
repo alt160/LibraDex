@@ -35,7 +35,7 @@ internal static partial class RawHarness
         var nativeTimer = Stopwatch.StartNew();
         using (Catalog catalog = Catalog.Create(path, CatalogOptions.UInt64Identities))
         {
-            using LibraDexStringScalar8Index index = catalog.Indexes["native"]["attributes"].String.Create(
+            using LibraDexStringScalar8Index index = catalog.Indexes.IndexSet("native").Define("attributes").String.Create(
                 stringKeys: StringKeys.Exact,
                 directions: LibraDexProjectionDirectionSet.Forward,
                 sortOrder: LibraDexIndexSortOrder.Ascending,
@@ -65,7 +65,7 @@ internal static partial class RawHarness
 
         using (Catalog reopened = Catalog.Open(path, CatalogOptions.UInt64Identities))
         {
-            using LibraDexStringScalar8Index index = reopened.Indexes["native"]["attributes"].String.Open();
+            using LibraDexStringScalar8Index index = reopened.Indexes.IndexSet("native").Define("attributes").String.Open();
             ValidateVarKeyScalar8SortedBuildOrder(index, expectedAscending, QueryDirection.Ascending, "native reopen ascending");
             ValidateVarKeyScalar8SortedBuildOrder(index, expectedDescending, QueryDirection.Descending, "native reopen descending");
             LibraDexVariableTextTopologyStorageComponent reopenedTopology = reopened.Maintenance.Assess().Storage.VariableTextTopologyComponents.Single(component =>

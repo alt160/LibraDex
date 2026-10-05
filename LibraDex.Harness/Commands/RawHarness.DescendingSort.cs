@@ -312,7 +312,7 @@ internal static partial class RawHarness
         {
             string path = Path.GetFullPath(Path.Combine("artifacts", $"descending-vv-catalog-{Guid.NewGuid():N}.lbdx"));
             using (Catalog fixtureCatalog = Catalog.Create(path))
-            using (VarKeyVarIdentityIndex index = fixtureCatalog.Indexes["vv"]["raw"]
+            using (VarKeyVarIdentityIndex index = fixtureCatalog.Indexes.IndexSet("vv").Define("raw")
                 .VarKeyVarIdentityKeys(maxKeyBytes: 64, maxIdentityBytes: 64)
                 .Create(options: new IndexOptions { SortOrder = LibraDexIndexSortOrder.Descending }))
             {
@@ -327,7 +327,7 @@ internal static partial class RawHarness
                     throw new InvalidDataException("VV descending catalog optimization did not complete.");
             }
             using (Catalog reopened = Catalog.Open(path))
-            using (VarKeyVarIdentityIndex index = reopened.Indexes["vv"]["raw"]
+            using (VarKeyVarIdentityIndex index = reopened.Indexes.IndexSet("vv").Define("raw")
                 .VarKeyVarIdentityKeys(maxKeyBytes: 64, maxIdentityBytes: 64).Open())
             {
                 if (!index.Descending)
@@ -2049,7 +2049,7 @@ internal static partial class RawHarness
         IndexOptions descending = new() { SortOrder = LibraDexIndexSortOrder.Descending };
         LibraDexIdentityPrimitiveRequest all = new(LibraDexCriteriaKind.All, Array.Empty<object?>(), TakeLimit: 4, Direction: QueryDirection.Descending);
 
-        using LibraDexIndex<long, long> scalar = catalog.Indexes["descending"]["modified"].Int64Keys<long>().Create(options: descending);
+        using LibraDexIndex<long, long> scalar = catalog.Indexes.IndexSet("descending").Define("modified").Int64Keys<long>().Create(options: descending);
         for (long identity = 1; identity <= 128; identity++)
             ValidateGenericInsert(scalar.Insert(1, identity), "descending scalar equal-key insert");
         ValidateGenericInsert(scalar.Insert(2, 900), "descending scalar high-key insert");
@@ -2057,7 +2057,7 @@ internal static partial class RawHarness
         AssertDescendingIds(scalar, new LibraDexIdentityPrimitiveRequest(
             LibraDexCriteriaKind.Find, new object?[] { 1L }, TakeLimit: 3, Direction: QueryDirection.Descending), 128, 127, 126);
         LibraDexConditionEndCondition scalarAll = LibraDexCondition.ForGroup("descending").Index("modified").AsInt64.All().EndCondition;
-        long[] scalarNatural = catalog.Indexes["descending"].GetIdentities<long>(scalarAll, deduplication: IdentityDeduplication.Preserve).Take(4).ToArray();
+        long[] scalarNatural = catalog.Indexes.IndexSet("descending").GetIdentities<long>(scalarAll, deduplication: IdentityDeduplication.Preserve).Take(4).ToArray();
         if (!scalarNatural.SequenceEqual(new long[] { 900, 128, 127, 126 }))
             throw new InvalidDataException($"Descending scalar plan-natural order failed: [{string.Join(',', scalarNatural)}].");
         if (verifySs88Shelf)
@@ -2123,7 +2123,7 @@ internal static partial class RawHarness
             {
                 using (Catalog persisted = Catalog.Create(reopenPath))
                 {
-                    using LibraDexIndex<long, long> fileIndex = persisted.Indexes["descending"]["reopenSS88"].Int64Keys<long>().Create(options: descending);
+                    using LibraDexIndex<long, long> fileIndex = persisted.Indexes.IndexSet("descending").Define("reopenSS88").Int64Keys<long>().Create(options: descending);
                     ValidateGenericInsert(fileIndex.Insert(1, 10), "descending SS8-8 file insert 10");
                     ValidateGenericInsert(fileIndex.Insert(1, 30), "descending SS8-8 file insert 30");
                     ValidateGenericInsert(fileIndex.Insert(1, 20), "descending SS8-8 file insert 20");
@@ -2131,7 +2131,7 @@ internal static partial class RawHarness
                 }
                 using (Catalog reopened = Catalog.Open(reopenPath))
                 {
-                    using LibraDexIndex<long, long> fileIndex = reopened.Indexes["descending"]["reopenSS88"].Int64Keys<long>().Open();
+                    using LibraDexIndex<long, long> fileIndex = reopened.Indexes.IndexSet("descending").Define("reopenSS88").Int64Keys<long>().Open();
                     Scalar8Scalar8Profile reopenedProfile = fileIndex.GetScalar8Scalar8Profile();
                     Scalar8Scalar8RoutePathTarget reopenedPath = reopened.Session.WalkScalar8Scalar8RoutePathTarget(
                         fileIndex.RootRouterOffset, encodedPublicKey, maxRouterHops: 16,
@@ -2165,7 +2165,7 @@ internal static partial class RawHarness
 
         if (verifySs168Shelf)
         {
-            using LibraDexIndex<Guid, long> guidIndex = catalog.Indexes["descending"]["guid168"].GuidKeys<long>().Create(options: descending);
+            using LibraDexIndex<Guid, long> guidIndex = catalog.Indexes.IndexSet("descending").Define("guid168").GuidKeys<long>().Create(options: descending);
             Guid key = Guid.Parse("00000000-0000-0000-0000-000000000007");
             Guid upperKey = Guid.Parse("00000000-0000-0000-0000-000000000008");
             for (long identity = 1; identity <= 700; identity++)
@@ -2181,13 +2181,13 @@ internal static partial class RawHarness
                 Direction: QueryDirection.Ascending), 1, 2, 3, 4);
             LibraDexConditionEndCondition guidNatural = LibraDexCondition.ForGroup("descending")
                 .Index("guid168").AsGuid.Between(key, key).EndCondition;
-            long[] naturalGuids = catalog.Indexes["descending"].GetIdentities<long>(
+            long[] naturalGuids = catalog.Indexes.IndexSet("descending").GetIdentities<long>(
                 guidNatural, deduplication: IdentityDeduplication.Preserve).Take(4).ToArray();
             if (!naturalGuids.SequenceEqual(new long[] { 700, 699, 698, 697 }))
                 throw new InvalidDataException($"Public SS16-8 natural descending range returned [{string.Join(',', naturalGuids)}].");
             LibraDexConditionEndCondition guidBetween = LibraDexCondition.ForGroup("descending")
                 .Index("guid168").AsGuid.Between(key, upperKey).EndCondition;
-            long[] naturalBetween = catalog.Indexes["descending"].GetIdentities<long>(
+            long[] naturalBetween = catalog.Indexes.IndexSet("descending").GetIdentities<long>(
                 guidBetween, deduplication: IdentityDeduplication.Preserve).Take(4).ToArray();
             if (!naturalBetween.SequenceEqual(new long[] { 900, 700, 699, 698 }))
                 throw new InvalidDataException($"Public SS16-8 natural descending between returned [{string.Join(',', naturalBetween)}].");
@@ -2228,14 +2228,14 @@ internal static partial class RawHarness
             {
                 using (Catalog persisted = Catalog.Create(reopenPath))
                 {
-                    using LibraDexIndex<Guid, long> fileIndex = persisted.Indexes["descending"]["guid168file"].GuidKeys<long>().Create(options: descending);
+                    using LibraDexIndex<Guid, long> fileIndex = persisted.Indexes.IndexSet("descending").Define("guid168file").GuidKeys<long>().Create(options: descending);
                     ValidateGenericInsert(fileIndex.Insert(key, 10), "descending SS16-8 file insert 10");
                     ValidateGenericInsert(fileIndex.Insert(key, 30), "descending SS16-8 file insert 30");
                     ValidateGenericInsert(fileIndex.Insert(key, 20), "descending SS16-8 file insert 20");
                 }
                 using (Catalog reopened = Catalog.Open(reopenPath))
                 {
-                    using LibraDexIndex<Guid, long> fileIndex = reopened.Indexes["descending"]["guid168file"].GuidKeys<long>().Open();
+                    using LibraDexIndex<Guid, long> fileIndex = reopened.Indexes.IndexSet("descending").Define("guid168file").GuidKeys<long>().Open();
                     Scalar16Scalar8Profile reopenedProfile = fileIndex.GetScalar16Scalar8Profile();
                     LibraDexGenericScalarCodec<Guid>.Encode16(key, out ulong encodedHigh, out ulong encodedLow);
                     Scalar16Scalar8RoutePathTarget reopenedPath = reopened.Session.WalkScalar16Scalar8RoutePathTarget(
@@ -2262,7 +2262,7 @@ internal static partial class RawHarness
 
         if (verifySs816Shelf)
         {
-            using LibraDexIndex<long, UInt128> wide = catalog.Indexes["descending"]["wideIdentity"].Int64Keys<UInt128>().Create(options: descending);
+            using LibraDexIndex<long, UInt128> wide = catalog.Indexes.IndexSet("descending").Define("wideIdentity").Int64Keys<UInt128>().Create(options: descending);
             for (ulong identity = 1; identity <= 700; identity++)
                 ValidateGenericInsert(wide.Insert(1, (UInt128)identity), "descending public SS8-16 terminal insert");
             ValidateGenericInsert(wide.Insert(2, (UInt128)900), "descending public SS8-16 upper-key insert");
@@ -2302,7 +2302,7 @@ internal static partial class RawHarness
             }
             LibraDexConditionEndCondition natural = LibraDexCondition.ForGroup("descending")
                 .Index("wideIdentity").AsInt64.Between(1, 2).EndCondition;
-            UInt128[] naturalIds = catalog.Indexes["descending"].GetIdentities<UInt128>(
+            UInt128[] naturalIds = catalog.Indexes.IndexSet("descending").GetIdentities<UInt128>(
                 natural, deduplication: IdentityDeduplication.Preserve).Take(4).ToArray();
             if (!naturalIds.SequenceEqual(new UInt128[] { 900, 700, 699, 698 }))
                 throw new InvalidDataException("Public SS8-16 natural descending condition order failed.");
@@ -2346,7 +2346,7 @@ internal static partial class RawHarness
             {
                 using (Catalog persisted = Catalog.Create(reopenPath))
                 {
-                    using LibraDexIndex<long, UInt128> fileIndex = persisted.Indexes["descending"]["wide816file"]
+                    using LibraDexIndex<long, UInt128> fileIndex = persisted.Indexes.IndexSet("descending").Define("wide816file")
                         .Int64Keys<UInt128>().Create(options: descending);
                     ValidateGenericInsert(fileIndex.Insert(1, (UInt128)10), "descending SS8-16 file insert 10");
                     ValidateGenericInsert(fileIndex.Insert(1, (UInt128)30), "descending SS8-16 file insert 30");
@@ -2354,7 +2354,7 @@ internal static partial class RawHarness
                 }
                 using (Catalog reopened = Catalog.Open(reopenPath))
                 {
-                    using LibraDexIndex<long, UInt128> fileIndex = reopened.Indexes["descending"]["wide816file"]
+                    using LibraDexIndex<long, UInt128> fileIndex = reopened.Indexes.IndexSet("descending").Define("wide816file")
                         .Int64Keys<UInt128>().Open();
                     Scalar8Scalar16Profile reopenedProfile = fileIndex.GetScalar8Scalar16Profile();
                     Scalar8Scalar16RoutePathTarget reopenedPath = reopened.Session.WalkScalar8Scalar16RoutePathTarget(
@@ -2382,14 +2382,14 @@ internal static partial class RawHarness
             {
                 using (Catalog persisted = Catalog.Create(terminalReopenPath))
                 {
-                    using LibraDexIndex<long, UInt128> fileIndex = persisted.Indexes["descending"]["wide816terminal"]
+                    using LibraDexIndex<long, UInt128> fileIndex = persisted.Indexes.IndexSet("descending").Define("wide816terminal")
                         .Int64Keys<UInt128>().Create(options: descending);
                     for (ulong identity = 1; identity <= 1300; identity++)
                         ValidateGenericInsert(fileIndex.Insert(1, (UInt128)identity), "descending SS8-16 file terminal insert");
                 }
                 using (Catalog reopened = Catalog.Open(terminalReopenPath))
                 {
-                    using LibraDexIndex<long, UInt128> fileIndex = reopened.Indexes["descending"]["wide816terminal"]
+                    using LibraDexIndex<long, UInt128> fileIndex = reopened.Indexes.IndexSet("descending").Define("wide816terminal")
                         .Int64Keys<UInt128>().Open();
                     Scalar8Scalar16RoutePathTarget reopenedPath = reopened.Session.WalkScalar8Scalar16RoutePathTarget(
                         fileIndex.RootRouterOffset, encodedKey, maxRouterHops: 16);
@@ -2422,7 +2422,7 @@ internal static partial class RawHarness
         {
             Guid key = Guid.Parse("00000000-0000-0000-0000-000000000007");
             Guid upperKey = Guid.Parse("00000000-0000-0000-0000-000000000008");
-            using LibraDexIndex<Guid, UInt128> wide = catalog.Indexes["descending"]["wide1616"].GuidKeys<UInt128>().Create(options: descending);
+            using LibraDexIndex<Guid, UInt128> wide = catalog.Indexes.IndexSet("descending").Define("wide1616").GuidKeys<UInt128>().Create(options: descending);
             for (ulong identity = 1; identity <= 700; identity++)
                 ValidateGenericInsert(wide.Insert(key, (UInt128)identity), "descending public SS16-16 terminal insert");
             ValidateGenericInsert(wide.Insert(upperKey, (UInt128)900), "descending public SS16-16 upper-key insert");
@@ -2481,7 +2481,7 @@ internal static partial class RawHarness
             }
             LibraDexConditionEndCondition natural = LibraDexCondition.ForGroup("descending")
                 .Index("wide1616").AsGuid.Between(key, upperKey).EndCondition;
-            UInt128[] naturalIds = catalog.Indexes["descending"].GetIdentities<UInt128>(
+            UInt128[] naturalIds = catalog.Indexes.IndexSet("descending").GetIdentities<UInt128>(
                 natural, deduplication: IdentityDeduplication.Preserve).Take(4).ToArray();
             if (!naturalIds.SequenceEqual(new UInt128[] { 900, 700, 699, 698 }))
                 throw new InvalidDataException("Public SS16-16 natural descending condition order failed.");
@@ -2528,7 +2528,7 @@ internal static partial class RawHarness
             {
                 using (Catalog persisted = Catalog.Create(reopenPath))
                 {
-                    using LibraDexIndex<Guid, UInt128> fileIndex = persisted.Indexes["descending"]["wide1616file"]
+                    using LibraDexIndex<Guid, UInt128> fileIndex = persisted.Indexes.IndexSet("descending").Define("wide1616file")
                         .GuidKeys<UInt128>().Create(options: descending);
                     ValidateGenericInsert(fileIndex.Insert(key, (UInt128)10), "descending SS16-16 file insert 10");
                     ValidateGenericInsert(fileIndex.Insert(key, (UInt128)30), "descending SS16-16 file insert 30");
@@ -2536,7 +2536,7 @@ internal static partial class RawHarness
                 }
                 using (Catalog reopened = Catalog.Open(reopenPath))
                 {
-                    using LibraDexIndex<Guid, UInt128> fileIndex = reopened.Indexes["descending"]["wide1616file"]
+                    using LibraDexIndex<Guid, UInt128> fileIndex = reopened.Indexes.IndexSet("descending").Define("wide1616file")
                         .GuidKeys<UInt128>().Open();
                     Scalar16Scalar16Profile reopenedProfile = fileIndex.GetScalar16Scalar16Profile();
                     Scalar16Scalar16RoutePathTarget reopenedPath = reopened.Session.WalkScalar16Scalar16RoutePathTarget(
@@ -2565,14 +2565,14 @@ internal static partial class RawHarness
             {
                 using (Catalog persisted = Catalog.Create(terminalReopenPath))
                 {
-                    using LibraDexIndex<Guid, UInt128> fileIndex = persisted.Indexes["descending"]["wide1616terminal"]
+                    using LibraDexIndex<Guid, UInt128> fileIndex = persisted.Indexes.IndexSet("descending").Define("wide1616terminal")
                         .GuidKeys<UInt128>().Create(options: descending);
                     for (ulong identity = 1; identity <= 1300; identity++)
                         ValidateGenericInsert(fileIndex.Insert(key, (UInt128)identity), "descending SS16-16 file terminal insert");
                 }
                 using (Catalog reopened = Catalog.Open(terminalReopenPath))
                 {
-                    using LibraDexIndex<Guid, UInt128> fileIndex = reopened.Indexes["descending"]["wide1616terminal"]
+                    using LibraDexIndex<Guid, UInt128> fileIndex = reopened.Indexes.IndexSet("descending").Define("wide1616terminal")
                         .GuidKeys<UInt128>().Open();
                     Scalar16Scalar16RoutePathTarget reopenedPath = reopened.Session.WalkScalar16Scalar16RoutePathTarget(
                         fileIndex.RootRouterOffset, encodedKeyHigh, encodedKeyLow, maxRouterHops: 17);
@@ -2603,7 +2603,7 @@ internal static partial class RawHarness
             key[^1] = 7;
             byte[] upperKey = new byte[32];
             upperKey[^1] = 8;
-            using LibraDexIndex<byte[], long> wide = catalog.Indexes["descending"]["wide328"].Blob
+            using LibraDexIndex<byte[], long> wide = catalog.Indexes.IndexSet("descending").Define("wide328").Blob
                 .Scalar<long>(LibraDexScalarWidth.Bytes32).Create(options: descending);
             for (long identity = 1; identity <= 1300; identity++)
                 ValidateGenericInsert(wide.Insert(key, identity), "descending public FS32-8 terminal insert");
@@ -2658,7 +2658,7 @@ internal static partial class RawHarness
             }
             LibraDexConditionEndCondition natural = LibraDexCondition.ForGroup("descending")
                 .Index("wide328").AsBinary.Between(key, upperKey).EndCondition;
-            long[] naturalIds = catalog.Indexes["descending"].GetIdentities<long>(
+            long[] naturalIds = catalog.Indexes.IndexSet("descending").GetIdentities<long>(
                 natural, deduplication: IdentityDeduplication.Preserve).Take(4).ToArray();
             if (!naturalIds.SequenceEqual(new long[] { 900, 1300, 1299, 1298 }))
                 throw new InvalidDataException("Public FS32-8 natural condition order failed.");
@@ -2679,7 +2679,7 @@ internal static partial class RawHarness
             {
                 using (Catalog persisted = Catalog.Create(reopenPath))
                 {
-                    using LibraDexIndex<byte[], long> fileIndex = persisted.Indexes["descending"]["wide328file"].Blob
+                    using LibraDexIndex<byte[], long> fileIndex = persisted.Indexes.IndexSet("descending").Define("wide328file").Blob
                         .Scalar<long>(LibraDexScalarWidth.Bytes32).Create(options: descending);
                     ValidateGenericInsert(fileIndex.Insert(key, 10), "descending FS32-8 file insert 10");
                     ValidateGenericInsert(fileIndex.Insert(key, 30), "descending FS32-8 file insert 30");
@@ -2687,7 +2687,7 @@ internal static partial class RawHarness
                 }
                 using (Catalog reopened = Catalog.Open(reopenPath))
                 {
-                    using LibraDexIndex<byte[], long> fileIndex = reopened.Indexes["descending"]["wide328file"].Blob
+                    using LibraDexIndex<byte[], long> fileIndex = reopened.Indexes.IndexSet("descending").Define("wide328file").Blob
                         .Scalar<long>(LibraDexScalarWidth.Bytes32).Open();
                     Fixed32Scalar8Profile reopenedProfile = fileIndex.GetFixed32Scalar8Profile();
                     Fixed32Scalar8RoutePathTarget reopenedPath = reopened.Session.WalkFixed32Scalar8RoutePathTarget(
@@ -2714,14 +2714,14 @@ internal static partial class RawHarness
             {
                 using (Catalog persisted = Catalog.Create(terminalReopenPath))
                 {
-                    using LibraDexIndex<byte[], long> fileIndex = persisted.Indexes["descending"]["wide328terminal"].Blob
+                    using LibraDexIndex<byte[], long> fileIndex = persisted.Indexes.IndexSet("descending").Define("wide328terminal").Blob
                         .Scalar<long>(LibraDexScalarWidth.Bytes32).Create(options: descending);
                     for (long identity = 1; identity <= 1300; identity++)
                         ValidateGenericInsert(fileIndex.Insert(key, identity), "descending FS32-8 file terminal insert");
                 }
                 using (Catalog reopened = Catalog.Open(terminalReopenPath))
                 {
-                    using LibraDexIndex<byte[], long> fileIndex = reopened.Indexes["descending"]["wide328terminal"].Blob
+                    using LibraDexIndex<byte[], long> fileIndex = reopened.Indexes.IndexSet("descending").Define("wide328terminal").Blob
                         .Scalar<long>(LibraDexScalarWidth.Bytes32).Open();
                     Fixed32Scalar8RoutePathTarget reopenedPath = reopened.Session.WalkFixed32Scalar8RoutePathTarget(
                         fileIndex.RootRouterOffset, 0, 0, 0, 7, maxRouterHops: 33);
@@ -2757,7 +2757,7 @@ internal static partial class RawHarness
             key[^1] = 7;
             byte[] upperKey = new byte[32];
             upperKey[^1] = 8;
-            using LibraDexIndex<byte[], UInt128> wide = catalog.Indexes["descending"]["wide3216"].Blob
+            using LibraDexIndex<byte[], UInt128> wide = catalog.Indexes.IndexSet("descending").Define("wide3216").Blob
                 .Scalar<UInt128>(LibraDexScalarWidth.Bytes32).Create(options: descending);
             for (ulong identity = 1; identity <= 1300; identity++)
                 ValidateGenericInsert(wide.Insert(key, (UInt128)identity), "descending public FS32-16 terminal insert");
@@ -2814,7 +2814,7 @@ internal static partial class RawHarness
             }
             LibraDexConditionEndCondition natural = LibraDexCondition.ForGroup("descending")
                 .Index("wide3216").AsBinary.Between(key, upperKey).EndCondition;
-            UInt128[] naturalIds = catalog.Indexes["descending"].GetIdentities<UInt128>(
+            UInt128[] naturalIds = catalog.Indexes.IndexSet("descending").GetIdentities<UInt128>(
                 natural, deduplication: IdentityDeduplication.Preserve).Take(4).ToArray();
             if (!naturalIds.SequenceEqual(new UInt128[] { 900, 1300, 1299, 1298 }))
                 throw new InvalidDataException("Public FS32-16 natural descending condition order failed.");
@@ -2845,7 +2845,7 @@ internal static partial class RawHarness
             {
                 using (Catalog persisted = Catalog.Create(reopenPath))
                 {
-                    using LibraDexIndex<byte[], UInt128> fileIndex = persisted.Indexes["descending"]["wide3216file"].Blob
+                    using LibraDexIndex<byte[], UInt128> fileIndex = persisted.Indexes.IndexSet("descending").Define("wide3216file").Blob
                         .Scalar<UInt128>(LibraDexScalarWidth.Bytes32).Create(options: descending);
                     ValidateGenericInsert(fileIndex.Insert(key, (UInt128)10), "descending FS32-16 file insert 10");
                     ValidateGenericInsert(fileIndex.Insert(key, (UInt128)30), "descending FS32-16 file insert 30");
@@ -2853,7 +2853,7 @@ internal static partial class RawHarness
                 }
                 using (Catalog reopened = Catalog.Open(reopenPath))
                 {
-                    using LibraDexIndex<byte[], UInt128> fileIndex = reopened.Indexes["descending"]["wide3216file"].Blob
+                    using LibraDexIndex<byte[], UInt128> fileIndex = reopened.Indexes.IndexSet("descending").Define("wide3216file").Blob
                         .Scalar<UInt128>(LibraDexScalarWidth.Bytes32).Open();
                     Fixed32Scalar16Profile reopenedProfile = fileIndex.GetFixed32Scalar16Profile();
                     Fixed32Scalar16RoutePathTarget reopenedPath = reopened.Session.WalkFixed32Scalar16RoutePathTarget(
@@ -2879,14 +2879,14 @@ internal static partial class RawHarness
             {
                 using (Catalog persisted = Catalog.Create(terminalReopenPath))
                 {
-                    using LibraDexIndex<byte[], UInt128> fileIndex = persisted.Indexes["descending"]["wide3216terminal"].Blob
+                    using LibraDexIndex<byte[], UInt128> fileIndex = persisted.Indexes.IndexSet("descending").Define("wide3216terminal").Blob
                         .Scalar<UInt128>(LibraDexScalarWidth.Bytes32).Create(options: descending);
                     for (ulong identity = 1; identity <= 1300; identity++)
                         ValidateGenericInsert(fileIndex.Insert(key, (UInt128)identity), "descending FS32-16 file terminal insert");
                 }
                 using (Catalog reopened = Catalog.Open(terminalReopenPath))
                 {
-                    using LibraDexIndex<byte[], UInt128> fileIndex = reopened.Indexes["descending"]["wide3216terminal"].Blob
+                    using LibraDexIndex<byte[], UInt128> fileIndex = reopened.Indexes.IndexSet("descending").Define("wide3216terminal").Blob
                         .Scalar<UInt128>(LibraDexScalarWidth.Bytes32).Open();
                     Fixed32Scalar16RoutePathTarget reopenedPath = reopened.Session.WalkFixed32Scalar16RoutePathTarget(
                         fileIndex.RootRouterOffset, 0, 0, 0, 7, maxRouterHops: 33);
@@ -2911,7 +2911,7 @@ internal static partial class RawHarness
                 throw new InvalidDataException($"Public FS32-16 descending terminal range deletion removed {removed.ChangedCount} instead of 1300.");
         }
 
-        using LibraDexStringScalar8Index text = catalog.Indexes["descending"]["name"].String.Create(stringKeys: StringKeys.Exact, sortOrder: LibraDexIndexSortOrder.Descending);
+        using LibraDexStringScalar8Index text = catalog.Indexes.IndexSet("descending").Define("name").String.Create(stringKeys: StringKeys.Exact, sortOrder: LibraDexIndexSortOrder.Descending);
         for (ulong identity = 1; identity <= 128; identity++)
             ValidateGenericInsert(text.Insert("same", identity), "descending string equal-key insert");
         ValidateGenericInsert(text.Insert("top", 900), "descending string high-key insert");
@@ -2930,7 +2930,7 @@ internal static partial class RawHarness
         if (!textTuplePrefix.SequenceEqual(new ulong[] { 900, 128, 127, 126 }))
             throw new InvalidDataException("Descending exact-string tuple stream did not match its identity stream.");
 
-        using LibraDexStringScalar8Index folded = catalog.Indexes["descending"]["folded"].String.Create(
+        using LibraDexStringScalar8Index folded = catalog.Indexes.IndexSet("descending").Define("folded").String.Create(
             stringKeys: StringKeys.ExactAndFolded,
             sortOrder: LibraDexIndexSortOrder.Descending);
         for (ulong identity = 1; identity <= 128; identity++)
@@ -2938,13 +2938,13 @@ internal static partial class RawHarness
         ValidateGenericInsert(folded.Insert("Super", 900), "descending folded high-key insert");
         LibraDexConditionEndCondition foldedPrefix = LibraDexCondition.ForGroup("descending").Index("folded")
             .AsString.StartsWith("s", ignoreCase: true).EndCondition;
-        ulong[] foldedNatural = catalog.Indexes["descending"].GetIdentities<ulong>(
+        ulong[] foldedNatural = catalog.Indexes.IndexSet("descending").GetIdentities<ulong>(
             foldedPrefix, deduplication: IdentityDeduplication.Preserve).Take(4).ToArray();
         if (!foldedNatural.SequenceEqual(new ulong[] { 900, 128, 127, 126 }))
             throw new InvalidDataException($"Descending folded projection returned [{string.Join(',', foldedNatural)}].");
 
-        using LibraDexBigIntScalar8Index<long> fixedBigInt = catalog.Indexes["descending"]["fixedBigInt"].BigIntKeys<long>(maxBytes: 16).Create(options: descending);
-        using LibraDexBigIntScalar8Index<long> variableBigInt = catalog.Indexes["descending"]["variableBigInt"].BigIntVarLenKeys<long>(maxBytes: 16).Create(options: descending);
+        using LibraDexBigIntScalar8Index<long> fixedBigInt = catalog.Indexes.IndexSet("descending").Define("fixedBigInt").BigIntKeys<long>(maxBytes: 16).Create(options: descending);
+        using LibraDexBigIntScalar8Index<long> variableBigInt = catalog.Indexes.IndexSet("descending").Define("variableBigInt").BigIntVarLenKeys<long>(maxBytes: 16).Create(options: descending);
         for (long identity = 1; identity <= 128; identity++)
         {
             ValidateGenericInsert(fixedBigInt.Insert(BigInteger.One, identity), "descending fixed BigInt equal-key insert");
@@ -2959,12 +2959,12 @@ internal static partial class RawHarness
         AssertDescendingIds(variableBigInt, bigIntFind, 128, 127, 126);
         if (verifyFsn8Shelf)
         {
-            using LibraDexBigIntScalar8Index<long> terminal = catalog.Indexes["descending"]["fixedBigIntTerminal"].BigIntKeys<long>(maxBytes: 512).Create(options: descending);
+            using LibraDexBigIntScalar8Index<long> terminal = catalog.Indexes.IndexSet("descending").Define("fixedBigIntTerminal").BigIntKeys<long>(maxBytes: 512).Create(options: descending);
             FixedNScalar8Profile terminalProfile = FixedNScalar8Profile.Default64KiB(515) with { Descending = true };
             long terminalLastIdentity = terminalProfile.MaxItemCount + 8L;
             for (long identity = 1; identity <= terminalLastIdentity; identity++)
                 ValidateGenericInsert(terminal.Insert(BigInteger.One, identity), "descending FSN-8 terminal insert");
-            CatalogIndexInfo terminalInfo = catalog.Indexes["descending"].List().Single(item => item.Name == "fixedBigIntTerminal");
+            CatalogIndexInfo terminalInfo = catalog.Indexes.IndexSet("descending").List().Single(item => item.Name == "fixedBigIntTerminal");
             byte[] encodedKey = LibraDexBigIntCodec.Encode(BigInteger.One, 512, LibraDexBigIntKeyStorage.FixedWidth);
             RouterSnapshot root = catalog.Session.ReadRouterSnapshot(terminalInfo.RootRouterOffset);
             long terminalOffset = catalog.Session.FindRouterTarget(root.Offset, encodedKey[root.KeyDepth]);
@@ -2988,7 +2988,7 @@ internal static partial class RawHarness
                 LibraDexCriteriaKind.Find, new object?[] { BigInteger.One }, TakeLimit: 3,
                 Direction: QueryDirection.Ascending), 1, 2, 3);
 
-            using LibraDexBigIntScalar8Index<long> split = catalog.Indexes["descending"]["fixedBigIntSplit"].BigIntKeys<long>(maxBytes: 512).Create(options: descending);
+            using LibraDexBigIntScalar8Index<long> split = catalog.Indexes.IndexSet("descending").Define("fixedBigIntSplit").BigIntKeys<long>(maxBytes: 512).Create(options: descending);
             for (long identity = 1; identity <= 64; identity++)
                 ValidateGenericInsert(split.Insert(new BigInteger(2), identity + 1000), "descending FSN-8 high-key split insert");
             for (long identity = 1; identity <= 64; identity++)
@@ -3011,26 +3011,26 @@ internal static partial class RawHarness
             {
                 using (Catalog persisted = Catalog.Create(reopenPath))
                 {
-                    using LibraDexBigIntScalar8Index<long> ordinary = persisted.Indexes["descending"]["ordinary"].BigIntKeys<long>(maxBytes: 512).Create(options: descending);
+                    using LibraDexBigIntScalar8Index<long> ordinary = persisted.Indexes.IndexSet("descending").Define("ordinary").BigIntKeys<long>(maxBytes: 512).Create(options: descending);
                     ValidateGenericInsert(ordinary.Insert(BigInteger.One, 1), "descending FSN-8 ordinary file insert 1");
                     ValidateGenericInsert(ordinary.Insert(BigInteger.One, 3), "descending FSN-8 ordinary file insert 3");
                     ValidateGenericInsert(ordinary.Insert(BigInteger.One, 2), "descending FSN-8 ordinary file insert 2");
-                    using LibraDexBigIntScalar8Index<long> routedTerminal = persisted.Indexes["descending"]["terminal"].BigIntKeys<long>(maxBytes: 512).Create(options: descending);
+                    using LibraDexBigIntScalar8Index<long> routedTerminal = persisted.Indexes.IndexSet("descending").Define("terminal").BigIntKeys<long>(maxBytes: 512).Create(options: descending);
                     for (long identity = 1; identity <= terminalLastIdentity; identity++)
                         ValidateGenericInsert(routedTerminal.Insert(BigInteger.One, identity), "descending FSN-8 terminal file insert");
                 }
 
                 using (Catalog reopened = Catalog.Open(reopenPath))
                 {
-                    using LibraDexBigIntScalar8Index<long> ordinary = reopened.Indexes["descending"]["ordinary"].BigIntKeys<long>(maxBytes: 512).Open();
-                    using LibraDexBigIntScalar8Index<long> routedTerminal = reopened.Indexes["descending"]["terminal"].BigIntKeys<long>(maxBytes: 512).Open();
+                    using LibraDexBigIntScalar8Index<long> ordinary = reopened.Indexes.IndexSet("descending").Define("ordinary").BigIntKeys<long>(maxBytes: 512).Open();
+                    using LibraDexBigIntScalar8Index<long> routedTerminal = reopened.Indexes.IndexSet("descending").Define("terminal").BigIntKeys<long>(maxBytes: 512).Open();
                     AssertDescendingIds(ordinary, new LibraDexIdentityPrimitiveRequest(
                         LibraDexCriteriaKind.Find, new object?[] { BigInteger.One }, TakeLimit: 3,
                         Direction: QueryDirection.Descending), 3, 2, 1);
                     AssertDescendingIds(routedTerminal, new LibraDexIdentityPrimitiveRequest(
                         LibraDexCriteriaKind.Find, new object?[] { BigInteger.One }, TakeLimit: 3,
                         Direction: QueryDirection.Descending), terminalLastIdentity, terminalLastIdentity - 1, terminalLastIdentity - 2);
-                    CatalogIndexInfo reopenedInfo = reopened.Indexes["descending"].List().Single(item => item.Name == "terminal");
+                    CatalogIndexInfo reopenedInfo = reopened.Indexes.IndexSet("descending").List().Single(item => item.Name == "terminal");
                     RouterSnapshot reopenedRouter = reopened.Session.ReadRouterSnapshot(reopenedInfo.RootRouterOffset);
                     long reopenedTerminalOffset = reopened.Session.FindRouterTarget(reopenedRouter.Offset, encodedKey[reopenedRouter.KeyDepth]);
                     byte[] reopenedRoot = reopened.Session.ReadTerminalIdentityRootBytes(reopenedTerminalOffset);
@@ -3047,12 +3047,12 @@ internal static partial class RawHarness
 
         if (verifyFsn16Shelf)
         {
-            using LibraDexBigIntScalar8Index<UInt128> terminal = catalog.Indexes["descending"]["fixedBigInt16Terminal"].BigIntKeys<UInt128>(maxBytes: 512).Create(options: descending);
+            using LibraDexBigIntScalar8Index<UInt128> terminal = catalog.Indexes.IndexSet("descending").Define("fixedBigInt16Terminal").BigIntKeys<UInt128>(maxBytes: 512).Create(options: descending);
             FixedNScalar16Profile profile = FixedNScalar16Profile.Default64KiB(515) with { Descending = true };
             UInt128 lastIdentity = (UInt128)(profile.MaxItemCount + 8);
             for (UInt128 identity = 1; identity <= lastIdentity; identity++)
                 ValidateGenericInsert(terminal.Insert(BigInteger.One, identity), "descending FSN-16 terminal insert");
-            CatalogIndexInfo info = catalog.Indexes["descending"].List().Single(item => item.Name == "fixedBigInt16Terminal");
+            CatalogIndexInfo info = catalog.Indexes.IndexSet("descending").List().Single(item => item.Name == "fixedBigInt16Terminal");
             byte[] encodedKey = LibraDexBigIntCodec.Encode(BigInteger.One, 512, LibraDexBigIntKeyStorage.FixedWidth);
             RouterSnapshot router = catalog.Session.ReadRouterSnapshot(info.RootRouterOffset);
             long terminalOffset = catalog.Session.FindRouterTarget(router.Offset, encodedKey[router.KeyDepth]);
@@ -3087,7 +3087,7 @@ internal static partial class RawHarness
             if (!highLaneFirst.SequenceEqual(new UInt128[] { highLaneIdentity, lastIdentity }))
                 throw new InvalidDataException("FSN-16 high identity lane did not lead the descending terminal.");
 
-            using LibraDexBigIntScalar8Index<UInt128> split = catalog.Indexes["descending"]["fixedBigInt16Split"].BigIntKeys<UInt128>(maxBytes: 512).Create(options: descending);
+            using LibraDexBigIntScalar8Index<UInt128> split = catalog.Indexes.IndexSet("descending").Define("fixedBigInt16Split").BigIntKeys<UInt128>(maxBytes: 512).Create(options: descending);
             for (UInt128 identity = 1; identity <= 64; identity++)
                 ValidateGenericInsert(split.Insert(new BigInteger(2), identity + 1000), "descending FSN-16 high-key split insert");
             for (UInt128 identity = 1; identity <= 64; identity++)
@@ -3110,19 +3110,19 @@ internal static partial class RawHarness
             {
                 using (Catalog persisted = Catalog.Create(reopenPath))
                 {
-                    using LibraDexBigIntScalar8Index<UInt128> ordinary = persisted.Indexes["descending"]["ordinary16"].BigIntKeys<UInt128>(maxBytes: 512).Create(options: descending);
+                    using LibraDexBigIntScalar8Index<UInt128> ordinary = persisted.Indexes.IndexSet("descending").Define("ordinary16").BigIntKeys<UInt128>(maxBytes: 512).Create(options: descending);
                     ValidateGenericInsert(ordinary.Insert(BigInteger.One, 1), "descending FSN-16 ordinary file insert 1");
                     ValidateGenericInsert(ordinary.Insert(BigInteger.One, 3), "descending FSN-16 ordinary file insert 3");
                     ValidateGenericInsert(ordinary.Insert(BigInteger.One, 2), "descending FSN-16 ordinary file insert 2");
-                    using LibraDexBigIntScalar8Index<UInt128> routedTerminal = persisted.Indexes["descending"]["terminal16"].BigIntKeys<UInt128>(maxBytes: 512).Create(options: descending);
+                    using LibraDexBigIntScalar8Index<UInt128> routedTerminal = persisted.Indexes.IndexSet("descending").Define("terminal16").BigIntKeys<UInt128>(maxBytes: 512).Create(options: descending);
                     for (UInt128 identity = 1; identity <= lastIdentity; identity++)
                         ValidateGenericInsert(routedTerminal.Insert(BigInteger.One, identity), "descending FSN-16 terminal file insert");
                 }
 
                 using (Catalog reopened = Catalog.Open(reopenPath))
                 {
-                    using LibraDexBigIntScalar8Index<UInt128> ordinary = reopened.Indexes["descending"]["ordinary16"].BigIntKeys<UInt128>(maxBytes: 512).Open();
-                    using LibraDexBigIntScalar8Index<UInt128> routedTerminal = reopened.Indexes["descending"]["terminal16"].BigIntKeys<UInt128>(maxBytes: 512).Open();
+                    using LibraDexBigIntScalar8Index<UInt128> ordinary = reopened.Indexes.IndexSet("descending").Define("ordinary16").BigIntKeys<UInt128>(maxBytes: 512).Open();
+                    using LibraDexBigIntScalar8Index<UInt128> routedTerminal = reopened.Indexes.IndexSet("descending").Define("terminal16").BigIntKeys<UInt128>(maxBytes: 512).Open();
                     UInt128[] ordinaryIds = ((IIdentityPrimitiveExecutor)ordinary).IterateIdentityPrimitive(new LibraDexIdentityPrimitiveRequest(
                         LibraDexCriteriaKind.Find, new object?[] { BigInteger.One }, TakeLimit: 3,
                         Direction: QueryDirection.Descending)).Cast<UInt128>().ToArray();
@@ -3132,7 +3132,7 @@ internal static partial class RawHarness
                     if (!ordinaryIds.SequenceEqual(new UInt128[] { 3, 2, 1 }) ||
                         !terminalIds.SequenceEqual(new UInt128[] { lastIdentity, lastIdentity - 1, lastIdentity - 2 }))
                         throw new InvalidDataException("FSN-16 file reopen lost descending tuple order.");
-                    CatalogIndexInfo reopenedInfo = reopened.Indexes["descending"].List().Single(item => item.Name == "terminal16");
+                    CatalogIndexInfo reopenedInfo = reopened.Indexes.IndexSet("descending").List().Single(item => item.Name == "terminal16");
                     RouterSnapshot reopenedRouter = reopened.Session.ReadRouterSnapshot(reopenedInfo.RootRouterOffset);
                     long reopenedTerminalOffset = reopened.Session.FindRouterTarget(reopenedRouter.Offset, encodedKey[reopenedRouter.KeyDepth]);
                     byte[] reopenedRoot = reopened.Session.ReadTerminalIdentityRootBytes(reopenedTerminalOffset);
@@ -3147,7 +3147,7 @@ internal static partial class RawHarness
             }
         }
 
-        using LibraDexVariableBlobScalar8Index<long> blob = catalog.Indexes["descending"]["blob"].Blob.Variable<long>(maxKeyBytes: 16).Create(options: descending);
+        using LibraDexVariableBlobScalar8Index<long> blob = catalog.Indexes.IndexSet("descending").Define("blob").Blob.Variable<long>(maxKeyBytes: 16).Create(options: descending);
         for (long identity = 1; identity <= 128; identity++)
             ValidateGenericInsert(blob.Insert(new byte[] { 1 }, identity), "descending variable blob equal-key insert");
         ValidateGenericInsert(blob.Insert(new byte[] { 2 }, 900), "descending variable blob high-key insert");
@@ -3156,7 +3156,7 @@ internal static partial class RawHarness
             LibraDexCriteriaKind.Find, new object?[] { new byte[] { 1 } }, TakeLimit: 3, Direction: QueryDirection.Descending), 128, 127, 126);
         if (verifyVs8Optimizer)
         {
-            CatalogIndexInfo optimizedInfo = catalog.Indexes["descending"].List().Single(item => item.Name == "blob");
+            CatalogIndexInfo optimizedInfo = catalog.Indexes.IndexSet("descending").List().Single(item => item.Name == "blob");
             LibraDexMaintenanceWalkResult optimized = catalog.Session.OptimizeVarKeyScalar8Topology(
                 optimizedInfo.RootRouterOffset, optimizedInfo.VarKeyMaxKeyLength, 16, maxWorkItems: null,
                 descending: true);
@@ -3174,7 +3174,7 @@ internal static partial class RawHarness
         }
         if (verifyVs8Shelf)
         {
-            CatalogIndexInfo blobInfo = catalog.Indexes["descending"].List().Single(item => item.Name == "blob");
+            CatalogIndexInfo blobInfo = catalog.Indexes.IndexSet("descending").List().Single(item => item.Name == "blob");
             byte[] encodedHighKey = LibraDexVarLenKeyCodec.Encode(new byte[] { 2 }, blobInfo.VarKeyMaxKeyLength, "key");
             byte[] encodedLowKey = LibraDexVarLenKeyCodec.Encode(new byte[] { 1 }, blobInfo.VarKeyMaxKeyLength, "key");
             long blobShelfOffset = catalog.Session.FindRouterTarget(blobInfo.RootRouterOffset, encodedHighKey[0]);
@@ -3189,7 +3189,7 @@ internal static partial class RawHarness
             {
                 using (Catalog persisted = Catalog.Create(reopenPath))
                 {
-                    using LibraDexVariableBlobScalar8Index<long> created = persisted.Indexes["descending"]["reopenBlob"]
+                    using LibraDexVariableBlobScalar8Index<long> created = persisted.Indexes.IndexSet("descending").Define("reopenBlob")
                         .Blob.Variable<long>(maxKeyBytes: 16).Create(options: descending);
                     ValidateGenericInsert(created.Insert(new byte[] { 1 }, 1), "VS8 descending file insert 1");
                     ValidateGenericInsert(created.Insert(new byte[] { 1 }, 3), "VS8 descending file insert 3");
@@ -3197,9 +3197,9 @@ internal static partial class RawHarness
                 }
                 using (Catalog reopened = Catalog.Open(reopenPath))
                 {
-                    using LibraDexVariableBlobScalar8Index<long> opened = reopened.Indexes["descending"]["reopenBlob"]
+                    using LibraDexVariableBlobScalar8Index<long> opened = reopened.Indexes.IndexSet("descending").Define("reopenBlob")
                         .Blob.Variable<long>(maxKeyBytes: 16).Open();
-                    CatalogIndexInfo reopenedInfo = reopened.Indexes["descending"].List().Single(item => item.Name == "reopenBlob");
+                    CatalogIndexInfo reopenedInfo = reopened.Indexes.IndexSet("descending").List().Single(item => item.Name == "reopenBlob");
                     byte[] encodedKey = LibraDexVarLenKeyCodec.Encode(new byte[] { 1 }, reopenedInfo.VarKeyMaxKeyLength, "key");
                     long shelfOffset = reopened.Session.FindRouterTarget(reopenedInfo.RootRouterOffset, encodedKey[0]);
                     VarKeyScalar8ReadOnly reopenedShelf = reopened.Session.ReadVarKeyScalar8ReadOnlyShelf(shelfOffset, reopenedInfo.VarKeyMaxKeyLength);
@@ -3218,8 +3218,8 @@ internal static partial class RawHarness
             }
         }
 
-        using LibraDexUInt64VarIdentityIndex rawUInt64 = catalog.Indexes["descending"]["rawUInt64"].UInt64VarIdentityKeys(maxIdentityBytes: 16).Create(options: descending);
-        using LibraDexBigIntVarIdentityIndex rawBigInt = catalog.Indexes["descending"]["rawBigInt"].BigIntVarIdentityKeys(maxBytes: 16, maxIdentityBytes: 16).Create(options: descending);
+        using LibraDexUInt64VarIdentityIndex rawUInt64 = catalog.Indexes.IndexSet("descending").Define("rawUInt64").UInt64VarIdentityKeys(maxIdentityBytes: 16).Create(options: descending);
+        using LibraDexBigIntVarIdentityIndex rawBigInt = catalog.Indexes.IndexSet("descending").Define("rawBigInt").BigIntVarIdentityKeys(maxBytes: 16, maxIdentityBytes: 16).Create(options: descending);
         for (int number = 1; number <= 512; number++)
         {
             string identity = $"id-{number:0000}";
@@ -3237,11 +3237,11 @@ internal static partial class RawHarness
         AssertDescendingRawIds(rawBigInt, bigIntFind, "id-0512", "id-0511", "id-0510");
         if (verifyFsnvShelf)
         {
-            using LibraDexBigIntVarIdentityIndex terminal = catalog.Indexes["descending"]["fixedBigIntVarTerminal"].BigIntVarIdentityKeys(maxBytes: 509, maxIdentityBytes: 256).Create(options: descending);
+            using LibraDexBigIntVarIdentityIndex terminal = catalog.Indexes.IndexSet("descending").Define("fixedBigIntVarTerminal").BigIntVarIdentityKeys(maxBytes: 509, maxIdentityBytes: 256).Create(options: descending);
             byte[] encodedKey = LibraDexBigIntCodec.Encode(BigInteger.One, 509, LibraDexBigIntKeyStorage.FixedWidth);
             for (int number = 1; number <= 530; number++)
                 ValidateGenericInsert(terminal.Insert(BigInteger.One, Encoding.ASCII.GetBytes($"id-{number:0000}".PadRight(128, 'x'))), "descending FSN-V terminal insert");
-            CatalogIndexInfo info = catalog.Indexes["descending"].List().Single(item => item.Name == "fixedBigIntVarTerminal");
+            CatalogIndexInfo info = catalog.Indexes.IndexSet("descending").List().Single(item => item.Name == "fixedBigIntVarTerminal");
             RouterSnapshot router = catalog.Session.ReadRouterSnapshot(info.RootRouterOffset);
             long terminalOffset = catalog.Session.FindRouterTarget(router.Offset, encodedKey[router.KeyDepth]);
             byte[] root = catalog.Session.ReadTerminalIdentityRootBytes(terminalOffset);
@@ -3269,13 +3269,13 @@ internal static partial class RawHarness
                 throw new InvalidDataException("FSN-V descending terminal bulk range order failed.");
             LibraDexConditionEndCondition natural = LibraDexCondition.ForGroup("descending")
                 .Index("fixedBigIntVarTerminal").AsBigInt.EqualTo(BigInteger.One).EndCondition;
-            string[] naturalHead = catalog.Indexes["descending"].GetIdentities<byte[]>(
+            string[] naturalHead = catalog.Indexes.IndexSet("descending").GetIdentities<byte[]>(
                 natural, deduplication: IdentityDeduplication.Preserve).Take(3)
                 .Select(value => Encoding.ASCII.GetString(value).Substring(0, 7)).ToArray();
             if (!naturalHead.SequenceEqual(new[] { "id-0530", "id-0529", "id-0528" }) || terminal.Count() != 530)
                 throw new InvalidDataException("FSN-V natural descending condition or count failed.");
 
-            using LibraDexBigIntVarIdentityIndex split = catalog.Indexes["descending"]["fixedBigIntVarSplit"].BigIntVarIdentityKeys(maxBytes: 509, maxIdentityBytes: 256).Create(options: descending);
+            using LibraDexBigIntVarIdentityIndex split = catalog.Indexes.IndexSet("descending").Define("fixedBigIntVarSplit").BigIntVarIdentityKeys(maxBytes: 509, maxIdentityBytes: 256).Create(options: descending);
             for (int number = 1; number <= 90; number++)
                 ValidateGenericInsert(split.Insert(new BigInteger(2), Encoding.ASCII.GetBytes($"hi-{number:0000}".PadRight(128, 'x'))), "descending FSN-V high-key split insert");
             for (int number = 1; number <= 90; number++)
@@ -3297,24 +3297,24 @@ internal static partial class RawHarness
             {
                 using (Catalog persisted = Catalog.Create(reopenPath))
                 {
-                    using LibraDexBigIntVarIdentityIndex ordinary = persisted.Indexes["descending"]["ordinaryVar"].BigIntVarIdentityKeys(509, 256).Create(options: descending);
+                    using LibraDexBigIntVarIdentityIndex ordinary = persisted.Indexes.IndexSet("descending").Define("ordinaryVar").BigIntVarIdentityKeys(509, 256).Create(options: descending);
                     foreach (string identity in new[] { "a", "b", "aa" })
                         ValidateGenericInsert(ordinary.Insert(BigInteger.One, Encoding.ASCII.GetBytes(identity)), "descending FSN-V ordinary file insert");
-                    using LibraDexBigIntVarIdentityIndex routedTerminal = persisted.Indexes["descending"]["terminalVar"].BigIntVarIdentityKeys(509, 256).Create(options: descending);
+                    using LibraDexBigIntVarIdentityIndex routedTerminal = persisted.Indexes.IndexSet("descending").Define("terminalVar").BigIntVarIdentityKeys(509, 256).Create(options: descending);
                     for (int number = 1; number <= 530; number++)
                         ValidateGenericInsert(routedTerminal.Insert(BigInteger.One, Encoding.ASCII.GetBytes($"id-{number:0000}".PadRight(128, 'x'))), "descending FSN-V terminal file insert");
                 }
                 using (Catalog reopened = Catalog.Open(reopenPath))
                 {
-                    using LibraDexBigIntVarIdentityIndex ordinary = reopened.Indexes["descending"]["ordinaryVar"].BigIntVarIdentityKeys(509, 256).Open();
-                    using LibraDexBigIntVarIdentityIndex routedTerminal = reopened.Indexes["descending"]["terminalVar"].BigIntVarIdentityKeys(509, 256).Open();
+                    using LibraDexBigIntVarIdentityIndex ordinary = reopened.Indexes.IndexSet("descending").Define("ordinaryVar").BigIntVarIdentityKeys(509, 256).Open();
+                    using LibraDexBigIntVarIdentityIndex routedTerminal = reopened.Indexes.IndexSet("descending").Define("terminalVar").BigIntVarIdentityKeys(509, 256).Open();
                     AssertDescendingRawIds(ordinary, new LibraDexIdentityPrimitiveRequest(
                         LibraDexCriteriaKind.Find, new object?[] { BigInteger.One }, TakeLimit: 3,
                         Direction: QueryDirection.Descending), "b", "aa", "a");
                     AssertDescendingRawIds(routedTerminal, new LibraDexIdentityPrimitiveRequest(
                         LibraDexCriteriaKind.Find, new object?[] { BigInteger.One }, TakeLimit: 3,
                         Direction: QueryDirection.Descending), "id-0530".PadRight(128, 'x'), "id-0529".PadRight(128, 'x'), "id-0528".PadRight(128, 'x'));
-                    CatalogIndexInfo reopenedInfo = reopened.Indexes["descending"].List().Single(item => item.Name == "terminalVar");
+                    CatalogIndexInfo reopenedInfo = reopened.Indexes.IndexSet("descending").List().Single(item => item.Name == "terminalVar");
                     RouterSnapshot reopenedRouter = reopened.Session.ReadRouterSnapshot(reopenedInfo.RootRouterOffset);
                     long reopenedOffset = reopened.Session.FindRouterTarget(reopenedRouter.Offset, encodedKey[reopenedRouter.KeyDepth]);
                     byte[] reopenedRoot = reopened.Session.ReadTerminalIdentityRootBytes(reopenedOffset);
@@ -3332,7 +3332,7 @@ internal static partial class RawHarness
             LibraDexCriteriaKind.Find, new object?[] { 1UL }, TakeLimit: 3, Direction: QueryDirection.Ascending), "id-0001", "id-0002", "id-0003");
         if (verifyPhysicalSv8)
         {
-            CatalogIndexInfo rawInfo = catalog.Indexes["descending"].List().Single(item => item.Name == "rawUInt64");
+            CatalogIndexInfo rawInfo = catalog.Indexes.IndexSet("descending").List().Single(item => item.Name == "rawUInt64");
             if (!catalog.Session.DeleteScalar8VarIdentityExactTuple(rawInfo.RootRouterOffset, rawInfo.VarIdentityMaxLength, 1UL, Encoding.ASCII.GetBytes("id-0512")))
                 throw new InvalidDataException("SV8 descending terminal delete missed its physical head.");
             AssertSv8DescendingPhysicalHead(catalog, "descending", "rawUInt64", 1UL, "id-0511");
@@ -3362,7 +3362,7 @@ internal static partial class RawHarness
             {
                 using (Catalog persisted = Catalog.Create(reopenPath))
                 {
-                    using LibraDexUInt64VarIdentityIndex fileIndex = persisted.Indexes["descending"]["reopen"].UInt64VarIdentityKeys(16).Create(options: descending);
+                    using LibraDexUInt64VarIdentityIndex fileIndex = persisted.Indexes.IndexSet("descending").Define("reopen").UInt64VarIdentityKeys(16).Create(options: descending);
                     ValidateGenericInsert(fileIndex.Insert(1UL, Encoding.ASCII.GetBytes("id-0001")), "descending SV8 file insert 1");
                     ValidateGenericInsert(fileIndex.Insert(1UL, Encoding.ASCII.GetBytes("id-0003")), "descending SV8 file insert 3");
                     ValidateGenericInsert(fileIndex.Insert(1UL, Encoding.ASCII.GetBytes("id-0002")), "descending SV8 file insert 2");
@@ -3371,7 +3371,7 @@ internal static partial class RawHarness
 
                 using (Catalog reopened = Catalog.Open(reopenPath))
                 {
-                    using LibraDexUInt64VarIdentityIndex fileIndex = reopened.Indexes["descending"]["reopen"].UInt64VarIdentityKeys(16).Open();
+                    using LibraDexUInt64VarIdentityIndex fileIndex = reopened.Indexes.IndexSet("descending").Define("reopen").UInt64VarIdentityKeys(16).Open();
                     AssertSv8DescendingPhysicalHead(reopened, "descending", "reopen", 1UL, "id-0003");
                     AssertDescendingRawIds(fileIndex, new LibraDexIdentityPrimitiveRequest(
                         LibraDexCriteriaKind.Find, new object?[] { 1UL }, TakeLimit: 3, Direction: QueryDirection.Descending), "id-0003", "id-0002", "id-0001");
@@ -3384,7 +3384,7 @@ internal static partial class RawHarness
             }
         }
 
-        IIndex composite = catalog.Indexes["descending"]["composite"].Composite<long>(C.Scalar<long>("stamp")).Create(options: descending);
+        IIndex composite = catalog.Indexes.IndexSet("descending").Define("composite").Composite<long>(C.Scalar<long>("stamp")).Create(options: descending);
         for (long identity = 128; identity >= 1; identity--)
             ValidateGenericInsert(composite.Insert(Key.Of(1L), identity), "descending composite equal-key insert");
         ValidateGenericInsert(composite.Insert(Key.Of(2L), 900L), "descending composite high-key insert");
@@ -3394,7 +3394,7 @@ internal static partial class RawHarness
 
         if (verifyShapeSortOverride)
         {
-            LibraDexIndexShapeSpec requestedShape = catalog.Indexes["descending"]["shapeOverride"].Shape.Scalar<long, long>();
+            LibraDexIndexShapeSpec requestedShape = catalog.Indexes.IndexSet("descending").Define("shapeOverride").Shape.Scalar<long, long>();
             IIndex overridden = catalog.Indexes.Create(requestedShape, options: descending);
             if (overridden.SortOrder != LibraDexIndexSortOrder.Descending ||
                 overridden.LogicalShape?.SortOrder != LibraDexIndexSortOrder.Descending ||
@@ -3427,7 +3427,7 @@ internal static partial class RawHarness
             {
                 using (Catalog persisted = Catalog.Create(reopenPath))
                 {
-                    LibraDexIndexShapeSpec numericShape = persisted.Indexes["descending"]["numericComposite"].Shape.Composite<long>(
+                    LibraDexIndexShapeSpec numericShape = persisted.Indexes.IndexSet("descending").Define("numericComposite").Shape.Composite<long>(
                         new[] { C.Scalar<long>("stamp") });
                     IIndex numeric = persisted.Indexes.Create(numericShape, options: descending);
                     ValidateGenericInsert(numeric.Insert(Key.Of(1L), 11L), "descending composite identity 11");
@@ -3436,7 +3436,7 @@ internal static partial class RawHarness
                     for (long key = 2; key <= 4; key++)
                         ValidateGenericInsert(numeric.Insert(Key.Of(key), key * 10), "descending composite distinct key");
 
-                    CatalogIndexInfo info = persisted.Indexes["descending"].List().Single(item => item.Name == "numericComposite");
+                    CatalogIndexInfo info = persisted.Indexes.IndexSet("descending").List().Single(item => item.Name == "numericComposite");
                     if (!persisted.Session.TryReadCompositeNodePage(info.RootRouterOffset, out byte[] rootBytes))
                         throw new InvalidDataException("Descending composite root page was not readable.");
                     LibraDexCompositeNodePage rootPage = LibraDexCompositeNodePageCodec.Decode(info.CreateShape(), rootBytes);
@@ -3451,14 +3451,14 @@ internal static partial class RawHarness
                         throw new InvalidDataException("Descending composite equal-key identities were not physically highest-first.");
 
                     IIndex textIndex = persisted.Indexes.Create(
-                        persisted.Indexes["descending"]["textComposite"].Shape.Composite<long>(new[] { C.Text("label") }),
+                        persisted.Indexes.IndexSet("descending").Define("textComposite").Shape.Composite<long>(new[] { C.Text("label") }),
                         options: descending);
                     ValidateGenericInsert(textIndex.Insert(Key.Of("alpha"), 101L), "descending composite text alpha");
                     ValidateGenericInsert(textIndex.Insert(Key.Of("alpine"), 102L), "descending composite text alpine");
                     ValidateGenericInsert(textIndex.Insert(Key.Of("alphabet"), 103L), "descending composite text alphabet");
                     ValidateGenericInsert(textIndex.Insert(Key.Of("beta"), 104L), "descending composite text beta");
 
-                    LibraDexIndexShapeSpec mixedShape = persisted.Indexes["descending"]["mixedComposite"].Shape.Composite<long>(
+                    LibraDexIndexShapeSpec mixedShape = persisted.Indexes.IndexSet("descending").Define("mixedComposite").Shape.Composite<long>(
                         new[]
                         {
                             C.Scalar<long>("major") with { SortOrder = LibraDexIndexSortOrder.Descending },
@@ -3473,7 +3473,7 @@ internal static partial class RawHarness
 
                 using (Catalog reopened = Catalog.Open(reopenPath))
                 {
-                    CatalogIndexInfo numericInfo = reopened.Indexes["descending"].List().Single(item => item.Name == "numericComposite");
+                    CatalogIndexInfo numericInfo = reopened.Indexes.IndexSet("descending").List().Single(item => item.Name == "numericComposite");
                     IIndex numeric = reopened.Indexes.Open(numericInfo.CreateShape());
                     AssertDescendingIds(numeric, new LibraDexIdentityPrimitiveRequest(
                         LibraDexCriteriaKind.All, Array.Empty<object?>(), TakeLimit: 4,
@@ -3498,14 +3498,14 @@ internal static partial class RawHarness
                     if (!ascending.SequenceEqual(new long[] { 11, 12, 13, 20, 30, 40 }))
                         throw new InvalidDataException("Reopened descending composite did not support explicit ascending traversal.");
 
-                    CatalogIndexInfo textInfo = reopened.Indexes["descending"].List().Single(item => item.Name == "textComposite");
+                    CatalogIndexInfo textInfo = reopened.Indexes.IndexSet("descending").List().Single(item => item.Name == "textComposite");
                     IIndex textIndex = reopened.Indexes.Open(textInfo.CreateShape());
                     AssertDescendingIds(textIndex, new LibraDexIdentityPrimitiveRequest(
                         LibraDexCriteriaKind.CompositeMatch,
                         new object?[] { new LibraDexCompositePredicate(new[] { LibraDexCompositePart.String("label").StartsWith("al") }) },
                         Direction: QueryDirection.Descending), 102, 103, 101);
 
-                    CatalogIndexInfo mixedInfo = reopened.Indexes["descending"].List().Single(item => item.Name == "mixedComposite");
+                    CatalogIndexInfo mixedInfo = reopened.Indexes.IndexSet("descending").List().Single(item => item.Name == "mixedComposite");
                     IIndex mixed = reopened.Indexes.Open(mixedInfo.CreateShape());
                     AssertDescendingIds(mixed, new LibraDexIdentityPrimitiveRequest(
                         LibraDexCriteriaKind.All, Array.Empty<object?>(), Direction: QueryDirection.Descending), 12, 11, 22, 21);
@@ -3572,7 +3572,7 @@ internal static partial class RawHarness
     /// <param name="expected">The expected first identity at the physical route head.<br/></param>
     private static void AssertSv8DescendingPhysicalHead(Catalog catalog, string group, string name, ulong key, string expected)
     {
-        CatalogIndexInfo info = catalog.Indexes[group].List().Single(item => item.Name == name);
+        CatalogIndexInfo info = catalog.Indexes.IndexSet(group).List().Single(item => item.Name == name);
         Scalar8VarIdentityRoutePathTarget path = catalog.Session.WalkScalar8VarIdentityRoutePathTarget(info.RootRouterOffset, key, maxRouterHops: 32);
         string actual;
         if (path.Target.Kind == Scalar8VarIdentityRouteTargetKind.TerminalVarIdentityRoot)
