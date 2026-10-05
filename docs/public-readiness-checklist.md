@@ -11,6 +11,18 @@ Purpose: track the remaining work to move LibraDex from controlled internal prot
 
 ## Current Readiness
 
+### 2026-10-05 catalog API 1.1.0 checkpoint
+
+- `[x]` Direct named catalog creation/opening/compaction and path resolution no longer require constructing `CatalogLocation`; existing exact-path and compatibility overloads remain available.
+- `[x]` Package version and README updated to 1.1.0. No catalog file-format change.
+- `[x]` Final source commit `9e410d853eeea518984c5e9a4163ecaaa2797578` passed all six Windows/Linux .NET 8/9/10 CI jobs: `https://github.com/alt160/LibraDex/actions/runs/37381444803`.
+- `[x]` Smoke coverage includes named create/open/reopen, invalid and missing names, extension normalization, legacy overloads, repeated-suffix compatibility metadata, memory-backed metadata, and named compaction.
+- `[x]` Release workflow succeeded: `https://github.com/alt160/LibraDex/actions/runs/37381913605`. GitHub package, symbols, and precompiled ZIP match their SHA-256 manifest. Package README and 9,487-member XML documentation verified.
+- `[x]` GitHub release: `https://github.com/alt160/LibraDex/releases/tag/v1.1.0`.
+- `[x]` NuGet public page and download index verified at 2026-10-05 15:26 America/Phoenix: `https://www.nuget.org/packages/LibraDex/1.1.0`. The repository-signed NuGet package's DLL, README, and XML documentation match the GitHub artifact byte-for-byte.
+- `[x]` Abraxas library and harness migrated to the 1.1.0 package and direct APIs; local-package Release/x64 build has zero warnings/errors. Native acceptance: 134/135 passed. The remaining Inheto corruption-fixture failure was independently reproduced with published LibraDex 1.0.0.
+- `[x]` Final Abraxas restore used NuGet.org, disabled HTTP caching, and an isolated package cache. Release/x64 build: zero warnings/errors; harness DLL matched the official restored package. All 135 checks rerun against public 1.1.0: 134 passed, only the same baseline-reproduced Inheto fixture failed. Evidence is recorded in Abraxas `LIBRADEX_PUBLIC_PACKAGE_MIGRATION.md`.
+
 ### 2026-10-05 release preparation checkpoint
 
 - `[x]` Public GitHub repository created at `https://github.com/alt160/LibraDex` and local `origin` configured.
