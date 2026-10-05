@@ -23,7 +23,7 @@ Purpose: track the remaining work to move LibraDex from controlled internal prot
 - `[x]` The `v1.0.0` tag is pushed at `74c1c9e6c316623acf7fefc3cace1f13764eff3b`; all six final-commit CI jobs passed.
 - `[x]` Release workflow attempt 2 succeeded: `https://github.com/alt160/LibraDex/actions/runs/37375675765`. Release build (zero warnings/errors), package-consumer smoke test, precompiled ZIP, checksums, provenance, NuGet authentication, and both package/symbol uploads passed.
 - `[x]` Public GitHub release: `https://github.com/alt160/LibraDex/releases/tag/v1.0.0`. Downloaded ZIP, package, and symbol package checksums match the release manifest. Package README, Apache-2.0 metadata, author `alt160`, and 9,476-member XML documentation verified.
-- `[~]` NuGet accepted the uploads at 2026-10-05 14:57 America/Phoenix; public package download availability is still being checked. Do not repeat the upload while validation/indexing proceeds.
+- `[x]` NuGet public package page and download index verified at 2026-10-05 15:02 America/Phoenix: `https://www.nuget.org/packages/LibraDex/1.0.0`. The downloaded NuGet package is repository-signed; its DLL, README, and XML documentation match the verified GitHub artifact byte-for-byte.
 
 The sections below preserve historical engineering gates and evidence; this dated checkpoint records the current package and release-preparation work without treating older unchecked items as newly validated.
 
