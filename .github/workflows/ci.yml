@@ -32,7 +32,9 @@ jobs:
         run: dotnet pack LibraDex.csproj --configuration Release --no-build --output artifacts/packages
 
       - name: Smoke test package consumer
+        env:
+          NUGET_PACKAGES: ${{ runner.temp }}/libradex-candidate-packages
         shell: bash
         run: |
-          dotnet restore tests/LibraDex.PackageSmoke/LibraDex.PackageSmoke.csproj -p:RestoreAdditionalProjectSources="$GITHUB_WORKSPACE/artifacts/packages" -p:TargetFramework=net${{ matrix.dotnet }}.0
+          dotnet restore tests/LibraDex.PackageSmoke/LibraDex.PackageSmoke.csproj --configfile tests/LibraDex.PackageSmoke/NuGet.Config -p:DisableImplicitLibraryPacksFolder=true -p:DisableImplicitNuGetFallbackFolder=true -p:TargetFramework=net${{ matrix.dotnet }}.0
           dotnet run --project tests/LibraDex.PackageSmoke/LibraDex.PackageSmoke.csproj --configuration Release --no-restore -p:TargetFramework=net${{ matrix.dotnet }}.0
