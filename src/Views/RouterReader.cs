@@ -242,7 +242,8 @@ internal readonly ref struct RouterReader
     /// <summary>
     /// Classifies one persisted compressed multi-byte route against the active edges of an inclusive variable-key range.<br/>
     /// The caller supplies the route indices selected for the lower and upper keys so boundary targets remain reachable even when a compressed route uses nearest-route fallback.<br/>
-    /// Routes wholly outside an active edge are rejected before their child target is queued; interior routes retain neither edge and may traverse their contained subtree directly.<br/>
+    /// Unselected routes wholly outside an active edge are rejected; selected nearest-route fallbacks retain that edge until complete-key filtering resolves their contents.<br/>
+    /// Interior routes retain neither edge and may traverse their contained subtree directly; equality with an inclusive synthetic bound also permits the existing contained shortcut.<br/>
     /// This method performs no allocation and compares the persisted stem and final-byte interval directly from the router page.<br/>
     /// </summary>
     /// <param name="routeIndex">The zero-based compressed route slot being classified.<br/></param>
@@ -291,8 +292,9 @@ internal readonly ref struct RouterReader
             return false;
         }
 
-        childLowerEdge = selectedByLower && lowToLower < 0 && highToLower >= 0;
-        childUpperEdge = selectedByUpper && lowToUpper <= 0 && highToUpper > 0;
+        // A selected nearest route can lie outside its declared interval; only exact bound equality makes that edge redundant.
+        childLowerEdge = selectedByLower && lowToLower != 0;
+        childUpperEdge = selectedByUpper && highToUpper != 0;
         return true;
     }
 

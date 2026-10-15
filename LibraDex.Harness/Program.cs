@@ -272,6 +272,7 @@ internal static partial class RawHarness
         new("vs8-sorted-build-sanity", CommandLane.Validation, RunVarKeyScalar8SortedBuildSanity),
         new("varlen-count-all-sanity", CommandLane.Validation, RunVarLenCountAllSanity),
         new("varlen-mb-range-count-sanity", CommandLane.Validation, RunVarLenMultiByteRangeCountSanity),
+        new("compressed-range-boundary-sanity", CommandLane.Validation, RunCompressedRangeBoundarySanity),
         new("varlen-mb-range-count-perf", CommandLane.Performance, RunVarLenMultiByteRangeCountPerf),
         new("vv-shelf-sanity", CommandLane.Validation, RunVarKeyVarIdentityShelfSanity),
         new("vv-shelf-capacity-sanity", CommandLane.Validation, RunVarKeyVarIdentityShelfCapacitySanity),

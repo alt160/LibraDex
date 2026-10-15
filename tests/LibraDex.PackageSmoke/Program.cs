@@ -6,6 +6,7 @@ CreateAndWrite();
 ReopenAndRead();
 ValidateLifetimeContracts();
 ValidateIndexLifecycle();
+ValidateCountBoundaries();
 Directory.Delete(catalogDirectory, recursive: true);
 
 Console.WriteLine("LibraDex package smoke test passed.");
@@ -129,4 +130,28 @@ void ValidateIndexLifecycle()
         throw new InvalidOperationException("Existing index lifecycle lost or duplicated entries.");
     if (catalog.Indexes.IndexSetNames().Length != 2 || catalog.Indexes.List().Length != 3)
         throw new InvalidOperationException("Missing-name operations created storage or index sets leaked into one another.");
+}
+
+/// <summary>
+/// Exercises exact counts and actual identity retrieval over a larger shared-prefix population through public packaged APIs.<br/>
+/// Missing prefixes and post-delete misses must stay zero without weakening existing-key counts.<br/>
+/// </summary>
+void ValidateCountBoundaries()
+{
+    using var catalog = Catalog.CreateMemory();
+    var group = catalog.Indexes.IndexSet("counts");
+    using var index = group.Define("text").String.Create(StringKeys.Exact);
+    for (int i = 0; i < 9239; i++) index.Insert("shared/" + new string('p', i % 31) + "/" + i.ToString("D8"), (ulong)i);
+    foreach (string missing in new[] { "never-existed", "reopened-insert", "zzzz", "shared/missing" })
+    {
+        var condition = group.Where(index).EqualTo(missing).EndCondition;
+        if (condition.Count(_ => index) != 0 || group.GetIdentities<ulong>(condition).Count != 0)
+            throw new InvalidDataException("Missing shared-prefix text key did not count as zero: " + missing);
+    }
+    var existing = group.Where(index).EqualTo("shared/" + new string('p', 7) + "/00000007").EndCondition;
+    if (existing.Count(_ => index) != 1 || !group.GetIdentities<ulong>(existing).SequenceEqual(new[] { 7UL }))
+        throw new InvalidDataException("Existing text key count/retrieval changed.");
+    index.Delete("shared/" + new string('p', 7) + "/00000007", 7UL);
+    if (existing.Count(_ => index) != 0 || group.GetIdentities<ulong>(existing).Count != 0)
+        throw new InvalidDataException("Deleted text key did not count as zero.");
 }

@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## 1.2.1 - 2026-10-15
+
+- Fixed compressed nearest-route boundary propagation: missing keys could incorrectly count a neighboring shelf instead of zero.
+- Exact and range counts retain complete-key boundary checks for fallback routes while fully contained ranges keep their metadata fast path.
+- Added cross-shape count/enumeration and package-consumer regressions. Public API and catalog file format are unchanged.
+
 ## 1.2.0 - 2026-10-05
 
 - Launch API correction: added verb-first typed Create/Open/CreateOrOpen methods at catalog and index-set level.
