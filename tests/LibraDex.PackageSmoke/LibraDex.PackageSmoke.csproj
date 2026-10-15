@@ -5,7 +5,7 @@
     <TargetFramework>net8.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <LibraDexPackageVersion Condition="'$(LibraDexPackageVersion)' == ''">1.2.1</LibraDexPackageVersion>
+    <LibraDexPackageVersion Condition="'$(LibraDexPackageVersion)' == ''">1.2.2</LibraDexPackageVersion>
   </PropertyGroup>
 
   <ItemGroup>

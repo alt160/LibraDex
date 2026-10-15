@@ -276,7 +276,7 @@ public sealed partial class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrim
     }
 
     /// <summary>
-    /// Replaces this index from an unordered entry stream by constructing one detached routed tree and publishing one complete snapshot.<br/>
+    /// Replaces this index from an unordered entry stream by constructing one detached routed tree and publishing one node-page root.<br/>
     /// Candidate construction performs no per-entry durable path copy, so a wide one-part composite root retains linear live storage instead of appending the cumulative root after every insertion.<br/>
     /// The current runtime tree and durable directory anchor remain unchanged if validation, cancellation, candidate construction, encoding, or publication fails.<br/>
     /// Duplicate exact tuples retain ordinary <see cref="IndexKeys"/> behavior and are counted once in the returned logical population.<br/>
@@ -308,10 +308,9 @@ public sealed partial class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrim
         cancellationToken.ThrowIfCancellationRequested();
         if (session is not null && slotIndex is int durableSlotIndex)
         {
-            LibraDexCompositeEntry[] replacementEntries = candidate.EnumerateEntries().ToArray();
-            byte[] snapshot = LibraDexCompositeSnapshotCodec.Encode(shape, replacementEntries);
-            session.UpdateCompositeSnapshotIndex(durableSlotIndex, snapshot, candidate.itemCount);
-            candidate.root.DurableOffset = 0;
+            PersistCompositeBulkNode(candidate.root, 0, dirtyNodes: null, forceAll: true);
+            cancellationToken.ThrowIfCancellationRequested();
+            session.UpdateCompositeNodeRoot(durableSlotIndex, candidate.root.DurableOffset, candidate.itemCount);
         }
 
         root.ReplaceWith(candidate.root);
@@ -387,7 +386,7 @@ public sealed partial class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrim
             }
             else
             {
-                PersistSnapshot(durableSlotIndex);
+                PersistNodeTree(durableSlotIndex);
             }
         }
 
@@ -847,6 +846,10 @@ public sealed partial class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrim
 
         key.ValidateAgainst(shape);
         CompositeNode? node = root;
+        CompositeNode[]? path = session is not null && slotIndex is not null
+            ? new CompositeNode[shape.CompositeParts.Count + 1] : null;
+        if (path is not null)
+            path[0] = root;
         for (int i = 0; i < shape.CompositeParts.Count; i++)
         {
             EnsureNodeLoaded(node, i);
@@ -855,6 +858,8 @@ public sealed partial class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrim
             {
                 return 0;
             }
+            if (path is not null)
+                path[i + 1] = node;
         }
 
         EnsureNodeLoaded(node, shape.CompositeParts.Count);
@@ -865,7 +870,7 @@ public sealed partial class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrim
         }
 
         itemCount -= deleted;
-        PersistAfterWholeTreeMutation();
+        PersistAfterWholeTreeMutation(path);
         return deleted;
     }
 
@@ -916,6 +921,10 @@ public sealed partial class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrim
         key.ValidateAgainst(shape);
         ValidateIdentity(identity);
         CompositeNode? node = root;
+        CompositeNode[]? path = session is not null && slotIndex is not null
+            ? new CompositeNode[shape.CompositeParts.Count + 1] : null;
+        if (path is not null)
+            path[0] = root;
         for (int i = 0; i < shape.CompositeParts.Count; i++)
         {
             EnsureNodeLoaded(node, i);
@@ -924,6 +933,8 @@ public sealed partial class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrim
             {
                 return false;
             }
+            if (path is not null)
+                path[i + 1] = node;
         }
 
         EnsureNodeLoaded(node, shape.CompositeParts.Count);
@@ -933,7 +944,7 @@ public sealed partial class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrim
         }
 
         itemCount--;
-        PersistAfterWholeTreeMutation();
+        PersistAfterWholeTreeMutation(path);
         return true;
     }
 
@@ -1174,14 +1185,15 @@ public sealed partial class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrim
         object?[] values = predicate.RequiresTerminalValues
             ? new object?[shape.CompositeParts.Count]
             : Array.Empty<object?>();
-        long deleted = DeleteCompositeMatch(root, tier: 0, predicate, values);
+        HashSet<CompositeNode>? dirtyNodes = session is not null && slotIndex is not null ? new() : null;
+        long deleted = DeleteCompositeMatch(root, tier: 0, predicate, values, dirtyNodes);
         if (deleted == 0)
         {
             return 0;
         }
 
         itemCount -= deleted;
-        PersistAfterWholeTreeMutation();
+        PersistAfterWholeTreeMutation(dirtyNodes: dirtyNodes);
         return deleted;
     }
 
@@ -1193,19 +1205,24 @@ public sealed partial class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrim
     /// <param name="tier">The current composite part ordinal.</param>
     /// <param name="predicate">The composite predicate being applied.</param>
     /// <param name="fullKeyValues">The reusable full-key path buffer.</param>
+    /// <param name="dirtyNodes">Optional changed-node set for child-before-parent publication; session-less trees need no durable bookkeeping.<br/></param>
     /// <returns>The number of tuples removed below this node.</returns>
     private long DeleteCompositeMatch(
         CompositeNode node,
         int tier,
         LibraDexCompositePredicate predicate,
-        object?[] fullKeyValues)
+        object?[] fullKeyValues,
+        HashSet<CompositeNode>? dirtyNodes)
     {
         EnsureNodeLoaded(node, tier);
         if (tier >= shape.CompositeParts.Count)
         {
             if (MatchesTerminalCriteria(predicate, fullKeyValues))
             {
-                return node.ClearIdentities();
+                long removed = node.ClearIdentities();
+                if (removed != 0)
+                    dirtyNodes?.Add(node);
+                return removed;
             }
 
             return 0;
@@ -1218,20 +1235,24 @@ public sealed partial class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrim
             foreach (CompositeNode child in MatchedChildren(node, tier, criterion!).ToArray())
             {
                 SetFullKeyValue(fullKeyValues, tier, child);
-                deleted += DeleteCompositeMatch(child, tier + 1, predicate, fullKeyValues);
+                deleted += DeleteCompositeMatch(child, tier + 1, predicate, fullKeyValues, dirtyNodes);
                 ClearFullKeyValue(fullKeyValues, tier);
             }
 
+            if (deleted != 0)
+                dirtyNodes?.Add(node);
             return deleted;
         }
 
         foreach (CompositeChild child in node.Children)
         {
             SetFullKeyValue(fullKeyValues, tier, child.Node);
-            deleted += DeleteCompositeMatch(child.Node, tier + 1, predicate, fullKeyValues);
+            deleted += DeleteCompositeMatch(child.Node, tier + 1, predicate, fullKeyValues, dirtyNodes);
             ClearFullKeyValue(fullKeyValues, tier);
         }
 
+        if (deleted != 0)
+            dirtyNodes?.Add(node);
         return deleted;
     }
 
@@ -2822,30 +2843,34 @@ public sealed partial class LibraDexRoutedCompositeIndex : IIndex, IIdentityPrim
     }
 
     /// <summary>
-    /// Writes the current routed composite contents as a replacement durable snapshot.<br/>
-    /// This is the first correctness-oriented durable contents path; it persists the logical tier tree through DataKernel while reserving optimized per-tier mini-router pages for the next physical storage slice.<br/>
+    /// Writes changed routed nodes from terminal tiers toward the root, then publishes the root and logical population once.<br/>
+    /// Untouched subtrees retain their durable offsets; a tree without page offsets receives a complete first page representation.<br/>
     /// </summary>
-    /// <param name="durableSlotIndex">The fixed catalog slot whose root offset should be updated to the replacement snapshot.</param>
-    private void PersistSnapshot(int durableSlotIndex)
+    /// <param name="durableSlotIndex">The fixed catalog slot whose root offset should be updated.<br/></param>
+    /// <param name="dirtyNodes">Changed nodes, or null when every node needs publication.<br/></param>
+    private void PersistNodeTree(int durableSlotIndex, HashSet<CompositeNode>? dirtyNodes = null)
     {
-        LibraDexCompositeEntry[] entries = EnumerateEntries().ToArray();
-        byte[] snapshot = LibraDexCompositeSnapshotCodec.Encode(shape, entries);
-        session!.UpdateCompositeSnapshotIndex(durableSlotIndex, snapshot, itemCount);
+        PersistCompositeBulkNode(root, 0, dirtyNodes, forceAll: dirtyNodes is null || root.DurableOffset <= 0);
+        session!.UpdateCompositeNodeRoot(durableSlotIndex, root.DurableOffset, itemCount);
     }
 
     /// <summary>
-    /// Publishes a whole-tree composite mutation after identities have been removed from one or more terminal nodes.<br/>
-    /// Deletion can touch many routed paths, so this correctness bridge writes a replacement snapshot and clears the node-page root marker to prevent later path-copy inserts from reusing stale durable child pages.<br/>
+    /// Publishes a composite deletion without changing the node-page storage contract used by native readers.<br/>
+    /// Exact deletes copy only their route; broader deletes publish changed nodes while reusing untouched durable subtrees.<br/>
     /// </summary>
-    private void PersistAfterWholeTreeMutation()
+    /// <param name="path">The optional exact changed route from root to terminal.<br/></param>
+    /// <param name="dirtyNodes">Optional changed nodes collected during predicate deletion.<br/></param>
+    private void PersistAfterWholeTreeMutation(CompositeNode[]? path = null, HashSet<CompositeNode>? dirtyNodes = null)
     {
         if (session is null || slotIndex is not int durableSlotIndex)
         {
             return;
         }
 
-        PersistSnapshot(durableSlotIndex);
-        root.DurableOffset = 0;
+        if (path is not null && root.DurableOffset > 0)
+            PersistPathCopy(durableSlotIndex, path);
+        else
+            PersistNodeTree(durableSlotIndex, dirtyNodes);
     }
 
     /// <summary>

@@ -7,6 +7,7 @@ ReopenAndRead();
 ValidateLifetimeContracts();
 ValidateIndexLifecycle();
 ValidateCountBoundaries();
+ValidateCompositeMutationReaders();
 Directory.Delete(catalogDirectory, recursive: true);
 
 Console.WriteLine("LibraDex package smoke test passed.");
@@ -154,4 +155,58 @@ void ValidateCountBoundaries()
     index.Delete("shared/" + new string('p', 7) + "/00000007", 7UL);
     if (existing.Count(_ => index) != 0 || group.GetIdentities<ulong>(existing).Count != 0)
         throw new InvalidDataException("Deleted text key did not count as zero.");
+}
+
+/// <summary>
+/// Verifies public packaged native readers remain available after exact delete, overwrite-style insertion, rekey, replacement and clear.<br/>
+/// Reads the same surviving tuples again after reopening, and distinguishes a valid empty root from a missing node-page root.<br/>
+/// </summary>
+void ValidateCompositeMutationReaders()
+{
+    string path = Path.Combine(catalogDirectory, "composite.lbdx");
+    using (Catalog catalog = Catalog.Create(path, CatalogOptions.UInt64Identities))
+    {
+        var group = catalog.Indexes.IndexSet("composite");
+        var index = (LibraDexRoutedCompositeIndex)group.Define("pair").Composite<ulong>(C.Int32("group"), C.Int32("value")).Create();
+        index.Insert(Key.Of(1, 5), 10UL);
+        index.Insert(Key.Of(1, 5), 11UL);
+        index.Insert(Key.Of(2, 20), 20UL);
+        if (!index.Delete(Key.Of(1, 5), 10UL)) throw new InvalidDataException("Composite exact delete failed.");
+        index.Insert(Key.Of(1, 105), 10UL);
+        if (!index.Rekey(20UL, Key.Of(2, 20), Key.Of(2, 120))) throw new InvalidDataException("Composite rekey failed.");
+        CheckCompositePackageRows(group);
+    }
+    using (Catalog catalog = Catalog.Open(path, CatalogOptions.UInt64Identities))
+    {
+        var group = catalog.Indexes["composite"];
+        CheckCompositePackageRows(group);
+        var index = (LibraDexRoutedCompositeIndex)group["pair"];
+        if (index.ReplaceFromUnordered(new[] { (Key.Of(1, 5), (object)11UL), (Key.Of(1, 105), (object)10UL), (Key.Of(2, 120), (object)20UL) }) != 3)
+            throw new InvalidDataException("Composite replacement count changed.");
+        CheckCompositePackageRows(group);
+        if (index.DeleteAll() != 3) throw new InvalidDataException("Composite clear count changed.");
+        using var empty = group.OpenCompositeReader<int, int, ulong>("pair");
+        if (empty.Read()) throw new InvalidDataException("Cleared composite reader returned a row.");
+    }
+    using (Catalog catalog = Catalog.Open(path, CatalogOptions.UInt64Identities))
+    using (var empty = catalog.Indexes["composite"].OpenCompositeReader<int, int, ulong>("pair"))
+    {
+        if (empty.Read()) throw new InvalidDataException("Reopened cleared composite reader returned a row.");
+    }
+}
+
+/// <summary>
+/// Checks complete identity and component values through the public typed page-native reader.<br/>
+/// </summary>
+/// <param name="group">The catalog index set containing the mutated composite index.<br/></param>
+void CheckCompositePackageRows(CatalogIdentityGroupIndexes group)
+{
+    var expected = new Dictionary<ulong, (int, int)> { [10] = (1, 105), [11] = (1, 5), [20] = (2, 120) };
+    using var reader = group.OpenCompositeReader<int, int, ulong>("pair");
+    while (reader.Read())
+    {
+        if (!expected.Remove(reader.Identity, out var value) || reader.Part1 != value.Item1 || reader.Part2 != value.Item2)
+            throw new InvalidDataException("Composite native package values changed.");
+    }
+    if (expected.Count != 0) throw new InvalidDataException("Composite native package reader omitted rows.");
 }

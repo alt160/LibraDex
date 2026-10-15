@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented in this file.
 
+## 1.2.2 - 2026-10-15
+
+- Fixed composite mutations that changed node-page storage into a snapshot representation and made page-native readers unavailable, including after reopen.
+- Exact tuple/key deletes now copy only their changed route. Predicate deletes reuse untouched durable pages; clear and unordered replacement publish valid node-page roots, including empty indexes.
+- Replacement candidates remain detached until publication. Added mutation/reopen, page-reuse, cancellation and packaged native-reader regressions.
+- Native row decoding, borrowed-memory access, public API and catalog file format remain unchanged. No automatic read-time migration is performed.
+
 ## 1.2.1 - 2026-10-15
 
 - Fixed compressed nearest-route boundary propagation: missing keys could incorrectly count a neighboring shelf instead of zero.

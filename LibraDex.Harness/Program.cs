@@ -164,6 +164,7 @@ internal static partial class RawHarness
         new("fixedn-varidentity-routed-sanity", CommandLane.Validation, RunFixedNVarIdentityRoutedSanity),
         new("catalog-api-sanity", CommandLane.Validation, RunCatalogApiSanity),
         new("composite-native-reader-sanity", CommandLane.Validation, RunCompositeNativeReaderSanity),
+        new("composite-mutation-native-sanity", CommandLane.Validation, RunCompositeMutationNativeSanity),
         new("string-culture-profiles-sanity", CommandLane.Validation, RunStringCultureProfilesSanity),
         new("catalog-index-set-drop-sanity", CommandLane.Validation, RunCatalogIndexSetDropSanity),
         new("catalog-allocator-drop-reuse-sanity", CommandLane.Validation, RunCatalogAllocatorDropReuseSanity),

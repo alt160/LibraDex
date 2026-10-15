@@ -79,15 +79,15 @@ public sealed partial class LibraDexRoutedCompositeIndex
     /// </summary>
     /// <param name="node">Routed node being considered for publication.<br/></param>
     /// <param name="tier">Zero-based tier of <paramref name="node"/>.<br/></param>
-    /// <param name="dirtyNodes">Nodes affected by the current bounded insertion group.<br/></param>
+    /// <param name="dirtyNodes">Nodes affected by the current mutation, or null for complete detached-tree publication.<br/></param>
     /// <param name="forceAll">Whether every descendant needs its first durable node page.<br/></param>
     private void PersistCompositeBulkNode(
         CompositeNode node,
         int tier,
-        HashSet<CompositeNode> dirtyNodes,
+        HashSet<CompositeNode>? dirtyNodes,
         bool forceAll)
     {
-        if (!forceAll && !dirtyNodes.Contains(node))
+        if (!forceAll && !dirtyNodes!.Contains(node))
             return;
 
         EnsureNodeLoaded(node, tier);
