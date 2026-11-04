@@ -1,10 +1,22 @@
 # LibraDex
 
+[![NuGet](https://img.shields.io/nuget/v/LibraDex.svg)](https://www.nuget.org/packages/LibraDex)
+
 **LibraDex is a .NET-native identity-index catalog for data you already own.** It creates durable or memory-only indexes that link typed keys to typed identities, without requiring LibraDex to store, serialize, or hydrate the records behind those identities.
 
 Think of it as a way to separate useful indexing capabilities from a table-and-row database model. Your application, files, blobs, service, cache, or existing collection remains the source of truth. LibraDex maintains the typed key-to-identity relationships that make that data fast to find, filter, count, and enumerate.
 
 It can be used as a key/value store, but that is not its central purpose. LibraDex is built for lookups, filtering, analysis, and ordered traversal over identities.
+
+## Install
+
+Install the [LibraDex NuGet package](https://www.nuget.org/packages/LibraDex):
+
+```shell
+dotnet add package LibraDex
+```
+
+LibraDex targets .NET 8. Applications targeting compatible newer .NET versions, including .NET 9 and 10, can use the same library asset. NuGet restores its dependencies automatically.
 
 ## Why LibraDex?
 
@@ -19,12 +31,6 @@ Use LibraDex when your application repeatedly needs to answer questions such as:
 LibraDex is deliberately an identity-indexing engine, not a general object store or relational database. It does not prescribe an object schema, own your payloads, or force your data into rows. That separation lets an application control record loading, caching, and lifetime while LibraDex focuses on the durable relationships used to locate records.
 
 ## Quick start
-
-Install the package:
-
-```shell
-dotnet add package LibraDex
-```
 
 Create a durable catalog and a typed index. Here, `products` is the shared identity group, `sku` is one index in that group, the key is a `long`, and the record identity is also a `long`.
 
